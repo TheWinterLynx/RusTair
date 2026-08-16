@@ -1,0 +1,19 @@
+[package]
+name = "rustair"
+version = "0.1.0"
+edition = "2024"
+description = "Native Rust MITS Altair 8800 emulator"
+license = "BSD-2-Clause"
+
+[dependencies]
+eframe = { version = "0.32", default-features = true }
+egui_extras = { version = "0.32", features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rodio = { version = "0.21", default-features = false, features = ["mp3", "playback"] }
+rfd = "0.15"
+rand = "0.9"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
