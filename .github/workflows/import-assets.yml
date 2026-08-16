@@ -1,0 +1,102 @@
+name: import-original-assets
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether import is needed
+        id: check
+        shell: bash
+        run: |
+          if [[ -f assets/Altair1.png && -f "assets/asr33 body.jpg" && -f assets/fan.mp3 ]]; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download original runtime assets
+        if: steps.check.outputs.needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          base='https://s2js.com/altair'
+          fetch() { local remote="$1" localname="$2"; curl --fail --location --retry 3 "$base/$remote" --output "assets/$localname"; }
+          fetch '4kbas32.bin' '4kbas32.bin'
+          fetch 'Altair1.png' 'Altair1.png'
+          fetch 'LEDoff.png' 'LEDoff.png'
+          fetch 'LEDon.png' 'LEDon.png'
+          fetch 'SwitchCentre.png' 'SwitchCentre.png'
+          fetch 'SwitchDown.png' 'SwitchDown.png'
+          fetch 'SwitchUp.png' 'SwitchUp.png'
+          fetch 'asr33%20body.jpg' 'asr33 body.jpg'
+          fetch 'asr33%20keys.png' 'asr33 keys.png'
+          fetch 'asr33head.png' 'asr33head.png'
+          fetch 'asrlinelocal.png' 'asrlinelocal.png'
+          fetch 'asrlinelocalknob.png' 'asrlinelocalknob.png'
+          fetch 'bellpadded.mp3' 'bellpadded.mp3'
+          fetch 'click.mp3' 'click.mp3'
+          fetch 'crpadded.mp3' 'crpadded.mp3'
+          fetch 'fan.mp3' 'fan.mp3'
+          fetch 'powerbtn.mp3' 'powerbtn.mp3'
+          fetch 'printcharpadded.mp3' 'printcharpadded.mp3'
+          fetch 'up-hum4.mp3' 'up-hum4.mp3'
+          fetch 'teletype.ttf' 'teletype.ttf'
+          fetch 'PaperTapeVideo4x.mp4' 'PaperTapeVideo4x.mp4'
+          fetch 'readingtape.gif' 'readingtape.gif'
+          fetch 'slideout.png' 'slideout.png'
+          fetch 'panelbg.png' 'panelbg.png'
+
+      - name: Verify exact files against supplied runtime
+        if: steps.check.outputs.needed == 'true'
+        shell: bash
+        working-directory: assets
+        run: |
+          cat > SHA256SUMS <<'EOF'
+          6946b7718068daa0c70219071824c78937c0c79554b5579b7f118b826d8968ed  4kbas32.bin
+          d25a8ca4a2c31594133b6f5af15609a01b78541734e84737ce61bf4e7c6e8489  Altair1.png
+          57fb6af4640efafcdd060b937cedd197611395b9d46bc7a3fc59dc7a39b329bf  LEDoff.png
+          d8110f7c7889e67134f68de96b97bb6d321d7c6f548407ecbfdb761ec322f7b5  LEDon.png
+          55bad81b5bc5b4a80b46ba5fb5e6b1fc8736828973798bac46779d95e7818ddf  SwitchCentre.png
+          a13dc1cbdeab9a53c36f27c9b9e03dca786770c1a694668c106284df6f178713  SwitchDown.png
+          16655dd99f24b86fdc9c06ae52350dbf52e291eef1b08b5529b2d1e2aa357ac8  SwitchUp.png
+          1f1e08944fd73ceb593fee98e9ade70d2b86803fd0e1121713e002659936b426  asr33 body.jpg
+          76bf2b2de8240f969da6a138310650daf1acb303bb26f344d60ba77bbe550a51  asr33 keys.png
+          60c1564759def805d5679b8e7deb6b130927e9a37aebcbd421f344f540d2ae14  asr33head.png
+          a41fc17f3d3dc3b8dded84753f8a7576ddda7b04662d0be4715befa53f455780  asrlinelocal.png
+          c776482eed730c733d9ef9d294841634653dcb4202e2df2e87e6ce4a594c669f  asrlinelocalknob.png
+          902020cf45967f639fc6ece5e1ad7feb1790eb2db7ea314b7cf31116ddd6dfbf  bellpadded.mp3
+          257e0e6a2bf144a3e98faec0ba0d5c29becc9684b4f9dc5c12ee5f3927322005  click.mp3
+          810e78687d4077526fff737844b2ca000f97e36d92828ef8a0001a4866f952a1  crpadded.mp3
+          30df3846372ccf7dd7c1e69bc320476ac587e52b7dff6e0cb574c813a42b2df0  fan.mp3
+          0dfee6edc00ba7cfc62766a43a6a683a96c6ae7ec836baeaf1b3c3a0c44309ad  powerbtn.mp3
+          c942e485b35523270c488f87073d1610b8c227942607bb133a703404b6328a69  printcharpadded.mp3
+          a278ad313e53d3d2660efa0e572dfb76ea58007d2ab71580b67ba1aed413d75e  up-hum4.mp3
+          b9f81f274052d6e767ed94b4b19b68a8ce70cceed18ff5283c068954ee521025  teletype.ttf
+          e81971d5011946a1dc98a04780878e6b83126ead12bca144c8e1f1722d320485  PaperTapeVideo4x.mp4
+          be2585493358948657972127c084456f0ba25e4ec916e24e5f36c5d98c097bb0  readingtape.gif
+          917aad88207ad94a96974754b3853be2dd347a5772e1b9a54ba6f119687fd1ae  slideout.png
+          b913c02f520c46d71d55fc5c0526e1aa92c438214699b8935665c43c563b410e  panelbg.png
+          EOF
+          sha256sum --check SHA256SUMS
+
+      - name: Commit verified assets to RusTair
+        if: steps.check.outputs.needed == 'true'
+        shell: bash
+        run: |
+          rm -f assets/SHA256SUMS
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add assets
+          git commit -m 'Add verified original Altair and ASR-33 assets'
+          git push
