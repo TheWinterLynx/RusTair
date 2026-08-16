@@ -52,7 +52,6 @@ jobs:
           fetch 'printcharpadded.mp3' 'printcharpadded.mp3'
           fetch 'up-hum4.mp3' 'up-hum4.mp3'
           fetch 'teletype.ttf' 'teletype.ttf'
-          fetch 'PaperTapeVideo4x.mp4' 'PaperTapeVideo4x.mp4'
           fetch 'readingtape.gif' 'readingtape.gif'
           fetch 'slideout.png' 'slideout.png'
           fetch 'panelbg.png' 'panelbg.png'
@@ -83,7 +82,6 @@ jobs:
           c942e485b35523270c488f87073d1610b8c227942607bb133a703404b6328a69  printcharpadded.mp3
           a278ad313e53d3d2660efa0e572dfb76ea58007d2ab71580b67ba1aed413d75e  up-hum4.mp3
           b9f81f274052d6e767ed94b4b19b68a8ce70cceed18ff5283c068954ee521025  teletype.ttf
-          e81971d5011946a1dc98a04780878e6b83126ead12bca144c8e1f1722d320485  PaperTapeVideo4x.mp4
           be2585493358948657972127c084456f0ba25e4ec916e24e5f36c5d98c097bb0  readingtape.gif
           917aad88207ad94a96974754b3853be2dd347a5772e1b9a54ba6f119687fd1ae  slideout.png
           b913c02f520c46d71d55fc5c0526e1aa92c438214699b8935665c43c563b410e  panelbg.png
