@@ -136,13 +136,13 @@ impl RusTairApp {
         let (r,resp)=ui.allocate_exact_size(Vec2::new(TTY_W*scale,TTY_H*scale),Sense::click()); let o=r.min;
         if let Some(t)=&self.tex.tty_body{Self::image(ui,t,r);}else{ui.painter().rect_filled(r,0.,Color32::from_rgb(80,76,65));}
         if let Some(t)=&self.tex.tty_keys{Self::image(ui,t,r);}
-        let paper=Rect::from_min_size(o+Vec2::new(TTY_W*.25*scale,TTY_H*.34*scale),Vec2::new(TTY_W*.49*scale,TTY_H*.27*scale));
+        let paper=Rect::from_min_size(o+Vec2::new(TTY_W*0.25*scale,TTY_H*0.34*scale),Vec2::new(TTY_W*0.49*scale,TTY_H*0.27*scale));
         let fs=if self.paper_width<=52{29.*scale}else{18.5*scale}; ui.painter().text(paper.left_bottom(),egui::Align2::LEFT_BOTTOM,&self.tty_output,egui::FontId::monospace(fs.max(5.)),Color32::from_rgb(35,35,30));
-        if self.tty_mode!=TtyMode::Off{if let Some(t)=&self.tex.tty_head{let cw=if self.paper_width<=52{31.}else{20.};let x=TTY_W*.25+(self.tty_column as f32).min(self.paper_width as f32)*cw;let hr=Rect::from_min_size(o+Vec2::new(x*scale,TTY_H*.33*scale),Vec2::new(180.*scale,190.*scale));Self::image(ui,t,hr);}}
-        let lls=Vec2::new(TTY_W*.18*scale,288.*(TTY_W*.18/349.)*scale); let ll=Rect::from_min_size(Pos2::new(r.right()-lls.x,r.bottom()-lls.y),lls);
+        if self.tty_mode!=TtyMode::Off{if let Some(t)=&self.tex.tty_head{let cw=if self.paper_width<=52{31.}else{20.};let x=TTY_W*0.25+(self.tty_column as f32).min(self.paper_width as f32)*cw;let hr=Rect::from_min_size(o+Vec2::new(x*scale,TTY_H*0.33*scale),Vec2::new(180.*scale,190.*scale));Self::image(ui,t,hr);}}
+        let lls=Vec2::new(TTY_W*0.18*scale,288.*(TTY_W*0.18/349.)*scale); let ll=Rect::from_min_size(Pos2::new(r.right()-lls.x,r.bottom()-lls.y),lls);
         if let Some(t)=&self.tex.tty_line_local{Self::image(ui,t,ll);}
-        if resp.clicked(){if let Some(p)=resp.interact_pointer_pos(){if ll.contains(p){let xp=(p.x-ll.left())/ll.width();let yp=(p.y-ll.top())/ll.height();if yp<.52{self.tty_mode=TtyMode::Off;}else if xp<.40&&yp<.80{self.tty_mode=TtyMode::Line;}else if xp>.56&&yp<.80{self.tty_mode=TtyMode::Local;}}}}
-        if let Some(t)=&self.tex.tty_knob{let kw=TTY_W*.06*scale;let kh=kw*117./116.;let base=r.right()-TTY_W*.06*scale-kw;let sh=match self.tty_mode{TtyMode::Line=>-.35*kw,TtyMode::Off=>0.,TtyMode::Local=>.35*kw};let kr=Rect::from_min_size(Pos2::new(base+sh,r.bottom()-TTY_H*.022*scale-kh),Vec2::new(kw,kh));Self::image(ui,t,kr);}
+        if resp.clicked(){if let Some(p)=resp.interact_pointer_pos(){if ll.contains(p){let xp=(p.x-ll.left())/ll.width();let yp=(p.y-ll.top())/ll.height();if yp<0.52{self.tty_mode=TtyMode::Off;}else if xp<0.40&&yp<0.80{self.tty_mode=TtyMode::Line;}else if xp>0.56&&yp<0.80{self.tty_mode=TtyMode::Local;}}}}
+        if let Some(t)=&self.tex.tty_knob{let kw=TTY_W*0.06*scale;let kh=kw*117./116.;let base=r.right()-TTY_W*0.06*scale-kw;let sh=match self.tty_mode{TtyMode::Line=>-0.35*kw,TtyMode::Off=>0.,TtyMode::Local=>0.35*kw};let kr=Rect::from_min_size(Pos2::new(base+sh,r.bottom()-TTY_H*0.022*scale-kh),Vec2::new(kw,kh));Self::image(ui,t,kr);}
     }
 }
 
