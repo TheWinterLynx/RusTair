@@ -20,3 +20,19 @@ jobs:
         run: cargo test --all-targets
       - name: Build release
         run: cargo build --release
+      - name: Publish Windows test build
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RusTair-Windows
+          path: |
+            target/release/rustair.exe
+            assets/**
+      - name: Publish Linux test build
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: RusTair-Linux
+          path: |
+            target/release/rustair
+            assets/**
