@@ -23,8 +23,30 @@ jobs:
         with:
           python-version: '3.12'
       - name: Build clean front panel and animated switch assets
+        shell: bash
         run: |
           python -m pip install --disable-pip-version-check pillow
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          expected = {
+              'panel_clean_00.b64': (6000, '36bf91511f0db796b2edc939dd0ab9df6841c730486c072c73e05b2742838ce8'),
+              'panel_clean_01.b64': (6000, '7547b3cc75cfd0b9af2cc91543e5ff4573a3f5fb54ac1ad412e75bc3820f4a60'),
+              'panel_clean_02.b64': (6000, 'e0920de66262f4ac93d95b8048ec54c33cd2de737e05ecd41e75b09221152e92'),
+              'panel_clean_03.b64': (6000, '9e40d0a86011102256b47ac22a88e90d9b796818f5b249786eec9eba603d6125'),
+              'panel_clean_04.b64': (5244, '8699bedd9e8461aff6054a37a0174a4c6224b94831a764351a32bb4603198f41'),
+          }
+          root = Path('assets/panels/blue/source')
+          bad = False
+          for name, (want_len, want_sha) in expected.items():
+              data = (root/name).read_bytes()
+              got = hashlib.sha256(data).hexdigest()
+              ok = len(data) == want_len and got == want_sha
+              print(f'{name}: {len(data)} bytes sha256={got} {"OK" if ok else "MISMATCH"}')
+              bad |= not ok
+          if bad:
+              raise SystemExit('Clean panel source chunk validation failed')
+          PY
           python scripts/build_blue_panel.py
       - name: Commit generated runtime panel assets
         if: runner.os == 'Linux'
