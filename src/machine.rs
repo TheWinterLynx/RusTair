@@ -18,6 +18,9 @@ pub struct AltairBus {
     pub panel_switches: u16,
     pub data_leds: u8,
     pub serial_rx: VecDeque<u8>,
+    /// One-byte transmit holding register. The ASR-33 side deliberately leaves
+    /// the byte here until the mechanical print interval has elapsed. That is
+    /// how the status ports expose BUSY/READY to software running on the 8080.
     pub serial_tx: VecDeque<u8>,
     pub memory_protected: [bool; MEMORY_BOARD_COUNT],
 }
@@ -74,6 +77,10 @@ impl AltairBus {
             self.memory_protected[index] = protected;
         }
     }
+
+    pub fn tx_busy(&self) -> bool {
+        !self.serial_tx.is_empty()
+    }
 }
 
 impl Bus for AltairBus {
@@ -93,12 +100,22 @@ impl Bus for AltairBus {
     fn input(&mut self, port: u8) -> u8 {
         match port {
             0xff => (self.panel_switches >> 8) as u8,
+
+            // MITS 88-SIO status convention used by the S2JS reference.
+            // Bit 0 is set when the receive buffer is empty, while bits 6/7
+            // are set while the transmit holding register is occupied.
             0x00 => {
                 let rx_empty = self.serial_rx.is_empty();
-                (if rx_empty { 0x01 } else { 0 }) | 0xc0
+                let tx_busy = self.tx_busy();
+                (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
             }
             0x01 => self.serial_rx.pop_front().unwrap_or(0),
-            0x10 => (if self.serial_rx.is_empty() { 0 } else { 0x01 }) | 0x02,
+
+            // MITS 2SIO / 8251 convention: bit 0 = RX ready, bit 1 = TX ready.
+            0x10 => {
+                (if self.serial_rx.is_empty() { 0 } else { 0x01 })
+                    | (if self.tx_busy() { 0 } else { 0x02 })
+            }
             0x11 => self.serial_rx.pop_front().unwrap_or(0),
             _ => 0,
         }
@@ -107,7 +124,13 @@ impl Bus for AltairBus {
     fn output(&mut self, port: u8, value: u8) {
         match port {
             0xff => self.data_leds = value,
-            0x01 | 0x11 => self.serial_tx.push_back(value),
+            0x01 | 0x11 => {
+                // The browser reference effectively has one text-box-sized TX
+                // holding register. Correct software polls READY before writing;
+                // if it does not, a new write replaces the old pending byte.
+                self.serial_tx.clear();
+                self.serial_tx.push_back(value);
+            }
             _ => {}
         }
     }
@@ -146,6 +169,8 @@ impl AltairMachine {
             self.wait_led = false;
             self.address_leds = 0;
             self.bus.data_leds = 0;
+            self.bus.serial_rx.clear();
+            self.bus.serial_tx.clear();
             self.bus.randomize();
         }
     }
@@ -156,6 +181,8 @@ impl AltairMachine {
         self.wait_led = true;
         self.address_leds = 0;
         self.bus.data_leds = 0;
+        self.bus.serial_rx.clear();
+        self.bus.serial_tx.clear();
     }
 
     pub fn set_running(&mut self, run: bool) {
@@ -262,5 +289,36 @@ mod tests {
         machine.bus.set_protected(0, true);
         machine.power(true);
         assert!(!machine.bus.is_protected(0));
+    }
+
+    #[test]
+    fn sio_status_tracks_transmit_holding_register() {
+        let mut bus = AltairBus::default();
+
+        // Empty TX register: 2SIO says transmitter ready; SIO busy bits clear.
+        assert_eq!(bus.input(0x10) & 0x02, 0x02);
+        assert_eq!(bus.input(0x00) & 0xc0, 0x00);
+
+        bus.output(0x01, b'A');
+        assert!(bus.tx_busy());
+        assert_eq!(bus.input(0x10) & 0x02, 0x00);
+        assert_eq!(bus.input(0x00) & 0xc0, 0xc0);
+
+        bus.serial_tx.pop_front();
+        assert!(!bus.tx_busy());
+        assert_eq!(bus.input(0x10) & 0x02, 0x02);
+        assert_eq!(bus.input(0x00) & 0xc0, 0x00);
+    }
+
+    #[test]
+    fn receive_status_matches_reference_ports() {
+        let mut bus = AltairBus::default();
+        assert_eq!(bus.input(0x00) & 0x01, 0x01); // SIO: 1 means RX empty
+        assert_eq!(bus.input(0x10) & 0x01, 0x00); // 2SIO: 0 means no RX data
+
+        bus.serial_rx.push_back(b'K');
+        assert_eq!(bus.input(0x00) & 0x01, 0x00);
+        assert_eq!(bus.input(0x10) & 0x01, 0x01);
+        assert_eq!(bus.input(0x01), b'K');
     }
 }
