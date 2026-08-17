@@ -9,8 +9,8 @@ use machine::{AltairMachine, CLOCK_HZ};
 use rustair::audio::AudioEngine;
 use rustair::teletype::{self, KeyKind, Mode as TtyMode, PrintEvent, Teletype};
 
-const PANEL_W: f32 = 1774.0;
-const PANEL_H: f32 = 887.0;
+const PANEL_W: f32 = 2048.0;
+const PANEL_H: f32 = 869.0;
 const TTY_W: f32 = teletype::IMAGE_W;
 const TTY_H: f32 = teletype::IMAGE_H;
 
@@ -18,36 +18,38 @@ const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
 const KEY_TAP_TIME: Duration = Duration::from_millis(75);
 
+// Exact centres measured from the Wikimedia/Cromemco front-panel photograph.
+// Arrays are indexed by the emulated bit number, hence bit 0 is the rightmost entry on the panel.
 const SENSE_X: [f32; 16] = [
-    1568., 1503., 1438., 1345., 1279., 1214., 1119., 1053.,
-    987., 890., 826., 760., 661., 593., 526., 425.,
+    1768., 1697., 1625., 1517., 1445., 1373., 1265., 1195.,
+    1124., 1016., 946., 874., 766., 694., 624., 518.,
 ];
-const SENSE_Y: f32 = 455.0;
+const SENSE_Y: f32 = 461.0;
 
 const ADDR_LED_X: [f32; 16] = [
-    1568., 1503., 1438., 1343., 1278., 1213., 1118., 1053.,
-    988., 890., 827., 761., 661., 595., 527., 425.,
+    1768., 1697., 1625., 1517., 1445., 1374., 1266., 1194.,
+    1123., 1016., 944., 873., 766., 694., 623., 516.,
 ];
-const ADDR_LED_Y: f32 = 306.0;
+const ADDR_LED_Y: f32 = 322.0;
 
-const DATA_LED_X: [f32; 8] = [1568., 1503., 1438., 1344., 1278., 1213., 1118., 1052.];
-const DATA_LED_Y: f32 = 163.0;
+const DATA_LED_X: [f32; 8] = [1769., 1697., 1625., 1516., 1445., 1373., 1264., 1193.];
+const DATA_LED_Y: f32 = 179.0;
 
-const STATUS_LED_X: [f32; 10] = [215., 286., 354., 426., 493., 559., 626., 693., 760., 825.];
-const STATUS_LED_Y: f32 = 164.0;
+const STATUS_LED_X: [f32; 10] = [300., 370., 442., 513., 585., 656., 727., 799., 871., 942.];
+const STATUS_LED_Y: f32 = 179.0;
 
-const WAIT_LED: (f32, f32) = (216., 307.);
-const HLDA_LED: (f32, f32) = (287., 306.);
+const WAIT_LED: (f32, f32) = (303., 321.);
+const HLDA_LED: (f32, f32) = (374., 321.);
 
-const POWER: (f32, f32) = (133., 597.);
-const RUN_STOP: (f32, f32) = (430., 597.);
-const SINGLE_STEP: (f32, f32) = (562., 597.);
-const EXAMINE: (f32, f32) = (694., 597.);
-const DEPOSIT: (f32, f32) = (826., 597.);
-const RESET: (f32, f32) = (956., 597.);
-const PROTECT: (f32, f32) = (1087., 597.);
-const AUX1: (f32, f32) = (1214., 597.);
-const AUX2: (f32, f32) = (1343., 597.);
+const POWER: (f32, f32) = (177., 602.);
+const RUN_STOP: (f32, f32) = (520., 602.);
+const SINGLE_STEP: (f32, f32) = (659., 602.);
+const EXAMINE: (f32, f32) = (803., 602.);
+const DEPOSIT: (f32, f32) = (943., 604.);
+const RESET: (f32, f32) = (1087., 603.);
+const PROTECT: (f32, f32) = (1231., 603.);
+const AUX1: (f32, f32) = (1373., 603.);
+const AUX2: (f32, f32) = (1516., 604.);
 
 struct Tex {
     panel: Option<egui::TextureHandle>,
@@ -64,8 +66,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RusTair — MITS Altair 8800")
-            .with_inner_size([1500.0, 820.0])
-            .with_min_inner_size([950.0, 560.0]),
+            .with_inner_size([1500.0, 760.0])
+            .with_min_inner_size([950.0, 480.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -155,7 +157,7 @@ impl RusTairApp {
             key_auto_release_at: None,
             key_displacement: 0.0,
             key_anim_tick: now,
-            status: "Ready — blue photographic panel".into(),
+            status: "Ready — Cromemco photographic panel (CC BY-SA 4.0)".into(),
         }
     }
 
