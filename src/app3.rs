@@ -192,5 +192,7 @@ impl RusTairApp {
 }
 
 include!("app3_panel.rs");
-include!("app3_tty.rs");
+include!("app3_tty_core.rs");
+include!("app3_tty_draw.rs");
+include!("app3_tty_io.rs");
 include!("app3_update.rs");
