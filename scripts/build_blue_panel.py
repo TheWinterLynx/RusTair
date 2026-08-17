@@ -1,142 +1,129 @@
 #!/usr/bin/env python3
-"""Build the photographic Altair 8800 panel assets used by RusTair.
+"""Build animated switch/LED sprites for RusTair's clean blue Altair panel.
 
-The base photograph is downloaded from Wikimedia Commons and is CC BY-SA 4.0:
-  "MITS Altair 8800 Front Panel.jpg" by Cromemco
-  https://commons.wikimedia.org/wiki/File:MITS_Altair_8800_Front_Panel.jpg
-
-The control sprites are drawn procedurally so the switch states can be animated
-without baking another photographed switch position into the front panel.
+The clean panel background is versioned separately as assets/panels/blue/panel.jpg.
+This script only regenerates the transparent sprite sheet. Every lower blue control
+on the Altair is a toggle switch: the function switches are three-position,
+spring-centred controls (up / centre / down), not push buttons.
 """
-from __future__ import annotations
-
-import hashlib
-import io
-import urllib.request
 from pathlib import Path
-
 from PIL import Image, ImageDraw, ImageFilter
 
 OUT = Path("assets/panels/blue")
-SOURCE_URL = "https://upload.wikimedia.org/wikipedia/commons/b/b2/MITS_Altair_8800_Front_Panel.jpg"
-SOURCE_SHA1 = "f496df0232032f7d0d46e9bbb306691b380d8c36"
-PANEL_SIZE = (2048, 869)
-CELL = 128
+CELL = 160
 SCALE = 4
 
-
-def download_panel() -> Image.Image:
-    req = urllib.request.Request(SOURCE_URL, headers={"User-Agent": "RusTair asset builder/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as response:
-        data = response.read()
-    digest = hashlib.sha1(data).hexdigest()
-    if digest != SOURCE_SHA1:
-        raise RuntimeError(f"Unexpected source image SHA-1: {digest}")
-    image = Image.open(io.BytesIO(data)).convert("RGB")
-    return image.resize(PANEL_SIZE, Image.Resampling.LANCZOS)
+RED = (218, 35, 68)
+WHITE = (231, 222, 193)
+BLUE = (37, 151, 205)
+BLACK = (35, 35, 31)
 
 
-def rounded_line(draw: ImageDraw.ImageDraw, xy, width, fill):
+def rounded_line(draw, xy, width, fill):
     draw.line(xy, fill=fill, width=width)
     r = width // 2
     for x, y in (xy[0], xy[-1]):
         draw.ellipse((x-r, y-r, x+r, y+r), fill=fill)
 
 
-def toggle(color: tuple[int, int, int], up: bool) -> Image.Image:
+def toggle(color, position):
+    """Transparent toggle overlay. position: -1 up, 0 centre, +1 down."""
     s = CELL * SCALE
     im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
     cx = cy = s // 2
+
+    # The clean panel already contains the mounting ring, so only draw the
+    # lever, its pivot and a small contact shadow.
     shadow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.ellipse((cx-92, cy-82, cx+92, cy+102), fill=(0, 0, 0, 100))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(18))
-    im.alpha_composite(shadow)
-    d = ImageDraw.Draw(im)
-    d.ellipse((cx-82, cy-82, cx+82, cy+82), fill=(92, 91, 84, 255), outline=(190, 180, 155, 255), width=10)
-    d.ellipse((cx-62, cy-62, cx+62, cy+62), fill=(18, 19, 18, 255), outline=(7, 7, 7, 255), width=8)
-    end_y = cy - 88 if up else cy + 88
-    rounded_line(d, [(cx, cy), (cx, end_y)], 38, (154, 148, 132, 255))
-    hy = cy - 118 if up else cy + 118
-    handle = (cx-48, hy-58, cx+48, hy+58)
-    d.rounded_rectangle(handle, radius=42, fill=(*color, 255), outline=(45, 40, 35, 220), width=7)
-    d.rounded_rectangle((cx-30, hy-43, cx-5, hy+20), radius=12, fill=(255, 255, 255, 55))
-    return im.resize((CELL, CELL), Image.Resampling.LANCZOS)
-
-
-def push_button(color=(38, 164, 213)) -> Image.Image:
-    s = CELL * SCALE
-    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    cx = cy = s // 2
-    shadow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.ellipse((cx-90, cy-70, cx+90, cy+105), fill=(0, 0, 0, 100))
+    sd.ellipse((cx-54, cy-42, cx+54, cy+62), fill=(0, 0, 0, 105))
     shadow = shadow.filter(ImageFilter.GaussianBlur(16))
     im.alpha_composite(shadow)
     d = ImageDraw.Draw(im)
-    d.ellipse((cx-78, cy-78, cx+78, cy+78), fill=(80, 78, 71, 255), outline=(185, 176, 155, 255), width=10)
-    d.ellipse((cx-58, cy-58, cx+58, cy+58), fill=(10, 13, 14, 255))
-    d.ellipse((cx-49, cy-49, cx+49, cy+49), fill=(*color, 255), outline=(12, 45, 58, 255), width=6)
-    d.ellipse((cx-28, cy-34, cx+5, cy-4), fill=(255, 255, 255, 65))
+
+    d.ellipse((cx-28, cy-28, cx+28, cy+28), fill=(108, 105, 96, 230), outline=(210, 201, 179, 220), width=5)
+
+    if position == 0:
+        # In the spring-centred state the lever points out of the panel, so its
+        # coloured end cap is seen almost head-on.
+        d.ellipse((cx-50, cy-38, cx+50, cy+43), fill=(*color, 255), outline=(39, 36, 32, 245), width=7)
+        d.ellipse((cx-28, cy-24, cx+4, cy+3), fill=(255, 255, 255, 75))
+    else:
+        end_y = cy + position * 112
+        rounded_line(d, [(cx, cy), (cx, end_y)], 34, (170, 164, 148, 255))
+        hy = cy + position * 132
+        box = (cx-48, hy-62, cx+48, hy+62)
+        d.rounded_rectangle(box, radius=40, fill=(*color, 255), outline=(42, 38, 34, 240), width=7)
+        highlight_y0 = hy-46 if position < 0 else hy-30
+        d.rounded_rectangle((cx-30, highlight_y0, cx-7, highlight_y0+58), radius=11, fill=(255,255,255,55))
     return im.resize((CELL, CELL), Image.Resampling.LANCZOS)
 
 
-def led_on() -> Image.Image:
+def led_on():
     s = CELL * SCALE
-    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    cx = cy = s // 2
-    glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    im = Image.new("RGBA", (s, s), (0,0,0,0))
+    cx = cy = s//2
+
+    glow = Image.new("RGBA", (s,s), (0,0,0,0))
     gd = ImageDraw.Draw(glow)
-    gd.ellipse((cx-150, cy-150, cx+150, cy+150), fill=(255, 16, 0, 95))
-    glow = glow.filter(ImageFilter.GaussianBlur(52))
+    gd.ellipse((cx-190, cy-190, cx+190, cy+190), fill=(255, 18, 0, 112))
+    glow = glow.filter(ImageFilter.GaussianBlur(68))
     im.alpha_composite(glow)
+
+    glow2 = Image.new("RGBA", (s,s), (0,0,0,0))
+    g2 = ImageDraw.Draw(glow2)
+    g2.ellipse((cx-105, cy-105, cx+105, cy+105), fill=(255, 42, 4, 150))
+    glow2 = glow2.filter(ImageFilter.GaussianBlur(30))
+    im.alpha_composite(glow2)
+
     d = ImageDraw.Draw(im)
-    d.ellipse((cx-75, cy-75, cx+75, cy+75), fill=(23, 18, 17, 255), outline=(105, 96, 82, 255), width=8)
-    d.ellipse((cx-59, cy-59, cx+59, cy+59), fill=(255, 18, 3, 255), outline=(125, 0, 0, 255), width=5)
-    d.ellipse((cx-28, cy-28, cx+28, cy+28), fill=(255, 75, 10, 255))
-    d.ellipse((cx-10, cy-10, cx+10, cy+10), fill=(255, 245, 188, 255))
+    d.ellipse((cx-66, cy-66, cx+66, cy+66), fill=(255, 20, 3, 250))
+    d.ellipse((cx-39, cy-39, cx+39, cy+39), fill=(255, 78, 12, 255))
+    d.ellipse((cx-14, cy-14, cx+14, cy+14), fill=(255, 251, 215, 255))
+    d.ellipse((cx-22, cy-30, cx-4, cy-12), fill=(255,255,255,210))
     return im.resize((CELL, CELL), Image.Resampling.LANCZOS)
 
 
-def led_off() -> Image.Image:
+def led_off():
+    # Kept for future skins; the current clean plate already contains off lenses.
     s = CELL * SCALE
-    im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    im = Image.new("RGBA", (s,s), (0,0,0,0))
     d = ImageDraw.Draw(im)
-    cx = cy = s // 2
-    d.ellipse((cx-75, cy-75, cx+75, cy+75), fill=(26, 22, 20, 255), outline=(92, 87, 76, 255), width=8)
-    d.ellipse((cx-58, cy-58, cx+58, cy+58), fill=(73, 5, 5, 255), outline=(35, 0, 0, 255), width=5)
-    d.ellipse((cx-33, cy-39, cx+5, cy-9), fill=(255, 120, 105, 25))
-    return im.resize((CELL, CELL), Image.Resampling.LANCZOS)
+    cx = cy = s//2
+    d.ellipse((cx-62,cy-62,cx+62,cy+62), fill=(64,5,5,245), outline=(25,0,0,240), width=6)
+    d.ellipse((cx-32,cy-38,cx+2,cy-10), fill=(255,130,115,28))
+    return im.resize((CELL,CELL), Image.Resampling.LANCZOS)
 
 
-def make_sprites() -> Image.Image:
-    sheet = Image.new("RGBA", (CELL * 4, CELL * 3), (0, 0, 0, 0))
+def make_sprites():
+    sheet = Image.new("RGBA", (CELL*4, CELL*3), (0,0,0,0))
     sprites = {
-        (0, 0): led_on(),
-        (1, 0): toggle((215, 33, 73), True),
-        (2, 0): toggle((215, 33, 73), False),
-        (3, 0): toggle((226, 218, 190), True),
-        (0, 1): toggle((226, 218, 190), False),
-        (1, 1): toggle((30, 30, 28), True),
-        (2, 1): toggle((30, 30, 28), False),
-        (3, 1): push_button((35, 164, 214)),
-        (0, 2): push_button((28, 29, 27)),
-        (1, 2): led_off(),
+        (0,0): led_on(),
+        (1,0): toggle(RED, -1),
+        (2,0): toggle(RED, +1),
+        (3,0): toggle(WHITE, -1),
+        (0,1): toggle(WHITE, +1),
+        (1,1): toggle(BLUE, -1),
+        (2,1): toggle(BLUE, 0),
+        (3,1): toggle(BLUE, +1),
+        (0,2): toggle(BLACK, -1),
+        (1,2): toggle(BLACK, 0),
+        (2,2): toggle(BLACK, +1),
+        (3,2): led_off(),
     }
-    for (col, row), sprite in sprites.items():
-        sheet.alpha_composite(sprite, (col * CELL, row * CELL))
+    for (col,row), sprite in sprites.items():
+        sheet.alpha_composite(sprite, (col*CELL,row*CELL))
     return sheet
 
 
-def main() -> None:
+def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    panel = download_panel()
-    panel.save(OUT / "panel.jpg", quality=92, optimize=True, progressive=True)
+    panel = OUT / "panel.jpg"
+    if not panel.exists():
+        raise RuntimeError(f"Missing clean panel base: {panel}")
     make_sprites().save(OUT / "sprites.png", optimize=True)
-    print(f"Built {OUT / 'panel.jpg'} and {OUT / 'sprites.png'}")
+    print(f"Built {OUT/'sprites.png'} from clean panel skin")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
