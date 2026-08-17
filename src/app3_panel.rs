@@ -5,24 +5,24 @@ impl RusTairApp {
         }
         let center = origin + Vec2::new(x * scale, y * scale);
 
-        // A deliberately brighter two-stage bloom than the previous panel.
+        // Strong incandescent-looking bloom while keeping the original red lens visible.
         ui.painter().circle_filled(
             center,
-            23.0 * scale,
-            Color32::from_rgba_unmultiplied(255, 18, 5, 34),
+            20.0 * scale,
+            Color32::from_rgba_unmultiplied(255, 12, 2, 55),
         );
         ui.painter().circle_filled(
             center,
-            15.0 * scale,
-            Color32::from_rgba_unmultiplied(255, 28, 8, 70),
+            12.0 * scale,
+            Color32::from_rgba_unmultiplied(255, 45, 8, 125),
         );
 
-        let rect = Self::centered_rect(origin, scale, x, y, 42.0, 42.0);
+        let rect = Self::centered_rect(origin, scale, x, y, 32.0, 32.0);
         if let Some(t) = &self.tex.panel_sprites {
             Self::image_uv(ui, t, rect, Self::sprite_uv(0, 0));
         } else {
-            ui.painter().circle_filled(center, 9.0 * scale, Color32::from_rgb(255, 70, 20));
-            ui.painter().circle_filled(center, 4.0 * scale, Color32::WHITE);
+            ui.painter().circle_filled(center, 8.0 * scale, Color32::from_rgb(255, 70, 20));
+            ui.painter().circle_filled(center, 3.0 * scale, Color32::WHITE);
         }
     }
 
@@ -48,7 +48,7 @@ impl RusTairApp {
 
     fn sense_switch(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, bit: usize) {
         let x = SENSE_X[bit];
-        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 58.0, 78.0);
+        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 54.0, 76.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
             self.machine.bus.panel_switches ^= 1u16 << bit;
@@ -66,7 +66,7 @@ impl RusTairApp {
         } else {
             (0, 1)
         };
-        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 82.0, cell);
+        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 70.0, cell);
     }
 
     fn button_response(
@@ -78,15 +78,16 @@ impl RusTairApp {
         y: f32,
         label: &str,
     ) -> egui::Response {
-        let hit = Self::centered_rect(origin, scale, x, y, 72.0, 72.0);
+        let hit = Self::centered_rect(origin, scale, x, y, 60.0, 60.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.hovered() {
             response.clone().on_hover_text(label);
         }
 
+        // Mechanical button travel: shrink slightly and move into the panel while held.
         let pressed = response.is_pointer_button_down_on();
-        let sprite_size = if pressed { 43.0 } else { 49.0 };
-        let sprite_y = y + if pressed { 3.5 } else { 0.0 };
+        let sprite_size = if pressed { 34.0 } else { 39.0 };
+        let sprite_y = y + if pressed { 3.0 } else { 0.0 };
         self.draw_panel_sprite(ui, origin, scale, x, sprite_y, sprite_size, (3, 1));
         response
     }
@@ -114,7 +115,7 @@ impl RusTairApp {
     }
 
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 82.0, 92.0);
+        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 70.0, 85.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
             self.set_altair_power(!self.machine.powered);
@@ -123,15 +124,15 @@ impl RusTairApp {
             response.clone().on_hover_text("POWER");
         }
         let cell = if self.machine.powered { (3, 0) } else { (0, 1) };
-        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 92.0, cell);
+        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 74.0, cell);
     }
 
     fn draw_aux(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, p: (f32, f32), label: &str) {
-        let hit = Self::centered_rect(origin, scale, p.0, p.1, 68.0, 82.0);
+        let hit = Self::centered_rect(origin, scale, p.0, p.1, 60.0, 72.0);
         let response = ui.allocate_rect(hit, Sense::click());
         let down = response.is_pointer_button_down_on();
         let cell = if down { (2, 1) } else { (1, 1) };
-        self.draw_panel_sprite(ui, origin, scale, p.0, p.1, 78.0, cell);
+        self.draw_panel_sprite(ui, origin, scale, p.0, p.1, 68.0, cell);
         if response.clicked() {
             self.audio.play_once("assets/click.mp3");
         }
@@ -183,7 +184,7 @@ impl RusTairApp {
             );
         }
 
-        // Status row: only light signals currently represented by the emulator.
+        // Status row: only signals already represented by the emulator are driven here.
         self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte); // INTE
         self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected()); // PROT
         self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted); // HLTA
