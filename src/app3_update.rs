@@ -1,7 +1,14 @@
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
-        let dt = now.duration_since(self.last_tick).min(Duration::from_millis(50));
+
+        // Keep emulation work bounded to roughly one visual frame. The previous
+        // 50 ms / 200k-cycle catch-up window could occasionally execute a large
+        // CPU burst on the UI thread after an OS scheduling hiccup, producing a
+        // visible whole-panel stutter/flash. At normal cadence this still runs
+        // the 2 MHz CPU at the requested rate (about 32k cycles per 16 ms frame),
+        // but deliberately drops excessive backlog instead of blocking drawing.
+        let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
         self.update_paper_tape();
@@ -18,7 +25,7 @@ impl eframe::App for RusTairApp {
 
         if self.machine.running {
             let cycles = (CLOCK_HZ as f64 * dt.as_secs_f64()) as u32;
-            self.machine.run_cycles(cycles.clamp(1, 200_000));
+            self.machine.run_cycles(cycles.clamp(1, 40_000));
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
