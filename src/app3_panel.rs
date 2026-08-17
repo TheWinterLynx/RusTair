@@ -5,24 +5,25 @@ impl RusTairApp {
         }
         let center = origin + Vec2::new(x * scale, y * scale);
 
-        // Strong incandescent-looking bloom while keeping the original red lens visible.
+        // Bright two-stage incandescent bloom. The clean panel already carries
+        // the dark/off lens, so this overlay only appears for an illuminated LED.
         ui.painter().circle_filled(
             center,
-            20.0 * scale,
-            Color32::from_rgba_unmultiplied(255, 12, 2, 55),
+            25.0 * scale,
+            Color32::from_rgba_unmultiplied(255, 16, 3, 48),
         );
         ui.painter().circle_filled(
             center,
-            12.0 * scale,
-            Color32::from_rgba_unmultiplied(255, 45, 8, 125),
+            16.0 * scale,
+            Color32::from_rgba_unmultiplied(255, 38, 7, 105),
         );
 
-        let rect = Self::centered_rect(origin, scale, x, y, 32.0, 32.0);
+        let rect = Self::centered_rect(origin, scale, x, y, 44.0, 44.0);
         if let Some(t) = &self.tex.panel_sprites {
             Self::image_uv(ui, t, rect, Self::sprite_uv(0, 0));
         } else {
-            ui.painter().circle_filled(center, 8.0 * scale, Color32::from_rgb(255, 70, 20));
-            ui.painter().circle_filled(center, 3.0 * scale, Color32::WHITE);
+            ui.painter().circle_filled(center, 10.0 * scale, Color32::from_rgb(255, 70, 20));
+            ui.painter().circle_filled(center, 4.0 * scale, Color32::WHITE);
         }
     }
 
@@ -48,7 +49,7 @@ impl RusTairApp {
 
     fn sense_switch(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, bit: usize) {
         let x = SENSE_X[bit];
-        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 54.0, 76.0);
+        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 70.0, 94.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
             self.machine.bus.panel_switches ^= 1u16 << bit;
@@ -66,10 +67,13 @@ impl RusTairApp {
         } else {
             (0, 1)
         };
-        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 70.0, cell);
+        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 105.0, cell);
     }
 
-    fn button_response(
+    /// Draw one spring-centred function switch. `cells` are (up, centre, down).
+    /// It follows the pointer while held and returns to centre on release.
+    /// Returns Some(true) for the lower/down actuation, Some(false) for upper/up.
+    fn momentary_switch(
         &mut self,
         ui: &mut egui::Ui,
         origin: Pos2,
@@ -77,68 +81,80 @@ impl RusTairApp {
         x: f32,
         y: f32,
         label: &str,
-    ) -> egui::Response {
-        let hit = Self::centered_rect(origin, scale, x, y, 60.0, 60.0);
+        cells: [(usize, usize); 3],
+        size: f32,
+    ) -> Option<bool> {
+        let hit = Self::centered_rect(origin, scale, x, y, 76.0, 98.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.hovered() {
             response.clone().on_hover_text(label);
         }
 
-        // Mechanical button travel: shrink slightly and move into the panel while held.
-        let pressed = response.is_pointer_button_down_on();
-        let sprite_size = if pressed { 34.0 } else { 39.0 };
-        let sprite_y = y + if pressed { 3.0 } else { 0.0 };
-        self.draw_panel_sprite(ui, origin, scale, x, sprite_y, sprite_size, (3, 1));
-        response
-    }
+        let down = response
+            .interact_pointer_pos()
+            .map(|p| p.y >= origin.y + y * scale)
+            .unwrap_or(false);
 
-    fn momentary_top_bottom(
-        &mut self,
-        ui: &mut egui::Ui,
-        origin: Pos2,
-        scale: f32,
-        x: f32,
-        y: f32,
-        label: &str,
-    ) -> Option<bool> {
-        let response = self.button_response(ui, origin, scale, x, y, label);
+        let cell = if response.is_pointer_button_down_on() {
+            if down { cells[2] } else { cells[0] }
+        } else {
+            cells[1]
+        };
+        self.draw_panel_sprite(ui, origin, scale, x, y, size, cell);
+
+        if response.is_pointer_button_down_on() {
+            ui.ctx().request_repaint_after(Duration::from_millis(8));
+        }
+
         if response.clicked() {
             self.audio.play_once("assets/click.mp3");
-            let down = response
-                .interact_pointer_pos()
-                .map(|p| p.y >= (origin.y + y * scale))
-                .unwrap_or(false);
             Some(down)
         } else {
             None
         }
     }
 
+    fn blue_function_switch(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        p: (f32, f32),
+        label: &str,
+    ) -> Option<bool> {
+        self.momentary_switch(
+            ui, origin, scale, p.0, p.1, label,
+            [(1, 1), (2, 1), (3, 1)],
+            104.0,
+        )
+    }
+
+    fn black_aux_switch(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        p: (f32, f32),
+        label: &str,
+    ) -> Option<bool> {
+        self.momentary_switch(
+            ui, origin, scale, p.0, p.1, label,
+            [(0, 2), (1, 2), (2, 2)],
+            100.0,
+        )
+    }
+
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 70.0, 85.0);
+        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 78.0, 100.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
             self.set_altair_power(!self.machine.powered);
         }
         if response.hovered() {
-            response.clone().on_hover_text("POWER");
+            response.clone().on_hover_text("POWER / OFF");
         }
         let cell = if self.machine.powered { (3, 0) } else { (0, 1) };
-        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 74.0, cell);
-    }
-
-    fn draw_aux(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, p: (f32, f32), label: &str) {
-        let hit = Self::centered_rect(origin, scale, p.0, p.1, 60.0, 72.0);
-        let response = ui.allocate_rect(hit, Sense::click());
-        let down = response.is_pointer_button_down_on();
-        let cell = if down { (2, 1) } else { (1, 1) };
-        self.draw_panel_sprite(ui, origin, scale, p.0, p.1, 68.0, cell);
-        if response.clicked() {
-            self.audio.play_once("assets/click.mp3");
-        }
-        if response.hovered() {
-            response.clone().on_hover_text(label);
-        }
+        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 108.0, cell);
     }
 
     fn set_altair_power(&mut self, on: bool) {
@@ -184,44 +200,43 @@ impl RusTairApp {
             );
         }
 
-        // Status row: only signals already represented by the emulator are driven here.
-        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte); // INTE
-        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected()); // PROT
-        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted); // HLTA
+        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected());
+        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted);
         self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, self.machine.wait_led);
         self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, false);
 
         self.draw_power(ui, origin, scale);
 
-        if let Some(run) = self.momentary_top_bottom(
-            ui, origin, scale, RUN_STOP.0, RUN_STOP.1, "STOP / RUN",
+        // All lower blue controls are three-position toggle switches. They rest
+        // at centre and spring back after the selected up/down action.
+        if let Some(run) = self.blue_function_switch(
+            ui, origin, scale, RUN_STOP, "STOP / RUN",
         ) {
             self.machine.set_running(run);
         }
 
-        if self.button_response(
-            ui, origin, scale, SINGLE_STEP.0, SINGLE_STEP.1, "SINGLE STEP",
-        ).clicked() {
-            self.audio.play_once("assets/click.mp3");
+        if self.blue_function_switch(
+            ui, origin, scale, SINGLE_STEP, "SINGLE STEP",
+        ).is_some() {
             self.machine.step();
         }
 
-        if let Some(next) = self.momentary_top_bottom(
-            ui, origin, scale, EXAMINE.0, EXAMINE.1, "EXAMINE / EXAMINE NEXT",
+        if let Some(next) = self.blue_function_switch(
+            ui, origin, scale, EXAMINE, "EXAMINE / EXAMINE NEXT",
         ) {
             self.machine.examine(next);
         }
 
-        if let Some(next) = self.momentary_top_bottom(
-            ui, origin, scale, DEPOSIT.0, DEPOSIT.1, "DEPOSIT / DEPOSIT NEXT",
+        if let Some(next) = self.blue_function_switch(
+            ui, origin, scale, DEPOSIT, "DEPOSIT / DEPOSIT NEXT",
         ) {
             self.machine.deposit(next);
         }
 
-        if self.button_response(
-            ui, origin, scale, RESET.0, RESET.1, "RESET / CLR",
-        ).clicked() {
-            self.audio.play_once("assets/click.mp3");
+        if self.blue_function_switch(
+            ui, origin, scale, RESET, "RESET / CLR",
+        ).is_some() {
             self.machine.reset();
             self.tty_tx_started = None;
             self.machine.address_leds = 0xffff;
@@ -229,13 +244,13 @@ impl RusTairApp {
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
         }
 
-        if let Some(unprotect) = self.momentary_top_bottom(
-            ui, origin, scale, PROTECT.0, PROTECT.1, "PROTECT / UNPROTECT",
+        if let Some(unprotect) = self.blue_function_switch(
+            ui, origin, scale, PROTECT, "PROTECT / UNPROTECT",
         ) {
             self.machine.protect_current_board(!unprotect);
         }
 
-        self.draw_aux(ui, origin, scale, AUX1, "AUX 1 (unassigned)");
-        self.draw_aux(ui, origin, scale, AUX2, "AUX 2 (unassigned)");
+        let _ = self.black_aux_switch(ui, origin, scale, AUX1, "AUX 1 (unassigned)");
+        let _ = self.black_aux_switch(ui, origin, scale, AUX2, "AUX 2 (unassigned)");
     }
 }
