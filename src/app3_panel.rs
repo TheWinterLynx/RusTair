@@ -27,6 +27,10 @@ impl RusTairApp {
         }
     }
 
+    /// Draw one transparent moving-control overlay. The photographed/cleaned
+    /// panel itself owns the fixed switch bezel and mounting hole; the atlas
+    /// contains only the lever, cap and moving shaft. This is important because
+    /// the metal base of a real toggle never rotates or translates with the lever.
     fn draw_panel_sprite(
         &self,
         ui: &mut egui::Ui,
@@ -49,7 +53,7 @@ impl RusTairApp {
 
     fn sense_switch(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, bit: usize) {
         let x = SENSE_X[bit];
-        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 70.0, 94.0);
+        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 74.0, 100.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
             self.machine.bus.panel_switches ^= 1u16 << bit;
@@ -67,12 +71,12 @@ impl RusTairApp {
         } else {
             (0, 1)
         };
-        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 105.0, cell);
+        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 118.0, cell);
     }
 
     /// Draw one spring-centred function switch. `cells` are (up, centre, down).
-    /// It follows the pointer while held and returns to centre on release.
-    /// Returns Some(true) for the lower/down actuation, Some(false) for upper/up.
+    /// The fixed metal base is part of panel.jpg. Only the lever overlay changes.
+    /// Returns Some(true) for lower/down actuation and Some(false) for upper/up.
     fn momentary_switch(
         &mut self,
         ui: &mut egui::Ui,
@@ -84,7 +88,7 @@ impl RusTairApp {
         cells: [(usize, usize); 3],
         size: f32,
     ) -> Option<bool> {
-        let hit = Self::centered_rect(origin, scale, x, y, 76.0, 98.0);
+        let hit = Self::centered_rect(origin, scale, x, y, 82.0, 104.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.hovered() {
             response.clone().on_hover_text(label);
@@ -125,7 +129,7 @@ impl RusTairApp {
         self.momentary_switch(
             ui, origin, scale, p.0, p.1, label,
             [(1, 1), (2, 1), (3, 1)],
-            104.0,
+            118.0,
         )
     }
 
@@ -140,30 +144,40 @@ impl RusTairApp {
         self.momentary_switch(
             ui, origin, scale, p.0, p.1, label,
             [(0, 2), (1, 2), (2, 2)],
-            100.0,
+            116.0,
         )
     }
 
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 78.0, 100.0);
+        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 82.0, 106.0);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
             self.set_altair_power(!self.machine.powered);
         }
         if response.hovered() {
-            response.clone().on_hover_text("POWER / OFF");
+            response.clone().on_hover_text("OFF / POWER");
         }
-        let cell = if self.machine.powered { (3, 0) } else { (0, 1) };
-        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 108.0, cell);
+
+        // The captured altair implementation powers on when the bistable switch
+        // enters its DOWN position. The previous RusTair mapping was reversed.
+        let cell = if self.machine.powered { (0, 1) } else { (3, 0) };
+        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 118.0, cell);
     }
 
     fn set_altair_power(&mut self, on: bool) {
         self.machine.power(on);
         self.tty_tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
+
         if on {
+            // Match sim.html Handle_Power -> Handle_Reset exactly: at power-on
+            // all address/data lamps flash for 500 ms and WAIT remains lit.
+            self.machine.address_leds = 0xffff;
+            self.machine.bus.data_leds = 0xff;
+            self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
             self.audio.start_loop("altair-fan", "assets/fan.mp3");
         } else {
+            self.reset_flash_until = None;
             self.audio.stop_loop("altair-fan");
         }
     }
@@ -200,8 +214,17 @@ impl RusTairApp {
             );
         }
 
+        // STATUS order on the photographic panel:
+        // INTE, PROT, MEMR, INP, M1, OUT, HLTA, STACK, WO, INT.
         self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte);
         self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected());
+
+        // The reference sim marks MEMR, M1 and WO as AlwaysOn whenever the
+        // machine has power. They were missing from the RusTair skin.
+        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, true);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, true);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, true);
+
         self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted);
         self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, self.machine.wait_led);
         self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, false);
