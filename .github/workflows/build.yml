@@ -31,7 +31,8 @@ jobs:
           import hashlib
           expected = {
               'panel_clean_00.b64': (6000, '36bf91511f0db796b2edc939dd0ab9df6841c730486c072c73e05b2742838ce8'),
-              'panel_clean_01.b64': (6000, '7547b3cc75cfd0b9af2cc91543e5ff4573a3f5fb54ac1ad412e75bc3820f4a60'),
+              'panel_clean_01a.b64': (3000, 'ac050457ce26a61112a4fb27e90cbc0bbcf5f78a516a2188f740b641fef65c99'),
+              'panel_clean_01b.b64': (3000, '0de685086378720693b16bd09eb874d09bcfffc3b165d16c342e23af80bcb94b'),
               'panel_clean_02.b64': (6000, 'e0920de66262f4ac93d95b8048ec54c33cd2de737e05ecd41e75b09221152e92'),
               'panel_clean_03.b64': (6000, '9e40d0a86011102256b47ac22a88e90d9b796818f5b249786eec9eba603d6125'),
               'panel_clean_04.b64': (5244, '8699bedd9e8461aff6054a37a0174a4c6224b94831a764351a32bb4603198f41'),
