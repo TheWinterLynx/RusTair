@@ -1,1 +1,1 @@
-include!("app.rs");
+include!("app2.rs");
