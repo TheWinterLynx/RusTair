@@ -140,7 +140,10 @@ def moving_shaft_to(cap_rect: tuple[int, int, int, int]) -> Image.Image:
 
     for offset in range(-5 * scale, 6 * scale):
         t = (offset + 5 * scale) / (10 * scale)
-        value = 75 + 150 * (math.sin(math.pi * t) ** 0.9)
+        # sin(pi) can be a tiny negative due to floating-point rounding; clamp
+        # before the fractional exponent so Pillow always receives real values.
+        highlight = max(0.0, math.sin(math.pi * t))
+        value = 75 + 150 * (highlight ** 0.9)
         if t > 0.7:
             value *= 0.7
         color = (
