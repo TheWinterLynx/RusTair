@@ -4,14 +4,13 @@
 The clean panel and the approved realistic switch artwork are reconstructed
 from Base64 chunks versioned under assets/panels/blue/source/.
 
-The runtime switch atlas deliberately contains only the moving lever/cap/shaft.
-The fixed metal bezel/mounting hole is already present in panel.jpg, so it
-never translates or rotates when a switch is actuated.
+Only the moving lever/cap/shaft is present in the runtime atlas. The fixed metal
+bezel/mounting hole lives in panel.jpg and therefore never moves.
 
-The source photographs contain rather extreme up/down poses. They are used here
-only for their photographic material/colour. Runtime lever geometry is rebuilt
-around one fixed pivot with deliberately short travel so a toggle appears to
-rock through a modest angle rather than fold through almost 90 degrees.
+The photographic source includes very extreme up/down switch poses. Runtime
+poses intentionally reuse one upright photographic lever as material and alter
+only its apparent length/position around one fixed pivot. This gives a short,
+realistic perspective movement instead of looking like a 90-degree rotation.
 """
 from __future__ import annotations
 
@@ -27,35 +26,21 @@ OUT = Path("assets/panels/blue")
 SOURCE = OUT / "source"
 PANEL_SIZE = (1774, 887)
 
-SOURCE_SPRITE_SIZE = (512, 384)   # 4x3 grid, 128 px cells
+SOURCE_SPRITE_SIZE = (512, 384)  # 4x3 grid, 128 px cells
 SOURCE_SPRITE_SHA256 = "364f6b13c3fb5031643d7b236e2ca93fe7b4ecc14d1f231a125a95efd5158cbf"
 
 RUNTIME_CELL = 256
 RUNTIME_SPRITE_SIZE = (RUNTIME_CELL * 4, RUNTIME_CELL * 3)
 
-# Geometry is expressed in the original 128x128 source-cell coordinate system.
-# The fixed photographed bezel is centred around this pivot in panel.jpg.
+# Geometry in the original 128x128 source-cell coordinate system.
 PIVOT_X = 64
 PIVOT_Y = 70
 
-# The old atlas effectively moved the cap by roughly 30-40 source pixels between
-# extreme states. These positions keep the visible cap centres only 7 px apart.
-# At runtime that produces a much more plausible small toggle movement.
-POSE_CAP_CENTER_Y = {
-    "up": 51,
-    "center": 58,
-    "down": 65,
-}
-POSE_CAP_HEIGHT = {
-    "up": 34,
-    "center": 31,
-    "down": 34,
-}
-POSE_CAP_WIDTH_SCALE = {
-    "up": 0.90,
-    "center": 0.94,
-    "down": 0.90,
-}
+# Five source pixels between poses is deliberately subtle. DOWN also becomes
+# slightly shorter/wider to suggest the handle tilting towards the viewer.
+POSE_CAP_CENTER_Y = {"up": 50, "center": 55, "down": 60}
+POSE_CAP_HEIGHT = {"up": 35, "center": 31, "down": 28}
+POSE_CAP_WIDTH_SCALE = {"up": 0.90, "center": 0.96, "down": 1.02}
 
 
 def decode_chunks(pattern: str) -> bytes:
@@ -101,17 +86,11 @@ def source_cell(sheet: Image.Image, col: int, row: int) -> Image.Image:
     return sheet.crop((col * w, row * h, (col + 1) * w, (row + 1) * h))
 
 
-def cap_only(full: Image.Image, direction: str) -> Image.Image:
-    """Keep only the photographic coloured/ivory cap, never the fixed bezel."""
+def upright_cap(full: Image.Image) -> Image.Image:
+    """Extract only the upper photographic cap, excluding shaft and fixed base."""
     alpha = full.getchannel("A")
     mask = Image.new("L", full.size, 0)
-    draw = ImageDraw.Draw(mask)
-
-    if direction == "up":
-        draw.rectangle((28, 0, 100, 50), fill=255)
-    else:
-        draw.rectangle((24, 80, 104, 127), fill=255)
-
+    ImageDraw.Draw(mask).rectangle((26, 0, 102, 52), fill=255)
     mask = ImageChops.multiply(alpha, mask).filter(ImageFilter.GaussianBlur(0.15))
     out = full.copy()
     out.putalpha(mask)
@@ -126,13 +105,7 @@ def crop_visible(image: Image.Image) -> Image.Image:
 
 
 def pose_cap(source_cap: Image.Image, pose: str) -> tuple[Image.Image, tuple[int, int]]:
-    """Reproject a photographic cap into a compact runtime toggle pose.
-
-    We deliberately do not reuse the source cap's extreme screen position.
-    Instead all poses share the same X axis and move only a few pixels around
-    the fixed bezel pivot. A slight height change supplies perspective without
-    making the lever look as if it rotates through a huge angle.
-    """
+    """Project one upright photographic cap into a short-travel toggle pose."""
     crop = crop_visible(source_cap)
     target_h = POSE_CAP_HEIGHT[pose]
     aspect = crop.width / max(1, crop.height)
@@ -147,32 +120,24 @@ def pose_cap(source_cap: Image.Image, pose: str) -> tuple[Image.Image, tuple[int
 
 
 def moving_shaft_to(cap_rect: tuple[int, int, int, int]) -> Image.Image:
-    """Draw only the small moving metal shaft between fixed pivot and cap.
-
-    Its bottom end is always PIVOT_X/PIVOT_Y, so the bezel never moves. The top
-    end follows the cap by only a few pixels between poses.
-    """
+    """Draw only the moving metal shaft; its lower endpoint is always fixed."""
     scale = 4
-    size = 128 * scale
-    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    image = Image.new("RGBA", (128 * scale, 128 * scale), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
 
-    x0, y0, x1, y1 = cap_rect
+    x0, _y0, x1, y1 = cap_rect
     cap_bottom_y = min(PIVOT_Y - 2, y1 - 2)
     top_x = ((x0 + x1) // 2) * scale
     top_y = cap_bottom_y * scale
     bottom_x = PIVOT_X * scale
     bottom_y = PIVOT_Y * scale
 
-    # Small shadow behind the moving shaft.
     draw.line(
         (top_x + 3 * scale, top_y + 2 * scale, bottom_x + 3 * scale, bottom_y + 2 * scale),
         fill=(10, 8, 7, 95),
         width=10 * scale,
     )
 
-    # Cylindrical metallic shaft. Because the travel is small, the shaft only
-    # changes length subtly; it never drags the fixed ring with it.
     for offset in range(-5 * scale, 6 * scale):
         t = (offset + 5 * scale) / (10 * scale)
         value = 75 + 150 * (math.sin(math.pi * t) ** 0.9)
@@ -210,66 +175,36 @@ def compact_lever(source_cap: Image.Image, pose: str) -> Image.Image:
     return out
 
 
-def centre_source(up_cap: Image.Image, down_cap: Image.Image) -> Image.Image:
-    """Blend both photographic views for a high-resolution neutral material."""
-    up = crop_visible(up_cap)
-    down = crop_visible(down_cap)
-    target_w = max(up.width, down.width)
-    target_h = max(up.height, down.height)
-    up = up.resize((target_w, target_h), Image.Resampling.LANCZOS)
-    down = down.resize((target_w, target_h), Image.Resampling.LANCZOS)
-    return Image.blend(up, down, 0.35)
-
-
 def build_moving_lever_atlas() -> Image.Image:
     source = source_sprite_sheet()
 
     led_on = source_cell(source, 0, 0)
 
-    red_up_cap = cap_only(source_cell(source, 1, 0), "up")
-    red_down_cap = cap_only(source_cell(source, 2, 0), "down")
-    white_up_cap = cap_only(source_cell(source, 3, 0), "up")
-    white_down_cap = cap_only(source_cell(source, 0, 1), "down")
-    blue_up_cap = cap_only(source_cell(source, 1, 1), "up")
-    blue_down_cap = cap_only(source_cell(source, 3, 1), "down")
-    black_up_cap = cap_only(source_cell(source, 0, 2), "up")
-    black_down_cap = cap_only(source_cell(source, 2, 2), "down")
+    # Use only upright photographic caps as material. DOWN is no longer built
+    # from the old inverted/extreme photographed pose.
+    red_cap = upright_cap(source_cell(source, 1, 0))
+    white_cap = upright_cap(source_cell(source, 3, 0))
+    blue_cap = upright_cap(source_cell(source, 1, 1))
+    black_cap = upright_cap(source_cell(source, 0, 2))
 
-    # Bistable sense/power switches use compact up/down poses too.
-    red_up = compact_lever(red_up_cap, "up")
-    red_down = compact_lever(red_down_cap, "down")
-    white_up = compact_lever(white_up_cap, "up")
-    white_down = compact_lever(white_down_cap, "down")
-
-    # Spring-centred function/AUX switches use the same fixed pivot and only a
-    # seven-pixel pose delta either side of centre.
-    blue_up = compact_lever(blue_up_cap, "up")
-    blue_center = compact_lever(centre_source(blue_up_cap, blue_down_cap), "center")
-    blue_down = compact_lever(blue_down_cap, "down")
-
-    black_up = compact_lever(black_up_cap, "up")
-    black_center = compact_lever(centre_source(black_up_cap, black_down_cap), "center")
-    black_down = compact_lever(black_down_cap, "down")
-
-    atlas = Image.new("RGBA", RUNTIME_SPRITE_SIZE, (0, 0, 0, 0))
     cells = {
         (0, 0): led_on,
-        (1, 0): red_up,
-        (2, 0): red_down,
-        (3, 0): white_up,
-        (0, 1): white_down,
-        (1, 1): blue_up,
-        (2, 1): blue_center,
-        (3, 1): blue_down,
-        (0, 2): black_up,
-        (1, 2): black_center,
-        (2, 2): black_down,
+        (1, 0): compact_lever(red_cap, "up"),
+        (2, 0): compact_lever(red_cap, "down"),
+        (3, 0): compact_lever(white_cap, "up"),
+        (0, 1): compact_lever(white_cap, "down"),
+        (1, 1): compact_lever(blue_cap, "up"),
+        (2, 1): compact_lever(blue_cap, "center"),
+        (3, 1): compact_lever(blue_cap, "down"),
+        (0, 2): compact_lever(black_cap, "up"),
+        (1, 2): compact_lever(black_cap, "center"),
+        (2, 2): compact_lever(black_cap, "down"),
     }
 
+    atlas = Image.new("RGBA", RUNTIME_SPRITE_SIZE, (0, 0, 0, 0))
     for (col, row), image in cells.items():
         hi = image.resize((RUNTIME_CELL, RUNTIME_CELL), Image.Resampling.LANCZOS)
         atlas.alpha_composite(hi, (col * RUNTIME_CELL, row * RUNTIME_CELL))
-
     return atlas
 
 
@@ -309,7 +244,7 @@ def main() -> None:
 
     digest = hashlib.sha256((OUT / "sprites.png").read_bytes()).hexdigest()
     print(
-        f"Built clean {OUT / 'panel.jpg'} and compact moving-lever atlas "
+        f"Built clean {OUT / 'panel.jpg'} and short-travel moving-lever atlas "
         f"{OUT / 'sprites.png'} ({sprites.width}x{sprites.height}, sha256={digest})"
     )
 
