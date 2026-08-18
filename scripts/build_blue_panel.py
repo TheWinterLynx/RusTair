@@ -9,8 +9,8 @@ bezel/mounting hole lives in panel.jpg and therefore never moves.
 
 The photographic source includes very extreme up/down switch poses. Runtime
 poses intentionally reuse one upright photographic lever as material and alter
-only its apparent length/position around one fixed pivot. This gives a short,
-realistic perspective movement instead of looking like a 90-degree rotation.
+only its apparent length/position around one fixed pivot. This gives a moderate,
+realistic perspective movement without looking like a 90-degree rotation.
 """
 from __future__ import annotations
 
@@ -36,12 +36,12 @@ RUNTIME_SPRITE_SIZE = (RUNTIME_CELL * 4, RUNTIME_CELL * 3)
 PIVOT_X = 64
 PIVOT_Y = 70
 
-# A real toggle has a short mechanical throw. Keep the visible cap large, but
-# move it only five source pixels between adjacent poses. DOWN remains above
-# the fixed pivot and is only slightly shorter/wider to suggest perspective.
-POSE_CAP_CENTER_Y = {"up": 37, "center": 42, "down": 47}
-POSE_CAP_HEIGHT = {"up": 40, "center": 37, "down": 34}
-POSE_CAP_WIDTH_SCALE = {"up": 0.92, "center": 0.96, "down": 1.00}
+# Intermediate throw between the original exaggerated animation and the last
+# over-conservative version. Eight source pixels separate adjacent poses while
+# the cap remains large and DOWN stays entirely above the fixed pivot.
+POSE_CAP_CENTER_Y = {"up": 34, "center": 42, "down": 50}
+POSE_CAP_HEIGHT = {"up": 41, "center": 37, "down": 33}
+POSE_CAP_WIDTH_SCALE = {"up": 0.91, "center": 0.96, "down": 1.01}
 
 
 def decode_chunks(pattern: str) -> bytes:
@@ -106,7 +106,7 @@ def crop_visible(image: Image.Image) -> Image.Image:
 
 
 def pose_cap(source_cap: Image.Image, pose: str) -> tuple[Image.Image, tuple[int, int]]:
-    """Project one upright photographic cap into a short-travel toggle pose."""
+    """Project one upright photographic cap into a moderate-travel toggle pose."""
     crop = crop_visible(source_cap)
     target_h = POSE_CAP_HEIGHT[pose]
     aspect = crop.width / max(1, crop.height)
@@ -246,7 +246,7 @@ def main() -> None:
 
     digest = hashlib.sha256((OUT / "sprites.png").read_bytes()).hexdigest()
     print(
-        f"Built clean {OUT / 'panel.jpg'} and short-travel moving-lever atlas "
+        f"Built clean {OUT / 'panel.jpg'} and balanced moving-lever atlas "
         f"{OUT / 'sprites.png'} ({sprites.width}x{sprites.height}, sha256={digest})"
     )
 
