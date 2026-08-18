@@ -1,7 +1,7 @@
 name: build
 
 on:
-  push:
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -11,17 +11,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
       - name: Build and validate clean panel assets
         shell: bash
         run: |
@@ -55,8 +53,8 @@ jobs:
               raise SystemExit('Panel asset source chunk validation failed')
           PY
           python scripts/build_blue_panel.py
+
       - name: Commit generated runtime panel assets
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -66,26 +64,17 @@ jobs:
             git commit -m "Update generated panel assets [skip ci]"
             git push
           fi
-      - name: Linux audio dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Test
         run: cargo test --all-targets
+
       - name: Build release
         run: cargo build --release
+
       - name: Publish Windows test build
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: RusTair-Windows
           path: |
             target/release/rustair.exe
-            assets/**
-      - name: Publish Linux test build
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: RusTair-Linux
-          path: |
-            target/release/rustair
             assets/**
