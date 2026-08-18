@@ -10,8 +10,9 @@ bezel/mounting hole lives in panel.jpg and therefore never moves.
 There are two mechanically different visual families:
 - bistable SENSE/POWER toggles: a real DOWN pose below the pivot and a compact
   neutral/slightly-UP pose above it;
-- spring-centred function/AUX toggles: the compact pose is CENTER at rest, with
-  modest momentary UP/DOWN travel.
+- spring-centred function/AUX toggles: their REST/CENTER pose deliberately
+  matches the physical DOWN/rest pose of the SENSE switches, exactly as on the
+  reference front panel. UP/DOWN are only shown while the switch is actuated.
 """
 from __future__ import annotations
 
@@ -37,24 +38,27 @@ RUNTIME_SPRITE_SIZE = (RUNTIME_CELL * 4, RUNTIME_CELL * 3)
 PIVOT_X = 64
 PIVOT_Y = 70
 
-# This is the visual neutral the user identified on the existing SENSE switches:
-# close to the bezel and noticeably shorter than the old exaggerated UP pose.
-NEUTRAL_POSE = (53, 31, 1.04)  # centre_y, height, width scale
+# Compact upper pose used when a bistable switch is raised. Keeping this close
+# to the bezel prevents the cap from covering the printed number/label above it.
+RAISED_POSE = (53, 31, 1.04)  # centre_y, height, width scale
 
 # Bistable SENSE/POWER switches start DOWN. DOWN is genuinely below the fixed
-# pivot rather than merely a foreshortened cap above it. When toggled UP they
-# use NEUTRAL_POSE so they do not obscure the number/label above the switch.
+# pivot. This is also the visual reference for the resting lower switches.
 BISTABLE_POSES = {
-    "up": NEUTRAL_POSE,
+    "up": RAISED_POSE,
     "down": (88, 34, 1.02),
 }
 
-# Spring-centred lower switches must visually rest at NEUTRAL_POSE. Their UP
-# travel is modest and their DOWN travel crosses below the pivot while held.
+# The lower blue/grey switches are spring-centred logically, but in the real
+# front-panel perspective their unactuated lever should look like the resting
+# A15-A0 toggles. Therefore CENTER is EXACTLY the SENSE DOWN geometry. When held
+# upward it moves only to RAISED_POSE; when held downward it travels a little
+# farther below the pivot.
+FUNCTION_REST_POSE = BISTABLE_POSES["down"]
 CENTERED_POSES = {
-    "up": (44, 34, 0.98),
-    "center": NEUTRAL_POSE,
-    "down": (83, 29, 1.05),
+    "up": RAISED_POSE,
+    "center": FUNCTION_REST_POSE,
+    "down": (101, 31, 1.06),
 }
 
 
@@ -245,13 +249,14 @@ def build_moving_lever_atlas() -> Image.Image:
         (2, 0): lever(red_down, "bistable", "down"),
         (3, 0): lever(white_up, "bistable", "up"),
         (0, 1): lever(white_down, "bistable", "down"),
-        # Spring-centred function switches.
+        # Spring-centred function switches. CENTER deliberately uses the same
+        # down-facing cap material and geometry as the resting SENSE switches.
         (1, 1): lever(blue_up, "centered", "up"),
-        (2, 1): lever(blue_up, "centered", "center"),
+        (2, 1): lever(blue_down, "centered", "center"),
         (3, 1): lever(blue_down, "centered", "down"),
-        # Spring-centred AUX switches.
+        # AUX follows the exact same mechanical convention.
         (0, 2): lever(black_up, "centered", "up"),
-        (1, 2): lever(black_up, "centered", "center"),
+        (1, 2): lever(black_down, "centered", "center"),
         (2, 2): lever(black_down, "centered", "down"),
     }
 
@@ -286,12 +291,12 @@ def validate_runtime_sprites(sprites: Image.Image) -> None:
             if cell.getbbox() is None:
                 raise RuntimeError(f"Runtime sprite cell ({col}, {row}) is empty")
 
-    # Semantic sanity checks so UP/CENTER/DOWN cannot silently become aliases
-    # again. These are source-coordinate assertions, independent of pixel scale.
+    # Semantic sanity checks so the lower controls cannot silently drift back to
+    # the old raised-looking rest pose.
     if not (BISTABLE_POSES["up"][0] < PIVOT_Y < BISTABLE_POSES["down"][0]):
         raise RuntimeError("Bistable UP/DOWN poses do not straddle the fixed pivot")
-    if CENTERED_POSES["center"] != NEUTRAL_POSE:
-        raise RuntimeError("Centred switch neutral pose drifted from NEUTRAL_POSE")
+    if CENTERED_POSES["center"] != BISTABLE_POSES["down"]:
+        raise RuntimeError("Function-switch CENTER no longer matches SENSE rest pose")
 
 
 def main() -> None:
