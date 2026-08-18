@@ -63,6 +63,7 @@ impl RusTairApp {
             response.clone().on_hover_text(format!("Sense switch {bit}"));
         }
 
+        // SENSE switches are bistable: one clear DOWN and one clear UP pose.
         let up = self.machine.bus.panel_switches & (1u16 << bit) != 0;
         let cell = if bit >= 8 {
             if up { (1, 0) } else { (2, 0) }
@@ -99,6 +100,8 @@ impl RusTairApp {
             .map(|p| p.y >= origin.y + y * scale)
             .unwrap_or(false);
 
+        // These controls rest in a true neutral centre pose. Only while held do
+        // they show the modest UP or DOWN spring travel.
         let cell = if response.is_pointer_button_down_on() {
             if down { cells[2] } else { cells[0] }
         } else {
@@ -155,11 +158,11 @@ impl RusTairApp {
             self.set_altair_power(!self.machine.powered);
         }
         if response.hovered() {
-            response.clone().on_hover_text("OFF / POWER");
+            response.clone().on_hover_text("OFF / ON");
         }
 
-        // The captured altair implementation powers on when the bistable switch
-        // enters its DOWN position. The previous RusTair mapping was reversed.
+        // POWER is a bistable white toggle just like the SENSE switches. The
+        // captured altair implementation powers on in the DOWN position.
         let cell = if self.machine.powered { (0, 1) } else { (3, 0) };
         self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 118.0, cell);
     }
@@ -196,6 +199,16 @@ impl RusTairApp {
         } else {
             ui.painter().rect_filled(whole, 0.0, Color32::from_rgb(20, 25, 28));
         }
+
+        // The clean-plate generation removed the original lower POWER legend.
+        // Restore it as part of the runtime skin so OFF/ON is always visible.
+        ui.painter().text(
+            origin + Vec2::new(POWER.0 * scale, 660.0 * scale),
+            egui::Align2::CENTER_CENTER,
+            "ON",
+            FontId::proportional(19.0 * scale),
+            Color32::from_rgb(226, 226, 214),
+        );
 
         for bit in 0..16 {
             self.sense_switch(ui, origin, scale, bit);
