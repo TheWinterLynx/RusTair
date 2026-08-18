@@ -7,10 +7,10 @@ from Base64 chunks versioned under assets/panels/blue/source/.
 Only the moving lever/cap/shaft is present in the runtime atlas. The fixed metal
 bezel/mounting hole lives in panel.jpg and therefore never moves.
 
-The photographic source includes very extreme up/down switch poses. Runtime
-poses intentionally reuse one upright photographic lever as material and alter
-only its apparent length/position around one fixed pivot. This gives a moderate,
-realistic perspective movement without looking like a 90-degree rotation.
+There are two mechanically different visual families:
+- bistable SENSE/POWER toggles: clearly UP or DOWN;
+- spring-centred function/AUX toggles: neutral CENTER at rest, with modest
+  momentary UP/DOWN travel.
 """
 from __future__ import annotations
 
@@ -36,12 +36,21 @@ RUNTIME_SPRITE_SIZE = (RUNTIME_CELL * 4, RUNTIME_CELL * 3)
 PIVOT_X = 64
 PIVOT_Y = 70
 
-# Intermediate throw between the original exaggerated animation and the last
-# over-conservative version. Eight source pixels separate adjacent poses while
-# the cap remains large and DOWN stays entirely above the fixed pivot.
-POSE_CAP_CENTER_Y = {"up": 34, "center": 42, "down": 50}
-POSE_CAP_HEIGHT = {"up": 41, "center": 37, "down": 33}
-POSE_CAP_WIDTH_SCALE = {"up": 0.91, "center": 0.96, "down": 1.01}
+# Bistable SENSE/POWER switches. UP intentionally keeps the familiar upright
+# photographic look; DOWN is much more foreshortened and close to the bezel so
+# the two stable positions read as roughly +/-45 degrees rather than centre/up.
+BISTABLE_POSES = {
+    "up":     (34, 41, 0.91),
+    "down":   (58, 31, 1.08),
+}
+
+# Spring-centred lower switches. The neutral pose deliberately matches the
+# upright look of the SENSE switches. UP and DOWN move only modestly around it.
+CENTERED_POSES = {
+    "up":     (27, 44, 0.88),
+    "center": (34, 41, 0.91),
+    "down":   (43, 36, 0.99),
+}
 
 
 def decode_chunks(pattern: str) -> bytes:
@@ -105,18 +114,24 @@ def crop_visible(image: Image.Image) -> Image.Image:
     return image.crop(bbox)
 
 
-def pose_cap(source_cap: Image.Image, pose: str) -> tuple[Image.Image, tuple[int, int]]:
-    """Project one upright photographic cap into a moderate-travel toggle pose."""
+def pose_cap(
+    source_cap: Image.Image,
+    family: str,
+    pose: str,
+) -> tuple[Image.Image, tuple[int, int]]:
+    """Project one photographic cap into the requested mechanical pose."""
+    poses = BISTABLE_POSES if family == "bistable" else CENTERED_POSES
+    center_y, target_h, width_scale = poses[pose]
+
     crop = crop_visible(source_cap)
-    target_h = POSE_CAP_HEIGHT[pose]
     aspect = crop.width / max(1, crop.height)
-    target_w = max(18, int(target_h * aspect * POSE_CAP_WIDTH_SCALE[pose]))
+    target_w = max(18, int(target_h * aspect * width_scale))
 
     cap = crop.resize((target_w, target_h), Image.Resampling.LANCZOS)
     cap = ImageEnhance.Sharpness(cap).enhance(1.45)
 
     x = PIVOT_X - target_w // 2
-    y = POSE_CAP_CENTER_Y[pose] - target_h // 2
+    y = center_y - target_h // 2
     return cap, (x, y)
 
 
@@ -166,8 +181,8 @@ def moving_shaft_to(cap_rect: tuple[int, int, int, int]) -> Image.Image:
     return image.resize((128, 128), Image.Resampling.LANCZOS)
 
 
-def compact_lever(source_cap: Image.Image, pose: str) -> Image.Image:
-    cap, (x, y) = pose_cap(source_cap, pose)
+def lever(source_cap: Image.Image, family: str, pose: str) -> Image.Image:
+    cap, (x, y) = pose_cap(source_cap, family, pose)
     rect = (x, y, x + cap.width, y + cap.height)
     shaft = moving_shaft_to(rect)
 
@@ -182,8 +197,8 @@ def build_moving_lever_atlas() -> Image.Image:
 
     led_on = source_cell(source, 0, 0)
 
-    # Use only upright photographic caps as material. DOWN is no longer built
-    # from the old inverted/extreme photographed pose.
+    # Reuse the approved photographic material. Geometry, not the original
+    # extreme photographed pose, determines each runtime state.
     red_cap = upright_cap(source_cell(source, 1, 0))
     white_cap = upright_cap(source_cell(source, 3, 0))
     blue_cap = upright_cap(source_cell(source, 1, 1))
@@ -191,16 +206,19 @@ def build_moving_lever_atlas() -> Image.Image:
 
     cells = {
         (0, 0): led_on,
-        (1, 0): compact_lever(red_cap, "up"),
-        (2, 0): compact_lever(red_cap, "down"),
-        (3, 0): compact_lever(white_cap, "up"),
-        (0, 1): compact_lever(white_cap, "down"),
-        (1, 1): compact_lever(blue_cap, "up"),
-        (2, 1): compact_lever(blue_cap, "center"),
-        (3, 1): compact_lever(blue_cap, "down"),
-        (0, 2): compact_lever(black_cap, "up"),
-        (1, 2): compact_lever(black_cap, "center"),
-        (2, 2): compact_lever(black_cap, "down"),
+        # Bistable SENSE/POWER family: up/down only.
+        (1, 0): lever(red_cap, "bistable", "up"),
+        (2, 0): lever(red_cap, "bistable", "down"),
+        (3, 0): lever(white_cap, "bistable", "up"),
+        (0, 1): lever(white_cap, "bistable", "down"),
+        # Spring-centred function switches.
+        (1, 1): lever(blue_cap, "centered", "up"),
+        (2, 1): lever(blue_cap, "centered", "center"),
+        (3, 1): lever(blue_cap, "centered", "down"),
+        # Spring-centred AUX switches.
+        (0, 2): lever(black_cap, "centered", "up"),
+        (1, 2): lever(black_cap, "centered", "center"),
+        (2, 2): lever(black_cap, "centered", "down"),
     }
 
     atlas = Image.new("RGBA", RUNTIME_SPRITE_SIZE, (0, 0, 0, 0))
@@ -246,7 +264,7 @@ def main() -> None:
 
     digest = hashlib.sha256((OUT / "sprites.png").read_bytes()).hexdigest()
     print(
-        f"Built clean {OUT / 'panel.jpg'} and balanced moving-lever atlas "
+        f"Built clean {OUT / 'panel.jpg'} and split-family moving-lever atlas "
         f"{OUT / 'sprites.png'} ({sprites.width}x{sprites.height}, sha256={digest})"
     )
 
