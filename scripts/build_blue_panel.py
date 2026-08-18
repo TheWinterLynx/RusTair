@@ -36,11 +36,12 @@ RUNTIME_SPRITE_SIZE = (RUNTIME_CELL * 4, RUNTIME_CELL * 3)
 PIVOT_X = 64
 PIVOT_Y = 70
 
-# Five source pixels between poses is deliberately subtle. DOWN also becomes
-# slightly shorter/wider to suggest the handle tilting towards the viewer.
-POSE_CAP_CENTER_Y = {"up": 50, "center": 55, "down": 60}
-POSE_CAP_HEIGHT = {"up": 35, "center": 31, "down": 28}
-POSE_CAP_WIDTH_SCALE = {"up": 0.90, "center": 0.96, "down": 1.02}
+# A real toggle has a short mechanical throw. Keep the visible cap large, but
+# move it only five source pixels between adjacent poses. DOWN remains above
+# the fixed pivot and is only slightly shorter/wider to suggest perspective.
+POSE_CAP_CENTER_Y = {"up": 37, "center": 42, "down": 47}
+POSE_CAP_HEIGHT = {"up": 40, "center": 37, "down": 34}
+POSE_CAP_WIDTH_SCALE = {"up": 0.92, "center": 0.96, "down": 1.00}
 
 
 def decode_chunks(pattern: str) -> bytes:
@@ -140,8 +141,6 @@ def moving_shaft_to(cap_rect: tuple[int, int, int, int]) -> Image.Image:
 
     for offset in range(-5 * scale, 6 * scale):
         t = (offset + 5 * scale) / (10 * scale)
-        # sin(pi) can be a tiny negative due to floating-point rounding; clamp
-        # before the fractional exponent so Pillow always receives real values.
         highlight = max(0.0, math.sin(math.pi * t))
         value = 75 + 150 * (highlight ** 0.9)
         if t > 0.7:
