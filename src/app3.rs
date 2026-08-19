@@ -49,9 +49,33 @@ const PROTECT: (f32, f32) = (1087., 597.);
 const AUX1: (f32, f32) = (1214., 597.);
 const AUX2: (f32, f32) = (1343., 597.);
 
+#[derive(Clone, Copy)]
+enum SwitchFamily {
+    Red,
+    White,
+    Blue,
+    Grey,
+}
+
+#[derive(Clone, Copy)]
+enum SwitchPosition {
+    Up,
+    Center,
+    Down,
+}
+
 struct Tex {
     panel: Option<egui::TextureHandle>,
+    // The legacy atlas is retained only for the illuminated LED overlay.
     panel_sprites: Option<egui::TextureHandle>,
+
+    // Every moving switch state is its own PNG. All states are rendered into
+    // exactly the same destination rectangle, so changing state never changes
+    // the runtime scale of the switch.
+    switch_red: [Option<egui::TextureHandle>; 2],
+    switch_white: [Option<egui::TextureHandle>; 2],
+    switch_blue: [Option<egui::TextureHandle>; 3],
+    switch_grey: [Option<egui::TextureHandle>; 3],
 
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
@@ -134,6 +158,25 @@ impl RusTairApp {
             tex: Tex {
                 panel: Self::load_texture(&cc.egui_ctx, "blue-panel", "assets/panels/blue/panel.jpg"),
                 panel_sprites: Self::load_texture(&cc.egui_ctx, "blue-panel-sprites", "assets/panels/blue/sprites.png"),
+
+                switch_red: [
+                    Self::load_texture(&cc.egui_ctx, "switch-red-up", "assets/panels/blue/switches/up_red.png"),
+                    Self::load_texture(&cc.egui_ctx, "switch-red-down", "assets/panels/blue/switches/down_red.png"),
+                ],
+                switch_white: [
+                    Self::load_texture(&cc.egui_ctx, "switch-white-up", "assets/panels/blue/switches/up_white.png"),
+                    Self::load_texture(&cc.egui_ctx, "switch-white-down", "assets/panels/blue/switches/down_white.png"),
+                ],
+                switch_blue: [
+                    Self::load_texture(&cc.egui_ctx, "switch-blue-up", "assets/panels/blue/switches/up_blue.png"),
+                    Self::load_texture(&cc.egui_ctx, "switch-blue-center", "assets/panels/blue/switches/center_blue.png"),
+                    Self::load_texture(&cc.egui_ctx, "switch-blue-down", "assets/panels/blue/switches/down_blue.png"),
+                ],
+                switch_grey: [
+                    Self::load_texture(&cc.egui_ctx, "switch-grey-up", "assets/panels/blue/switches/up_grey.png"),
+                    Self::load_texture(&cc.egui_ctx, "switch-grey-center", "assets/panels/blue/switches/center_grey.png"),
+                    Self::load_texture(&cc.egui_ctx, "switch-grey-down", "assets/panels/blue/switches/down_grey.png"),
+                ],
 
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
                 tty_keys: Self::load_texture(&cc.egui_ctx, "tty-keys", "assets/asr33 keys.png"),
