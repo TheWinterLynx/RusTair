@@ -7,14 +7,14 @@ impl RusTairApp {
     const SWITCH_TEX_SIZE: f32 = 1254.0;
 
     fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, on: bool) {
-        // The panel photograph itself contains the unlit lamp hardware. At
+        // The supplied panel already contains the unlit lamp hardware. At
         // startup machine.powered=false, so no lit overlay is painted at all.
         if !self.machine.powered || !on {
             return;
         }
 
-        // Deliberately no outer halo and no cast-shadow layer. A lit LED is a
-        // compact emissive disc painted directly over the fixed unlit lens.
+        // No halo, no blurred circle and no cast-shadow layer. A lit LED is a
+        // compact emissive face painted directly over the fixed dark lens.
         let center = origin + Vec2::new(x * scale, y * scale);
         ui.painter().circle_filled(
             center,
@@ -41,10 +41,11 @@ impl RusTairApp {
         }
     }
 
-    // Return the source crop and the physical pivot point, both expressed in
-    // pixels of the untouched 1254 x 1254 supplied PNG. UP pivots at the lower
-    // end of its visible shaft; DOWN at the upper end. In CENTER the shaft is
-    // hidden behind the cap, so the mechanical axis projects to the cap centre.
+    // Return the useful source crop and the physical pivot point in pixels of
+    // the untouched 1254 x 1254 PNG. For UP the pivot is the lower end of the
+    // metal stem; for DOWN it is the upper end. The CENTER pivot is not guessed
+    // from the crop centre: it is the centre of the metal mount in the original
+    // source before its ring was removed (approximately 627,455).
     fn switch_geometry(position: SwitchPosition) -> (Vec2, Vec2, Vec2) {
         match position {
             SwitchPosition::Up => (
@@ -53,9 +54,9 @@ impl RusTairApp {
                 Vec2::new(627.0, 1085.0),
             ),
             SwitchPosition::Center => (
-                Vec2::new(390.0, 340.0),
+                Vec2::new(390.0, 320.0),
                 Vec2::new(860.0, 965.0),
-                Vec2::new(627.0, 652.0),
+                Vec2::new(627.0, 455.0),
             ),
             SwitchPosition::Down => (
                 Vec2::new(390.0, 110.0),
@@ -79,9 +80,10 @@ impl RusTairApp {
         let crop_size = crop_max - crop_min;
         let pivot_in_crop = pivot_px - crop_min;
 
-        // This is the invariant that makes it look like a real lever rather
-        // than three photographs replacing each other: every sprite's physical
-        // pivot lands on exactly the socket centre already present in panel.png.
+        // Invariant: every pose maps its own physical pivot onto the exact same
+        // fixed socket centre in panel.png. The nut/socket is never part of the
+        // moving layer; the much narrower white lever simply covers the centre
+        // opening while the fixed metal ring remains visible around it.
         let socket = origin + Vec2::new(x * scale, y * scale);
         let source_to_screen = Self::SWITCH_SOURCE_TO_PANEL * scale;
         let rect = Rect::from_min_size(
@@ -113,8 +115,8 @@ impl RusTairApp {
             response.clone().on_hover_text(format!("Sense switch {bit}"));
         }
 
-        // All sixteen sense switches are now the same white hardware and are
-        // strictly bistable: only UP or DOWN, never CENTER.
+        // A15-A0 are all the same white bistable hardware. They have only UP
+        // and DOWN, never the spring-centred CENTER pose.
         let position = if self.machine.bus.panel_switches & (1u16 << bit) != 0 {
             SwitchPosition::Up
         } else {
@@ -123,8 +125,9 @@ impl RusTairApp {
         self.draw_switch_sprite(ui, origin, scale, x, SENSE_Y, position);
     }
 
-    /// Draw a spring-centred three-position control. Its socket is part of the
-    /// panel image and never moves; only the white lever sprite changes pose.
+    /// Spring-centred three-position switch. The resting state is CENTER; while
+    /// held, the top half selects UP and the lower half selects DOWN. Releasing
+    /// the mouse automatically returns the drawing to CENTER.
     fn momentary_switch(
         &mut self,
         ui: &mut egui::Ui,
@@ -178,7 +181,8 @@ impl RusTairApp {
             response.clone().on_hover_text("OFF / ON");
         }
 
-        // POWER is the second bistable family member: UP=OFF, DOWN=ON.
+        // POWER is bistable and follows the real/reference labelling: UP=OFF,
+        // DOWN=ON. It never uses the CENTER texture.
         let position = if self.machine.powered {
             SwitchPosition::Down
         } else {
