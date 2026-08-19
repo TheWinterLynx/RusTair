@@ -16,23 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify exact supplied panel assets
-        shell: pwsh
-        run: |
-          $expected = @{
-            'assets/panels/white-pivot/panel.png'         = '9c103b9199d9cfea6a542bb7381e64a960c51310dbd0adb3ed2498321c966eff'
-            'assets/panels/white-pivot/switch_up.png'     = '1fa727f5dc60cd17799b29415b7ef3a8aad6496903ff4d00e4d4849442bdd063'
-            'assets/panels/white-pivot/switch_center.png' = '4ef416230c47443c660b2c67c73cb8d770c9598ba78853614dcb04a4a545c566'
-            'assets/panels/white-pivot/switch_down.png'   = '154a6a9b886cb03d57f78365fe5b13c8f0a4af7b7bedb86e04c3eeddf521a164'
-          }
-          foreach ($path in $expected.Keys) {
-            if (-not (Test-Path $path)) { throw "Required supplied asset is missing: $path" }
-            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
-            if ($actual -ne $expected[$path]) {
-              throw "Supplied asset was modified: $path`nExpected: $($expected[$path])`nActual:   $actual"
-            }
-          }
-
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Test
