@@ -1,20 +1,356 @@
-impl RusTairApp {
-    // The supplied switch PNGs are 1254 x 1254. The old implementation fitted
-    // that entire canvas into a 118 px square. This branch deliberately uses
-    // half that linear scale while keeping one common source-pixel scale for
-    // UP/CENTER/DOWN, so a switch never grows or shrinks between states.
-    const SWITCH_SOURCE_TO_PANEL: f32 = 59.0 / 1254.0;
-    const SWITCH_TEX_SIZE: f32 = 1254.0;
+// Central, uniform configuration for every physical front-panel switch.
+//
+// Every switch uses exactly the same `SwitchConfig` structure. Each of its
+// UP, CENTER and DOWN poses has its own:
+//   - sprite reference,
+//   - X/Y micro-offset,
+//   - scale.
+//
+// Micro-offsets are in panel pixels:
+//   +X = right, -X = left, +Y = down, -Y = up.
+//
+// To add a new sprite (for example a red UP lever):
+//   1. add a `SwitchSpriteId` variant,
+//   2. add its metadata in `SwitchSpriteId::asset()`,
+//   3. reference that ID in any individual pose below.
+//
+// The runtime texture cache automatically discovers every sprite referenced by
+// `ALL_SWITCHES`, so there is no separate loader list to maintain.
 
+#[derive(Clone, Copy)]
+enum SwitchPosition {
+    Up,
+    Center,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum SwitchSpriteId {
+    WhiteUp,
+    WhiteCenter,
+    WhiteDown,
+}
+
+#[derive(Clone, Copy)]
+enum SwitchAlphaMode {
+    Preserve,
+    RemoveBlack,
+}
+
+#[derive(Clone, Copy)]
+struct SwitchSpriteAsset {
+    path: &'static str,
+    canvas_size: (f32, f32),
+    crop_min: (f32, f32),
+    crop_max: (f32, f32),
+    pivot: (f32, f32),
+    source_to_panel: f32,
+    alpha_mode: SwitchAlphaMode,
+}
+
+#[derive(Clone, Copy)]
+struct SwitchPoseConfig {
+    sprite: SwitchSpriteId,
+    offset: (f32, f32),
+    scale: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SwitchConfig {
+    name: &'static str,
+    socket: (f32, f32),
+    hit_size: (f32, f32),
+    up: SwitchPoseConfig,
+    center: SwitchPoseConfig,
+    down: SwitchPoseConfig,
+}
+
+impl SwitchConfig {
+    fn pose(&self, position: SwitchPosition) -> SwitchPoseConfig {
+        match position {
+            SwitchPosition::Up => self.up,
+            SwitchPosition::Center => self.center,
+            SwitchPosition::Down => self.down,
+        }
+    }
+}
+
+impl SwitchSpriteId {
+    fn asset(self) -> SwitchSpriteAsset {
+        match self {
+            SwitchSpriteId::WhiteUp => SwitchSpriteAsset {
+                path: "assets/panels/white-pivot/switch_up.png",
+                canvas_size: (1254.0, 1254.0),
+                crop_min: (390.0, 40.0),
+                crop_max: (870.0, 1095.0),
+                pivot: (627.0, 1085.0),
+                source_to_panel: 59.0 / 1254.0,
+                alpha_mode: SwitchAlphaMode::Preserve,
+            },
+            SwitchSpriteId::WhiteCenter => SwitchSpriteAsset {
+                path: "assets/panels/white-pivot/switch_center.png",
+                canvas_size: (1254.0, 1254.0),
+                crop_min: (390.0, 320.0),
+                crop_max: (860.0, 965.0),
+                pivot: (627.0, 455.0),
+                source_to_panel: 59.0 / 1254.0,
+                // The checked-in CENTER may still be RGB on black. This is
+                // metadata-driven so CENTER is not a special renderer path.
+                alpha_mode: SwitchAlphaMode::RemoveBlack,
+            },
+            SwitchSpriteId::WhiteDown => SwitchSpriteAsset {
+                path: "assets/panels/white-pivot/switch_down.png",
+                canvas_size: (1254.0, 1254.0),
+                crop_min: (390.0, 110.0),
+                crop_max: (865.0, 1145.0),
+                pivot: (627.0, 118.0),
+                source_to_panel: 59.0 / 1254.0,
+                alpha_mode: SwitchAlphaMode::Preserve,
+            },
+        }
+    }
+}
+
+const fn pose(
+    sprite: SwitchSpriteId,
+    offset_x: f32,
+    offset_y: f32,
+    scale: f32,
+) -> SwitchPoseConfig {
+    SwitchPoseConfig {
+        sprite,
+        offset: (offset_x, offset_y),
+        scale,
+    }
+}
+
+const fn switch_config(
+    name: &'static str,
+    x: f32,
+    y: f32,
+    hit_w: f32,
+    hit_h: f32,
+    up: SwitchPoseConfig,
+    center: SwitchPoseConfig,
+    down: SwitchPoseConfig,
+) -> SwitchConfig {
+    SwitchConfig {
+        name,
+        socket: (x, y),
+        hit_size: (hit_w, hit_h),
+        up,
+        center,
+        down,
+    }
+}
+
+const SWITCH_A0: SwitchConfig = switch_config(
+    "A0", 1665.0, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A1: SwitchConfig = switch_config(
+    "A1", 1597.8, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A2: SwitchConfig = switch_config(
+    "A2", 1527.0, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A3: SwitchConfig = switch_config(
+    "A3", 1426.2, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A4: SwitchConfig = switch_config(
+    "A4", 1359.0, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A5: SwitchConfig = switch_config(
+    "A5", 1290.6, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A6: SwitchConfig = switch_config(
+    "A6", 1192.2, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A7: SwitchConfig = switch_config(
+    "A7", 1122.6, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A8: SwitchConfig = switch_config(
+    "A8", 1053.0, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A9: SwitchConfig = switch_config(
+    "A9", 953.4, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A10: SwitchConfig = switch_config(
+    "A10", 883.8, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A11: SwitchConfig = switch_config(
+    "A11", 816.6, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A12: SwitchConfig = switch_config(
+    "A12", 718.2, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A13: SwitchConfig = switch_config(
+    "A13", 648.6, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A14: SwitchConfig = switch_config(
+    "A14", 576.6, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_A15: SwitchConfig = switch_config(
+    "A15", 480.6, 425.8, 72.0, 92.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_POWER: SwitchConfig = switch_config(
+    "POWER", 151.8, 562.2, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_RUN_STOP: SwitchConfig = switch_config(
+    "RUN / STOP", 477.0, 562.2, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_SINGLE_STEP: SwitchConfig = switch_config(
+    "SINGLE STEP", 610.2, 561.0, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_EXAMINE: SwitchConfig = switch_config(
+    "EXAMINE", 748.2, 562.2, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_DEPOSIT: SwitchConfig = switch_config(
+    "DEPOSIT", 885.0, 562.2, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_RESET: SwitchConfig = switch_config(
+    "RESET", 1018.2, 559.8, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_PROTECT: SwitchConfig = switch_config(
+    "PROTECT", 1152.6, 563.4, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_AUX1: SwitchConfig = switch_config(
+    "AUX 1", 1285.8, 559.8, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+const SWITCH_AUX2: SwitchConfig = switch_config(
+    "AUX 2", 1423.8, 562.2, 76.0, 96.0,
+    pose(SwitchSpriteId::WhiteUp,     0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0),
+    pose(SwitchSpriteId::WhiteDown,   0.0, 0.0, 1.0),
+);
+
+// Indexed by the actual 8080 bit number:
+// [0] is physical A0 (right-most), [15] is A15 (left-most).
+const SENSE_SWITCHES: [SwitchConfig; 16] = [
+    SWITCH_A0,
+    SWITCH_A1,
+    SWITCH_A2,
+    SWITCH_A3,
+    SWITCH_A4,
+    SWITCH_A5,
+    SWITCH_A6,
+    SWITCH_A7,
+    SWITCH_A8,
+    SWITCH_A9,
+    SWITCH_A10,
+    SWITCH_A11,
+    SWITCH_A12,
+    SWITCH_A13,
+    SWITCH_A14,
+    SWITCH_A15,
+];
+
+// Master list used only to discover/cache referenced sprite assets.
+const ALL_SWITCHES: [SwitchConfig; 25] = [
+    SWITCH_A0,
+    SWITCH_A1,
+    SWITCH_A2,
+    SWITCH_A3,
+    SWITCH_A4,
+    SWITCH_A5,
+    SWITCH_A6,
+    SWITCH_A7,
+    SWITCH_A8,
+    SWITCH_A9,
+    SWITCH_A10,
+    SWITCH_A11,
+    SWITCH_A12,
+    SWITCH_A13,
+    SWITCH_A14,
+    SWITCH_A15,
+    SWITCH_POWER,
+    SWITCH_RUN_STOP,
+    SWITCH_SINGLE_STEP,
+    SWITCH_EXAMINE,
+    SWITCH_DEPOSIT,
+    SWITCH_RESET,
+    SWITCH_PROTECT,
+    SWITCH_AUX1,
+    SWITCH_AUX2,
+];
+
+impl RusTairApp {
     fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, on: bool) {
-        // The supplied panel already contains the unlit lamp hardware. At
-        // startup machine.powered=false, so no lit overlay is painted at all.
         if !self.machine.powered || !on {
             return;
         }
 
-        // No halo, no blurred circle and no cast-shadow layer. A lit LED is a
-        // compact emissive face painted directly over the fixed dark lens.
         let center = origin + Vec2::new(x * scale, y * scale);
         ui.painter().circle_filled(
             center,
@@ -33,37 +369,8 @@ impl RusTairApp {
         );
     }
 
-    fn switch_texture(&self, position: SwitchPosition) -> Option<&egui::TextureHandle> {
-        match position {
-            SwitchPosition::Up => self.tex.switch_white[0].as_ref(),
-            SwitchPosition::Center => self.tex.switch_white[1].as_ref(),
-            SwitchPosition::Down => self.tex.switch_white[2].as_ref(),
-        }
-    }
-
-    // Return the useful source crop and the physical pivot point in pixels of
-    // the untouched 1254 x 1254 PNG. For UP the pivot is the lower end of the
-    // metal stem; for DOWN it is the upper end. The CENTER pivot is not guessed
-    // from the crop centre: it is the centre of the metal mount in the original
-    // source before its ring was removed (approximately 627,455).
-    fn switch_geometry(position: SwitchPosition) -> (Vec2, Vec2, Vec2) {
-        match position {
-            SwitchPosition::Up => (
-                Vec2::new(390.0, 40.0),
-                Vec2::new(870.0, 1095.0),
-                Vec2::new(627.0, 1085.0),
-            ),
-            SwitchPosition::Center => (
-                Vec2::new(390.0, 320.0),
-                Vec2::new(860.0, 965.0),
-                Vec2::new(627.0, 455.0),
-            ),
-            SwitchPosition::Down => (
-                Vec2::new(390.0, 110.0),
-                Vec2::new(865.0, 1145.0),
-                Vec2::new(627.0, 118.0),
-            ),
-        }
+    fn switch_texture(&self, sprite: SwitchSpriteId) -> Option<&egui::TextureHandle> {
+        self.tex.switch_sprites.get(&sprite)
     }
 
     fn draw_switch_sprite(
@@ -71,81 +378,101 @@ impl RusTairApp {
         ui: &mut egui::Ui,
         origin: Pos2,
         scale: f32,
-        x: f32,
-        y: f32,
+        switch: SwitchConfig,
         position: SwitchPosition,
     ) {
-        let Some(texture) = self.switch_texture(position) else { return; };
-        let (crop_min, crop_max, pivot_px) = Self::switch_geometry(position);
+        let pose = switch.pose(position);
+        let asset = pose.sprite.asset();
+        let Some(texture) = self.switch_texture(pose.sprite) else { return; };
+
+        let crop_min = Vec2::new(asset.crop_min.0, asset.crop_min.1);
+        let crop_max = Vec2::new(asset.crop_max.0, asset.crop_max.1);
+        let pivot_px = Vec2::new(asset.pivot.0, asset.pivot.1);
         let crop_size = crop_max - crop_min;
         let pivot_in_crop = pivot_px - crop_min;
 
-        // Invariant: every pose maps its own physical pivot onto the exact same
-        // fixed socket centre in panel.png. The nut/socket is never part of the
-        // moving layer; the much narrower white lever simply covers the centre
-        // opening while the fixed metal ring remains visible around it.
-        let socket = origin + Vec2::new(x * scale, y * scale);
-        let source_to_screen = Self::SWITCH_SOURCE_TO_PANEL * scale;
+        // Socket = physical position. Pose offset = independent sprite nudge.
+        let socket = origin
+            + Vec2::new(
+                (switch.socket.0 + pose.offset.0) * scale,
+                (switch.socket.1 + pose.offset.1) * scale,
+            );
+
+        let source_to_screen = asset.source_to_panel * pose.scale * scale;
         let rect = Rect::from_min_size(
             socket - pivot_in_crop * source_to_screen,
             crop_size * source_to_screen,
         );
+
         let uv = Rect::from_min_max(
             Pos2::new(
-                crop_min.x / Self::SWITCH_TEX_SIZE,
-                crop_min.y / Self::SWITCH_TEX_SIZE,
+                crop_min.x / asset.canvas_size.0,
+                crop_min.y / asset.canvas_size.1,
             ),
             Pos2::new(
-                crop_max.x / Self::SWITCH_TEX_SIZE,
-                crop_max.y / Self::SWITCH_TEX_SIZE,
+                crop_max.x / asset.canvas_size.0,
+                crop_max.y / asset.canvas_size.1,
             ),
         );
+
         ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
     }
 
     fn sense_switch(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, bit: usize) {
-        let x = SENSE_X[bit];
-        let hit = Self::centered_rect(origin, scale, x, SENSE_Y, 72.0, 92.0);
+        let switch = SENSE_SWITCHES[bit];
+        let hit = Self::centered_rect(
+            origin,
+            scale,
+            switch.socket.0,
+            switch.socket.1,
+            switch.hit_size.0,
+            switch.hit_size.1,
+        );
         let response = ui.allocate_rect(hit, Sense::click());
+
         if response.clicked() {
             self.machine.bus.panel_switches ^= 1u16 << bit;
             self.audio.play_once("assets/click.mp3");
         }
         if response.hovered() {
-            response.clone().on_hover_text(format!("Sense switch {bit}"));
+            response
+                .clone()
+                .on_hover_text(format!("Sense switch {}", switch.name));
         }
 
-        // A15-A0 are all the same white bistable hardware. They have only UP
-        // and DOWN, never the spring-centred CENTER pose.
         let position = if self.machine.bus.panel_switches & (1u16 << bit) != 0 {
             SwitchPosition::Up
         } else {
             SwitchPosition::Down
         };
-        self.draw_switch_sprite(ui, origin, scale, x, SENSE_Y, position);
+        self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
-    /// Spring-centred three-position switch. The resting state is CENTER; while
-    /// held, the top half selects UP and the lower half selects DOWN. Releasing
-    /// the mouse automatically returns the drawing to CENTER.
     fn momentary_switch(
         &mut self,
         ui: &mut egui::Ui,
         origin: Pos2,
         scale: f32,
-        x: f32,
-        y: f32,
+        switch: SwitchConfig,
         label: &str,
     ) -> Option<bool> {
-        let hit = Self::centered_rect(origin, scale, x, y, 76.0, 96.0);
+        let hit = Self::centered_rect(
+            origin,
+            scale,
+            switch.socket.0,
+            switch.socket.1,
+            switch.hit_size.0,
+            switch.hit_size.1,
+        );
         let response = ui.allocate_rect(hit, Sense::click());
+
         if response.hovered() {
             response.clone().on_hover_text(label);
         }
 
         let down = response
             .interact_pointer_pos()
-            .map(|p| p.y >= origin.y + y * scale)
+            .map(|p| p.y >= origin.y + switch.socket.1 * scale)
             .unwrap_or(false);
 
         let position = if response.is_pointer_button_down_on() {
@@ -157,7 +484,8 @@ impl RusTairApp {
         } else {
             SwitchPosition::Center
         };
-        self.draw_switch_sprite(ui, origin, scale, x, y, position);
+
+        self.draw_switch_sprite(ui, origin, scale, switch, position);
 
         if response.is_pointer_button_down_on() {
             ui.ctx().request_repaint_after(Duration::from_millis(8));
@@ -172,8 +500,17 @@ impl RusTairApp {
     }
 
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        let hit = Self::centered_rect(origin, scale, POWER.0, POWER.1, 76.0, 96.0);
+        let switch = SWITCH_POWER;
+        let hit = Self::centered_rect(
+            origin,
+            scale,
+            switch.socket.0,
+            switch.socket.1,
+            switch.hit_size.0,
+            switch.hit_size.1,
+        );
         let response = ui.allocate_rect(hit, Sense::click());
+
         if response.clicked() {
             self.set_altair_power(!self.machine.powered);
         }
@@ -181,14 +518,12 @@ impl RusTairApp {
             response.clone().on_hover_text("OFF / ON");
         }
 
-        // POWER is bistable and follows the real/reference labelling: UP=OFF,
-        // DOWN=ON. It never uses the CENTER texture.
         let position = if self.machine.powered {
             SwitchPosition::Down
         } else {
             SwitchPosition::Up
         };
-        self.draw_switch_sprite(ui, origin, scale, POWER.0, POWER.1, position);
+        self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
     fn set_altair_power(&mut self, on: bool) {
@@ -265,12 +600,24 @@ impl RusTairApp {
 
         self.draw_power(ui, origin, scale);
 
-        if let Some(run) = self.momentary_switch(ui, origin, scale, RUN_STOP.0, RUN_STOP.1, "STOP / RUN") {
+        if let Some(run) = self.momentary_switch(
+            ui,
+            origin,
+            scale,
+            SWITCH_RUN_STOP,
+            "STOP / RUN",
+        ) {
             self.machine.set_running(run);
         }
 
         if self
-            .momentary_switch(ui, origin, scale, SINGLE_STEP.0, SINGLE_STEP.1, "SINGLE STEP")
+            .momentary_switch(
+                ui,
+                origin,
+                scale,
+                SWITCH_SINGLE_STEP,
+                "SINGLE STEP",
+            )
             .is_some()
         {
             self.machine.step();
@@ -280,8 +627,7 @@ impl RusTairApp {
             ui,
             origin,
             scale,
-            EXAMINE.0,
-            EXAMINE.1,
+            SWITCH_EXAMINE,
             "EXAMINE / EXAMINE NEXT",
         ) {
             self.machine.examine(next);
@@ -291,15 +637,20 @@ impl RusTairApp {
             ui,
             origin,
             scale,
-            DEPOSIT.0,
-            DEPOSIT.1,
+            SWITCH_DEPOSIT,
             "DEPOSIT / DEPOSIT NEXT",
         ) {
             self.machine.deposit(next);
         }
 
         if self
-            .momentary_switch(ui, origin, scale, RESET.0, RESET.1, "RESET / CLR")
+            .momentary_switch(
+                ui,
+                origin,
+                scale,
+                SWITCH_RESET,
+                "RESET / CLR",
+            )
             .is_some()
         {
             self.machine.reset();
@@ -313,14 +664,25 @@ impl RusTairApp {
             ui,
             origin,
             scale,
-            PROTECT.0,
-            PROTECT.1,
+            SWITCH_PROTECT,
             "PROTECT / UNPROTECT",
         ) {
             self.machine.protect_current_board(!unprotect);
         }
 
-        let _ = self.momentary_switch(ui, origin, scale, AUX1.0, AUX1.1, "AUX 1 (unassigned)");
-        let _ = self.momentary_switch(ui, origin, scale, AUX2.0, AUX2.1, "AUX 2 (unassigned)");
+        let _ = self.momentary_switch(
+            ui,
+            origin,
+            scale,
+            SWITCH_AUX1,
+            "AUX 1 (unassigned)",
+        );
+        let _ = self.momentary_switch(
+            ui,
+            origin,
+            scale,
+            SWITCH_AUX2,
+            "AUX 2 (unassigned)",
+        );
     }
 }
