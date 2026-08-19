@@ -9,8 +9,10 @@ use machine::{AltairMachine, CLOCK_HZ};
 use rustair::audio::AudioEngine;
 use rustair::teletype::{self, KeyKind, Mode as TtyMode, PrintEvent, Teletype};
 
-const PANEL_W: f32 = 1774.0;
-const PANEL_H: f32 = 887.0;
+// Exact dimensions of the supplied clean panel asset. All panel coordinates
+// below are expressed directly in this image's pixel coordinate system.
+const PANEL_W: f32 = 1935.0;
+const PANEL_H: f32 = 813.0;
 const TTY_W: f32 = teletype::IMAGE_W;
 const TTY_H: f32 = teletype::IMAGE_H;
 
@@ -18,44 +20,38 @@ const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
 const KEY_TAP_TIME: Duration = Duration::from_millis(75);
 
+// These coordinates are the previous proven hit/render locations transformed
+// into the 1935 x 813 supplied panel coordinate system.
 const SENSE_X: [f32; 16] = [
-    1568., 1503., 1438., 1345., 1279., 1214., 1119., 1053.,
-    987., 890., 826., 760., 661., 593., 526., 425.,
+    1710.3, 1639.4, 1568.5, 1467.1, 1395.1, 1324.2, 1220.6, 1148.6,
+    1076.6, 970.8, 901.0, 829.0, 721.0, 646.8, 573.7, 463.6,
 ];
-const SENSE_Y: f32 = 455.0;
+const SENSE_Y: f32 = 417.0;
 
 const ADDR_LED_X: [f32; 16] = [
-    1568., 1503., 1438., 1343., 1278., 1213., 1118., 1053.,
-    988., 890., 827., 761., 661., 595., 527., 425.,
+    1710.3, 1639.4, 1568.5, 1464.9, 1394.0, 1323.1, 1219.5, 1148.6,
+    1077.7, 970.8, 902.1, 830.1, 721.0, 649.0, 574.8, 463.6,
 ];
-const ADDR_LED_Y: f32 = 306.0;
+const ADDR_LED_Y: f32 = 280.5;
 
-const DATA_LED_X: [f32; 8] = [1568., 1503., 1438., 1344., 1278., 1213., 1118., 1052.];
-const DATA_LED_Y: f32 = 163.0;
+const DATA_LED_X: [f32; 8] = [1710.3, 1639.4, 1568.5, 1466.0, 1394.0, 1323.1, 1219.5, 1147.5];
+const DATA_LED_Y: f32 = 149.4;
 
-const STATUS_LED_X: [f32; 10] = [215., 286., 354., 426., 493., 559., 626., 693., 760., 825.];
-const STATUS_LED_Y: f32 = 164.0;
+const STATUS_LED_X: [f32; 10] = [234.5, 312.0, 386.1, 464.7, 537.7, 609.7, 682.8, 755.9, 829.0, 899.9];
+const STATUS_LED_Y: f32 = 150.3;
 
-const WAIT_LED: (f32, f32) = (216., 307.);
-const HLDA_LED: (f32, f32) = (287., 306.);
+const WAIT_LED: (f32, f32) = (235.6, 281.4);
+const HLDA_LED: (f32, f32) = (313.0, 280.5);
 
-const POWER: (f32, f32) = (133., 597.);
-const RUN_STOP: (f32, f32) = (430., 597.);
-const SINGLE_STEP: (f32, f32) = (562., 597.);
-const EXAMINE: (f32, f32) = (694., 597.);
-const DEPOSIT: (f32, f32) = (826., 597.);
-const RESET: (f32, f32) = (956., 597.);
-const PROTECT: (f32, f32) = (1087., 597.);
-const AUX1: (f32, f32) = (1214., 597.);
-const AUX2: (f32, f32) = (1343., 597.);
-
-#[derive(Clone, Copy)]
-enum SwitchFamily {
-    Red,
-    White,
-    Blue,
-    Grey,
-}
+const POWER: (f32, f32) = (145.1, 547.2);
+const RUN_STOP: (f32, f32) = (469.0, 547.2);
+const SINGLE_STEP: (f32, f32) = (613.0, 547.2);
+const EXAMINE: (f32, f32) = (757.0, 547.2);
+const DEPOSIT: (f32, f32) = (901.0, 547.2);
+const RESET: (f32, f32) = (1042.8, 547.2);
+const PROTECT: (f32, f32) = (1185.7, 547.2);
+const AUX1: (f32, f32) = (1324.2, 547.2);
+const AUX2: (f32, f32) = (1464.9, 547.2);
 
 #[derive(Clone, Copy)]
 enum SwitchPosition {
@@ -66,14 +62,10 @@ enum SwitchPosition {
 
 struct Tex {
     panel: Option<egui::TextureHandle>,
-    led_on: Option<egui::TextureHandle>,
 
-    // Every switch state is a standalone PNG. Red/white are bistable;
-    // blue/grey are spring-centred three-position switches.
-    switch_red: [Option<egui::TextureHandle>; 2],
-    switch_white: [Option<egui::TextureHandle>; 2],
-    switch_blue: [Option<egui::TextureHandle>; 3],
-    switch_grey: [Option<egui::TextureHandle>; 3],
+    // The only moving-switch textures used by this branch. Their original PNG
+    // files are stored unchanged; all scaling/cropping/pivot work is runtime-only.
+    switch_white: [Option<egui::TextureHandle>; 3],
 
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
@@ -133,6 +125,33 @@ impl RusTairApp {
         ))
     }
 
+    // The supplied CENTER PNG has a black canvas. Keep the file itself exactly
+    // as supplied and remove that canvas only from the decoded runtime texture.
+    // A luminance threshold is enough here: the ivory moving part is far above
+    // it, and the fixed metal socket is provided by the panel photograph.
+    fn load_center_switch_texture(
+        ctx: &egui::Context,
+        name: &str,
+        path: &str,
+    ) -> Option<egui::TextureHandle> {
+        let bytes = std::fs::read(path).ok()?;
+        let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        for pixel in image.pixels_mut() {
+            let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
+            if brightness <= 48 {
+                pixel[3] = 0;
+            } else if brightness < 80 {
+                pixel[3] = (((brightness - 48) as u16 * 255) / 32) as u8;
+            }
+        }
+        let size = [image.width() as usize, image.height() as usize];
+        Some(ctx.load_texture(
+            name,
+            egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
+            egui::TextureOptions::LINEAR,
+        ))
+    }
+
     fn install_teletype_font(ctx: &egui::Context) {
         let Ok(bytes) = std::fs::read("assets/teletype.ttf") else { return; };
         let mut fonts = egui::FontDefinitions::default();
@@ -152,28 +171,32 @@ impl RusTairApp {
         Self::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
         Self {
+            // AltairMachine::default() starts powered=false, running=false and
+            // with address/data/wait LEDs cleared. The supplied panel asset also
+            // contains only unlit lamps, so startup is visually all-dark.
             machine: AltairMachine::default(),
             tex: Tex {
-                panel: Self::load_texture(&cc.egui_ctx, "blue-panel", "assets/panels/blue/panel.jpg"),
-                led_on: Self::load_texture(&cc.egui_ctx, "blue-panel-led-on", "assets/panels/blue/led_on.png"),
-
-                switch_red: [
-                    Self::load_texture(&cc.egui_ctx, "switch-red-up", "assets/panels/blue/switches/up_red.png"),
-                    Self::load_texture(&cc.egui_ctx, "switch-red-down", "assets/panels/blue/switches/down_red.png"),
-                ],
+                panel: Self::load_texture(
+                    &cc.egui_ctx,
+                    "white-pivot-panel",
+                    "assets/panels/white-pivot/panel.png",
+                ),
                 switch_white: [
-                    Self::load_texture(&cc.egui_ctx, "switch-white-up", "assets/panels/blue/switches/up_white.png"),
-                    Self::load_texture(&cc.egui_ctx, "switch-white-down", "assets/panels/blue/switches/down_white.png"),
-                ],
-                switch_blue: [
-                    Self::load_texture(&cc.egui_ctx, "switch-blue-up", "assets/panels/blue/switches/up_blue.png"),
-                    Self::load_texture(&cc.egui_ctx, "switch-blue-center", "assets/panels/blue/switches/center_blue.png"),
-                    Self::load_texture(&cc.egui_ctx, "switch-blue-down", "assets/panels/blue/switches/down_blue.png"),
-                ],
-                switch_grey: [
-                    Self::load_texture(&cc.egui_ctx, "switch-grey-up", "assets/panels/blue/switches/up_grey.png"),
-                    Self::load_texture(&cc.egui_ctx, "switch-grey-center", "assets/panels/blue/switches/center_grey.png"),
-                    Self::load_texture(&cc.egui_ctx, "switch-grey-down", "assets/panels/blue/switches/down_grey.png"),
+                    Self::load_texture(
+                        &cc.egui_ctx,
+                        "white-switch-up",
+                        "assets/panels/white-pivot/switch_up.png",
+                    ),
+                    Self::load_center_switch_texture(
+                        &cc.egui_ctx,
+                        "white-switch-center",
+                        "assets/panels/white-pivot/switch_center.png",
+                    ),
+                    Self::load_texture(
+                        &cc.egui_ctx,
+                        "white-switch-down",
+                        "assets/panels/white-pivot/switch_down.png",
+                    ),
                 ],
 
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
@@ -196,7 +219,7 @@ impl RusTairApp {
             key_auto_release_at: None,
             key_displacement: 0.0,
             key_anim_tick: now,
-            status: "Ready — clean photographic Altair panel".into(),
+            status: "Ready — fixed sockets, white pivot switches".into(),
         }
     }
 
