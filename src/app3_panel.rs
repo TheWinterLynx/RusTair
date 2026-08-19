@@ -16,11 +16,9 @@ impl RusTairApp {
             Color32::from_rgba_unmultiplied(255, 38, 7, 105),
         );
 
-        // Keep the old atlas only for the illuminated LED lens. Switches no
-        // longer use the atlas at all.
         let rect = Self::centered_rect(origin, scale, x, y, 44.0, 44.0);
-        if let Some(t) = &self.tex.panel_sprites {
-            Self::image_uv(ui, t, rect, Self::sprite_uv(0, 0));
+        if let Some(t) = &self.tex.led_on {
+            Self::image(ui, t, rect);
         } else {
             ui.painter().circle_filled(center, 10.0 * scale, Color32::from_rgb(255, 70, 20));
             ui.painter().circle_filled(center, 4.0 * scale, Color32::WHITE);
@@ -46,9 +44,8 @@ impl RusTairApp {
             (SwitchFamily::Grey, SwitchPosition::Center) => self.tex.switch_grey[1].as_ref(),
             (SwitchFamily::Grey, SwitchPosition::Down) => self.tex.switch_grey[2].as_ref(),
 
-            // Red/white controls are two-position switches and never request a
-            // centre texture.
-            (SwitchFamily::Red | SwitchFamily::White, SwitchPosition::Center) => None,
+            (SwitchFamily::Red, SwitchPosition::Center)
+            | (SwitchFamily::White, SwitchPosition::Center) => None,
         }
     }
 
@@ -63,8 +60,8 @@ impl RusTairApp {
         position: SwitchPosition,
     ) {
         if let Some(texture) = self.switch_texture(family, position) {
-            // One fixed destination rectangle for every switch and every state.
-            // The application never scales UP/CENTER/DOWN differently.
+            // Every state uses exactly the same destination rectangle. Runtime
+            // code never grows or shrinks a switch when its position changes.
             let rect = Self::centered_rect(origin, scale, x, y, 118.0, 118.0);
             Self::image(ui, texture, rect);
         }
