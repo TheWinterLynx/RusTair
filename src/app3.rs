@@ -9,8 +9,7 @@ use machine::{AltairMachine, CLOCK_HZ};
 use rustair::audio::AudioEngine;
 use rustair::teletype::{self, KeyKind, Mode as TtyMode, PrintEvent, Teletype};
 
-// Exact dimensions of the supplied clean panel asset. All panel coordinates
-// below are expressed directly in this image's pixel coordinate system.
+// Exact dimensions of the supplied front_clean(1).png panel.
 const PANEL_W: f32 = 1935.0;
 const PANEL_H: f32 = 813.0;
 const TTY_W: f32 = teletype::IMAGE_W;
@@ -20,38 +19,42 @@ const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
 const KEY_TAP_TIME: Duration = Duration::from_millis(75);
 
-// These coordinates are the previous proven hit/render locations transformed
-// into the 1935 x 813 supplied panel coordinate system.
+// Measured directly from the supplied panel image. Arrays are indexed by the
+// actual 8080 bit number, therefore bit 0 is the right-most physical control.
 const SENSE_X: [f32; 16] = [
-    1710.3, 1639.4, 1568.5, 1467.1, 1395.1, 1324.2, 1220.6, 1148.6,
-    1076.6, 970.8, 901.0, 829.0, 721.0, 646.8, 573.7, 463.6,
+    1665.0, 1597.8, 1527.0, 1426.2, 1359.0, 1290.6, 1192.2, 1122.6,
+    1053.0, 953.4, 883.8, 816.6, 718.2, 648.6, 576.6, 480.6,
 ];
-const SENSE_Y: f32 = 417.0;
+const SENSE_Y: f32 = 425.8;
 
 const ADDR_LED_X: [f32; 16] = [
-    1710.3, 1639.4, 1568.5, 1464.9, 1394.0, 1323.1, 1219.5, 1148.6,
-    1077.7, 970.8, 902.1, 830.1, 721.0, 649.0, 574.8, 463.6,
+    1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0,
+    1052.7, 953.6, 884.8, 817.5, 718.5, 649.7, 579.9, 480.0,
 ];
-const ADDR_LED_Y: f32 = 280.5;
+const ADDR_LED_Y: f32 = 290.3;
 
-const DATA_LED_X: [f32; 8] = [1710.3, 1639.4, 1568.5, 1466.0, 1394.0, 1323.1, 1219.5, 1147.5];
-const DATA_LED_Y: f32 = 149.4;
+const DATA_LED_X: [f32; 8] = [
+    1666.9, 1597.6, 1528.6, 1427.6, 1358.9, 1289.4, 1191.0, 1121.1,
+];
+const DATA_LED_Y: f32 = 153.4;
 
-const STATUS_LED_X: [f32; 10] = [234.5, 312.0, 386.1, 464.7, 537.7, 609.7, 682.8, 755.9, 829.0, 899.9];
-const STATUS_LED_Y: f32 = 150.3;
+const STATUS_LED_X: [f32; 10] = [
+    277.0, 345.1, 410.8, 479.2, 548.5, 616.6, 683.6, 750.5, 818.4, 885.4,
+];
+const STATUS_LED_Y: f32 = 153.8;
 
-const WAIT_LED: (f32, f32) = (235.6, 281.4);
-const HLDA_LED: (f32, f32) = (313.0, 280.5);
+const WAIT_LED: (f32, f32) = (276.6, 290.7);
+const HLDA_LED: (f32, f32) = (344.9, 290.7);
 
-const POWER: (f32, f32) = (145.1, 547.2);
-const RUN_STOP: (f32, f32) = (469.0, 547.2);
-const SINGLE_STEP: (f32, f32) = (613.0, 547.2);
-const EXAMINE: (f32, f32) = (757.0, 547.2);
-const DEPOSIT: (f32, f32) = (901.0, 547.2);
-const RESET: (f32, f32) = (1042.8, 547.2);
-const PROTECT: (f32, f32) = (1185.7, 547.2);
-const AUX1: (f32, f32) = (1324.2, 547.2);
-const AUX2: (f32, f32) = (1464.9, 547.2);
+const POWER: (f32, f32) = (151.8, 562.2);
+const RUN_STOP: (f32, f32) = (477.0, 562.2);
+const SINGLE_STEP: (f32, f32) = (610.2, 561.0);
+const EXAMINE: (f32, f32) = (748.2, 562.2);
+const DEPOSIT: (f32, f32) = (885.0, 562.2);
+const RESET: (f32, f32) = (1018.2, 559.8);
+const PROTECT: (f32, f32) = (1152.6, 563.4);
+const AUX1: (f32, f32) = (1285.8, 559.8);
+const AUX2: (f32, f32) = (1423.8, 562.2);
 
 #[derive(Clone, Copy)]
 enum SwitchPosition {
@@ -63,8 +66,9 @@ enum SwitchPosition {
 struct Tex {
     panel: Option<egui::TextureHandle>,
 
-    // The only moving-switch textures used by this branch. Their original PNG
-    // files are stored unchanged; all scaling/cropping/pivot work is runtime-only.
+    // Only these three white moving parts are used for every switch. The PNGs
+    // themselves remain unmodified; resize, crop and pivot alignment are done
+    // by the renderer.
     switch_white: [Option<egui::TextureHandle>; 3],
 
     tty_body: Option<egui::TextureHandle>,
@@ -125,10 +129,10 @@ impl RusTairApp {
         ))
     }
 
-    // The supplied CENTER PNG has a black canvas. Keep the file itself exactly
-    // as supplied and remove that canvas only from the decoded runtime texture.
-    // A luminance threshold is enough here: the ivory moving part is far above
-    // it, and the fixed metal socket is provided by the panel photograph.
+    // The supplied CENTER asset is RGB on a black canvas. The file stays
+    // byte-for-byte untouched in the repository; only its decoded runtime copy
+    // gets alpha. Pure/near black connected canvas pixels disappear while the
+    // dark physical stem behind the ivory cap is preserved.
     fn load_center_switch_texture(
         ctx: &egui::Context,
         name: &str,
@@ -138,10 +142,10 @@ impl RusTairApp {
         let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
         for pixel in image.pixels_mut() {
             let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
-            if brightness <= 48 {
+            if brightness <= 2 {
                 pixel[3] = 0;
-            } else if brightness < 80 {
-                pixel[3] = (((brightness - 48) as u16 * 255) / 32) as u8;
+            } else if brightness < 16 {
+                pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
             }
         }
         let size = [image.width() as usize, image.height() as usize];
@@ -171,9 +175,8 @@ impl RusTairApp {
         Self::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
         Self {
-            // AltairMachine::default() starts powered=false, running=false and
-            // with address/data/wait LEDs cleared. The supplied panel asset also
-            // contains only unlit lamps, so startup is visually all-dark.
+            // Default is deliberately POWER OFF, STOPPED and all front-panel
+            // LED state registers cleared. No LED overlay is painted at startup.
             machine: AltairMachine::default(),
             tex: Tex {
                 panel: Self::load_texture(
