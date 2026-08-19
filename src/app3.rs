@@ -1,6 +1,7 @@
 mod cpu8080;
 mod machine;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,14 +19,6 @@ const TTY_H: f32 = teletype::IMAGE_H;
 const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
 const KEY_TAP_TIME: Duration = Duration::from_millis(75);
-
-// Measured directly from the supplied panel image. Arrays are indexed by the
-// actual 8080 bit number, therefore bit 0 is the right-most physical control.
-const SENSE_X: [f32; 16] = [
-    1665.0, 1597.8, 1527.0, 1426.2, 1359.0, 1290.6, 1192.2, 1122.6,
-    1053.0, 953.4, 883.8, 816.6, 718.2, 648.6, 576.6, 480.6,
-];
-const SENSE_Y: f32 = 425.8;
 
 const ADDR_LED_X: [f32; 16] = [
     1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0,
@@ -46,30 +39,12 @@ const STATUS_LED_Y: f32 = 153.8;
 const WAIT_LED: (f32, f32) = (276.6, 290.7);
 const HLDA_LED: (f32, f32) = (344.9, 290.7);
 
-const POWER: (f32, f32) = (151.8, 562.2);
-const RUN_STOP: (f32, f32) = (477.0, 562.2);
-const SINGLE_STEP: (f32, f32) = (610.2, 561.0);
-const EXAMINE: (f32, f32) = (748.2, 562.2);
-const DEPOSIT: (f32, f32) = (885.0, 562.2);
-const RESET: (f32, f32) = (1018.2, 559.8);
-const PROTECT: (f32, f32) = (1152.6, 563.4);
-const AUX1: (f32, f32) = (1285.8, 559.8);
-const AUX2: (f32, f32) = (1423.8, 562.2);
-
-#[derive(Clone, Copy)]
-enum SwitchPosition {
-    Up,
-    Center,
-    Down,
-}
-
 struct Tex {
     panel: Option<egui::TextureHandle>,
 
-    // Only these three white moving parts are used for every switch. The PNGs
-    // themselves remain unmodified; resize, crop and pivot alignment are done
-    // by the renderer.
-    switch_white: [Option<egui::TextureHandle>; 3],
+    // Switch textures are keyed by logical sprite ID. Every physical switch
+    // references sprites through its own UP/CENTER/DOWN configuration.
+    switch_sprites: HashMap<SwitchSpriteId, egui::TextureHandle>,
 
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
@@ -129,31 +104,55 @@ impl RusTairApp {
         ))
     }
 
-    // The supplied CENTER asset is RGB on a black canvas. The file stays
-    // byte-for-byte untouched in the repository; only its decoded runtime copy
-    // gets alpha. Pure/near black connected canvas pixels disappear while the
-    // dark physical stem behind the ivory cap is preserved.
-    fn load_center_switch_texture(
+    fn load_switch_sprite_texture(
         ctx: &egui::Context,
-        name: &str,
-        path: &str,
+        sprite: SwitchSpriteId,
     ) -> Option<egui::TextureHandle> {
-        let bytes = std::fs::read(path).ok()?;
+        let asset = sprite.asset();
+        let bytes = std::fs::read(asset.path).ok()?;
         let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-        for pixel in image.pixels_mut() {
-            let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
-            if brightness <= 2 {
-                pixel[3] = 0;
-            } else if brightness < 16 {
-                pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
+
+        if matches!(asset.alpha_mode, SwitchAlphaMode::RemoveBlack) {
+            for pixel in image.pixels_mut() {
+                let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
+                if brightness <= 2 {
+                    pixel[3] = 0;
+                } else if brightness < 16 {
+                    pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
+                }
             }
         }
+
         let size = [image.width() as usize, image.height() as usize];
         Some(ctx.load_texture(
-            name,
+            asset.path,
             egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
             egui::TextureOptions::LINEAR,
         ))
+    }
+
+    fn load_switch_textures(
+        ctx: &egui::Context,
+    ) -> HashMap<SwitchSpriteId, egui::TextureHandle> {
+        let mut textures = HashMap::new();
+
+        for switch in ALL_SWITCHES.iter() {
+            for position in [
+                SwitchPosition::Up,
+                SwitchPosition::Center,
+                SwitchPosition::Down,
+            ] {
+                let sprite = switch.pose(position).sprite;
+                if textures.contains_key(&sprite) {
+                    continue;
+                }
+                if let Some(texture) = Self::load_switch_sprite_texture(ctx, sprite) {
+                    textures.insert(sprite, texture);
+                }
+            }
+        }
+
+        textures
     }
 
     fn install_teletype_font(ctx: &egui::Context) {
@@ -184,23 +183,7 @@ impl RusTairApp {
                     "white-pivot-panel",
                     "assets/panels/white-pivot/panel.png",
                 ),
-                switch_white: [
-                    Self::load_texture(
-                        &cc.egui_ctx,
-                        "white-switch-up",
-                        "assets/panels/white-pivot/switch_up.png",
-                    ),
-                    Self::load_center_switch_texture(
-                        &cc.egui_ctx,
-                        "white-switch-center",
-                        "assets/panels/white-pivot/switch_center.png",
-                    ),
-                    Self::load_texture(
-                        &cc.egui_ctx,
-                        "white-switch-down",
-                        "assets/panels/white-pivot/switch_down.png",
-                    ),
-                ],
+                switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
 
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
                 tty_keys: Self::load_texture(&cc.egui_ctx, "tty-keys", "assets/asr33 keys.png"),
@@ -222,7 +205,7 @@ impl RusTairApp {
             key_auto_release_at: None,
             key_displacement: 0.0,
             key_anim_tick: now,
-            status: "Ready — fixed sockets, white pivot switches".into(),
+            status: "Ready — modular per-switch sprites".into(),
         }
     }
 
