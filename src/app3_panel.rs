@@ -5,8 +5,6 @@ impl RusTairApp {
         }
         let center = origin + Vec2::new(x * scale, y * scale);
 
-        // Bright two-stage incandescent bloom. The clean panel already carries
-        // the dark/off lens, so this overlay only appears for an illuminated LED.
         ui.painter().circle_filled(
             center,
             25.0 * scale,
@@ -18,6 +16,8 @@ impl RusTairApp {
             Color32::from_rgba_unmultiplied(255, 38, 7, 105),
         );
 
+        // Keep the old atlas only for the illuminated LED lens. Switches no
+        // longer use the atlas at all.
         let rect = Self::centered_rect(origin, scale, x, y, 44.0, 44.0);
         if let Some(t) = &self.tex.panel_sprites {
             Self::image_uv(ui, t, rect, Self::sprite_uv(0, 0));
@@ -27,27 +27,46 @@ impl RusTairApp {
         }
     }
 
-    /// Draw one transparent moving-control overlay. The photographed/cleaned
-    /// panel itself owns the fixed switch bezel and mounting hole; the atlas
-    /// contains only the lever, cap and moving shaft. This is important because
-    /// the metal base of a real toggle never rotates or translates with the lever.
-    fn draw_panel_sprite(
+    fn switch_texture(
+        &self,
+        family: SwitchFamily,
+        position: SwitchPosition,
+    ) -> Option<&egui::TextureHandle> {
+        match (family, position) {
+            (SwitchFamily::Red, SwitchPosition::Up) => self.tex.switch_red[0].as_ref(),
+            (SwitchFamily::Red, SwitchPosition::Down) => self.tex.switch_red[1].as_ref(),
+            (SwitchFamily::White, SwitchPosition::Up) => self.tex.switch_white[0].as_ref(),
+            (SwitchFamily::White, SwitchPosition::Down) => self.tex.switch_white[1].as_ref(),
+
+            (SwitchFamily::Blue, SwitchPosition::Up) => self.tex.switch_blue[0].as_ref(),
+            (SwitchFamily::Blue, SwitchPosition::Center) => self.tex.switch_blue[1].as_ref(),
+            (SwitchFamily::Blue, SwitchPosition::Down) => self.tex.switch_blue[2].as_ref(),
+
+            (SwitchFamily::Grey, SwitchPosition::Up) => self.tex.switch_grey[0].as_ref(),
+            (SwitchFamily::Grey, SwitchPosition::Center) => self.tex.switch_grey[1].as_ref(),
+            (SwitchFamily::Grey, SwitchPosition::Down) => self.tex.switch_grey[2].as_ref(),
+
+            // Red/white controls are two-position switches and never request a
+            // centre texture.
+            (SwitchFamily::Red | SwitchFamily::White, SwitchPosition::Center) => None,
+        }
+    }
+
+    fn draw_switch_sprite(
         &self,
         ui: &mut egui::Ui,
         origin: Pos2,
         scale: f32,
         x: f32,
         y: f32,
-        size: f32,
-        cell: (usize, usize),
+        family: SwitchFamily,
+        position: SwitchPosition,
     ) {
-        if let Some(t) = &self.tex.panel_sprites {
-            Self::image_uv(
-                ui,
-                t,
-                Self::centered_rect(origin, scale, x, y, size, size),
-                Self::sprite_uv(cell.0, cell.1),
-            );
+        if let Some(texture) = self.switch_texture(family, position) {
+            // One fixed destination rectangle for every switch and every state.
+            // The application never scales UP/CENTER/DOWN differently.
+            let rect = Self::centered_rect(origin, scale, x, y, 118.0, 118.0);
+            Self::image(ui, texture, rect);
         }
     }
 
@@ -63,21 +82,24 @@ impl RusTairApp {
             response.clone().on_hover_text(format!("Sense switch {bit}"));
         }
 
-        // SENSE switches are bistable: initial false = physical DOWN, true = UP.
-        let up = self.machine.bus.panel_switches & (1u16 << bit) != 0;
-        let cell = if bit >= 8 {
-            if up { (1, 0) } else { (2, 0) }
-        } else if up {
-            (3, 0)
+        // A15-A8 are red, A7-A0 are white. They are bistable and only have
+        // physical UP/DOWN states: false = DOWN, true = UP.
+        let family = if bit >= 8 {
+            SwitchFamily::Red
         } else {
-            (0, 1)
+            SwitchFamily::White
         };
-        self.draw_panel_sprite(ui, origin, scale, x, SENSE_Y, 118.0, cell);
+        let position = if self.machine.bus.panel_switches & (1u16 << bit) != 0 {
+            SwitchPosition::Up
+        } else {
+            SwitchPosition::Down
+        };
+        self.draw_switch_sprite(ui, origin, scale, x, SENSE_Y, family, position);
     }
 
-    /// Draw one spring-centred function switch. `cells` are (up, centre, down).
-    /// The fixed metal base is part of panel.jpg. Only the lever overlay changes.
-    /// Returns Some(true) for lower/down actuation and Some(false) for upper/up.
+    /// Draw one spring-centred three-position function switch. The resting
+    /// state is always CENTER. While held, the upper half uses UP and the lower
+    /// half uses DOWN. The switch springs back to CENTER on release.
     fn momentary_switch(
         &mut self,
         ui: &mut egui::Ui,
@@ -86,8 +108,7 @@ impl RusTairApp {
         x: f32,
         y: f32,
         label: &str,
-        cells: [(usize, usize); 3],
-        size: f32,
+        family: SwitchFamily,
     ) -> Option<bool> {
         let hit = Self::centered_rect(origin, scale, x, y, 82.0, 104.0);
         let response = ui.allocate_rect(hit, Sense::click());
@@ -100,14 +121,16 @@ impl RusTairApp {
             .map(|p| p.y >= origin.y + y * scale)
             .unwrap_or(false);
 
-        // Rest always uses the neutral centre cell. Only while held do the
-        // function/AUX switches show their momentary UP or DOWN travel.
-        let cell = if response.is_pointer_button_down_on() {
-            if down { cells[2] } else { cells[0] }
+        let position = if response.is_pointer_button_down_on() {
+            if down {
+                SwitchPosition::Down
+            } else {
+                SwitchPosition::Up
+            }
         } else {
-            cells[1]
+            SwitchPosition::Center
         };
-        self.draw_panel_sprite(ui, origin, scale, x, y, size, cell);
+        self.draw_switch_sprite(ui, origin, scale, x, y, family, position);
 
         if response.is_pointer_button_down_on() {
             ui.ctx().request_repaint_after(Duration::from_millis(8));
@@ -129,14 +152,10 @@ impl RusTairApp {
         p: (f32, f32),
         label: &str,
     ) -> Option<bool> {
-        self.momentary_switch(
-            ui, origin, scale, p.0, p.1, label,
-            [(1, 1), (2, 1), (3, 1)],
-            118.0,
-        )
+        self.momentary_switch(ui, origin, scale, p.0, p.1, label, SwitchFamily::Blue)
     }
 
-    fn black_aux_switch(
+    fn grey_aux_switch(
         &mut self,
         ui: &mut egui::Ui,
         origin: Pos2,
@@ -144,11 +163,7 @@ impl RusTairApp {
         p: (f32, f32),
         label: &str,
     ) -> Option<bool> {
-        self.momentary_switch(
-            ui, origin, scale, p.0, p.1, label,
-            [(0, 2), (1, 2), (2, 2)],
-            116.0,
-        )
+        self.momentary_switch(ui, origin, scale, p.0, p.1, label, SwitchFamily::Grey)
     }
 
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
@@ -161,11 +176,22 @@ impl RusTairApp {
             response.clone().on_hover_text("OFF / ON");
         }
 
-        // Match the base altair Handle_Power: Down = powered ON, Up = OFF.
-        // The atlas now makes those names physically true rather than merely
-        // swapping two foreshortened poses.
-        let cell = if self.machine.powered { (0, 1) } else { (3, 0) };
-        self.draw_panel_sprite(ui, origin, scale, POWER.0, POWER.1, 118.0, cell);
+        // Reference Altair behaviour: UP = OFF, DOWN = ON. POWER is a
+        // two-position white switch, never centred.
+        let position = if self.machine.powered {
+            SwitchPosition::Down
+        } else {
+            SwitchPosition::Up
+        };
+        self.draw_switch_sprite(
+            ui,
+            origin,
+            scale,
+            POWER.0,
+            POWER.1,
+            SwitchFamily::White,
+            position,
+        );
     }
 
     fn set_altair_power(&mut self, on: bool) {
@@ -174,8 +200,6 @@ impl RusTairApp {
         self.audio.play_once("assets/powerbtn.mp3");
 
         if on {
-            // Match sim.html Handle_Power -> Handle_Reset exactly: at power-on
-            // all address/data lamps flash for 500 ms and WAIT remains lit.
             self.machine.address_leds = 0xffff;
             self.machine.bus.data_leds = 0xff;
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
@@ -201,8 +225,6 @@ impl RusTairApp {
             ui.painter().rect_filled(whole, 0.0, Color32::from_rgb(20, 25, 28));
         }
 
-        // Keep ON close to the POWER switch, aligned visually with RUN and the
-        // other lower legends instead of floating far below the control.
         ui.painter().text(
             origin + Vec2::new(POWER.0 * scale, 632.0 * scale),
             egui::Align2::CENTER_CENTER,
@@ -217,63 +239,78 @@ impl RusTairApp {
 
         for bit in 0..16 {
             self.draw_led(
-                ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y,
+                ui,
+                origin,
+                scale,
+                ADDR_LED_X[bit],
+                ADDR_LED_Y,
                 self.machine.address_leds & (1u16 << bit) != 0,
             );
         }
         for bit in 0..8 {
             self.draw_led(
-                ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y,
+                ui,
+                origin,
+                scale,
+                DATA_LED_X[bit],
+                DATA_LED_Y,
                 self.machine.bus.data_leds & (1u8 << bit) != 0,
             );
         }
 
-        // STATUS order on the photographic panel:
-        // INTE, PROT, MEMR, INP, M1, OUT, HLTA, STACK, WO, INT.
         self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected());
-
-        // The reference sim marks MEMR, M1 and WO as AlwaysOn whenever the
-        // machine has power. They were missing from the RusTair skin.
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[1],
+            STATUS_LED_Y,
+            self.machine.current_board_protected(),
+        );
         self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, true);
         self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, true);
         self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, true);
-
         self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted);
         self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, self.machine.wait_led);
         self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, false);
 
         self.draw_power(ui, origin, scale);
 
-        // All lower blue controls are three-position toggle switches. They rest
-        // at centre and spring back after the selected up/down action.
-        if let Some(run) = self.blue_function_switch(
-            ui, origin, scale, RUN_STOP, "STOP / RUN",
-        ) {
+        if let Some(run) = self.blue_function_switch(ui, origin, scale, RUN_STOP, "STOP / RUN") {
             self.machine.set_running(run);
         }
 
-        if self.blue_function_switch(
-            ui, origin, scale, SINGLE_STEP, "SINGLE STEP",
-        ).is_some() {
+        if self
+            .blue_function_switch(ui, origin, scale, SINGLE_STEP, "SINGLE STEP")
+            .is_some()
+        {
             self.machine.step();
         }
 
         if let Some(next) = self.blue_function_switch(
-            ui, origin, scale, EXAMINE, "EXAMINE / EXAMINE NEXT",
+            ui,
+            origin,
+            scale,
+            EXAMINE,
+            "EXAMINE / EXAMINE NEXT",
         ) {
             self.machine.examine(next);
         }
 
         if let Some(next) = self.blue_function_switch(
-            ui, origin, scale, DEPOSIT, "DEPOSIT / DEPOSIT NEXT",
+            ui,
+            origin,
+            scale,
+            DEPOSIT,
+            "DEPOSIT / DEPOSIT NEXT",
         ) {
             self.machine.deposit(next);
         }
 
-        if self.blue_function_switch(
-            ui, origin, scale, RESET, "RESET / CLR",
-        ).is_some() {
+        if self
+            .blue_function_switch(ui, origin, scale, RESET, "RESET / CLR")
+            .is_some()
+        {
             self.machine.reset();
             self.tty_tx_started = None;
             self.machine.address_leds = 0xffff;
@@ -282,12 +319,16 @@ impl RusTairApp {
         }
 
         if let Some(unprotect) = self.blue_function_switch(
-            ui, origin, scale, PROTECT, "PROTECT / UNPROTECT",
+            ui,
+            origin,
+            scale,
+            PROTECT,
+            "PROTECT / UNPROTECT",
         ) {
             self.machine.protect_current_board(!unprotect);
         }
 
-        let _ = self.black_aux_switch(ui, origin, scale, AUX1, "AUX 1 (unassigned)");
-        let _ = self.black_aux_switch(ui, origin, scale, AUX2, "AUX 2 (unassigned)");
+        let _ = self.grey_aux_switch(ui, origin, scale, AUX1, "AUX 1 (unassigned)");
+        let _ = self.grey_aux_switch(ui, origin, scale, AUX2, "AUX 2 (unassigned)");
     }
 }
