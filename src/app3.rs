@@ -66,12 +66,10 @@ enum SwitchPosition {
 
 struct Tex {
     panel: Option<egui::TextureHandle>,
-    // The legacy atlas is retained only for the illuminated LED overlay.
-    panel_sprites: Option<egui::TextureHandle>,
+    led_on: Option<egui::TextureHandle>,
 
-    // Every moving switch state is its own PNG. All states are rendered into
-    // exactly the same destination rectangle, so changing state never changes
-    // the runtime scale of the switch.
+    // Every switch state is a standalone PNG. Red/white are bistable;
+    // blue/grey are spring-centred three-position switches.
     switch_red: [Option<egui::TextureHandle>; 2],
     switch_white: [Option<egui::TextureHandle>; 2],
     switch_blue: [Option<egui::TextureHandle>; 3],
@@ -157,7 +155,7 @@ impl RusTairApp {
             machine: AltairMachine::default(),
             tex: Tex {
                 panel: Self::load_texture(&cc.egui_ctx, "blue-panel", "assets/panels/blue/panel.jpg"),
-                panel_sprites: Self::load_texture(&cc.egui_ctx, "blue-panel-sprites", "assets/panels/blue/sprites.png"),
+                led_on: Self::load_texture(&cc.egui_ctx, "blue-panel-led-on", "assets/panels/blue/led_on.png"),
 
                 switch_red: [
                     Self::load_texture(&cc.egui_ctx, "switch-red-up", "assets/panels/blue/switches/up_red.png"),
@@ -209,21 +207,6 @@ impl RusTairApp {
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
-    }
-
-    fn image_uv(ui: &mut egui::Ui, texture: &egui::TextureHandle, rect: Rect, uv: Rect) {
-        ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
-    }
-
-    fn sprite_uv(col: usize, row: usize) -> Rect {
-        const COLS: f32 = 4.0;
-        const ROWS: f32 = 3.0;
-        let x0 = col as f32 / COLS;
-        let y0 = row as f32 / ROWS;
-        Rect::from_min_max(
-            Pos2::new(x0, y0),
-            Pos2::new((col + 1) as f32 / COLS, (row + 1) as f32 / ROWS),
-        )
     }
 
     fn centered_rect(origin: Pos2, scale: f32, x: f32, y: f32, w: f32, h: f32) -> Rect {
