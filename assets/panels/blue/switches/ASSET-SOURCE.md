@@ -1,0 +1,1 @@
+The PNG switch assets in this directory are the individual user-approved assets from switches.zip, normalized to the same square canvas. SENSE A15-A0 and POWER use red/white UP and DOWN only. Lower blue function switches and grey AUX switches use UP, CENTER and DOWN.
