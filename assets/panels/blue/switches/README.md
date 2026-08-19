@@ -1,0 +1,1 @@
+RusTair switch sprites are stored as individual transparent PNG files. SENSE A15-A0 and POWER use only UP/DOWN. The lower blue function switches and grey AUX switches use UP/CENTER/DOWN. Runtime code loads each PNG directly; there is no switch sprite atlas and no runtime scaling between states.
