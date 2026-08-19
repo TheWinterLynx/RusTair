@@ -1,16 +1,15 @@
 mod cpu8080;
-mod machine;
+mod altair_machine;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
-use machine::{AltairMachine, CLOCK_HZ};
+use altair_machine::{AltairMachine, CLOCK_HZ};
 use rustair::audio::AudioEngine;
 use rustair::teletype::{self, KeyKind, Mode as TtyMode, PrintEvent, Teletype};
 
-// Exact dimensions of the supplied front_clean(1).png panel.
 const PANEL_W: f32 = 1935.0;
 const PANEL_H: f32 = 813.0;
 const TTY_W: f32 = teletype::IMAGE_W;
@@ -41,11 +40,7 @@ const HLDA_LED: (f32, f32) = (344.9, 290.7);
 
 struct Tex {
     panel: Option<egui::TextureHandle>,
-
-    // Switch textures are keyed by logical sprite ID. Every physical switch
-    // references sprites through its own UP/CENTER/DOWN configuration.
     switch_sprites: HashMap<SwitchSpriteId, egui::TextureHandle>,
-
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
     tty_head: Option<egui::TextureHandle>,
@@ -74,21 +69,17 @@ struct RusTairApp {
     tty: Teletype,
     tty_window_open: bool,
     audio: AudioEngine,
-
     last_tick: Instant,
     last_tape_tick: Instant,
     reset_flash_until: Option<Instant>,
-
     tty_tx_started: Option<Instant>,
     print_head_raise_until: Option<Instant>,
     tty_power_flash_until: Option<Instant>,
-
     animated_key: Option<usize>,
     pressed_key: Option<usize>,
     key_auto_release_at: Option<Instant>,
     key_displacement: f32,
     key_anim_tick: Instant,
-
     status: String,
 }
 
@@ -104,14 +95,10 @@ impl RusTairApp {
         ))
     }
 
-    fn load_switch_sprite_texture(
-        ctx: &egui::Context,
-        sprite: SwitchSpriteId,
-    ) -> Option<egui::TextureHandle> {
+    fn load_switch_sprite_texture(ctx: &egui::Context, sprite: SwitchSpriteId) -> Option<egui::TextureHandle> {
         let asset = sprite.asset();
         let bytes = std::fs::read(asset.path).ok()?;
         let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-
         if matches!(asset.alpha_mode, SwitchAlphaMode::RemoveBlack) {
             for pixel in image.pixels_mut() {
                 let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
@@ -122,7 +109,6 @@ impl RusTairApp {
                 }
             }
         }
-
         let size = [image.width() as usize, image.height() as usize];
         Some(ctx.load_texture(
             asset.path,
@@ -131,27 +117,18 @@ impl RusTairApp {
         ))
     }
 
-    fn load_switch_textures(
-        ctx: &egui::Context,
-    ) -> HashMap<SwitchSpriteId, egui::TextureHandle> {
+    fn load_switch_textures(ctx: &egui::Context) -> HashMap<SwitchSpriteId, egui::TextureHandle> {
         let mut textures = HashMap::new();
-
-        for switch in ALL_SWITCHES.iter() {
-            for position in [
-                SwitchPosition::Up,
-                SwitchPosition::Center,
-                SwitchPosition::Down,
-            ] {
-                let sprite = switch.pose(position).sprite;
-                if textures.contains_key(&sprite) {
-                    continue;
-                }
+        for switch in SENSE_SWITCHES.iter().chain(CONTROL_SWITCHES.iter()) {
+            for position in [SwitchPosition::Up, SwitchPosition::Center, SwitchPosition::Down] {
+                let Some(pose) = switch.pose(position) else { continue; };
+                let sprite = pose.sprite;
+                if textures.contains_key(&sprite) { continue; }
                 if let Some(texture) = Self::load_switch_sprite_texture(ctx, sprite) {
                     textures.insert(sprite, texture);
                 }
             }
         }
-
         textures
     }
 
@@ -174,17 +151,10 @@ impl RusTairApp {
         Self::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
         Self {
-            // Default is deliberately POWER OFF, STOPPED and all front-panel
-            // LED state registers cleared. No LED overlay is painted at startup.
             machine: AltairMachine::default(),
             tex: Tex {
-                panel: Self::load_texture(
-                    &cc.egui_ctx,
-                    "white-pivot-panel",
-                    "assets/panels/white-pivot/panel.png",
-                ),
+                panel: Self::load_texture(&cc.egui_ctx, "front-panel", "assets/panels/white-pivot/panel.png"),
                 switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
-
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
                 tty_keys: Self::load_texture(&cc.egui_ctx, "tty-keys", "assets/asr33 keys.png"),
                 tty_head: Self::load_texture(&cc.egui_ctx, "tty-head", "assets/asr33head.png"),
@@ -205,7 +175,7 @@ impl RusTairApp {
             key_auto_release_at: None,
             key_displacement: 0.0,
             key_anim_tick: now,
-            status: "Ready — modular per-switch sprites".into(),
+            status: "Ready — modular front-panel switches".into(),
         }
     }
 
@@ -226,8 +196,8 @@ impl RusTairApp {
     }
 }
 
-include!("app3_panel.rs");
-include!("app3_tty_core.rs");
-include!("app3_tty_draw.rs");
-include!("app3_tty_io.rs");
-include!("app3_update.rs");
+include!("front_panel.rs");
+include!("teletype_controller.rs");
+include!("teletype_renderer.rs");
+include!("teletype_io.rs");
+include!("application_loop.rs");

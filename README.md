@@ -1,19 +1,17 @@
 # RusTair
 
-Native Rust implementation of the **MITS Altair 8800** simulator, built to keep the photographic front panel and machine sounds without requiring a browser.
-
-This repository starts by porting the Intel 8080 behaviour from the `8080.js` used by the existing Altair simulator. Later the CPU module is intentionally replaceable with our own 8080 implementation so both cores can be cross-checked against each other.
+Native Rust implementation of the **MITS Altair 8800** simulator, with a photographic front panel, machine audio and an ASR-33 teletype.
 
 ## Current state
 
-- Native Windows/Linux desktop window using `eframe/egui` — no web browser or local HTTP server.
-- Intel 8080 core in Rust (`src/cpu8080.rs`).
-- 8 KiB Altair memory model and the same basic I/O ports used by `sim.html`.
-- Photographic front panel with clickable address switches.
-- Power, Run/Stop, Single Step, Examine, Deposit and Reset.
-- Address/data/WAIT LEDs.
-- Binary loader and hook for the existing Microsoft 4K BASIC image.
-- Runtime asset loading from `assets/`, so replacing artwork/audio does not require changing emulator code.
+- Native Windows/Linux desktop UI using `eframe/egui`.
+- Intel 8080 CPU core in Rust.
+- 8 KiB Altair memory model and front-panel operations.
+- Address/data/status LEDs.
+- Configurable two-position and spring-centred three-position front-panel switches.
+- Per-switch, per-pose sprite selection, X/Y micro-adjustment and scale.
+- ASR-33 teletype with keyboard, paper tape and audio.
+- Bundled Microsoft 4K BASIC image.
 
 ## Build
 
@@ -23,26 +21,34 @@ cargo run --release
 
 The release executable is created at `target/release/rustair.exe` on Windows.
 
-## Assets
+> The ASR-33 source artwork is larger than 2048 pixels on a side. With the current `egui` version a debug build can trip a debug-only texture-size assertion on some backends, while the release build used by GitHub Actions runs correctly on the same machine. Use `--release` for normal local testing.
 
-The artwork/audio originated in the sibling `TheWinterLynx/altair` project. Put the required files under `assets/`:
+## Source layout
 
-- `Altair1.png`
-- `LEDon.png`
-- `SwitchUp.png`
-- `SwitchDown.png`
-- `SwitchCentre.png`
-- `fan.mp3`
-- `click.mp3`
-- `powerbtn.mp3`
-- `4kbas32.bin`
+- `src/main.rs` — executable entry point.
+- `src/application.rs` — application state, texture loading and shared UI helpers.
+- `src/front_panel.rs` — front-panel switch model/configuration and rendering.
+- `src/application_loop.rs` — `eframe::App` update loop and main menu.
+- `src/teletype_controller.rs` — ASR-33 input, serial and mechanical behaviour.
+- `src/teletype_renderer.rs` — ASR-33 drawing and keyboard animation.
+- `src/teletype_io.rs` — paper-tape and teletype-window I/O.
+- `src/altair_machine.rs` — Altair memory, I/O bus and machine state.
+- `src/cpu8080.rs` — Intel 8080 core.
+- `src/teletype.rs` — reusable ASR-33 data model.
+- `src/audio.rs` — audio playback engine.
 
-`scripts/import-assets.ps1` copies them from a local clone of the original repo.
+## Front-panel switch configuration
 
-## Architecture
+Every physical switch uses the same `SwitchConfig` structure in `src/front_panel.rs`.
 
-`cpu8080.rs` is deliberately isolated behind a small `Bus` trait. `machine.rs` implements the Altair-specific memory and I/O. The UI only talks to `AltairMachine`. When the home-grown 8080 is ready we can replace the CPU module without rewriting the front panel.
+Two-position switches use `SwitchKind::TwoPosition` and `center: None`. Spring-centred switches use `SwitchKind::ThreePosition` and `center: Some(...)`.
 
-## Accuracy plan
+Each available pose has its own sprite reference, X/Y offset and scale. This means, for example, A15 UP can use a red sprite while A15 DOWN and every other switch continue using the default white artwork.
 
-The current CPU is a Rust re-expression of the instruction behaviour and flag rules from the existing `8080.js`. The next validation step is to run the same diagnostic/exerciser against both implementations and compare registers, flags, memory writes, I/O and cycle counts instruction-by-instruction.
+## Runtime assets
+
+The active front-panel artwork is under `assets/panels/white-pivot/`.
+
+Shared runtime assets under `assets/` include the ASR-33 artwork/audio, `teletype.ttf`, `fan.mp3`, `click.mp3`, `powerbtn.mp3` and `4kbas32.bin`.
+
+Legacy panel artwork and abandoned generated-panel experiments are intentionally not kept in the active branch.

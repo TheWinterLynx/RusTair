@@ -1,21 +1,35 @@
 # White-pivot Altair front panel
 
-This branch intentionally uses only the four image assets supplied for this iteration. They must not be regenerated, recoloured, resized or otherwise rewritten on disk; all crop, resize, alpha handling and pivot placement is performed at runtime by Rust.
+This directory contains the active front-panel artwork used by RusTair:
 
-Expected files:
+- `panel.png` — fixed photographic panel, including the metal switch sockets.
+- `switch_up.png` — default white UP pose.
+- `switch_center.png` — default white CENTER pose.
+- `switch_down.png` — default white DOWN pose.
 
-- `panel.png` — supplied `front_clean(1).png`, 1935x813 RGBA, SHA-256 `9c103b9199d9cfea6a542bb7381e64a960c51310dbd0adb3ed2498321c966eff`
-- `switch_up.png` — supplied `1f53c7ac-a45b-497d-94e3-3d40a00910f4(1).png`, 1254x1254 RGBA, SHA-256 `1fa727f5dc60cd17799b29415b7ef3a8aad6496903ff4d00e4d4849442bdd063`
-- `switch_center.png` — supplied `d8d2faf1-206b-4f46-8eb9-3ba16eef7fbd.png`, 1254x1254 RGB, SHA-256 `4ef416230c47443c660b2c67c73cb8d770c9598ba78853614dcb04a4a545c566`
-- `switch_down.png` — supplied `d9111009-5b93-4fed-bc53-964e29ff4833(1).png`, 1254x1254 RGBA, SHA-256 `154a6a9b886cb03d57f78365fe5b13c8f0a4af7b7bedb86e04c3eeddf521a164`
+The switch artwork is configured in `src/front_panel.rs`.
 
-Switch rules implemented in code:
+## Switch model
 
-- SENSE A15-A0: white UP/DOWN only.
-- POWER: white UP/DOWN only (`UP = OFF`, `DOWN = ON`).
-- STOP/RUN, SINGLE STEP, EXAMINE, DEPOSIT, RESET, PROTECT, AUX1 and AUX2: white UP/CENTER/DOWN, spring-centred.
-- Fixed metal nuts/sockets are part of `panel.png` only and never move.
-- Every switch pose is anchored by its own physical source pivot to the fixed socket centre.
-- All poses share one source-pixel scale (`59/1254` panel pixels per source pixel), approximately half the previous linear size, so changing pose cannot resize the switch.
-- `switch_center.png` has its black canvas removed only in the decoded runtime texture; its file bytes remain untouched.
-- LEDs are dark in `panel.png`; the runtime lit state has no halo or cast-shadow layer, and no LED overlay is drawn while POWER is OFF.
+Every physical switch uses the same `SwitchConfig` structure. A two-position switch has UP and DOWN poses and `center: None`. A spring-centred switch has UP, CENTER and DOWN poses.
+
+Every available pose can independently select:
+
+- a sprite ID,
+- an X/Y micro-offset in panel pixels,
+- a scale factor.
+
+The socket position is also stored per physical switch, so individual controls can be aligned without changing any other switch.
+
+## Adding another sprite
+
+For example, to add a red UP lever:
+
+1. Add the PNG to this directory (or another asset directory).
+2. Add a `SwitchSpriteId` variant in `src/front_panel.rs`.
+3. Add its `SwitchSpriteAsset` metadata (path, canvas, crop, pivot and scale).
+4. Reference that sprite ID from the UP pose of whichever switch should use it.
+
+The application automatically caches every sprite referenced by the switch configuration; there is no separate hard-coded texture list.
+
+`switch_center.png` may be supplied on a black RGB canvas. Its asset metadata currently uses `SwitchAlphaMode::RemoveBlack`, so black-background removal is performed only in the decoded runtime texture.
