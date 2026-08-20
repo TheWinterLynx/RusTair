@@ -129,8 +129,9 @@ impl RusTairApp {
                 let mut glass = glass_image.to_rgba8();
 
                 // The source asset has a black canvas around the transparent
-                // plastic. Remove only that near-black background while keeping
-                // the dark scratches, reflections and hardware of the cover.
+                // plastic. Remove the canvas first, then keep the photographic
+                // cover deliberately translucent: this layer is only the glass,
+                // not a second opaque copy of the platen/mechanism underneath.
                 for pixel in glass.pixels_mut() {
                     let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
                     if brightness <= 2 {
@@ -138,6 +139,7 @@ impl RusTairApp {
                     } else if brightness < 16 {
                         pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
                     }
+                    pixel[3] = ((pixel[3] as u16 * 72) / 255) as u8;
                 }
 
                 // Keep the square asset undistorted. Its visible glass occupies
