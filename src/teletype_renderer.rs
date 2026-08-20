@@ -58,7 +58,16 @@ impl RusTairApp {
         let char_cell = char_width * scale;
         let font_size = (char_width * 1.63 * scale).max(5.0);
         let line_height = (font_size * 1.03).max(6.0);
-        let max_lines = ((paper.height() / line_height).floor() as usize).max(1);
+
+        // The print point is on the platen behind the cover. In the photograph
+        // the visible lower edge/reflection of the window sits a little below
+        // the freshly printed baseline. Drawing directly on paper.bottom() made
+        // the text appear pasted onto that dark seam instead of onto the paper.
+        let baseline_inset = TTY_H * 0.018 * scale;
+        let print_baseline = paper.bottom() - baseline_inset;
+        let printable_height = (paper.height() - baseline_inset).max(line_height);
+        let max_lines = ((printable_height / line_height).floor() as usize).max(1);
+
         let now = Instant::now();
         let feed_offset = self.paper_feed_offset(now, line_height);
         let extra_line = usize::from(feed_offset > 0.01);
@@ -71,7 +80,7 @@ impl RusTairApp {
 
         for (row, line) in visible.iter().enumerate() {
             let from_bottom = visible.len() - 1 - row;
-            let baseline = paper.bottom() - from_bottom as f32 * line_height + feed_offset;
+            let baseline = print_baseline - from_bottom as f32 * line_height + feed_offset;
             let absolute_line = first + row;
 
             for (column, byte) in line.bytes().take(self.tty.paper_width).enumerate() {
