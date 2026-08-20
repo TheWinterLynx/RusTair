@@ -1,3 +1,45 @@
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalSpeed {
+    Instant,
+    Baud300,
+    Baud1200,
+    Baud2400,
+    Baud9600,
+}
+
+impl TerminalSpeed {
+    const ALL: [Self; 5] = [
+        Self::Instant,
+        Self::Baud300,
+        Self::Baud1200,
+        Self::Baud2400,
+        Self::Baud9600,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Instant => "Instant",
+            Self::Baud300 => "300 baud",
+            Self::Baud1200 => "1200 baud",
+            Self::Baud2400 => "2400 baud",
+            Self::Baud9600 => "9600 baud",
+        }
+    }
+
+    // One asynchronous serial character is modelled as 10 bits: start,
+    // 8 data bits and stop. The ASR-33 keeps its separate mechanical timing;
+    // these rates belong only to the electronic text terminal.
+    fn char_time(self) -> Duration {
+        match self {
+            Self::Instant => Duration::ZERO,
+            Self::Baud300 => Duration::from_micros(33_333),
+            Self::Baud1200 => Duration::from_micros(8_333),
+            Self::Baud2400 => Duration::from_micros(4_167),
+            Self::Baud9600 => Duration::from_micros(1_042),
+        }
+    }
+}
+
 const TERMINAL_MAX_CHARS: usize = 200_000;
 const TERMINAL_INPUT_DEFAULT_HEIGHT: f32 = 235.0;
 const TERMINAL_INPUT_MIN_HEIGHT: f32 = 115.0;
@@ -88,8 +130,54 @@ impl RusTairApp {
         }
 
         let count = bytes.len();
-        self.machine.bus.serial_rx.extend(bytes);
+        if count > 0 {
+            let was_empty = self.terminal_input_queue.is_empty();
+            self.terminal_input_queue.extend(bytes);
+            if was_empty {
+                // The first character may start immediately. Subsequent bytes
+                // are released at the selected serial character interval.
+                self.terminal_rx_next_at = Some(Instant::now());
+            }
+        }
         count
+    }
+
+    fn process_terminal_input(&mut self, ctx: &egui::Context) {
+        if self.terminal_input_queue.is_empty() {
+            self.terminal_rx_next_at = None;
+            return;
+        }
+        if !self.machine.powered {
+            return;
+        }
+
+        // Model a one-character receive register. Pasted programs are kept in
+        // our host-side queue and are only presented to the Altair after the
+        // previous character has been consumed by software. This prevents a
+        // large paste from being dumped into serial_rx all at once.
+        if !self.machine.bus.serial_rx.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(1));
+            return;
+        }
+
+        let now = Instant::now();
+        let due = self.terminal_rx_next_at.unwrap_or(now);
+        if now < due {
+            ctx.request_repaint_after(due.duration_since(now));
+            return;
+        }
+
+        if let Some(byte) = self.terminal_input_queue.pop_front() {
+            self.machine.bus.serial_rx.push_back(byte & 0x7f);
+        }
+
+        if self.terminal_input_queue.is_empty() {
+            self.terminal_rx_next_at = None;
+        } else {
+            let char_time = self.terminal_speed.char_time();
+            self.terminal_rx_next_at = Some(now + char_time);
+            ctx.request_repaint_after(char_time);
+        }
     }
 
     fn terminal_send_command(&mut self) {
@@ -98,7 +186,7 @@ impl RusTairApp {
         let count = self.terminal_enqueue_text(&command, true);
         if count > 0 {
             if blank {
-                self.status = "Terminal sent CR".into();
+                self.status = "Terminal queued CR".into();
             } else {
                 self.status = format!("Terminal command queued: {count} bytes");
             }
@@ -112,7 +200,10 @@ impl RusTairApp {
         let program = self.terminal_program.clone();
         let count = self.terminal_enqueue_text(&program, true);
         if count > 0 {
-            self.status = format!("Terminal program queued: {count} bytes");
+            self.status = format!(
+                "Terminal program queued: {count} bytes at {}",
+                self.terminal_speed.label()
+            );
         }
     }
 
@@ -121,8 +212,13 @@ impl RusTairApp {
             self.status = format!("{name} ignored: Altair power is off");
             return;
         }
-        self.machine.bus.serial_rx.push_back(byte & 0x7f);
-        self.status = format!("Terminal sent {name}");
+
+        // Manual control keys should not sit behind a pasted BASIC listing.
+        // They still wait for the Altair's one-byte receive register to become
+        // free, but otherwise take priority over queued paste data.
+        self.terminal_input_queue.push_front(byte & 0x7f);
+        self.terminal_rx_next_at = Some(Instant::now());
+        self.status = format!("Terminal queued {name}");
     }
 
     fn load_terminal_text_file(&mut self) {
@@ -136,7 +232,11 @@ impl RusTairApp {
                 let text = String::from_utf8_lossy(&bytes);
                 let count = self.terminal_enqueue_text(&text, true);
                 if count > 0 {
-                    self.status = format!("Terminal queued {count} bytes from {}", path.display());
+                    self.status = format!(
+                        "Terminal queued {count} bytes from {} at {}",
+                        path.display(),
+                        self.terminal_speed.label()
+                    );
                 }
             }
             Err(e) => self.status = format!("Terminal file load failed: {e}"),
@@ -175,7 +275,10 @@ impl RusTairApp {
                 self.terminal_program.clear();
             }
         });
-        ui.small("Paste one or many lines. Newlines are sent as carriage returns.");
+        ui.small(format!(
+            "Paste one or many lines. Input is paced at {}; newlines become carriage returns.",
+            self.terminal_speed.label()
+        ));
 
         let editor_height = (ui.available_height() - 8.0).max(30.0);
         ui.add_sized(
@@ -218,6 +321,19 @@ impl RusTairApp {
                     self.load_terminal_text_file();
                 }
                 ui.separator();
+                ui.label("Speed:");
+                let previous_speed = self.terminal_speed;
+                egui::ComboBox::from_id_salt("terminal-speed")
+                    .selected_text(self.terminal_speed.label())
+                    .show_ui(ui, |ui| {
+                        for speed in TerminalSpeed::ALL {
+                            ui.selectable_value(&mut self.terminal_speed, speed, speed.label());
+                        }
+                    });
+                if self.terminal_speed != previous_speed && !self.terminal_input_queue.is_empty() {
+                    self.terminal_rx_next_at = Some(Instant::now());
+                }
+                ui.separator();
                 ui.checkbox(&mut self.terminal_uppercase, "Uppercase input");
                 ui.separator();
                 if ui.button("CTRL-C").clicked() {
@@ -231,7 +347,9 @@ impl RusTairApp {
 
         egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
             ui.small(format!(
-                "TEXT TERMINAL  |  RX queued {}  |  TX {}  |  {} chars",
+                "TEXT TERMINAL  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
+                self.terminal_speed.label(),
+                self.terminal_input_queue.len(),
                 self.machine.bus.serial_rx.len(),
                 if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
                 self.terminal_output.len(),
