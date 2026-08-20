@@ -48,6 +48,7 @@ struct Tex {
     switch_sprites: HashMap<SwitchSpriteId, egui::TextureHandle>,
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
+    tty_glass: Option<egui::TextureHandle>,
     tty_head: Option<egui::TextureHandle>,
     tty_line_local: Option<egui::TextureHandle>,
     tty_knob: Option<egui::TextureHandle>,
@@ -107,6 +108,29 @@ impl RusTairApp {
     fn load_texture(ctx: &egui::Context, name: &str, path: &str) -> Option<egui::TextureHandle> {
         let bytes = std::fs::read(path).ok()?;
         let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let size = [image.width() as usize, image.height() as usize];
+        Some(ctx.load_texture(
+            name,
+            egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
+            egui::TextureOptions::LINEAR,
+        ))
+    }
+
+    fn load_texture_remove_black(
+        ctx: &egui::Context,
+        name: &str,
+        path: &str,
+    ) -> Option<egui::TextureHandle> {
+        let bytes = std::fs::read(path).ok()?;
+        let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        for pixel in image.pixels_mut() {
+            let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
+            if brightness <= 2 {
+                pixel[3] = 0;
+            } else if brightness < 16 {
+                pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
+            }
+        }
         let size = [image.width() as usize, image.height() as usize];
         Some(ctx.load_texture(
             name,
@@ -177,6 +201,7 @@ impl RusTairApp {
                 switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
                 tty_keys: Self::load_texture(&cc.egui_ctx, "tty-keys", "assets/asr33 keys.png"),
+                tty_glass: Self::load_texture_remove_black(&cc.egui_ctx, "tty-glass", "assets/asr33glass.jpg"),
                 tty_head: Self::load_texture(&cc.egui_ctx, "tty-head", "assets/asr33head.png"),
                 tty_line_local: Self::load_texture(&cc.egui_ctx, "tty-line-local", "assets/asrlinelocal.png"),
                 tty_knob: Self::load_texture(&cc.egui_ctx, "tty-knob", "assets/asrlinelocalknob.png"),
