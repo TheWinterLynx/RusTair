@@ -70,8 +70,7 @@ impl RusTairApp {
                     self.set_tty_mode(TtyMode::Local);
                 }
                 ui.separator();
-                ui.selectable_value(&mut self.tty.paper_width, 52, "Large");
-                ui.selectable_value(&mut self.tty.paper_width, 82, "Normal");
+                ui.label(format!("{} columns", self.tty.paper_width));
                 ui.separator();
                 if ui.button("Clear paper").clicked() { self.tty.clear_paper(); }
                 if ui.button("Read tape…").clicked() { self.load_paper_tape(); }
@@ -93,9 +92,6 @@ impl RusTairApp {
         self.update_key_animation(ctx);
         self.draw_tty_menu(ctx);
 
-        if self.print_head_raise_until.is_some_and(|until| Instant::now() < until) {
-            ctx.request_repaint_after(Duration::from_millis(8));
-        }
         if self.tty_power_flash_until.is_some_and(|until| Instant::now() < until) {
             ctx.request_repaint_after(PANEL_FRAME);
         }
@@ -105,7 +101,7 @@ impl RusTairApp {
         });
         egui::TopBottomPanel::bottom("tty-status").show(ctx, |ui| {
             ui.small(format!(
-                "ASR-33 {}  |  RX {}  |  TX {}  |  column {}",
+                "ASR-33 {}  |  RX {}  |  TX {}  |  column {}/{}",
                 match self.tty.mode {
                     TtyMode::Off => "OFF",
                     TtyMode::Line => "LINE",
@@ -114,6 +110,7 @@ impl RusTairApp {
                 self.machine.bus.serial_rx.len(),
                 if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
                 self.tty.column,
+                self.tty.paper_width,
             ));
         });
     }
