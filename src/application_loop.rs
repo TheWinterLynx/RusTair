@@ -12,12 +12,9 @@ impl eframe::App for RusTairApp {
         self.last_tick = now;
 
         self.update_paper_tape();
-        self.process_terminal_input(ctx);
-
-        // Advance any serial character whose transmit interval has completed
-        // before running the CPU, so software polling TX READY can observe the
-        // newly available holding register during this same emulation slice.
-        self.process_serial_devices(ctx);
+        if self.terminal_window_open {
+            self.process_terminal_input(ctx);
+        }
 
         if let Some(until) = self.reset_flash_until {
             if now >= until {
@@ -35,10 +32,16 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        // The CPU may have written a new byte during the slice above. Capture it
-        // immediately so the selected terminal baud timer starts now rather than
-        // waiting for the next visual frame.
-        self.process_serial_devices(ctx);
+        // The two serial displays are alternative endpoints. Most importantly,
+        // the ASR-33 path below is the original implementation, completely
+        // untouched by the text-terminal baud selector. While the text terminal
+        // is open it owns TX; when it is closed the ASR-33 resumes its original
+        // ~90 ms mechanical character timing exactly as before.
+        if self.terminal_window_open {
+            self.process_terminal_serial(ctx);
+        } else {
+            self.process_tty_serial(ctx);
+        }
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -66,6 +69,12 @@ impl eframe::App for RusTairApp {
                     self.tty_window_open = true;
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
+                    // Cancel any in-progress ASR-33 holding-register timer when
+                    // handing the serial line to the text terminal. The ASR-33
+                    // algorithm itself remains unchanged and will start a fresh
+                    // mechanical interval when the text terminal is closed.
+                    self.tty_tx_started = None;
+                    self.terminal_tx_started = None;
                     self.terminal_window_open = true;
                 }
                 ui.separator();
