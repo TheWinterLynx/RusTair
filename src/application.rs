@@ -77,12 +77,8 @@ struct RusTairApp {
     terminal_speed: TerminalSpeed,
     terminal_input_queue: VecDeque<u8>,
     terminal_rx_next_at: Option<Instant>,
-    // This timer now represents the Altair serial TX holding register. The
-    // existing name is retained because the front-panel reset paths already
-    // clear it whenever the machine is reset or power-cycled.
+    terminal_tx_started: Option<Instant>,
     tty_tx_started: Option<Instant>,
-    tty_output_queue: VecDeque<u8>,
-    tty_output_started: Option<Instant>,
     audio: AudioEngine,
     last_tick: Instant,
     last_tape_tick: Instant,
@@ -186,9 +182,8 @@ impl RusTairApp {
             terminal_speed: TerminalSpeed::Baud9600,
             terminal_input_queue: VecDeque::new(),
             terminal_rx_next_at: None,
+            terminal_tx_started: None,
             tty_tx_started: None,
-            tty_output_queue: VecDeque::new(),
-            tty_output_started: None,
             audio: AudioEngine::new(),
             last_tick: now,
             last_tape_tick: now,
