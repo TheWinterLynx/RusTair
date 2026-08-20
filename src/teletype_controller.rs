@@ -69,10 +69,10 @@ impl RusTairApp {
         let now = Instant::now();
         let char_time = self.active_serial_tx_char_time();
 
-        if let Some(started) = self.serial_tx_started {
+        if let Some(started) = self.tty_tx_started {
             if char_time.is_zero() || now.duration_since(started) >= char_time {
                 self.machine.bus.serial_tx.pop_front();
-                self.serial_tx_started = None;
+                self.tty_tx_started = None;
                 ctx.request_repaint();
             } else {
                 ctx.request_repaint_after(char_time.saturating_sub(now.duration_since(started)));
@@ -80,15 +80,15 @@ impl RusTairApp {
             }
         }
 
-        if self.serial_tx_started.is_none() {
+        if self.tty_tx_started.is_none() {
             if let Some(&byte) = self.machine.bus.serial_tx.front() {
                 self.terminal_receive_byte(byte);
                 self.tty_output_queue.push_back(byte);
-                self.serial_tx_started = Some(now);
+                self.tty_tx_started = Some(now);
 
                 if char_time.is_zero() {
                     self.machine.bus.serial_tx.pop_front();
-                    self.serial_tx_started = None;
+                    self.tty_tx_started = None;
                     ctx.request_repaint();
                 } else {
                     ctx.request_repaint_after(char_time);
