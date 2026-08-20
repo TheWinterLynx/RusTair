@@ -1,33 +1,143 @@
 impl RusTairApp {
-    fn draw_pressed_key(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        let Some(index) = self.animated_key else { return; };
-        if self.key_displacement <= 0.0 { return; }
+    fn teletype_key_legend(kind: KeyKind) -> String {
+        match kind {
+            KeyKind::Character(chars) => {
+                let mut chars = chars.chars();
+                let normal = chars.next().unwrap_or(' ');
+                if let Some(shifted) = chars.next() {
+                    format!("{shifted}\n{normal}")
+                } else {
+                    normal.to_string()
+                }
+            }
+            KeyKind::Escape => "ESC".into(),
+            KeyKind::LineFeed => "LINE\nFEED".into(),
+            KeyKind::CarriageReturn => "RETURN".into(),
+            KeyKind::Delete => "DELETE".into(),
+            KeyKind::Space => String::new(),
+            KeyKind::Control => "CTRL".into(),
+            KeyKind::Shift => "SHIFT".into(),
+        }
+    }
 
-        let key = teletype::KEYS[index];
+    fn draw_key_pose(
+        &self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        kind: KeyKind,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        pose: u8,
+        legend_override: Option<&str>,
+    ) {
+        // The three generated assets use the same 700x700 canvas. Their cap
+        // bottoms are deliberately registered at y=680, so the panel-side
+        // pivot never moves; only the amount of key body/stem above the well
+        // changes. Each pose has a slightly different photographed cap width,
+        // so compensate for that here to preserve the exact apparent width.
+        const SPRITE_SIZE: f32 = 700.0;
+        const CAP_BOTTOM: f32 = 680.0;
+        const UP_CAP_HEIGHT: f32 = 642.0; // 680 - 38
 
-        let source = Rect::from_min_max(
-            Pos2::new(key.x / TTY_W, key.y / TTY_H),
-            Pos2::new((key.x + key.w) / TTY_W, (key.y + key.h + 40.0) / TTY_H),
-        );
+        let (texture, cap_left, cap_top, cap_width) = match pose {
+            1 => (&self.tex.tty_key_mid, 85.0, 103.0, 517.0),
+            2 => (&self.tex.tty_key_down, 84.0, 153.0, 531.0),
+            _ => (&self.tex.tty_key_up, 87.0, 38.0, 524.0),
+        };
+        let Some(texture) = texture else { return; };
+
+        // Preserve the original ASR-33 coordinate table exactly. In the UP
+        // pose the photographed key cap occupies x..x+w and y..y+h+40. MID
+        // and DOWN keep that same lower contact line while their upper face
+        // descends into the key well.
+        let sx = w / cap_width;
+        let sy = (h + 40.0) / UP_CAP_HEIGHT;
+        let cap_bottom_y = y + h + 40.0;
+        let target_left = x - cap_left * sx;
+        let target_top = cap_bottom_y - CAP_BOTTOM * sy;
         let target = Rect::from_min_size(
-            origin + Vec2::new(key.x * scale, key.y * scale),
-            Vec2::new(key.w * scale, (key.h + 40.0) * scale),
+            origin + Vec2::new(target_left * scale, target_top * scale),
+            Vec2::new(SPRITE_SIZE * sx * scale, SPRITE_SIZE * sy * scale),
         );
-        if let Some(body) = &self.tex.tty_body {
-            ui.painter().image(body.id(), target, source, Color32::WHITE);
+        ui.painter().image(
+            texture.id(),
+            target,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+
+        let legend = legend_override
+            .map(str::to_owned)
+            .unwrap_or_else(|| Self::teletype_key_legend(kind));
+        if legend.is_empty() { return; }
+
+        // Put the legend on the photographed upper face rather than at the
+        // fixed hit-box centre. This means the lettering follows the real MID
+        // and DOWN geometry without translating the sprite by hand.
+        let cap_top_y = cap_bottom_y - (CAP_BOTTOM - cap_top) * sy;
+        let cap_height = (CAP_BOTTOM - cap_top) * sy;
+        let legend_y = cap_top_y + cap_height * 0.34;
+        let compact = legend.contains('\n') || legend.len() > 4;
+        let font_factor = if compact { 0.145 } else { 0.225 };
+        let font_size = (w * font_factor * scale).max(5.0);
+        ui.painter().text(
+            origin + Vec2::new((x + w * 0.5) * scale, legend_y * scale),
+            egui::Align2::CENTER_CENTER,
+            legend,
+            FontId::monospace(font_size),
+            Color32::from_rgb(47, 44, 38),
+        );
+    }
+
+    fn draw_pressed_key(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
+        // This used to erase one rectangular patch of the photographed
+        // keyboard and slide the original key pixels downward. That looked
+        // like a sticker moving over the panel. We now rebuild the complete
+        // keyboard from aligned photographic UP/MID/DOWN poses every frame.
+        for (index, key) in teletype::KEYS.iter().copied().enumerate() {
+            // The current clean body still contains its original space bar.
+            // Keep it untouched until its own wide three-pose asset is made.
+            if matches!(key.kind, KeyKind::Space) {
+                continue;
+            }
+
+            let pose = if self.animated_key == Some(index) && self.key_displacement > 0.0 {
+                if self.key_displacement < 6.0 { 1 } else { 2 }
+            } else {
+                0
+            };
+            self.draw_key_pose(
+                ui,
+                origin,
+                scale,
+                key.kind,
+                key.x,
+                key.y,
+                key.w,
+                key.h,
+                pose,
+                None,
+            );
         }
 
-        let key_source = Rect::from_min_max(
-            Pos2::new(key.x / TTY_W, key.y / TTY_H),
-            Pos2::new((key.x + key.w) / TTY_W, (key.y + key.h) / TTY_H),
+        // The photographed Model 33 has a non-functional HERE IS key which is
+        // intentionally absent from the emulator's key map. Fill its well as a
+        // decorative UP key so the original 13-key number-row layout remains.
+        self.draw_key_pose(
+            ui,
+            origin,
+            scale,
+            KeyKind::Character(" "),
+            2480.0,
+            1918.0,
+            114.0,
+            97.0,
+            0,
+            Some("HERE\nIS"),
         );
-        let key_target = Rect::from_min_size(
-            origin + Vec2::new(key.x * scale, (key.y + self.key_displacement) * scale),
-            Vec2::new(key.w * scale, key.h * scale),
-        );
-        if let Some(keys) = &self.tex.tty_keys {
-            ui.painter().image(keys.id(), key_target, key_source, Color32::WHITE);
-        }
     }
 
     fn paper_feed_offset(&self, now: Instant, line_height: f32) -> f32 {
