@@ -127,6 +127,10 @@ impl RusTairApp {
         if let Ok(glass_bytes) = std::fs::read(glass_path) {
             if let Ok(glass_image) = image::load_from_memory(&glass_bytes) {
                 let mut glass = glass_image.to_rgba8();
+
+                // The source asset has a black canvas around the transparent
+                // plastic. Remove only that near-black background while keeping
+                // the dark scratches, reflections and hardware of the cover.
                 for pixel in glass.pixels_mut() {
                     let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
                     if brightness <= 2 {
@@ -136,13 +140,22 @@ impl RusTairApp {
                     }
                 }
 
+                // Keep the square asset undistorted. Its visible glass occupies
+                // only the middle band of the source image, so place the square
+                // partly above the teletype canvas. These calibration values put
+                // the visible cover at roughly x=245..2776, y=502..1142 in the
+                // 3008x2983 ASR-33 image, with its lower lip matching the current
+                // renderer's glass sill near 0.380 * TTY_H.
+                let glass_side = (image.width() as f32 * 0.858).round() as u32;
                 let glass = image::imageops::resize(
                     &glass,
-                    image.width(),
-                    image.height(),
+                    glass_side,
+                    glass_side,
                     image::imageops::FilterType::Lanczos3,
                 );
-                image::imageops::overlay(&mut image, &glass, 0, 0);
+                let glass_x = (image.width() as f32 * 0.0705).round() as i64;
+                let glass_y = -((image.height() as f32 * 0.152).round() as i64);
+                image::imageops::overlay(&mut image, &glass, glass_x, glass_y);
             }
         }
 
