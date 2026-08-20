@@ -89,13 +89,15 @@ impl RusTairApp {
     }
 
     fn terminal_send_command(&mut self) {
-        if self.terminal_command.is_empty() {
-            return;
-        }
         let command = std::mem::take(&mut self.terminal_command);
+        let blank = command.is_empty();
         let count = self.terminal_enqueue_text(&command, true);
         if count > 0 {
-            self.status = format!("Terminal command queued: {count} bytes");
+            if blank {
+                self.status = "Terminal sent CR".into();
+            } else {
+                self.status = format!("Terminal command queued: {count} bytes");
+            }
         }
     }
 
@@ -159,15 +161,73 @@ impl RusTairApp {
             });
         });
 
+        egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
+            ui.small(format!(
+                "TEXT TERMINAL  |  RX queued {}  |  TX {}  |  {} chars",
+                self.machine.bus.serial_rx.len(),
+                if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
+                self.terminal_output.len(),
+            ));
+        });
+
+        // The complete input area is a resizable bottom panel. Drag its top
+        // separator to trade space between terminal output and command/program
+        // entry, which is especially useful for long multi-line BASIC listings.
+        egui::TopBottomPanel::bottom("terminal-input")
+            .resizable(true)
+            .default_height(235.0)
+            .min_height(82.0)
+            .max_height(520.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(">").monospace().strong());
+                    let width = (ui.available_width() - 122.0).max(80.0);
+                    let response = ui.add_sized(
+                        [width, 26.0],
+                        egui::TextEdit::singleline(&mut self.terminal_command)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text("command (blank + Enter sends CR)"),
+                    );
+                    let enter = response.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Send").clicked() || enter {
+                        self.terminal_send_command();
+                        response.request_focus();
+                    }
+                    if ui.button("CR").on_hover_text("Send carriage return only").clicked() {
+                        self.terminal_send_control(b'\r', "CR");
+                        response.request_focus();
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.strong("Paste / program input");
+                    if ui.button("Send block").clicked() {
+                        self.terminal_send_program();
+                    }
+                    if ui.button("Clear editor").clicked() {
+                        self.terminal_program.clear();
+                    }
+                });
+                ui.small("Paste one or many lines. Newlines are sent as carriage returns.");
+
+                let editor_height = (ui.available_height() - 8.0).max(30.0);
+                ui.add_sized(
+                    [ui.available_width(), editor_height],
+                    egui::TextEdit::multiline(&mut self.terminal_program)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            let output_height = (ui.available_height() - 185.0).max(120.0);
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
                     .auto_shrink([false, false])
-                    .max_height(output_height)
                     .show(ui, |ui| {
-                        ui.set_min_height(output_height);
+                        ui.set_min_height(ui.available_height());
                         ui.add(
                             egui::Label::new(
                                 egui::RichText::new(&self.terminal_output)
@@ -178,52 +238,6 @@ impl RusTairApp {
                         );
                     });
             });
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(">").monospace().strong());
-                let width = (ui.available_width() - 72.0).max(80.0);
-                let response = ui.add_sized(
-                    [width, 26.0],
-                    egui::TextEdit::singleline(&mut self.terminal_command)
-                        .font(egui::TextStyle::Monospace)
-                        .hint_text("command"),
-                );
-                let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button("Send").clicked() || enter {
-                    self.terminal_send_command();
-                    response.request_focus();
-                }
-            });
-
-            egui::CollapsingHeader::new("Paste / program input")
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.label("Paste one or many lines. Newlines are sent as carriage returns.");
-                    ui.add(
-                        egui::TextEdit::multiline(&mut self.terminal_program)
-                            .font(egui::TextStyle::Monospace)
-                            .desired_rows(6)
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.horizontal(|ui| {
-                        if ui.button("Send program").clicked() {
-                            self.terminal_send_program();
-                        }
-                        if ui.button("Clear editor").clicked() {
-                            self.terminal_program.clear();
-                        }
-                    });
-                });
-        });
-
-        egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
-            ui.small(format!(
-                "TEXT TERMINAL  |  RX queued {}  |  TX {}  |  {} chars",
-                self.machine.bus.serial_rx.len(),
-                if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
-                self.terminal_output.len(),
-            ));
         });
     }
 
