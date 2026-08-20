@@ -12,6 +12,12 @@ impl eframe::App for RusTairApp {
         self.last_tick = now;
 
         self.update_paper_tape();
+        self.process_terminal_input(ctx);
+
+        // Advance any serial character whose transmit interval has completed
+        // before running the CPU, so software polling TX READY can observe the
+        // newly available holding register during this same emulation slice.
+        self.process_serial_devices(ctx);
 
         if let Some(until) = self.reset_flash_until {
             if now >= until {
@@ -29,15 +35,10 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        // The ASR-33 owns the real TX holding-register timing. Mirror each new
-        // byte into the text terminal just before the teletype starts consuming
-        // it, so both interfaces see the same serial stream without double reads.
-        if self.tty_tx_started.is_none() {
-            if let Some(&byte) = self.machine.bus.serial_tx.front() {
-                self.terminal_receive_byte(byte);
-            }
-        }
-        self.process_tty_serial(ctx);
+        // The CPU may have written a new byte during the slice above. Capture it
+        // immediately so the selected terminal baud timer starts now rather than
+        // waiting for the next visual frame.
+        self.process_serial_devices(ctx);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
