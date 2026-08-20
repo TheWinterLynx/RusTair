@@ -19,7 +19,9 @@ const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
 const KEY_TAP_TIME: Duration = Duration::from_millis(75);
 const PRINT_HEAD_STRIKE_TIME: Duration = Duration::from_millis(84);
+const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
 const PRINT_HEAD_CARRIAGE_RETURN_TIME: Duration = Duration::from_millis(160);
+const PAPER_FEED_TIME: Duration = Duration::from_millis(74);
 
 const ADDR_LED_X: [f32; 16] = [
     1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0,
@@ -86,7 +88,10 @@ struct RusTairApp {
     last_tape_tick: Instant,
     reset_flash_until: Option<Instant>,
     print_head_raise_until: Option<Instant>,
+    print_head_impact_at: Option<Instant>,
+    print_head_glyph: u8,
     print_head_carriage_return_until: Option<Instant>,
+    paper_feed_until: Option<Instant>,
     tty_power_flash_until: Option<Instant>,
     animated_key: Option<usize>,
     pressed_key: Option<usize>,
@@ -192,7 +197,10 @@ impl RusTairApp {
             last_tape_tick: now,
             reset_flash_until: None,
             print_head_raise_until: None,
+            print_head_impact_at: None,
+            print_head_glyph: b' ',
             print_head_carriage_return_until: None,
+            paper_feed_until: None,
             tty_power_flash_until: None,
             animated_key: None,
             pressed_key: None,
