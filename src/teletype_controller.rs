@@ -2,20 +2,56 @@ impl RusTairApp {
     // ----------------------- ASR-33 -----------------------
 
     fn play_print_events(&mut self, events: &[PrintEvent]) {
+        let now = Instant::now();
         for event in events {
             match event {
-                PrintEvent::Printable => {
-                    self.audio.play_once("assets/printcharpadded.mp3");
-                    self.print_head_raise_until = Some(Instant::now() + PRINT_HEAD_STRIKE_TIME);
+                PrintEvent::Printable(byte) => {
+                    self.print_head_glyph = *byte;
+                    self.print_head_raise_until = Some(now + PRINT_HEAD_STRIKE_TIME);
+                    self.print_head_impact_at = Some(now + PRINT_HEAD_IMPACT_DELAY);
                 }
                 PrintEvent::CarriageReturn => {
                     self.audio.play_once("assets/crpadded.mp3");
                     self.print_head_raise_until = None;
+                    self.print_head_impact_at = None;
                     self.print_head_carriage_return_until =
-                        Some(Instant::now() + PRINT_HEAD_CARRIAGE_RETURN_TIME);
+                        Some(now + PRINT_HEAD_CARRIAGE_RETURN_TIME);
+                }
+                PrintEvent::LineFeed => {
+                    self.paper_feed_until = Some(now + PAPER_FEED_TIME);
                 }
                 PrintEvent::Bell => self.audio.play_once("assets/bellpadded.mp3"),
             }
+        }
+    }
+
+    fn update_teletype_mechanics(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+
+        if self.print_head_impact_at.is_some_and(|at| now >= at) {
+            self.audio.play_once("assets/printcharpadded.mp3");
+            self.print_head_impact_at = None;
+        }
+
+        if self.print_head_raise_until.is_some_and(|until| now >= until) {
+            self.print_head_raise_until = None;
+        }
+        if self
+            .print_head_carriage_return_until
+            .is_some_and(|until| now >= until)
+        {
+            self.print_head_carriage_return_until = None;
+        }
+        if self.paper_feed_until.is_some_and(|until| now >= until) {
+            self.paper_feed_until = None;
+        }
+
+        if self.print_head_impact_at.is_some()
+            || self.print_head_raise_until.is_some()
+            || self.print_head_carriage_return_until.is_some()
+            || self.paper_feed_until.is_some()
+        {
+            ctx.request_repaint_after(Duration::from_millis(8));
         }
     }
 
@@ -27,7 +63,9 @@ impl RusTairApp {
         if mode == TtyMode::Off {
             self.audio.stop_loop("tty-motor");
             self.print_head_raise_until = None;
+            self.print_head_impact_at = None;
             self.print_head_carriage_return_until = None;
+            self.paper_feed_until = None;
         } else {
             self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
         }
@@ -219,5 +257,4 @@ impl RusTairApp {
         }
         self.key_auto_release_at = None;
     }
-
 }
