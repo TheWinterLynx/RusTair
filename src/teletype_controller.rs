@@ -38,93 +38,32 @@ impl RusTairApp {
         self.play_print_events(&events);
     }
 
-    fn print_tty_serial_byte(&mut self, byte: u8) {
-        let was_off = self.tty.mode == TtyMode::Off;
-        let events = self.tty.print_serial(byte);
-        if was_off && self.tty.mode == TtyMode::Line {
-            self.audio.play_once("assets/powerbtn.mp3");
-            self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
-        }
-        self.play_print_events(&events);
-    }
-
-    fn active_serial_tx_char_time(&self) -> Duration {
-        if self.terminal_window_open {
-            self.terminal_speed.char_time()
-        } else {
-            TTY_CHAR_TIME
-        }
-    }
-
-    // The Altair's transmit holding register is paced by the currently active
-    // serial endpoint. With only the ASR-33 visible, the original 110-baud-ish
-    // mechanical timing remains in control. Opening the text terminal switches
-    // the line to its selected electronic terminal speed.
-    //
-    // Every outgoing byte is also copied into a separate ASR-33 print queue.
-    // That queue is consumed at the mechanical 90 ms/character rate regardless
-    // of text-terminal speed, so a 9600-baud terminal no longer makes the
-    // teletype unrealistically print at 9600 baud.
-    fn process_serial_tx(&mut self, ctx: &egui::Context) {
+    fn process_tty_serial(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
-        let char_time = self.active_serial_tx_char_time();
 
         if let Some(started) = self.tty_tx_started {
-            if char_time.is_zero() || now.duration_since(started) >= char_time {
+            if now.duration_since(started) >= TTY_CHAR_TIME {
                 self.machine.bus.serial_tx.pop_front();
                 self.tty_tx_started = None;
-                ctx.request_repaint();
             } else {
-                ctx.request_repaint_after(char_time.saturating_sub(now.duration_since(started)));
+                ctx.request_repaint_after(Duration::from_millis(5));
                 return;
             }
         }
 
         if self.tty_tx_started.is_none() {
             if let Some(&byte) = self.machine.bus.serial_tx.front() {
-                self.terminal_receive_byte(byte);
-                self.tty_output_queue.push_back(byte);
-                self.tty_tx_started = Some(now);
-
-                if char_time.is_zero() {
-                    self.machine.bus.serial_tx.pop_front();
-                    self.tty_tx_started = None;
-                    ctx.request_repaint();
-                } else {
-                    ctx.request_repaint_after(char_time);
+                let was_off = self.tty.mode == TtyMode::Off;
+                let events = self.tty.print_serial(byte);
+                if was_off && self.tty.mode == TtyMode::Line {
+                    self.audio.play_once("assets/powerbtn.mp3");
+                    self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
                 }
+                self.play_print_events(&events);
+                self.tty_tx_started = Some(now);
+                ctx.request_repaint_after(PANEL_FRAME);
             }
         }
-    }
-
-    fn process_tty_output_queue(&mut self, ctx: &egui::Context) {
-        if self.tty_output_queue.is_empty() {
-            self.tty_output_started = None;
-            return;
-        }
-
-        let now = Instant::now();
-        if let Some(started) = self.tty_output_started {
-            let elapsed = now.duration_since(started);
-            if elapsed < TTY_CHAR_TIME {
-                ctx.request_repaint_after(TTY_CHAR_TIME - elapsed);
-                return;
-            }
-            self.tty_output_started = None;
-        }
-
-        if self.tty_output_started.is_none() {
-            if let Some(byte) = self.tty_output_queue.pop_front() {
-                self.print_tty_serial_byte(byte);
-                self.tty_output_started = Some(now);
-                ctx.request_repaint_after(TTY_CHAR_TIME);
-            }
-        }
-    }
-
-    fn process_serial_devices(&mut self, ctx: &egui::Context) {
-        self.process_serial_tx(ctx);
-        self.process_tty_output_queue(ctx);
     }
 
     fn key_index_for_byte(byte: u8) -> Option<usize> {
@@ -273,4 +212,5 @@ impl RusTairApp {
         }
         self.key_auto_release_at = None;
     }
+
 }
