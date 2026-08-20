@@ -59,11 +59,11 @@ impl RusTairApp {
         let font_size = (char_width * 1.63 * scale).max(5.0);
         let line_height = (font_size * 1.03).max(6.0);
 
-        // The print point is on the platen behind the cover. In the photograph
-        // the visible lower edge/reflection of the window sits a little below
-        // the freshly printed baseline. Drawing directly on paper.bottom() made
-        // the text appear pasted onto that dark seam instead of onto the paper.
-        let baseline_inset = TTY_H * 0.018 * scale;
+        // Keep the print baseline deliberately flat. The photographed window
+        // seam has a little perspective, but bending the text to follow it is
+        // much more noticeable than the seam itself. A small constant inset
+        // keeps every character safely above the dark lower edge instead.
+        let baseline_inset = TTY_H * 0.024 * scale;
         let print_baseline = paper.bottom() - baseline_inset;
         let printable_height = (paper.height() - baseline_inset).max(line_height);
         let max_lines = ((printable_height / line_height).floor() as usize).max(1);
@@ -77,7 +77,6 @@ impl RusTairApp {
         let visible = &lines[first..];
         let painter = ui.painter().with_clip_rect(paper);
         let font = FontId::new(font_size, FontFamily::Name("teletype".into()));
-        let perspective_denominator = self.tty.paper_width.saturating_sub(1).max(1) as f32;
 
         for (row, line) in visible.iter().enumerate() {
             let from_bottom = visible.len() - 1 - row;
@@ -92,19 +91,10 @@ impl RusTairApp {
                     Self::ink_character_style(absolute_line, column, byte);
                 let blue = ink.saturating_sub(3);
 
-                // The source photograph is not perfectly front-on: the platen/
-                // glass seam rises slightly at the far right. A perfectly flat
-                // software baseline therefore appears to dive underneath it.
-                // Follow the photographed paper geometry, with most correction
-                // confined to the final third of the carriage travel.
-                let perspective_t = column as f32 / perspective_denominator;
-                let perspective_lift =
-                    TTY_H * 0.006 * scale * perspective_t * perspective_t;
-
                 painter.text(
                     Pos2::new(
                         paper.left() + column as f32 * char_cell + jitter_x * scale,
-                        baseline - perspective_lift + jitter_y * scale,
+                        baseline + jitter_y * scale,
                     ),
                     egui::Align2::LEFT_BOTTOM,
                     (byte as char).to_string(),
@@ -162,11 +152,6 @@ impl RusTairApp {
             target_center_x,
             travel_time,
         );
-        let head_perspective_t = ((center_x - teletype::PRINT_LEFT)
-            / teletype::PRINTABLE_WIDTH)
-            .clamp(0.0, 1.0);
-        let head_perspective_lift =
-            TTY_H * 0.006 * head_perspective_t * head_perspective_t;
 
         // Model 33 character selection is mechanical: 16 rotational positions
         // crossed with four vertical levels. Do not rotate the whole PNG in the
@@ -204,8 +189,7 @@ impl RusTairApp {
         let rest_top = TTY_H * REST_TOP_RATIO;
         let strike_top = TTY_H * STRIKE_TOP_RATIO;
         let selection_height = level_pose * TTY_H * 0.0042;
-        let top_y = rest_top + (strike_top - rest_top) * lift + selection_height
-            - head_perspective_lift;
+        let top_y = rest_top + (strike_top - rest_top) * lift + selection_height;
         let sill_y = TTY_H * GLASS_SILL_RATIO;
 
         let head_rect = Rect::from_min_size(
