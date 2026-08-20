@@ -53,6 +53,87 @@ impl RusTairApp {
         (x, y, ink)
     }
 
+    fn paper_line_height(&self, scale: f32) -> f32 {
+        let char_width = self.tty.char_width_image_px();
+        let font_size = (char_width * 1.63 * scale).max(5.0);
+        (font_size * 1.03).max(6.0)
+    }
+
+    fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
+        if self.tty.output.is_empty() { return; }
+        // The photograph contains a fixed piece of paper. Once enough lines
+        // have been fed, text used to climb beyond that photographed sheet and
+        // appear to float over the background. Model the continuous roll as a
+        // real render layer instead: its free end travels upward on every LF
+        // while the print point remains fixed at the platen.
+        let line_height = self.paper_line_height(scale);
+        let baseline_inset = TTY_H * 0.024 * scale;
+        let print_baseline = origin.y + teletype::PRINT_TOP * scale - baseline_inset;
+        let feed_offset = self.paper_feed_offset(Instant::now(), line_height);
+        let line_count = self.tty.output.split('\n').count().max(1) as f32;
+
+        // Leave several blank lines ahead of the first printed character, as a
+        // real roll would already have some free paper above the print station.
+        // The +feed_offset term makes the free edge move continuously during LF
+        // instead of jumping by a whole line when the newline enters the model.
+        const LEADER_LINES: f32 = 7.0;
+        let sheet_top = (print_baseline
+            - (line_count + LEADER_LINES) * line_height
+            + feed_offset)
+            .max(machine.top());
+        let sheet_bottom = origin.y + (teletype::PRINT_TOP - TTY_H * 0.010) * scale;
+        if sheet_top >= sheet_bottom {
+            return;
+        }
+
+        let char_width = self.tty.char_width_image_px();
+        let side_margin = char_width * 1.8 * scale;
+        let left = origin.x + teletype::PRINT_LEFT * scale - side_margin;
+        let right = origin.x
+            + (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH) * scale
+            + side_margin;
+        let sheet = Rect::from_min_max(
+            Pos2::new(left, sheet_top),
+            Pos2::new(right, sheet_bottom),
+        );
+
+        // A restrained drop shadow separates the moving sheet from the static
+        // photograph. The paper itself is deliberately slightly translucent so
+        // the original photographed texture still contributes underneath it.
+        let shadow = Rect::from_min_max(
+            sheet.min + Vec2::new(3.0 * scale, 4.5 * scale),
+            sheet.max + Vec2::new(3.0 * scale, 4.5 * scale),
+        );
+        let painter = ui.painter().with_clip_rect(machine);
+        painter.rect_filled(
+            shadow,
+            1.5 * scale,
+            Color32::from_rgba_unmultiplied(20, 18, 16, 42),
+        );
+        painter.rect_filled(
+            sheet,
+            1.0 * scale,
+            Color32::from_rgba_unmultiplied(222, 220, 214, 224),
+        );
+
+        // The exposed free edge is visible only while it is still inside the
+        // camera frame. This tiny highlight/shadow pair makes the LF motion easy
+        // to perceive without turning the paper into a UI panel.
+        if sheet_top > machine.top() + 1.0 {
+            painter.line_segment(
+                [Pos2::new(left, sheet_top), Pos2::new(right, sheet_top)],
+                egui::Stroke::new(1.0 * scale, Color32::from_rgba_unmultiplied(255, 255, 248, 95)),
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(left, sheet_top + 1.5 * scale),
+                    Pos2::new(right, sheet_top + 1.5 * scale),
+                ],
+                egui::Stroke::new(1.0 * scale, Color32::from_rgba_unmultiplied(60, 55, 50, 38)),
+            );
+        }
+    }
+
     fn draw_paper_text(&self, ui: &mut egui::Ui, paper: Rect, scale: f32) {
         let char_width = self.tty.char_width_image_px();
         let char_cell = char_width * scale;
@@ -315,6 +396,11 @@ impl RusTairApp {
 
         if let Some(t) = &self.tex.tty_body { Self::image(ui, t, rect); }
         if let Some(t) = &self.tex.tty_keys { Self::image(ui, t, rect); }
+
+        // The moving paper is a separate layer over the photographed machine
+        // and under ink/typewheel. As LF advances, its free edge and all ink
+        // travel together, so old lines can never end up printed "in the air".
+        self.draw_virtual_paper(ui, rect, origin, scale);
 
         let paper = Rect::from_min_max(
             origin + Vec2::new(teletype::PRINT_LEFT * scale, 0.0),
