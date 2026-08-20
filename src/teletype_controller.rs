@@ -12,6 +12,7 @@ impl RusTairApp {
                 }
                 PrintEvent::CarriageReturn => {
                     self.audio.play_once("assets/crpadded.mp3");
+                    self.print_head_auto_return_at = None;
                     self.print_head_raise_until = None;
                     self.print_head_impact_at = None;
                     self.print_head_carriage_return_until =
@@ -19,6 +20,12 @@ impl RusTairApp {
                 }
                 PrintEvent::LineFeed => {
                     self.paper_feed_until = Some(now + PAPER_FEED_TIME);
+                }
+                PrintEvent::AutomaticReturn => {
+                    // Let the 72nd character finish its impact first. At the
+                    // end of that strike update_teletype_mechanics starts the
+                    // real-looking carriage sweep and paper feed together.
+                    self.print_head_auto_return_at = Some(now + PRINT_HEAD_STRIKE_TIME);
                 }
                 PrintEvent::Bell => self.audio.play_once("assets/bellpadded.mp3"),
             }
@@ -31,6 +38,21 @@ impl RusTairApp {
         if self.print_head_impact_at.is_some_and(|at| now >= at) {
             self.audio.play_once("assets/printcharpadded.mp3");
             self.print_head_impact_at = None;
+        }
+
+        if self
+            .print_head_auto_return_at
+            .is_some_and(|at| now >= at)
+        {
+            self.print_head_auto_return_at = None;
+            if self.tty.complete_auto_wrap() {
+                self.audio.play_once("assets/crpadded.mp3");
+                self.print_head_raise_until = None;
+                self.print_head_impact_at = None;
+                self.print_head_carriage_return_until =
+                    Some(now + PRINT_HEAD_CARRIAGE_RETURN_TIME);
+                self.paper_feed_until = Some(now + PAPER_FEED_TIME);
+            }
         }
 
         if self.print_head_raise_until.is_some_and(|until| now >= until) {
@@ -47,6 +69,7 @@ impl RusTairApp {
         }
 
         if self.print_head_impact_at.is_some()
+            || self.print_head_auto_return_at.is_some()
             || self.print_head_raise_until.is_some()
             || self.print_head_carriage_return_until.is_some()
             || self.paper_feed_until.is_some()
@@ -64,6 +87,7 @@ impl RusTairApp {
             self.audio.stop_loop("tty-motor");
             self.print_head_raise_until = None;
             self.print_head_impact_at = None;
+            self.print_head_auto_return_at = None;
             self.print_head_carriage_return_until = None;
             self.paper_feed_until = None;
         } else {
@@ -94,6 +118,20 @@ impl RusTairApp {
                 ctx.request_repaint_after(Duration::from_millis(5));
                 return;
             }
+        }
+
+        // A real ASR-33 cannot accept the next print operation while its
+        // carriage is returning from the right margin. Hold the UART queue
+        // instead of silently throwing characters away during the sweep.
+        let carriage_returning = self
+            .print_head_carriage_return_until
+            .is_some_and(|until| now < until);
+        if self.tty.auto_wrap_pending()
+            || self.print_head_auto_return_at.is_some()
+            || carriage_returning
+        {
+            ctx.request_repaint_after(Duration::from_millis(5));
+            return;
         }
 
         if self.tty_tx_started.is_none() {
