@@ -76,32 +76,43 @@ impl SwitchConfig {
 
 impl SwitchSpriteId {
     fn asset(self) -> SwitchSpriteAsset {
+        // These are the aligned 32x96 sprites from agent/aligned-switch-sprites.
+        // All three states use exactly the same fixed socket pivot. The
+        // 1.30 panel scale makes the 32px-wide fixed base render at 41.6 panel
+        // pixels, slightly larger than the ~39px panel socket so the artwork
+        // fully covers the socket underneath while only the lever appears to move.
+        const CANVAS: (f32, f32) = (32.0, 96.0);
+        const CROP_MIN: (f32, f32) = (0.0, 0.0);
+        const CROP_MAX: (f32, f32) = (32.0, 96.0);
+        const SOCKET_PIVOT: (f32, f32) = (15.5, 47.5);
+        const SOURCE_TO_PANEL: f32 = 1.30;
+
         match self {
             SwitchSpriteId::WhiteUp => SwitchSpriteAsset {
                 path: "assets/panels/white-pivot/switch_up.png",
-                canvas_size: (1254.0, 1254.0),
-                crop_min: (390.0, 40.0),
-                crop_max: (870.0, 1095.0),
-                pivot: (627.0, 1085.0),
-                source_to_panel: 59.0 / 1254.0,
+                canvas_size: CANVAS,
+                crop_min: CROP_MIN,
+                crop_max: CROP_MAX,
+                pivot: SOCKET_PIVOT,
+                source_to_panel: SOURCE_TO_PANEL,
                 alpha_mode: SwitchAlphaMode::Preserve,
             },
             SwitchSpriteId::WhiteCenter => SwitchSpriteAsset {
                 path: "assets/panels/white-pivot/switch_center.png",
-                canvas_size: (1254.0, 1254.0),
-                crop_min: (390.0, 320.0),
-                crop_max: (860.0, 965.0),
-                pivot: (627.0, 455.0),
-                source_to_panel: 59.0 / 1254.0,
-                alpha_mode: SwitchAlphaMode::RemoveBlack,
+                canvas_size: CANVAS,
+                crop_min: CROP_MIN,
+                crop_max: CROP_MAX,
+                pivot: SOCKET_PIVOT,
+                source_to_panel: SOURCE_TO_PANEL,
+                alpha_mode: SwitchAlphaMode::Preserve,
             },
             SwitchSpriteId::WhiteDown => SwitchSpriteAsset {
                 path: "assets/panels/white-pivot/switch_down.png",
-                canvas_size: (1254.0, 1254.0),
-                crop_min: (390.0, 110.0),
-                crop_max: (865.0, 1145.0),
-                pivot: (627.0, 118.0),
-                source_to_panel: 59.0 / 1254.0,
+                canvas_size: CANVAS,
+                crop_min: CROP_MIN,
+                crop_max: CROP_MAX,
+                pivot: SOCKET_PIVOT,
+                source_to_panel: SOURCE_TO_PANEL,
                 alpha_mode: SwitchAlphaMode::Preserve,
             },
         }
