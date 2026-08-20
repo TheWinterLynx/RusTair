@@ -169,31 +169,31 @@ impl RusTairApp {
             TTY_H * 0.006 * head_perspective_t * head_perspective_t;
 
         // Model 33 character selection is mechanical: 16 rotational positions
-        // crossed with four vertical levels. The sprite is a front photograph,
-        // so axial rotation is represented by a tiny sideways/squash movement
-        // while the four real height levels remain directly visible.
+        // crossed with four vertical levels. Do not rotate the whole PNG in the
+        // screen plane (that would look like the assembly is tilting). Instead
+        // keep the lower mount fixed and make only the cylindrical upper wheel
+        // visibly turn around its vertical axis: its face slides, narrows a
+        // little and the highlight moves from one side to the other.
         let (slot, level) = teletype::typewheel_position(self.print_head_glyph);
         let slot_target = (slot as f32 - 7.5) / 7.5;
         let level_target = (level as f32 - 1.5) / 1.5;
         let slot_pose = ui.ctx().animate_value_with_time(
             egui::Id::new("asr33-typewheel-slot"),
             slot_target,
-            0.022,
+            0.034,
         );
         let level_pose = ui.ctx().animate_value_with_time(
             egui::Id::new("asr33-typewheel-level"),
             level_target,
-            0.018,
+            0.022,
         );
 
-        // asr33head.png is 177x186. Keep its real aspect ratio instead of
-        // stretching it to a generic rectangle.
+        // asr33head.png is 177x186. Keep the complete assembly at its real
+        // aspect ratio; only the visible cylinder face is foreshortened below.
         let texture_size = head.size_vec2();
         let head_aspect = texture_size.y / texture_size.x.max(1.0);
-        let base_head_width = TTY_W * 0.060 * (0.96 + 0.07 * lift);
-        let head_width = base_head_width * (1.0 - 0.018 * slot_pose.abs());
+        let head_width = TTY_W * 0.060 * (0.96 + 0.07 * lift);
         let head_height = head_width * head_aspect;
-        let visual_center_x = center_x + slot_pose * head_width * 0.035;
 
         // In repose the wheel sits down inside the mechanism and only its top
         // is visible through the window. During a print strike it snaps up.
@@ -210,7 +210,7 @@ impl RusTairApp {
 
         let head_rect = Rect::from_min_size(
             origin + Vec2::new(
-                (visual_center_x - head_width * 0.5) * scale,
+                (center_x - head_width * 0.5) * scale,
                 top_y * scale,
             ),
             Vec2::new(head_width * scale, head_height * scale),
@@ -223,13 +223,77 @@ impl RusTairApp {
             rect.min,
             Pos2::new(rect.right(), origin.y + sill_y * scale),
         );
-        let selection_shadow = (slot_pose.abs() * 8.0).round() as u8;
-        let shade = ((225.0 + 30.0 * lift).round() as u8).saturating_sub(selection_shadow);
-        ui.painter().with_clip_rect(glass_clip).image(
+        let clipped = ui.painter().with_clip_rect(glass_clip);
+
+        // The bottom ~30% of the sprite is the stationary support/mount. Keep
+        // it fixed while the actual type cylinder above it turns.
+        const WHEEL_FRACTION: f32 = 0.70;
+        let mount_source = Rect::from_min_max(
+            Pos2::new(0.0, WHEEL_FRACTION),
+            Pos2::new(1.0, 1.0),
+        );
+        let mount_target = Rect::from_min_max(
+            Pos2::new(head_rect.left(), head_rect.top() + head_rect.height() * WHEEL_FRACTION),
+            head_rect.max,
+        );
+        let base_shade = (226.0 + 29.0 * lift).round() as u8;
+        clipped.image(
             head.id(),
-            head_rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::from_rgb(shade, shade, shade),
+            mount_target,
+            mount_source,
+            Color32::from_rgb(base_shade, base_shade, base_shade),
+        );
+
+        // Apparent axial rotation of the cylinder. Five to six percent
+        // foreshortening is enough to read clearly at the size used by the UI,
+        // while remaining much subtler than a fake 2-D sprite rotation.
+        let wheel_width = head_width * (1.0 - 0.058 * slot_pose.abs());
+        let wheel_center_x = center_x + slot_pose * head_width * 0.070;
+        let wheel_target = Rect::from_min_size(
+            origin + Vec2::new(
+                (wheel_center_x - wheel_width * 0.5) * scale,
+                top_y * scale,
+            ),
+            Vec2::new(wheel_width * scale, head_height * WHEEL_FRACTION * scale),
+        );
+        let wheel_mid_x = wheel_target.center().x;
+        let left_target = Rect::from_min_max(
+            wheel_target.min,
+            Pos2::new(wheel_mid_x, wheel_target.bottom()),
+        );
+        let right_target = Rect::from_min_max(
+            Pos2::new(wheel_mid_x, wheel_target.top()),
+            wheel_target.max,
+        );
+
+        // Slide the photographed character face a few percent inside the
+        // silhouette. Because the two halves use opposite illumination, the
+        // eye reads this as a round metal cylinder turning rather than as a
+        // flat bitmap moving sideways.
+        let uv_shift = slot_pose * 0.035;
+        let left_source = Rect::from_min_max(
+            Pos2::new(0.035 + uv_shift, 0.0),
+            Pos2::new(0.500 + uv_shift, WHEEL_FRACTION),
+        );
+        let right_source = Rect::from_min_max(
+            Pos2::new(0.500 + uv_shift, 0.0),
+            Pos2::new(0.965 + uv_shift, WHEEL_FRACTION),
+        );
+
+        let side_delta = (slot_pose * 24.0).round() as i16;
+        let left_shade = (base_shade as i16 - side_delta).clamp(175, 255) as u8;
+        let right_shade = (base_shade as i16 + side_delta).clamp(175, 255) as u8;
+        clipped.image(
+            head.id(),
+            left_target,
+            left_source,
+            Color32::from_rgb(left_shade, left_shade, left_shade),
+        );
+        clipped.image(
+            head.id(),
+            right_target,
+            right_source,
+            Color32::from_rgb(right_shade, right_shade, right_shade),
         );
 
         // Repaint a narrow strip of the original photograph over the wheel.
@@ -238,8 +302,8 @@ impl RusTairApp {
         if let Some(body) = &self.tex.tty_body {
             let lip_top = sill_y - TTY_H * 0.004;
             let lip_bottom = sill_y + TTY_H * 0.012;
-            let lip_left = (visual_center_x - head_width * 0.72).max(0.0);
-            let lip_right = (visual_center_x + head_width * 0.72).min(TTY_W);
+            let lip_left = (center_x - head_width * 0.72).max(0.0);
+            let lip_right = (center_x + head_width * 0.72).min(TTY_W);
             let lip_target = Rect::from_min_max(
                 origin + Vec2::new(lip_left * scale, lip_top * scale),
                 origin + Vec2::new(lip_right * scale, lip_bottom * scale),
