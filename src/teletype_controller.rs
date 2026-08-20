@@ -6,9 +6,14 @@ impl RusTairApp {
             match event {
                 PrintEvent::Printable => {
                     self.audio.play_once("assets/printcharpadded.mp3");
-                    self.print_head_raise_until = Some(Instant::now() + Duration::from_millis(100));
+                    self.print_head_raise_until = Some(Instant::now() + PRINT_HEAD_STRIKE_TIME);
                 }
-                PrintEvent::CarriageReturn => self.audio.play_once("assets/crpadded.mp3"),
+                PrintEvent::CarriageReturn => {
+                    self.audio.play_once("assets/crpadded.mp3");
+                    self.print_head_raise_until = None;
+                    self.print_head_carriage_return_until =
+                        Some(Instant::now() + PRINT_HEAD_CARRIAGE_RETURN_TIME);
+                }
                 PrintEvent::Bell => self.audio.play_once("assets/bellpadded.mp3"),
             }
         }
@@ -21,6 +26,8 @@ impl RusTairApp {
         self.tty_power_flash_until = None;
         if mode == TtyMode::Off {
             self.audio.stop_loop("tty-motor");
+            self.print_head_raise_until = None;
+            self.print_head_carriage_return_until = None;
         } else {
             self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
         }
