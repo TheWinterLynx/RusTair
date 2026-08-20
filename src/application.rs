@@ -177,7 +177,7 @@ impl RusTairApp {
             tex: Tex {
                 panel: Self::load_texture(&cc.egui_ctx, "front-panel", "assets/panels/white-pivot/panel.png"),
                 switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
-                tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
+                tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33_body_clean.jpg"),
                 // The old full-keyboard overlay is deliberately disabled. The
                 // clean body contains the key wells and each key is now painted
                 // independently from three aligned photographic poses.
