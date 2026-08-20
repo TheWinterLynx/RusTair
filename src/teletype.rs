@@ -5,7 +5,9 @@ pub const IMAGE_H: f32 = 2983.0;
 pub const PRINT_LEFT: f32 = IMAGE_W * 0.25;
 pub const PRINT_TOP: f32 = IMAGE_H * 0.34;
 pub const PRINT_HEAD_TOP: f32 = IMAGE_H * 0.33;
-pub const PRINTABLE_WIDTH: f32 = 1644.0;
+// Calibrated to the visible paper in the ASR-33 photograph. The previous
+// 1644px span let the final columns drift into the dark glass at the right.
+pub const PRINTABLE_WIDTH: f32 = 1500.0;
 pub const PAPER_COLUMNS: usize = 72;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +22,7 @@ pub enum PrintEvent {
     Printable(u8),
     CarriageReturn,
     LineFeed,
+    AutomaticReturn,
     Bell,
 }
 
@@ -186,6 +189,8 @@ pub struct Teletype {
     pub capture_to_tape: bool,
     pub tape_out: Vec<u8>,
     pub tape_in: VecDeque<u8>,
+    auto_wrap_pending: bool,
+    suppress_crlf_after_auto_wrap: bool,
 }
 
 impl Default for Teletype {
@@ -200,6 +205,8 @@ impl Default for Teletype {
             capture_to_tape: false,
             tape_out: Vec::new(),
             tape_in: VecDeque::new(),
+            auto_wrap_pending: false,
+            suppress_crlf_after_auto_wrap: false,
         }
     }
 }
@@ -214,12 +221,38 @@ impl Teletype {
         if mode == Mode::Off {
             self.shift_down = false;
             self.control_down = false;
+            self.auto_wrap_pending = false;
+            self.suppress_crlf_after_auto_wrap = false;
         }
     }
 
     pub fn clear_paper(&mut self) {
         self.output.clear();
         self.column = 0;
+        self.auto_wrap_pending = false;
+        self.suppress_crlf_after_auto_wrap = false;
+    }
+
+    pub fn auto_wrap_pending(&self) -> bool {
+        self.auto_wrap_pending
+    }
+
+    /// Finish the automatic end-of-line mechanism after the final character
+    /// has struck the ribbon. Keeping this separate from `print()` leaves the
+    /// carriage visibly parked at column 72 until the strike has completed.
+    pub fn complete_auto_wrap(&mut self) -> bool {
+        if !self.auto_wrap_pending {
+            return false;
+        }
+        self.output.push('\n');
+        self.column = 0;
+        self.auto_wrap_pending = false;
+        // Software commonly emits its own CR/LF. Swallow one immediately
+        // following pair so the mechanical auto-return does not create a blank
+        // line when both behaviours coincide at the right margin.
+        self.suppress_crlf_after_auto_wrap = true;
+        self.trim_paper_history();
+        true
     }
 
     /// Print one seven-bit character arriving from the Altair.
@@ -283,6 +316,24 @@ impl Teletype {
             self.tape_out.push(byte);
         }
 
+        // While the automatic return is physically in progress the typebox is
+        // unavailable. Serial input is normally held by the controller; this
+        // also protects LOCAL-mode input from printing beyond the hard stop.
+        if self.auto_wrap_pending {
+            return events;
+        }
+
+        if self.suppress_crlf_after_auto_wrap {
+            match byte {
+                b'\r' => return events,
+                b'\n' => {
+                    self.suppress_crlf_after_auto_wrap = false;
+                    return events;
+                }
+                _ => self.suppress_crlf_after_auto_wrap = false,
+            }
+        }
+
         if byte == 0x07 {
             events.push(PrintEvent::Bell);
         } else if (0x20..=0x7e).contains(&byte)
@@ -304,14 +355,18 @@ impl Teletype {
                 events.push(PrintEvent::LineFeed);
             }
             0x20..=0x7e => {
-                // The carriage cannot travel past the physical right margin.
-                // Extra bytes are consumed, but neither ink nor the typewheel
-                // are drawn outside the 72-column paper area. A program must
-                // send CR/LF to continue, just as on the mechanical terminal.
                 if self.column < self.paper_width {
                     self.put_at_carriage(byte);
                     self.column += 1;
                     events.push(PrintEvent::Printable(byte));
+
+                    // The ASR-33 automatic margin mechanism is triggered by the
+                    // final printable position. It waits for this impact to
+                    // finish, then the controller performs CR+LF mechanically.
+                    if self.column == self.paper_width {
+                        self.auto_wrap_pending = true;
+                        events.push(PrintEvent::AutomaticReturn);
+                    }
                 }
             }
             _ => {}
@@ -398,14 +453,45 @@ mod tests {
     }
 
     #[test]
-    fn right_margin_never_overflows() {
+    fn right_margin_requests_and_completes_automatic_return() {
         let mut tty = Teletype::default();
         tty.set_mode(Mode::Line);
-        for _ in 0..(PAPER_COLUMNS + 10) {
-            tty.print_serial(b'X');
+        let mut last_events = Vec::new();
+        for _ in 0..PAPER_COLUMNS {
+            last_events = tty.print_serial(b'X');
         }
         assert_eq!(tty.column, PAPER_COLUMNS);
         assert_eq!(tty.output.len(), PAPER_COLUMNS);
+        assert!(tty.auto_wrap_pending());
+        assert!(last_events.contains(&PrintEvent::AutomaticReturn));
+
+        // Nothing can print beyond the hard stop while the carriage mechanism
+        // is waiting to return.
+        tty.print_serial(b'Y');
+        assert_eq!(tty.output.len(), PAPER_COLUMNS);
+
+        assert!(tty.complete_auto_wrap());
+        assert_eq!(tty.column, 0);
+        assert_eq!(tty.output.len(), PAPER_COLUMNS + 1);
+        assert!(tty.output.ends_with('\n'));
+
+        tty.print_serial(b'Z');
+        assert!(tty.output.ends_with("\nZ"));
+    }
+
+    #[test]
+    fn explicit_crlf_after_auto_wrap_is_not_double_spaced() {
+        let mut tty = Teletype::default();
+        tty.set_mode(Mode::Line);
+        for _ in 0..PAPER_COLUMNS {
+            tty.print_serial(b'X');
+        }
+        tty.complete_auto_wrap();
+        tty.print_serial(b'\r');
+        tty.print_serial(b'\n');
+        tty.print_serial(b'Z');
+        assert_eq!(tty.output.matches('\n').count(), 1);
+        assert!(tty.output.ends_with("\nZ"));
     }
 
     #[test]
