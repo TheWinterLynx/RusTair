@@ -42,6 +42,7 @@ impl eframe::App for RusTairApp {
         } else {
             self.process_tty_serial(ctx);
         }
+        self.update_teletype_mechanics(ctx);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
