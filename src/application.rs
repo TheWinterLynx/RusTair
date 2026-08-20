@@ -48,7 +48,6 @@ struct Tex {
     switch_sprites: HashMap<SwitchSpriteId, egui::TextureHandle>,
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
-    tty_glass: Option<egui::TextureHandle>,
     tty_head: Option<egui::TextureHandle>,
     tty_line_local: Option<egui::TextureHandle>,
     tty_knob: Option<egui::TextureHandle>,
@@ -116,21 +115,37 @@ impl RusTairApp {
         ))
     }
 
-    fn load_texture_remove_black(
+    fn load_teletype_keys_with_glass(
         ctx: &egui::Context,
         name: &str,
-        path: &str,
+        keys_path: &str,
+        glass_path: &str,
     ) -> Option<egui::TextureHandle> {
-        let bytes = std::fs::read(path).ok()?;
-        let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-        for pixel in image.pixels_mut() {
-            let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
-            if brightness <= 2 {
-                pixel[3] = 0;
-            } else if brightness < 16 {
-                pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
+        let keys_bytes = std::fs::read(keys_path).ok()?;
+        let mut image = image::load_from_memory(&keys_bytes).ok()?.to_rgba8();
+
+        if let Ok(glass_bytes) = std::fs::read(glass_path) {
+            if let Ok(glass_image) = image::load_from_memory(&glass_bytes) {
+                let mut glass = glass_image.to_rgba8();
+                for pixel in glass.pixels_mut() {
+                    let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
+                    if brightness <= 2 {
+                        pixel[3] = 0;
+                    } else if brightness < 16 {
+                        pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
+                    }
+                }
+
+                let glass = image::imageops::resize(
+                    &glass,
+                    image.width(),
+                    image.height(),
+                    image::imageops::FilterType::Lanczos3,
+                );
+                image::imageops::overlay(&mut image, &glass, 0, 0);
             }
         }
+
         let size = [image.width() as usize, image.height() as usize];
         Some(ctx.load_texture(
             name,
@@ -200,8 +215,12 @@ impl RusTairApp {
                 panel: Self::load_texture(&cc.egui_ctx, "front-panel", "assets/panels/white-pivot/panel.png"),
                 switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
-                tty_keys: Self::load_texture(&cc.egui_ctx, "tty-keys", "assets/asr33 keys.png"),
-                tty_glass: Self::load_texture_remove_black(&cc.egui_ctx, "tty-glass", "assets/asr33glass.jpg"),
+                tty_keys: Self::load_teletype_keys_with_glass(
+                    &cc.egui_ctx,
+                    "tty-keys",
+                    "assets/asr33 keys.png",
+                    "assets/asr33glass.jpg",
+                ),
                 tty_head: Self::load_texture(&cc.egui_ctx, "tty-head", "assets/asr33head.png"),
                 tty_line_local: Self::load_texture(&cc.egui_ctx, "tty-line-local", "assets/asrlinelocal.png"),
                 tty_knob: Self::load_texture(&cc.egui_ctx, "tty-knob", "assets/asrlinelocalknob.png"),
