@@ -116,7 +116,7 @@ impl RusTairApp {
         painter.add(egui::Shape::convex_polygon(
             paper_points,
             Color32::from_rgb(220, 218, 211),
-            egui::Stroke::new(0.0, Color32::TRANSPARENT),
+            egui::Stroke::new(0.0_f32, Color32::TRANSPARENT),
         ));
 
         // Very restrained illumination: one broad soft lift in the upper half
@@ -277,7 +277,6 @@ impl RusTairApp {
     fn print_head_lift(&self, now: Instant) -> f32 {
         let Some(until) = self.print_head_raise_until else { return 0.0; };
         let Some(remaining) = until.checked_duration_since(now) else { return 0.0; };
-
         let total = PRINT_HEAD_STRIKE_TIME.as_secs_f32().max(0.001);
         let elapsed = (1.0 - remaining.as_secs_f32() / total).clamp(0.0, 1.0);
 
