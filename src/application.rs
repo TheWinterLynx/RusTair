@@ -68,6 +68,12 @@ struct RusTairApp {
     tex: Tex,
     tty: Teletype,
     tty_window_open: bool,
+    terminal_window_open: bool,
+    terminal_output: String,
+    terminal_command: String,
+    terminal_program: String,
+    terminal_uppercase: bool,
+    terminal_last_was_cr: bool,
     audio: AudioEngine,
     last_tick: Instant,
     last_tape_tick: Instant,
@@ -163,6 +169,12 @@ impl RusTairApp {
             },
             tty: Teletype::default(),
             tty_window_open: false,
+            terminal_window_open: false,
+            terminal_output: String::new(),
+            terminal_command: String::new(),
+            terminal_program: String::new(),
+            terminal_uppercase: true,
+            terminal_last_was_cr: false,
             audio: AudioEngine::new(),
             last_tick: now,
             last_tape_tick: now,
@@ -200,4 +212,5 @@ include!("front_panel.rs");
 include!("teletype_controller.rs");
 include!("teletype_renderer.rs");
 include!("teletype_io.rs");
+include!("terminal.rs");
 include!("application_loop.rs");
