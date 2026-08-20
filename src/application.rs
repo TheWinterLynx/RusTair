@@ -1,7 +1,7 @@
 mod cpu8080;
 mod altair_machine;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -74,11 +74,16 @@ struct RusTairApp {
     terminal_program: String,
     terminal_uppercase: bool,
     terminal_last_was_cr: bool,
+    terminal_speed: TerminalSpeed,
+    terminal_input_queue: VecDeque<u8>,
+    terminal_rx_next_at: Option<Instant>,
+    serial_tx_started: Option<Instant>,
+    tty_output_queue: VecDeque<u8>,
+    tty_output_started: Option<Instant>,
     audio: AudioEngine,
     last_tick: Instant,
     last_tape_tick: Instant,
     reset_flash_until: Option<Instant>,
-    tty_tx_started: Option<Instant>,
     print_head_raise_until: Option<Instant>,
     tty_power_flash_until: Option<Instant>,
     animated_key: Option<usize>,
@@ -175,11 +180,16 @@ impl RusTairApp {
             terminal_program: String::new(),
             terminal_uppercase: true,
             terminal_last_was_cr: false,
+            terminal_speed: TerminalSpeed::Baud9600,
+            terminal_input_queue: VecDeque::new(),
+            terminal_rx_next_at: None,
+            serial_tx_started: None,
+            tty_output_queue: VecDeque::new(),
+            tty_output_started: None,
             audio: AudioEngine::new(),
             last_tick: now,
             last_tape_tick: now,
             reset_flash_until: None,
-            tty_tx_started: None,
             print_head_raise_until: None,
             tty_power_flash_until: None,
             animated_key: None,
