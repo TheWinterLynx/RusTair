@@ -17,7 +17,7 @@ const TTY_H: f32 = teletype::IMAGE_H;
 
 const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
-const KEY_TAP_TIME: Duration = Duration::from_millis(75);
+const KEY_TAP_TIME: Duration = Duration::from_millis(50);
 const PRINT_HEAD_STRIKE_TIME: Duration = Duration::from_millis(84);
 const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
 const PRINT_HEAD_CARRIAGE_RETURN_TIME: Duration = Duration::from_millis(160);
@@ -47,6 +47,9 @@ struct Tex {
     switch_sprites: HashMap<SwitchSpriteId, egui::TextureHandle>,
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
+    tty_key_up: Option<egui::TextureHandle>,
+    tty_key_mid: Option<egui::TextureHandle>,
+    tty_key_down: Option<egui::TextureHandle>,
     tty_head: Option<egui::TextureHandle>,
     tty_line_local: Option<egui::TextureHandle>,
     tty_knob: Option<egui::TextureHandle>,
@@ -175,7 +178,13 @@ impl RusTairApp {
                 panel: Self::load_texture(&cc.egui_ctx, "front-panel", "assets/panels/white-pivot/panel.png"),
                 switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33 body.jpg"),
-                tty_keys: Self::load_texture(&cc.egui_ctx, "tty-keys", "assets/asr33 keys.png"),
+                // The old full-keyboard overlay is deliberately disabled. The
+                // clean body contains the key wells and each key is now painted
+                // independently from three aligned photographic poses.
+                tty_keys: None,
+                tty_key_up: Self::load_texture(&cc.egui_ctx, "tty-key-up", "assets/asr33_key_up.png"),
+                tty_key_mid: Self::load_texture(&cc.egui_ctx, "tty-key-mid", "assets/asr33_key_mid.png"),
+                tty_key_down: Self::load_texture(&cc.egui_ctx, "tty-key-down", "assets/asr33_key_down.png"),
                 tty_head: Self::load_texture(&cc.egui_ctx, "tty-head", "assets/asr33head.png"),
                 tty_line_local: Self::load_texture(&cc.egui_ctx, "tty-line-local", "assets/asrlinelocal.png"),
                 tty_knob: Self::load_texture(&cc.egui_ctx, "tty-knob", "assets/asrlinelocalknob.png"),
