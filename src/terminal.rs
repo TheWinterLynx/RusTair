@@ -1,4 +1,8 @@
 const TERMINAL_MAX_CHARS: usize = 200_000;
+const TERMINAL_INPUT_DEFAULT_HEIGHT: f32 = 235.0;
+const TERMINAL_INPUT_MIN_HEIGHT: f32 = 115.0;
+const TERMINAL_OUTPUT_MIN_HEIGHT: f32 = 100.0;
+const TERMINAL_SPLITTER_THICKNESS: f32 = 6.0;
 
 impl RusTairApp {
     fn terminal_receive_byte(&mut self, byte: u8) {
@@ -139,6 +143,70 @@ impl RusTairApp {
         }
     }
 
+    fn draw_terminal_input(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(">").monospace().strong());
+            let width = (ui.available_width() - 122.0).max(80.0);
+            let response = ui.add_sized(
+                [width, 26.0],
+                egui::TextEdit::singleline(&mut self.terminal_command)
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("command (blank + Enter sends CR)"),
+            );
+            let enter = response.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Send").clicked() || enter {
+                self.terminal_send_command();
+                response.request_focus();
+            }
+            if ui.button("CR").on_hover_text("Send carriage return only").clicked() {
+                self.terminal_send_control(b'\r', "CR");
+                response.request_focus();
+            }
+        });
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.strong("Paste / program input");
+            if ui.button("Send block").clicked() {
+                self.terminal_send_program();
+            }
+            if ui.button("Clear editor").clicked() {
+                self.terminal_program.clear();
+            }
+        });
+        ui.small("Paste one or many lines. Newlines are sent as carriage returns.");
+
+        let editor_height = (ui.available_height() - 8.0).max(30.0);
+        ui.add_sized(
+            [ui.available_width(), editor_height],
+            egui::TextEdit::multiline(&mut self.terminal_program)
+                .font(egui::TextStyle::Monospace)
+                .desired_width(f32::INFINITY),
+        );
+    }
+
+    fn draw_terminal_output(&self, ui: &mut egui::Ui) {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            let output_height = ui.available_height();
+            egui::ScrollArea::vertical()
+                .stick_to_bottom(true)
+                .auto_shrink([false, false])
+                .max_height(output_height)
+                .show(ui, |ui| {
+                    ui.set_min_height(output_height);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&self.terminal_output)
+                                .monospace()
+                                .size(15.0),
+                        )
+                        .selectable(true),
+                    );
+                });
+        });
+    }
+
     fn draw_terminal_window(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("terminal-menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
@@ -170,74 +238,104 @@ impl RusTairApp {
             ));
         });
 
-        // The complete input area is a resizable bottom panel. Drag its top
-        // separator to trade space between terminal output and command/program
-        // entry, which is especially useful for long multi-line BASIC listings.
-        egui::TopBottomPanel::bottom("terminal-input")
-            .resizable(true)
-            .default_height(235.0)
-            .min_height(82.0)
-            .max_height(520.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(">").monospace().strong());
-                    let width = (ui.available_width() - 122.0).max(80.0);
-                    let response = ui.add_sized(
-                        [width, 26.0],
-                        egui::TextEdit::singleline(&mut self.terminal_command)
-                            .font(egui::TextStyle::Monospace)
-                            .hint_text("command (blank + Enter sends CR)"),
-                    );
-                    let enter = response.lost_focus()
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button("Send").clicked() || enter {
-                        self.terminal_send_command();
-                        response.request_focus();
-                    }
-                    if ui.button("CR").on_hover_text("Send carriage return only").clicked() {
-                        self.terminal_send_control(b'\r', "CR");
-                        response.request_focus();
-                    }
-                });
-
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.strong("Paste / program input");
-                    if ui.button("Send block").clicked() {
-                        self.terminal_send_program();
-                    }
-                    if ui.button("Clear editor").clicked() {
-                        self.terminal_program.clear();
-                    }
-                });
-                ui.small("Paste one or many lines. Newlines are sent as carriage returns.");
-
-                let editor_height = (ui.available_height() - 8.0).max(30.0);
-                ui.add_sized(
-                    [ui.available_width(), editor_height],
-                    egui::TextEdit::multiline(&mut self.terminal_program)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY),
-                );
-            });
-
+        // Do not use a resizable TopBottomPanel for the input area here. egui
+        // panels negotiate their size with their contents, so a multiline
+        // TextEdit or an almost-empty output area can change the requested
+        // minimum size and make the separator appear to "bounce" after a drag.
+        //
+        // Instead we own one explicit splitter coordinate. Its desired input
+        // height is stored independently of either pane's contents, and the two
+        // child UIs are clipped to rectangles derived solely from that value.
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .stick_to_bottom(true)
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_height(ui.available_height());
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&self.terminal_output)
-                                    .monospace()
-                                    .size(15.0),
-                            )
-                            .selectable(true),
-                        );
+            let available = ui.available_rect_before_wrap();
+            let splitter_state_id = egui::Id::new("rustair-terminal-input-height");
+
+            let max_input_height = (available.height()
+                - TERMINAL_OUTPUT_MIN_HEIGHT
+                - TERMINAL_SPLITTER_THICKNESS)
+                .max(TERMINAL_INPUT_MIN_HEIGHT);
+
+            // Keep the user's desired height even if the window is temporarily
+            // too small. We only clamp the height used for this frame. When the
+            // window grows again the splitter returns to the user's position.
+            let desired_input_height = ctx
+                .data(|data| data.get_temp::<f32>(splitter_state_id))
+                .unwrap_or(TERMINAL_INPUT_DEFAULT_HEIGHT);
+            let mut input_height = desired_input_height
+                .clamp(TERMINAL_INPUT_MIN_HEIGHT, max_input_height);
+            let mut splitter_y = available.max.y - input_height;
+
+            let splitter_hit_rect = Rect::from_min_max(
+                Pos2::new(
+                    available.min.x,
+                    splitter_y - TERMINAL_SPLITTER_THICKNESS * 0.5,
+                ),
+                Pos2::new(
+                    available.max.x,
+                    splitter_y + TERMINAL_SPLITTER_THICKNESS * 0.5,
+                ),
+            );
+            let splitter_id = ui.make_persistent_id("terminal-input-splitter");
+            let response = ui.interact(splitter_hit_rect, splitter_id, Sense::drag());
+
+            if response.hovered() || response.dragged() {
+                ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+
+            if response.dragged() {
+                if let Some(pointer) = response.interact_pointer_pos() {
+                    input_height = (available.max.y - pointer.y)
+                        .clamp(TERMINAL_INPUT_MIN_HEIGHT, max_input_height);
+                    splitter_y = available.max.y - input_height;
+                    ctx.data_mut(|data| {
+                        data.insert_temp(splitter_state_id, input_height);
                     });
-            });
+                    ctx.request_repaint();
+                }
+            }
+
+            let half_splitter = TERMINAL_SPLITTER_THICKNESS * 0.5;
+            let output_rect = Rect::from_min_max(
+                available.min,
+                Pos2::new(available.max.x, splitter_y - half_splitter),
+            );
+            let input_rect = Rect::from_min_max(
+                Pos2::new(available.min.x, splitter_y + half_splitter),
+                available.max,
+            );
+
+            let separator_stroke = if response.hovered() || response.dragged() {
+                ui.visuals().widgets.hovered.fg_stroke
+            } else {
+                ui.visuals().widgets.noninteractive.bg_stroke
+            };
+            ui.painter().line_segment(
+                [
+                    Pos2::new(available.min.x, splitter_y),
+                    Pos2::new(available.max.x, splitter_y),
+                ],
+                separator_stroke,
+            );
+
+            let mut output_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("terminal-output-area")
+                    .max_rect(output_rect),
+            );
+            output_ui.set_clip_rect(output_rect);
+            self.draw_terminal_output(&mut output_ui);
+
+            let mut input_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("terminal-input-area")
+                    .max_rect(input_rect),
+            );
+            input_ui.set_clip_rect(input_rect);
+            self.draw_terminal_input(&mut input_ui);
+
+            // new_child deliberately does not allocate parent layout space.
+            // Mark the full central region as consumed after both fixed panes.
+            ui.advance_cursor_after_rect(available);
         });
     }
 
