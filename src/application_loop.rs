@@ -29,6 +29,14 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
+        // The ASR-33 owns the real TX holding-register timing. Mirror each new
+        // byte into the text terminal just before the teletype starts consuming
+        // it, so both interfaces see the same serial stream without double reads.
+        if self.tty_tx_started.is_none() {
+            if let Some(&byte) = self.machine.bus.serial_tx.front() {
+                self.terminal_receive_byte(byte);
+            }
+        }
         self.process_tty_serial(ctx);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
