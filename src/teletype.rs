@@ -6,6 +6,7 @@ pub const PRINT_LEFT: f32 = IMAGE_W * 0.25;
 pub const PRINT_TOP: f32 = IMAGE_H * 0.34;
 pub const PRINT_HEAD_TOP: f32 = IMAGE_H * 0.33;
 pub const PRINTABLE_WIDTH: f32 = 1644.0;
+pub const PAPER_COLUMNS: usize = 72;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -16,8 +17,9 @@ pub enum Mode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrintEvent {
-    Printable,
+    Printable(u8),
     CarriageReturn,
+    LineFeed,
     Bell,
 }
 
@@ -133,7 +135,11 @@ pub fn key_to_byte(kind: KeyKind, shifted: bool, control: bool) -> Option<u8> {
         KeyKind::Character(chars) => {
             let mut iter = chars.chars();
             let first = iter.next()?;
-            if shifted { iter.next().unwrap_or(first) } else { first }
+            if shifted {
+                iter.next().unwrap_or(first)
+            } else {
+                first
+            }
         }
         KeyKind::Escape => return Some(0x1b),
         KeyKind::LineFeed => return Some(b'\n'),
@@ -151,6 +157,25 @@ pub fn key_to_byte(kind: KeyKind, shifted: bool, control: bool) -> Option<u8> {
     Some(byte)
 }
 
+/// Return the Model 33 typewheel's 16-position rotational slot and one of its
+/// four vertical character levels. The ASR-33 printable set occupies the four
+/// 16-code ASCII blocks 0x20..=0x5f, so the low nibble selects rotation and
+/// the next two bits select height.
+pub fn typewheel_position(byte: u8) -> (u8, u8) {
+    let byte = if byte.is_ascii_lowercase() {
+        byte.to_ascii_uppercase()
+    } else {
+        byte
+    };
+    let byte = if (0x20..=0x5f).contains(&byte) {
+        byte
+    } else {
+        b'?'
+    };
+    let index = byte - 0x20;
+    (index & 0x0f, index >> 4)
+}
+
 pub struct Teletype {
     pub mode: Mode,
     pub output: String,
@@ -161,23 +186,20 @@ pub struct Teletype {
     pub capture_to_tape: bool,
     pub tape_out: Vec<u8>,
     pub tape_in: VecDeque<u8>,
-    previous: Option<u8>,
 }
 
 impl Default for Teletype {
     fn default() -> Self {
         Self {
             mode: Mode::Off,
-            output: " ".to_owned(),
+            output: String::new(),
             column: 0,
-            // This is also the default in the original ASR-33 page.
-            paper_width: 52,
+            paper_width: PAPER_COLUMNS,
             shift_down: false,
             control_down: false,
             capture_to_tape: false,
             tape_out: Vec::new(),
             tape_in: VecDeque::new(),
-            previous: None,
         }
     }
 }
@@ -197,13 +219,11 @@ impl Teletype {
 
     pub fn clear_paper(&mut self) {
         self.output.clear();
-        self.output.push(' ');
         self.column = 0;
-        self.previous = None;
     }
 
     /// Print one seven-bit character arriving from the Altair.
-    /// Returns sound/mechanical events that the native audio layer can render.
+    /// Returns sound/mechanical events that the native layer can render.
     pub fn print_serial(&mut self, byte: u8) -> Vec<PrintEvent> {
         if self.mode == Mode::Off {
             // The web original did this deliberately as a convenience.
@@ -220,66 +240,91 @@ impl Teletype {
         self.print(byte)
     }
 
+    fn put_at_carriage(&mut self, byte: u8) {
+        // The paper model is ASCII-only, so byte offsets and character offsets
+        // are identical. This lets a bare CR genuinely overprint the current
+        // line instead of pretending that CR also fed the paper.
+        let line_start = self.output.rfind('\n').map_or(0, |index| index + 1);
+        let position = line_start + self.column;
+        if position < self.output.len() {
+            self.output
+                .replace_range(position..position + 1, &(byte as char).to_string());
+        } else {
+            self.output
+                .extend(std::iter::repeat_n(' ', position - self.output.len()));
+            self.output.push(byte as char);
+        }
+    }
+
+    fn trim_paper_history(&mut self) {
+        if self.output.len() <= 12_000 {
+            return;
+        }
+        let search_from = 4_000.min(self.output.len());
+        if let Some(relative) = self.output[search_from..].find('\n') {
+            self.output.drain(..search_from + relative + 1);
+        }
+    }
+
     fn print(&mut self, byte: u8) -> Vec<PrintEvent> {
         if self.mode == Mode::Off {
             return Vec::new();
         }
 
         let byte = byte & 0x7f;
-        let byte = if byte.is_ascii_lowercase() { byte.to_ascii_uppercase() } else { byte };
+        let byte = if byte.is_ascii_lowercase() {
+            byte.to_ascii_uppercase()
+        } else {
+            byte
+        };
         let mut events = Vec::new();
 
         if self.capture_to_tape {
             self.tape_out.push(byte);
         }
 
-        // Bell rings either explicitly or eight columns before the paper edge.
-        if byte == 0x07 || self.column == self.paper_width.saturating_sub(8) {
+        if byte == 0x07 {
+            events.push(PrintEvent::Bell);
+        } else if (0x20..=0x7e).contains(&byte)
+            && self.column == self.paper_width.saturating_sub(8)
+        {
             events.push(PrintEvent::Bell);
         }
 
         match byte {
             0x07 | 0x1b => {}
             b'\r' => {
-                self.output.push('\n');
-                self.output.push(' ');
                 self.column = 0;
                 events.push(PrintEvent::CarriageReturn);
             }
             b'\n' => {
-                // BASIC normally emits CR/LF. The Javascript source suppresses
-                // the LF after CR because CR already advanced its text model.
-                if self.previous != Some(b'\r') {
-                    self.output.push('\n');
-                    self.output.push(' ');
-                    self.output.extend(std::iter::repeat_n(' ', self.column.saturating_sub(1)));
-                }
+                self.output.push('\n');
+                self.output
+                    .extend(std::iter::repeat_n(' ', self.column));
+                events.push(PrintEvent::LineFeed);
             }
             0x20..=0x7e => {
-                if self.column > self.paper_width {
-                    self.output.push('\n');
-                    self.output.push(' ');
-                    self.column = 0;
-                    events.push(PrintEvent::CarriageReturn);
+                // The carriage cannot travel past the physical right margin.
+                // Extra bytes are consumed, but neither ink nor the typewheel
+                // are drawn outside the 72-column paper area. A program must
+                // send CR/LF to continue, just as on the mechanical terminal.
+                if self.column < self.paper_width {
+                    self.put_at_carriage(byte);
+                    self.column += 1;
+                    events.push(PrintEvent::Printable(byte));
                 }
-                self.output.push(byte as char);
-                self.column += 1;
-                events.push(PrintEvent::Printable);
             }
             _ => {}
         }
 
-        self.previous = Some(byte);
-        if self.output.len() > 12_000 {
-            let cut = self.output.char_indices().nth(4_000).map(|p| p.0).unwrap_or(0);
-            self.output.drain(..cut);
-        }
+        self.trim_paper_history();
         events
     }
 
     pub fn load_tape(&mut self, bytes: &[u8]) {
         self.tape_in.clear();
-        self.tape_in.extend(bytes.iter().copied().map(|b| b.to_ascii_uppercase()));
+        self.tape_in
+            .extend(bytes.iter().copied().map(|b| b.to_ascii_uppercase()));
     }
 
     pub fn next_tape_byte(&mut self) -> Option<u8> {
@@ -299,18 +344,75 @@ mod tests {
 
     #[test]
     fn shift_and_control_match_asr33() {
-        assert_eq!(key_to_byte(KeyKind::Character("K["), true, false), Some(b'['));
-        assert_eq!(key_to_byte(KeyKind::Character("A"), false, true), Some(1));
+        assert_eq!(
+            key_to_byte(KeyKind::Character("K["), true, false),
+            Some(b'[')
+        );
+        assert_eq!(
+            key_to_byte(KeyKind::Character("A"), false, true),
+            Some(1)
+        );
     }
 
     #[test]
-    fn crlf_does_not_double_space_lines() {
+    fn default_paper_is_72_columns() {
+        assert_eq!(Teletype::default().paper_width, PAPER_COLUMNS);
+    }
+
+    #[test]
+    fn carriage_return_and_line_feed_are_independent() {
         let mut tty = Teletype::default();
         tty.set_mode(Mode::Line);
         tty.print_serial(b'A');
+        tty.print_serial(b'B');
         tty.print_serial(b'\r');
-        let before = tty.output.clone();
+        assert_eq!(tty.output, "AB");
+        assert_eq!(tty.column, 0);
         tty.print_serial(b'\n');
-        assert_eq!(tty.output, before);
+        assert_eq!(tty.output, "AB\n");
+        tty.print_serial(b'C');
+        assert_eq!(tty.output, "AB\nC");
+    }
+
+    #[test]
+    fn line_feed_keeps_horizontal_carriage_position() {
+        let mut tty = Teletype::default();
+        tty.set_mode(Mode::Line);
+        tty.print_serial(b'A');
+        tty.print_serial(b'B');
+        tty.print_serial(b'\n');
+        tty.print_serial(b'C');
+        assert_eq!(tty.output, "AB\n  C");
+        assert_eq!(tty.column, 3);
+    }
+
+    #[test]
+    fn bare_carriage_return_overprints_current_line() {
+        let mut tty = Teletype::default();
+        tty.set_mode(Mode::Line);
+        tty.print_serial(b'A');
+        tty.print_serial(b'B');
+        tty.print_serial(b'\r');
+        tty.print_serial(b'C');
+        assert_eq!(tty.output, "CB");
+    }
+
+    #[test]
+    fn right_margin_never_overflows() {
+        let mut tty = Teletype::default();
+        tty.set_mode(Mode::Line);
+        for _ in 0..(PAPER_COLUMNS + 10) {
+            tty.print_serial(b'X');
+        }
+        assert_eq!(tty.column, PAPER_COLUMNS);
+        assert_eq!(tty.output.len(), PAPER_COLUMNS);
+    }
+
+    #[test]
+    fn typewheel_uses_16_rotations_and_four_levels() {
+        assert_eq!(typewheel_position(b' '), (0, 0));
+        assert_eq!(typewheel_position(b'?'), (15, 1));
+        assert_eq!(typewheel_position(b'@'), (0, 2));
+        assert_eq!(typewheel_position(b'P'), (0, 3));
     }
 }
