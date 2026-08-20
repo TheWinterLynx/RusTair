@@ -61,77 +61,165 @@ impl RusTairApp {
 
     fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
         if self.tty.output.is_empty() { return; }
-        // The photograph contains a fixed piece of paper. Once enough lines
-        // have been fed, text used to climb beyond that photographed sheet and
-        // appear to float over the background. Model the continuous roll as a
-        // real render layer instead: its free end travels upward on every LF
-        // while the print point remains fixed at the platen.
+
+        // The paper is not a floating card. Its free end moves up with LF, but
+        // the lower end continues *inside* the mechanism and is occluded later
+        // by a photographic foreground strip from the platen/glass assembly.
         let line_height = self.paper_line_height(scale);
         let baseline_inset = TTY_H * 0.024 * scale;
         let print_baseline = origin.y + teletype::PRINT_TOP * scale - baseline_inset;
         let feed_offset = self.paper_feed_offset(Instant::now(), line_height);
         let line_count = self.tty.output.split('\n').count().max(1) as f32;
 
-        // Leave several blank lines ahead of the first printed character, as a
-        // real roll would already have some free paper above the print station.
-        // The +feed_offset term makes the free edge move continuously during LF
-        // instead of jumping by a whole line when the newline enters the model.
-        const LEADER_LINES: f32 = 7.0;
+        // A shorter leader keeps the first few lines from looking like a large
+        // rectangular card suddenly glued to the machine.
+        const LEADER_LINES: f32 = 4.5;
         let sheet_top = (print_baseline
             - (line_count + LEADER_LINES) * line_height
             + feed_offset)
             .max(machine.top());
-        let sheet_bottom = origin.y + (teletype::PRINT_TOP - TTY_H * 0.010) * scale;
-        if sheet_top >= sheet_bottom {
-            return;
-        }
+
+        // Deliberately extend the paper below the visible print station. The
+        // lower edge is never meant to be seen; draw_paper_foreground() covers
+        // it with the real mechanism pixels after ink has been rendered.
+        let sheet_bottom = origin.y + (teletype::PRINT_TOP + TTY_H * 0.032) * scale;
+        if sheet_top >= sheet_bottom { return; }
 
         let char_width = self.tty.char_width_image_px();
         let side_margin = char_width * 1.8 * scale;
-        let left = origin.x + teletype::PRINT_LEFT * scale - side_margin;
-        let right = origin.x
+        let bottom_left = origin.x + teletype::PRINT_LEFT * scale - side_margin;
+        let bottom_right = origin.x
             + (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH) * scale
             + side_margin;
-        let sheet = Rect::from_min_max(
-            Pos2::new(left, sheet_top),
-            Pos2::new(right, sheet_bottom),
-        );
 
-        // A restrained drop shadow separates the moving sheet from the static
-        // photograph. The paper itself is deliberately slightly translucent so
-        // the original photographed texture still contributes underneath it.
-        let shadow = Rect::from_min_max(
-            sheet.min + Vec2::new(3.0 * scale, 4.5 * scale),
-            sheet.max + Vec2::new(3.0 * scale, 4.5 * scale),
-        );
+        // Only the sheet geometry gets a tiny perspective cue; text remains
+        // perfectly horizontal. The upper free edge is slightly narrower and
+        // a fraction out of square, like lightly tensioned continuous paper.
+        let taper = (char_width * 0.38 * scale).max(0.8 * scale);
+        let top_left = bottom_left + taper;
+        let top_right = bottom_right - taper;
+        let top_left_y = sheet_top + 0.9 * scale;
+        let top_right_y = sheet_top;
+
+        let paper_points = vec![
+            Pos2::new(top_left, top_left_y),
+            Pos2::new(top_right, top_right_y),
+            Pos2::new(bottom_right, sheet_bottom),
+            Pos2::new(bottom_left, sheet_bottom),
+        ];
+
         let painter = ui.painter().with_clip_rect(machine);
+
+        // Near-opaque paper removes the horizontal machinery bands that were
+        // bleeding through the old translucent rectangle. The warm-grey tone
+        // is intentionally close to aged teletype stock rather than UI white.
+        painter.add(egui::Shape::convex_polygon(
+            paper_points,
+            Color32::from_rgb(220, 218, 211),
+            egui::Stroke::new(0.0, Color32::TRANSPARENT),
+        ));
+
+        // Very restrained illumination: one broad soft lift in the upper half
+        // and a contact shadow only where the sheet approaches the platen. This
+        // avoids the previous drop-shadow-around-a-card appearance.
+        let inner_left = top_left.max(bottom_left) + 3.0 * scale;
+        let inner_right = top_right.min(bottom_right) - 3.0 * scale;
+        let highlight_top = sheet_top + line_height * 0.55;
+        let highlight_bottom = (highlight_top + line_height * 1.4).min(sheet_bottom);
+        if highlight_top < highlight_bottom && inner_left < inner_right {
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(inner_left, highlight_top),
+                    Pos2::new(inner_right, highlight_bottom),
+                ),
+                0.0,
+                Color32::from_rgba_unmultiplied(255, 254, 247, 10),
+            );
+        }
+
+        let contact_y = origin.y + (teletype::PRINT_TOP - TTY_H * 0.010) * scale;
+        let contact_h = (TTY_H * 0.008 * scale).max(1.0);
         painter.rect_filled(
-            shadow,
-            1.5 * scale,
-            Color32::from_rgba_unmultiplied(20, 18, 16, 42),
-        );
-        painter.rect_filled(
-            sheet,
-            1.0 * scale,
-            Color32::from_rgba_unmultiplied(222, 220, 214, 224),
+            Rect::from_min_max(
+                Pos2::new(bottom_left + 2.0 * scale, contact_y - contact_h),
+                Pos2::new(bottom_right - 2.0 * scale, contact_y),
+            ),
+            0.0,
+            Color32::from_rgba_unmultiplied(38, 34, 30, 24),
         );
 
-        // The exposed free edge is visible only while it is still inside the
-        // camera frame. This tiny highlight/shadow pair makes the LF motion easy
-        // to perceive without turning the paper into a UI panel.
+        // The free edge gets only a hairline highlight/shadow. No shadow is
+        // drawn around the whole sheet, so it reads as flexible paper instead
+        // of a panel floating above the photograph.
         if sheet_top > machine.top() + 1.0 {
             painter.line_segment(
-                [Pos2::new(left, sheet_top), Pos2::new(right, sheet_top)],
-                egui::Stroke::new(1.0 * scale, Color32::from_rgba_unmultiplied(255, 255, 248, 95)),
+                [Pos2::new(top_left, top_left_y), Pos2::new(top_right, top_right_y)],
+                egui::Stroke::new(
+                    (0.65 * scale).max(0.45),
+                    Color32::from_rgba_unmultiplied(255, 255, 248, 72),
+                ),
             );
             painter.line_segment(
                 [
-                    Pos2::new(left, sheet_top + 1.5 * scale),
-                    Pos2::new(right, sheet_top + 1.5 * scale),
+                    Pos2::new(top_left, top_left_y + 1.2 * scale),
+                    Pos2::new(top_right, top_right_y + 1.2 * scale),
                 ],
-                egui::Stroke::new(1.0 * scale, Color32::from_rgba_unmultiplied(60, 55, 50, 38)),
+                egui::Stroke::new(
+                    (0.55 * scale).max(0.4),
+                    Color32::from_rgba_unmultiplied(68, 62, 56, 28),
+                ),
             );
         }
+
+        // A tiny lower-side contact shadow suggests that the sheet disappears
+        // into the machine without outlining the entire paper rectangle.
+        let side_shadow_top = (contact_y - line_height * 1.1).max(sheet_top);
+        painter.line_segment(
+            [
+                Pos2::new(bottom_left + 0.8 * scale, side_shadow_top),
+                Pos2::new(bottom_left, contact_y),
+            ],
+            egui::Stroke::new(
+                (0.8 * scale).max(0.5),
+                Color32::from_rgba_unmultiplied(35, 31, 28, 24),
+            ),
+        );
+        painter.line_segment(
+            [
+                Pos2::new(bottom_right - 0.8 * scale, side_shadow_top),
+                Pos2::new(bottom_right, contact_y),
+            ],
+            egui::Stroke::new(
+                (0.8 * scale).max(0.5),
+                Color32::from_rgba_unmultiplied(35, 31, 28, 20),
+            ),
+        );
+    }
+
+    fn draw_paper_foreground(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
+        if self.tty.output.is_empty() { return; }
+        let Some(body) = &self.tex.tty_body else { return; };
+
+        // Put the real platen/glass pixels back in front of paper and ink. This
+        // is the decisive depth cue: the sheet now physically disappears into
+        // the ASR-33 instead of ending in a visible rectangular lower edge.
+        let char_width = self.tty.char_width_image_px();
+        let side_margin = char_width * 2.4;
+        let left = (teletype::PRINT_LEFT - side_margin).max(0.0);
+        let right = (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH + side_margin)
+            .min(TTY_W);
+        let top = (teletype::PRINT_TOP - TTY_H * 0.008).max(0.0);
+        let bottom = (teletype::PRINT_TOP + TTY_H * 0.046).min(TTY_H);
+
+        let target = Rect::from_min_max(
+            origin + Vec2::new(left * scale, top * scale),
+            origin + Vec2::new(right * scale, bottom * scale),
+        );
+        let source = Rect::from_min_max(
+            Pos2::new(left / TTY_W, top / TTY_H),
+            Pos2::new(right / TTY_W, bottom / TTY_H),
+        );
+        ui.painter().image(body.id(), target, source, Color32::WHITE);
     }
 
     fn draw_paper_text(&self, ui: &mut egui::Ui, paper: Rect, scale: f32) {
@@ -410,6 +498,10 @@ impl RusTairApp {
             ),
         );
         self.draw_paper_text(ui, paper, scale);
+
+        // Restore the real front mechanism after paper + ink. The sheet now
+        // appears to travel behind the platen/glass rather than ending on top.
+        self.draw_paper_foreground(ui, origin, scale);
         self.draw_print_head(ui, rect, origin, scale);
 
         let selector_size = Vec2::new(
