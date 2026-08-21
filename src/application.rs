@@ -117,6 +117,66 @@ impl RusTairApp {
         ))
     }
 
+    /// Load one ASR-33 key pose after removing transparent canvas padding.
+    ///
+    /// The GIMP UP/MID/DOWN files intentionally shorten the physical key from
+    /// its top while keeping the lower edge as the mechanical reference. Their
+    /// PNG canvases, however, can contain different amounts of transparent
+    /// padding. If we render the complete canvases, that invisible padding
+    /// becomes part of the geometry and a pressed key can appear to rise even
+    /// though the artwork itself was authored correctly. Cropping to the alpha
+    /// bounds makes the renderer's bottom anchor the *visible key bottom* for
+    /// every pose.
+    fn load_key_pose_texture(
+        ctx: &egui::Context,
+        name: &str,
+        path: &str,
+    ) -> Option<egui::TextureHandle> {
+        let bytes = std::fs::read(path).ok()?;
+        let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let (width, height) = image.dimensions();
+
+        let mut min_x = width;
+        let mut min_y = height;
+        let mut max_x = 0u32;
+        let mut max_y = 0u32;
+        let mut found = false;
+
+        // Ignore the almost-transparent anti-aliased fringe so a single halo
+        // pixel cannot enlarge the crop and reintroduce pose-dependent padding.
+        const ALPHA_THRESHOLD: u8 = 8;
+        for (x, y, pixel) in image.enumerate_pixels() {
+            if pixel[3] <= ALPHA_THRESHOLD {
+                continue;
+            }
+            found = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+
+        let cropped = if found {
+            image::imageops::crop_imm(
+                &image,
+                min_x,
+                min_y,
+                max_x - min_x + 1,
+                max_y - min_y + 1,
+            )
+            .to_image()
+        } else {
+            image
+        };
+
+        let size = [cropped.width() as usize, cropped.height() as usize];
+        Some(ctx.load_texture(
+            name,
+            egui::ColorImage::from_rgba_unmultiplied(size, &cropped.into_raw()),
+            egui::TextureOptions::LINEAR,
+        ))
+    }
+
     fn load_switch_sprite_texture(ctx: &egui::Context, sprite: SwitchSpriteId) -> Option<egui::TextureHandle> {
         let asset = sprite.asset();
         let bytes = std::fs::read(asset.path).ok()?;
@@ -182,9 +242,9 @@ impl RusTairApp {
                 // clean body contains the key wells and each key is now painted
                 // independently from three aligned photographic poses.
                 tty_keys: None,
-                tty_key_up: Self::load_texture(&cc.egui_ctx, "tty-key-up", "assets/asr33_key_up.png"),
-                tty_key_mid: Self::load_texture(&cc.egui_ctx, "tty-key-mid", "assets/asr33_key_mid.png"),
-                tty_key_down: Self::load_texture(&cc.egui_ctx, "tty-key-down", "assets/asr33_key_down.png"),
+                tty_key_up: Self::load_key_pose_texture(&cc.egui_ctx, "tty-key-up", "assets/asr33_key_up.png"),
+                tty_key_mid: Self::load_key_pose_texture(&cc.egui_ctx, "tty-key-mid", "assets/asr33_key_mid.png"),
+                tty_key_down: Self::load_key_pose_texture(&cc.egui_ctx, "tty-key-down", "assets/asr33_key_down.png"),
                 tty_head: Self::load_texture(&cc.egui_ctx, "tty-head", "assets/asr33head.png"),
                 tty_line_local: Self::load_texture(&cc.egui_ctx, "tty-line-local", "assets/asrlinelocal.png"),
                 tty_knob: Self::load_texture(&cc.egui_ctx, "tty-knob", "assets/asrlinelocalknob.png"),
