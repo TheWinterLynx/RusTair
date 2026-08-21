@@ -99,6 +99,7 @@ impl SerialBoard {
         }
     }
 
+    /// Status/control address of the board's first serial port.
     pub const fn status_port(self) -> u8 {
         match self {
             Self::Sio88 => 0x00,
@@ -106,10 +107,27 @@ impl SerialBoard {
         }
     }
 
+    /// Data address of the board's first serial port.
     pub const fn data_port(self) -> u8 {
         match self {
             Self::Sio88 => 0x01,
             Self::TwoSio88 => 0x11,
+        }
+    }
+
+    /// Status/control address of Port 1 on a fully populated 88-2SIO.
+    pub const fn port1_status_port(self) -> Option<u8> {
+        match self {
+            Self::Sio88 => None,
+            Self::TwoSio88 => Some(0x12),
+        }
+    }
+
+    /// Data address of Port 1 on a fully populated 88-2SIO.
+    pub const fn port1_data_port(self) -> Option<u8> {
+        match self {
+            Self::Sio88 => None,
+            Self::TwoSio88 => Some(0x13),
         }
     }
 }
@@ -157,5 +175,13 @@ mod tests {
     #[test]
     fn default_serial_board_is_88_sio() {
         assert_eq!(AppConfig::default().machine.serial_board, SerialBoard::Sio88);
+    }
+
+    #[test]
+    fn two_sio_exposes_both_standard_port_pairs() {
+        let board = SerialBoard::TwoSio88;
+        assert_eq!((board.status_port(), board.data_port()), (0x10, 0x11));
+        assert_eq!(board.port1_status_port(), Some(0x12));
+        assert_eq!(board.port1_data_port(), Some(0x13));
     }
 }
