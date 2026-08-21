@@ -33,7 +33,7 @@ impl RusTairApp {
 
         if self.terminal.tx_started.is_none() {
             if let Some(byte) = self.machine.bus.serial_tx_front() {
-                self.terminal_receive_byte(byte);
+                self.terminal.receive_byte(byte);
                 self.terminal.tx_started = Some(now);
 
                 if char_time.is_zero() {
