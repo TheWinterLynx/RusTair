@@ -1,13 +1,10 @@
 use super::*;
 
 impl RusTairApp {
-    /// Drive the Text Terminal's physical serial connection. With an 88-SIO it
-    /// uses the board's single port when the terminal owns that cable. With a
-    /// fully populated 88-2SIO it is permanently attached to Port 1 and can run
-    /// simultaneously with the ASR-33 on Port 0.
+    /// Drive whichever physical serial port the Text Terminal cable is attached
+    /// to. Window visibility does not affect the cable: a hidden terminal keeps
+    /// receiving guest output until the user explicitly disconnects it.
     pub(in crate::app) fn process_terminal_serial(&mut self, ctx: &egui::Context) {
-        // A hidden terminal window is still a connected physical terminal. Keep
-        // receiving guest output into TerminalState even when the UI is closed.
         if !self.terminal_serial_tx_busy() {
             self.terminal.tx_started = None;
             return;
