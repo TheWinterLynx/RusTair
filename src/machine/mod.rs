@@ -48,6 +48,14 @@ impl AltairBus {
         self.memory.randomize();
     }
 
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
+        self.memory.arm_basic32_full_memory_probe_guard()
+    }
+
+    pub fn clear_transient_memory_guards(&mut self) {
+        self.memory.clear_transient_guards();
+    }
+
     pub fn load(&mut self, address: u16, bytes: &[u8]) {
         self.memory.load(address, bytes);
     }
@@ -174,6 +182,10 @@ impl AltairMachine {
         self.bus.installed_ram_bytes()
     }
 
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
+        self.bus.arm_basic32_full_memory_probe_guard()
+    }
+
     pub fn power(&mut self, on: bool) {
         self.powered = on;
         self.running = false;
@@ -190,6 +202,7 @@ impl AltairMachine {
     }
 
     pub fn reset(&mut self) {
+        self.bus.clear_transient_memory_guards();
         self.cpu.reset();
         self.running = false;
         self.wait_led = true;
@@ -357,6 +370,29 @@ mod tests {
 
         machine.power(false);
         assert_eq!(machine.bus.read(0x0010), 0x00);
+    }
+
+    #[test]
+    fn basic32_64k_probe_guard_is_one_shot() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::K64, RamInit::Zeroed);
+
+        machine.bus.write(0xffff, 0xa5);
+        assert_eq!(machine.bus.read(0xffff), 0xa5);
+        assert!(machine.arm_basic32_full_memory_probe_guard());
+
+        machine.bus.write(0xffff, 0x37);
+        assert_ne!(machine.bus.read(0xffff), 0x37);
+
+        machine.bus.write(0xffff, 0x5a);
+        assert_eq!(machine.bus.read(0xffff), 0x5a);
+    }
+
+    #[test]
+    fn basic32_probe_guard_only_arms_for_full_64k() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::K48, RamInit::Zeroed);
+        assert!(!machine.arm_basic32_full_memory_probe_guard());
     }
 
     #[test]
