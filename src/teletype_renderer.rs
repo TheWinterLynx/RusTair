@@ -35,16 +35,13 @@ impl RusTairApp {
         pose: u8,
         legend_override: Option<&str>,
     ) {
-        // The current GIMP assets encode the vertical travel themselves. Keep
-        // one fixed lower anchor and use only UP/MID: DOWN proved visually too
-        // deep for the short ASR-33 key stroke.
         const KEY_CANVAS_WIDTH: f32 = 170.0;
         const SOCKET_BASE_OFFSET: f32 = 50.0;
 
-        let (texture, legend_ratio) = if pose == 0 {
-            (&self.tex.tty_key_up, 0.36)
+        let texture = if pose == 0 {
+            &self.tex.tty_key_up
         } else {
-            (&self.tex.tty_key_mid, 0.43)
+            &self.tex.tty_key_mid
         };
         let Some(texture) = texture else { return; };
 
@@ -52,19 +49,33 @@ impl RusTairApp {
         let texture_size = texture.size_vec2();
         let texture_aspect = texture_size.y / texture_size.x.max(1.0);
 
-        // CTRL and SHIFT are physically broader than the normal cylindrical
-        // caps. Until dedicated assets are added, use only a restrained X
-        // stretch rather than the old 150/114 deformation.
-        let width_factor = if matches!(kind, KeyKind::Control | KeyKind::Shift) {
-            1.12
+        // The real ASR-33 uses slightly larger caps for the non-alphanumeric
+        // controls. Scale them uniformly so they gain diameter without becoming
+        // the horizontally stretched pills used by the first keyboard pass.
+        let special = legend_override.is_some()
+            || matches!(
+                kind,
+                KeyKind::Escape
+                    | KeyKind::LineFeed
+                    | KeyKind::CarriageReturn
+                    | KeyKind::Delete
+                    | KeyKind::Repeat
+                    | KeyKind::Break
+                    | KeyKind::Control
+                    | KeyKind::Shift
+            );
+        let size_factor = if matches!(kind, KeyKind::Control | KeyKind::Shift) {
+            1.10
+        } else if special {
+            1.05
         } else {
             1.0
         };
-        let target_w = KEY_CANVAS_WIDTH * width_factor;
-        let target_h = KEY_CANVAS_WIDTH * texture_aspect;
+        let target_w = KEY_CANVAS_WIDTH * size_factor;
+        let target_h = target_w * texture_aspect;
 
-        // UP and MID share exactly the same visible lower edge. Only the upper
-        // face descends, so the key reads as being pushed into the socket.
+        // UP and MID share one physical lower edge. The GIMP artwork itself
+        // contains the shorter MID pose, so the cap only moves down from above.
         let base_y = socket_y + SOCKET_BASE_OFFSET;
         let target = Rect::from_min_size(
             origin
@@ -87,8 +98,19 @@ impl RusTairApp {
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
         if legend.is_empty() { return; }
 
-        let legend_y = base_y - target_h * (1.0 - legend_ratio);
-        let compact = legend.contains('\n') || legend.len() > 4;
+        // Register the overlay to the centre of the photographed top face, not
+        // to the whole cylindrical body. Two-line legends sit a fraction higher
+        // so both rows stay comfortably inside the circular top surface.
+        let multiline = legend.contains('\n');
+        let legend_ratio = match (pose, multiline) {
+            (0, true) => 0.315,
+            (0, false) => 0.325,
+            (_, true) => 0.385,
+            (_, false) => 0.395,
+        };
+        let special_y_nudge = if special { -2.0 } else { 0.0 };
+        let legend_y = base_y - target_h * (1.0 - legend_ratio) + special_y_nudge;
+        let compact = multiline || legend.len() > 4;
         let font_factor = if compact { 0.145 } else { 0.225 };
         let font_size = (114.0 * font_factor * scale).max(5.0);
         ui.painter().text(
@@ -111,12 +133,11 @@ impl RusTairApp {
         h: f32,
         pose: u8,
     ) {
-        // The spacebar is already a real KeyKind::Space entry in KEYS. Render
-        // its dedicated wide asset around that exact matrix centre instead of
-        // stretching a cylindrical key. As with the normal keys, the GIMP MID
-        // asset carries the press geometry and shares one fixed lower anchor.
-        const SPACEBAR_VISUAL_SCALE: f32 = 0.98;
-        const SPACEBAR_BASE_OFFSET: f32 = 46.0;
+        // Slightly overlap the photographed well on all sides. At 0.98 the
+        // socket rim was still visible; 1.045 matches the real bar/well ratio
+        // while keeping the matrix centre as the only horizontal reference.
+        const SPACEBAR_VISUAL_SCALE: f32 = 1.045;
+        const SPACEBAR_BASE_OFFSET: f32 = 55.0;
 
         let texture = if pose == 0 {
             &self.tex.tty_spacebar_up
@@ -150,9 +171,6 @@ impl RusTairApp {
 
     fn draw_pressed_key(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
         for (index, key) in teletype::KEYS.iter().copied().enumerate() {
-            // The keyboard now deliberately has only two visual states: UP and
-            // MID. This is the same short-stroke animation for normal keys and
-            // for the dedicated spacebar assets.
             let pose = u8::from(
                 self.animated_key == Some(index) && self.key_displacement > 0.0,
             );
@@ -184,8 +202,8 @@ impl RusTairApp {
             }
         }
 
-        // HERE IS is a physical, non-ASCII key. Keep it decorative, but place
-        // it on the same calibrated socket grid as the real keys.
+        // HERE IS is physical but does not emit an ASCII byte. The legend
+        // override also marks it as a slightly larger special cap above.
         self.draw_key_pose(
             ui,
             origin,
@@ -208,8 +226,6 @@ impl RusTairApp {
     }
 
     fn ink_character_style(line: usize, column: usize, byte: u8) -> (f32, f32, u8) {
-        // Deterministic micro-variation: the same piece of paper does not
-        // shimmer between frames, but every impact is a little different.
         let mut hash = (line as u32).wrapping_mul(0x9e37_79b9)
             ^ (column as u32).wrapping_mul(0x85eb_ca6b)
             ^ (byte as u32).wrapping_mul(0xc2b2_ae35);
@@ -232,26 +248,18 @@ impl RusTairApp {
     fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
         if self.tty.output.is_empty() { return; }
 
-        // The paper is not a floating card. Its free end moves up with LF, but
-        // the lower end continues *inside* the mechanism and is occluded later
-        // by a photographic foreground strip from the platen/glass assembly.
         let line_height = self.paper_line_height(scale);
         let baseline_inset = TTY_H * 0.024 * scale;
         let print_baseline = origin.y + teletype::PRINT_TOP * scale - baseline_inset;
         let feed_offset = self.paper_feed_offset(Instant::now(), line_height);
         let line_count = self.tty.output.split('\n').count().max(1) as f32;
 
-        // A shorter leader keeps the first few lines from looking like a large
-        // rectangular card suddenly glued to the machine.
         const LEADER_LINES: f32 = 4.5;
         let sheet_top = (print_baseline
             - (line_count + LEADER_LINES) * line_height
             + feed_offset)
             .max(machine.top());
 
-        // Deliberately extend the paper below the visible print station. The
-        // lower edge is never meant to be seen; draw_paper_foreground() covers
-        // it with the real mechanism pixels after ink has been rendered.
         let sheet_bottom = origin.y + (teletype::PRINT_TOP + TTY_H * 0.032) * scale;
         if sheet_top >= sheet_bottom { return; }
 
@@ -262,9 +270,6 @@ impl RusTairApp {
             + (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH) * scale
             + side_margin;
 
-        // Only the sheet geometry gets a tiny perspective cue; text remains
-        // perfectly horizontal. The upper free edge is slightly narrower and
-        // a fraction out of square, like lightly tensioned continuous paper.
         let taper = (char_width * 0.38 * scale).max(0.8 * scale);
         let top_left = bottom_left + taper;
         let top_right = bottom_right - taper;
@@ -279,19 +284,12 @@ impl RusTairApp {
         ];
 
         let painter = ui.painter().with_clip_rect(machine);
-
-        // Near-opaque paper removes the horizontal machinery bands that were
-        // bleeding through the old translucent rectangle. The warm-grey tone
-        // is intentionally close to aged teletype stock rather than UI white.
         painter.add(egui::Shape::convex_polygon(
             paper_points,
             Color32::from_rgb(220, 218, 211),
             egui::Stroke::new(0.0_f32, Color32::TRANSPARENT),
         ));
 
-        // Very restrained illumination: one broad soft lift in the upper half
-        // and a contact shadow only where the sheet approaches the platen. This
-        // avoids the previous drop-shadow-around-a-card appearance.
         let inner_left = top_left.max(bottom_left) + 3.0 * scale;
         let inner_right = top_right.min(bottom_right) - 3.0 * scale;
         let highlight_top = sheet_top + line_height * 0.55;
@@ -318,9 +316,6 @@ impl RusTairApp {
             Color32::from_rgba_unmultiplied(38, 34, 30, 24),
         );
 
-        // The free edge gets only a hairline highlight/shadow. No shadow is
-        // drawn around the whole sheet, so it reads as flexible paper instead
-        // of a panel floating above the photograph.
         if sheet_top > machine.top() + 1.0 {
             painter.line_segment(
                 [Pos2::new(top_left, top_left_y), Pos2::new(top_right, top_right_y)],
@@ -341,8 +336,6 @@ impl RusTairApp {
             );
         }
 
-        // A tiny lower-side contact shadow suggests that the sheet disappears
-        // into the machine without outlining the entire paper rectangle.
         let side_shadow_top = (contact_y - line_height * 1.1).max(sheet_top);
         painter.line_segment(
             [
@@ -370,9 +363,6 @@ impl RusTairApp {
         if self.tty.output.is_empty() { return; }
         let Some(body) = &self.tex.tty_body else { return; };
 
-        // Put the real platen/glass pixels back in front of paper and ink. This
-        // is the decisive depth cue: the sheet now physically disappears into
-        // the ASR-33 instead of ending in a visible rectangular lower edge.
         let char_width = self.tty.char_width_image_px();
         let side_margin = char_width * 2.4;
         let left = (teletype::PRINT_LEFT - side_margin).max(0.0);
@@ -398,10 +388,6 @@ impl RusTairApp {
         let font_size = (char_width * 1.63 * scale).max(5.0);
         let line_height = (font_size * 1.03).max(6.0);
 
-        // Keep the print baseline deliberately flat. The photographed window
-        // seam has a little perspective, but bending the text to follow it is
-        // much more noticeable than the seam itself. A small constant inset
-        // keeps every character safely above the dark lower edge instead.
         let baseline_inset = TTY_H * 0.024 * scale;
         let print_baseline = paper.bottom() - baseline_inset;
         let printable_height = (paper.height() - baseline_inset).max(line_height);
@@ -450,8 +436,6 @@ impl RusTairApp {
         let total = PRINT_HEAD_STRIKE_TIME.as_secs_f32().max(0.001);
         let elapsed = (1.0 - remaining.as_secs_f32() / total).clamp(0.0, 1.0);
 
-        // The selector settles during the first ~20 ms, the typewheel snaps
-        // into the ribbon at the impact point, then drops back under the glass.
         if elapsed < 0.24 {
             let t = (elapsed / 0.24).clamp(0.0, 1.0);
             1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t)
@@ -478,8 +462,6 @@ impl RusTairApp {
         let target_center_x = teletype::PRINT_LEFT
             + (active_column as f32 + 0.5) * char_width;
 
-        // A normal character advances with a small mechanical slide. A CR
-        // deliberately takes longer, so the carriage visibly sweeps home.
         let travel_time = if returning {
             PRINT_HEAD_CARRIAGE_RETURN_TIME.as_secs_f32()
         } else {
@@ -491,12 +473,6 @@ impl RusTairApp {
             travel_time,
         );
 
-        // Model 33 character selection is mechanical: 16 rotational positions
-        // crossed with four vertical levels. Do not rotate the whole PNG in the
-        // screen plane (that would look like the assembly is tilting). Instead
-        // keep the lower mount fixed and make only the cylindrical upper wheel
-        // visibly turn around its vertical axis: its face slides, narrows a
-        // little and the highlight moves from one side to the other.
         let (slot, level) = teletype::typewheel_position(self.print_head_glyph);
         let slot_target = (slot as f32 - 7.5) / 7.5;
         let level_target = (level as f32 - 1.5) / 1.5;
@@ -511,15 +487,11 @@ impl RusTairApp {
             0.022,
         );
 
-        // asr33head.png is 177x186. Keep the complete assembly at its real
-        // aspect ratio; only the visible cylinder face is foreshortened below.
         let texture_size = head.size_vec2();
         let head_aspect = texture_size.y / texture_size.x.max(1.0);
         let head_width = TTY_W * 0.060 * (0.96 + 0.07 * lift);
         let head_height = head_width * head_aspect;
 
-        // In repose the wheel sits down inside the mechanism and only its top
-        // is visible through the window. During a print strike it snaps up.
         const REST_TOP_RATIO: f32 = 0.355;
         const STRIKE_TOP_RATIO: f32 = 0.322;
         const GLASS_SILL_RATIO: f32 = 0.380;
@@ -538,17 +510,12 @@ impl RusTairApp {
             Vec2::new(head_width * scale, head_height * scale),
         );
 
-        // Clipping is the depth cue that was missing before: the typewheel is
-        // genuinely hidden by the photographic glass/body instead of merely
-        // being moved on top of the complete teletype image.
         let glass_clip = Rect::from_min_max(
             rect.min,
             Pos2::new(rect.right(), origin.y + sill_y * scale),
         );
         let clipped = ui.painter().with_clip_rect(glass_clip);
 
-        // The bottom ~30% of the sprite is the stationary support/mount. Keep
-        // it fixed while the actual type cylinder above it turns.
         const WHEEL_FRACTION: f32 = 0.70;
         let mount_source = Rect::from_min_max(
             Pos2::new(0.0, WHEEL_FRACTION),
@@ -566,9 +533,6 @@ impl RusTairApp {
             Color32::from_rgb(base_shade, base_shade, base_shade),
         );
 
-        // Apparent axial rotation of the cylinder. Five to six percent
-        // foreshortening is enough to read clearly at the size used by the UI,
-        // while remaining much subtler than a fake 2-D sprite rotation.
         let wheel_width = head_width * (1.0 - 0.058 * slot_pose.abs());
         let wheel_center_x = center_x + slot_pose * head_width * 0.070;
         let wheel_target = Rect::from_min_size(
@@ -588,10 +552,6 @@ impl RusTairApp {
             wheel_target.max,
         );
 
-        // Slide the photographed character face a few percent inside the
-        // silhouette. Because the two halves use opposite illumination, the
-        // eye reads this as a round metal cylinder turning rather than as a
-        // flat bitmap moving sideways.
         let uv_shift = slot_pose * 0.035;
         let left_source = Rect::from_min_max(
             Pos2::new(0.035 + uv_shift, 0.0),
@@ -618,9 +578,6 @@ impl RusTairApp {
             Color32::from_rgb(right_shade, right_shade, right_shade),
         );
 
-        // Repaint a narrow strip of the original photograph over the wheel.
-        // This uses the real glass/case pixels as a foreground layer and
-        // removes the hard "sprite pasted on top" edge at the sill.
         if let Some(body) = &self.tex.tty_body {
             let lip_top = sill_y - TTY_H * 0.004;
             let lip_bottom = sill_y + TTY_H * 0.012;
@@ -654,9 +611,6 @@ impl RusTairApp {
         if let Some(t) = &self.tex.tty_body { Self::image(ui, t, rect); }
         if let Some(t) = &self.tex.tty_keys { Self::image(ui, t, rect); }
 
-        // The moving paper is a separate layer over the photographed machine
-        // and under ink/typewheel. As LF advances, its free edge and all ink
-        // travel together, so old lines can never end up printed "in the air".
         self.draw_virtual_paper(ui, rect, origin, scale);
 
         let paper = Rect::from_min_max(
@@ -667,9 +621,6 @@ impl RusTairApp {
             ),
         );
         self.draw_paper_text(ui, paper, scale);
-
-        // Restore the real front mechanism after paper + ink. The sheet now
-        // appears to travel behind the platen/glass rather than ending on top.
         self.draw_paper_foreground(ui, origin, scale);
         self.draw_print_head(ui, rect, origin, scale);
 
