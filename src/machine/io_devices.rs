@@ -1,3 +1,5 @@
+use crate::config::SerialBoard;
+
 use super::serial::SerialPort;
 
 const SIO_STATUS_PORT: u8 = 0x00;
@@ -14,35 +16,63 @@ const SIO2_DATA_PORT: u8 = 0x11;
 #[derive(Default)]
 pub(super) struct IoDevices {
     serial: SerialPort,
+    serial_board: SerialBoard,
 }
 
 impl IoDevices {
-    pub(super) fn input(&mut self, port: u8) -> u8 {
-        match port {
-            // MITS 88-SIO status convention used by the S2JS reference.
-            // Bit 0 is set when the receive buffer is empty, while bits 6/7
-            // are set while the transmit holding register is occupied.
-            SIO_STATUS_PORT => {
-                let rx_empty = self.serial.rx_empty();
-                let tx_busy = self.serial.tx_busy();
-                (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
-            }
-            SIO_DATA_PORT => self.serial.read_rx().unwrap_or(0),
+    pub(super) fn configure_serial_board(&mut self, board: SerialBoard) {
+        self.serial_board = board;
+        self.serial.clear();
+    }
 
-            // MITS 2SIO / 8251 convention: bit 0 = RX ready, bit 1 = TX ready.
-            SIO2_STATUS_PORT => {
-                (if self.serial.rx_empty() { 0 } else { 0x01 })
-                    | (if self.serial.tx_busy() { 0 } else { 0x02 })
-            }
-            SIO2_DATA_PORT => self.serial.read_rx().unwrap_or(0),
-            _ => 0,
+    pub(super) fn serial_board(&self) -> SerialBoard {
+        self.serial_board
+    }
+
+    pub(super) fn input(&mut self, port: u8) -> u8 {
+        match self.serial_board {
+            SerialBoard::Sio88 => match port {
+                // MITS 88-SIO status convention used by the S2JS reference.
+                // Bit 0 is set when the receive buffer is empty, while bits 6/7
+                // are set while the transmit holding register is occupied.
+                SIO_STATUS_PORT => {
+                    let rx_empty = self.serial.rx_empty();
+                    let tx_busy = self.serial.tx_busy();
+                    (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
+                }
+                SIO_DATA_PORT => self.serial.read_rx().unwrap_or(0),
+
+                // An absent 88-2SIO must not look TX-ready to software polling
+                // its status register.
+                SIO2_STATUS_PORT => 0x00,
+                _ => 0,
+            },
+            SerialBoard::TwoSio88 => match port {
+                // MITS 88-2SIO / 6850-style convention used by RusTair:
+                // bit 0 = RX ready, bit 1 = TX ready.
+                SIO2_STATUS_PORT => {
+                    (if self.serial.rx_empty() { 0 } else { 0x01 })
+                        | (if self.serial.tx_busy() { 0 } else { 0x02 })
+                }
+                SIO2_DATA_PORT => self.serial.read_rx().unwrap_or(0),
+
+                // The 88-SIO uses active-low ready flags. Returning all ones
+                // for its absent status register keeps software waiting rather
+                // than accidentally treating the uninstalled card as ready.
+                SIO_STATUS_PORT => 0xff,
+                _ => 0,
+            },
         }
     }
 
     pub(super) fn output(&mut self, port: u8, value: u8) {
-        match port {
-            SIO_DATA_PORT | SIO2_DATA_PORT => self.serial.write_tx(value),
-            _ => {}
+        let selected_data_port = match self.serial_board {
+            SerialBoard::Sio88 => SIO_DATA_PORT,
+            SerialBoard::TwoSio88 => SIO2_DATA_PORT,
+        };
+
+        if port == selected_data_port {
+            self.serial.write_tx(value);
         }
     }
 
