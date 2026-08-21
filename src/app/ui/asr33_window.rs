@@ -6,10 +6,43 @@ impl RusTairApp {
             return;
         }
         self.asr33.last_tape_tick = Instant::now();
-        if self.machine.bus.serial_rx_empty() {
+        if self.asr_serial_rx_empty() {
             if let Some(byte) = self.tty.next_tape_byte() {
-                self.machine.bus.serial_receive(byte);
+                self.asr_serial_receive(byte);
             }
+        }
+    }
+
+    fn draw_tty_connection_selector(&mut self, ui: &mut egui::Ui) {
+        let board = self.config.machine.serial_board;
+        let current = self.asr_connection();
+        let mut selected = current;
+
+        ui.label("Connection:");
+        egui::ComboBox::from_id_salt("asr33-serial-connection")
+            .selected_text(Self::serial_connection_label(board, current))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut selected,
+                    SerialConnection::Disconnected,
+                    "Disconnected",
+                );
+                ui.selectable_value(
+                    &mut selected,
+                    SerialConnection::Port0,
+                    Self::serial_connection_label(board, SerialConnection::Port0),
+                );
+                if board == SerialBoard::TwoSio88 {
+                    ui.selectable_value(
+                        &mut selected,
+                        SerialConnection::Port1,
+                        Self::serial_connection_label(board, SerialConnection::Port1),
+                    );
+                }
+            });
+
+        if selected != current {
+            self.set_serial_connection(SerialDevice::InternalAsr33, selected);
         }
     }
 
@@ -27,6 +60,8 @@ impl RusTairApp {
                 if ui.selectable_label(self.tty.mode == TtyMode::Local, "LOCAL").clicked() {
                     self.set_tty_mode(TtyMode::Local);
                 }
+                ui.separator();
+                self.draw_tty_connection_selector(ui);
                 ui.separator();
                 ui.label(format!("{} columns", self.tty.paper_width));
                 ui.separator();
@@ -66,15 +101,28 @@ impl RusTairApp {
             ui.centered_and_justified(|ui| self.draw_teletype(ui));
         });
         egui::TopBottomPanel::bottom("tty-status").show(ctx, |ui| {
+            let connection = self.asr_connection();
+            let connection_label =
+                Self::serial_connection_label(self.config.machine.serial_board, connection);
+            let tx = if connection.is_connected() {
+                if self.asr_serial_tx_busy() {
+                    "BUSY"
+                } else {
+                    "READY"
+                }
+            } else {
+                "N/A"
+            };
             ui.small(format!(
-                "ASR-33 {}  |  RX {}  |  TX {}  |  column {}/{}",
+                "ASR-33 {}  |  {}  |  RX {}  |  TX {}  |  column {}/{}",
                 match self.tty.mode {
                     TtyMode::Off => "OFF",
                     TtyMode::Line => "LINE",
                     TtyMode::Local => "LOCAL",
                 },
-                self.machine.bus.serial_rx_len(),
-                if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
+                connection_label,
+                self.asr_serial_rx_len(),
+                tx,
                 self.tty.column,
                 self.tty.paper_width,
             ));
