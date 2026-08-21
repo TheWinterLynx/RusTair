@@ -142,6 +142,30 @@ impl eframe::App for RusTairApp {
                         );
                     });
 
+                    ui.menu_button("Preferences", |ui| {
+                        let mut auto_open_basic_console =
+                            self.config.preferences.auto_open_basic_console;
+                        if ui
+                            .checkbox(
+                                &mut auto_open_basic_console,
+                                "Auto-open BASIC console",
+                            )
+                            .changed()
+                        {
+                            self.config.preferences.auto_open_basic_console =
+                                auto_open_basic_console;
+                            self.status = if auto_open_basic_console {
+                                "Preference enabled: auto-open BASIC console".into()
+                            } else {
+                                "Preference disabled: BASIC loads without opening a terminal window"
+                                    .into()
+                            };
+                        }
+                        ui.small(
+                            "When bundled BASIC is loaded, reveal the device connected to Port 0. This never changes the serial wiring.",
+                        );
+                    });
+
                     ui.menu_button("Compatibility", |ui| {
                         ui.label("Software workarounds (off = historically faithful)");
                         ui.separator();
