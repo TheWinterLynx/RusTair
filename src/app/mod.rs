@@ -15,7 +15,7 @@ use self::asr33_state::Asr33State;
 use self::terminal_state::{TerminalSpeed, TerminalState};
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
-use crate::config::{AppConfig, RamInit, RamSize};
+use crate::config::{AppConfig, RamInit, RamSize, SerialBoard};
 use crate::io::serial_router::{SerialEndpoint, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
@@ -99,7 +99,7 @@ impl RusTairApp {
             audio: AudioEngine::new(),
             last_tick: now,
             reset_flash_until: None,
-            status: "Ready — 8 KiB RAM".into(),
+            status: "Ready — 8 KiB RAM — MITS 88-SIO".into(),
         }
     }
 
@@ -118,6 +118,24 @@ impl RusTairApp {
             "Memory configured: {} — {}; machine reset",
             ram_size.label(),
             ram_init.label()
+        );
+    }
+
+    fn apply_serial_board_configuration(&mut self, serial_board: SerialBoard) {
+        if self.config.machine.serial_board == serial_board {
+            return;
+        }
+
+        self.config.machine.serial_board = serial_board;
+        self.machine.configure_serial_board(serial_board);
+        self.asr33.tx_started = None;
+        self.terminal.tx_started = None;
+        self.reset_flash_until = None;
+        self.status = format!(
+            "Serial board configured: {} — status {:02X}h, data {:02X}h; machine reset",
+            serial_board.label(),
+            serial_board.status_port(),
+            serial_board.data_port()
         );
     }
 
