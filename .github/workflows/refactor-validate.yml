@@ -1,12 +1,13 @@
 name: validate-modular-refactor
 
 on:
-  push:
-    branches:
-      - agent/modular-architecture-refactor
   pull_request:
     branches:
       - main
+
+concurrency:
+  group: modular-refactor-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
