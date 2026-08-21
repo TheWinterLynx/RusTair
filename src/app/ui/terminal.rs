@@ -1,46 +1,4 @@
-use super::super::{egui, Duration, Instant, Pos2, Rect, RusTairApp, Sense};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::app) enum TerminalSpeed {
-    Instant,
-    Baud300,
-    Baud1200,
-    Baud2400,
-    Baud9600,
-}
-
-impl TerminalSpeed {
-    pub(in crate::app) const ALL: [Self; 5] = [
-        Self::Instant,
-        Self::Baud300,
-        Self::Baud1200,
-        Self::Baud2400,
-        Self::Baud9600,
-    ];
-
-    pub(in crate::app) fn label(self) -> &'static str {
-        match self {
-            Self::Instant => "Instant",
-            Self::Baud300 => "300 baud",
-            Self::Baud1200 => "1200 baud",
-            Self::Baud2400 => "2400 baud",
-            Self::Baud9600 => "9600 baud",
-        }
-    }
-
-    // One asynchronous serial character is modelled as 10 bits: start,
-    // 8 data bits and stop. The ASR-33 keeps its separate mechanical timing;
-    // these rates belong only to the electronic text terminal.
-    pub(in crate::app) fn char_time(self) -> Duration {
-        match self {
-            Self::Instant => Duration::ZERO,
-            Self::Baud300 => Duration::from_micros(33_333),
-            Self::Baud1200 => Duration::from_micros(8_333),
-            Self::Baud2400 => Duration::from_micros(4_167),
-            Self::Baud9600 => Duration::from_micros(1_042),
-        }
-    }
-}
+use super::super::{egui, Duration, Instant, Pos2, Rect, RusTairApp, Sense, TerminalSpeed};
 
 const TERMINAL_MAX_CHARS: usize = 200_000;
 const TERMINAL_INPUT_DEFAULT_HEIGHT: f32 = 235.0;
@@ -52,43 +10,43 @@ impl RusTairApp {
     pub(in crate::app) fn terminal_receive_byte(&mut self, byte: u8) {
         match byte & 0x7f {
             b'\r' => {
-                if !self.terminal_output.ends_with('\n') {
-                    self.terminal_output.push('\n');
+                if !self.terminal.output.ends_with('\n') {
+                    self.terminal.output.push('\n');
                 }
-                self.terminal_last_was_cr = true;
+                self.terminal.last_was_cr = true;
             }
             b'\n' => {
-                if !self.terminal_last_was_cr && !self.terminal_output.ends_with('\n') {
-                    self.terminal_output.push('\n');
+                if !self.terminal.last_was_cr && !self.terminal.output.ends_with('\n') {
+                    self.terminal.output.push('\n');
                 }
-                self.terminal_last_was_cr = false;
+                self.terminal.last_was_cr = false;
             }
             0x08 | 0x7f => {
-                if !self.terminal_output.ends_with('\n') {
-                    self.terminal_output.pop();
+                if !self.terminal.output.ends_with('\n') {
+                    self.terminal.output.pop();
                 }
-                self.terminal_last_was_cr = false;
+                self.terminal.last_was_cr = false;
             }
             b'\t' => {
-                self.terminal_output.push('\t');
-                self.terminal_last_was_cr = false;
+                self.terminal.output.push('\t');
+                self.terminal.last_was_cr = false;
             }
             0x20..=0x7e => {
-                self.terminal_output.push((byte & 0x7f) as char);
-                self.terminal_last_was_cr = false;
+                self.terminal.output.push((byte & 0x7f) as char);
+                self.terminal.last_was_cr = false;
             }
             _ => {
-                self.terminal_last_was_cr = false;
+                self.terminal.last_was_cr = false;
             }
         }
 
-        if self.terminal_output.len() > TERMINAL_MAX_CHARS {
-            let excess = self.terminal_output.len() - TERMINAL_MAX_CHARS;
-            let cut = self.terminal_output[excess..]
+        if self.terminal.output.len() > TERMINAL_MAX_CHARS {
+            let excess = self.terminal.output.len() - TERMINAL_MAX_CHARS;
+            let cut = self.terminal.output[excess..]
                 .find('\n')
                 .map(|offset| excess + offset + 1)
                 .unwrap_or(excess);
-            self.terminal_output.drain(..cut);
+            self.terminal.output.drain(..cut);
         }
     }
 
@@ -114,7 +72,7 @@ impl RusTairApp {
                     previous_was_cr = false;
                 }
                 0x08 | 0x09 | 0x1b | 0x20..=0x7e => {
-                    bytes.push(if self.terminal_uppercase {
+                    bytes.push(if self.terminal.uppercase {
                         byte.to_ascii_uppercase()
                     } else {
                         byte
@@ -133,20 +91,20 @@ impl RusTairApp {
 
         let count = bytes.len();
         if count > 0 {
-            let was_empty = self.terminal_input_queue.is_empty();
-            self.terminal_input_queue.extend(bytes);
+            let was_empty = self.terminal.input_queue.is_empty();
+            self.terminal.input_queue.extend(bytes);
             if was_empty {
                 // The first character may start immediately. Subsequent bytes
                 // are released at the selected serial character interval.
-                self.terminal_rx_next_at = Some(Instant::now());
+                self.terminal.rx_next_at = Some(Instant::now());
             }
         }
         count
     }
 
     pub(in crate::app) fn process_terminal_input(&mut self, ctx: &egui::Context) {
-        if self.terminal_input_queue.is_empty() {
-            self.terminal_rx_next_at = None;
+        if self.terminal.input_queue.is_empty() {
+            self.terminal.rx_next_at = None;
             return;
         }
         if !self.machine.powered {
@@ -155,35 +113,34 @@ impl RusTairApp {
 
         // Model a one-character receive register. Pasted programs are kept in
         // our host-side queue and are only presented to the Altair after the
-        // previous character has been consumed by software. This prevents a
-        // large paste from being dumped into the receive register all at once.
+        // previous character has been consumed by software.
         if !self.machine.bus.serial_rx_empty() {
             ctx.request_repaint_after(Duration::from_millis(1));
             return;
         }
 
         let now = Instant::now();
-        let due = self.terminal_rx_next_at.unwrap_or(now);
+        let due = self.terminal.rx_next_at.unwrap_or(now);
         if now < due {
             ctx.request_repaint_after(due.duration_since(now));
             return;
         }
 
-        if let Some(byte) = self.terminal_input_queue.pop_front() {
+        if let Some(byte) = self.terminal.input_queue.pop_front() {
             self.machine.bus.serial_receive(byte & 0x7f);
         }
 
-        if self.terminal_input_queue.is_empty() {
-            self.terminal_rx_next_at = None;
+        if self.terminal.input_queue.is_empty() {
+            self.terminal.rx_next_at = None;
         } else {
-            let char_time = self.terminal_speed.char_time();
-            self.terminal_rx_next_at = Some(now + char_time);
+            let char_time = self.terminal.speed.char_time();
+            self.terminal.rx_next_at = Some(now + char_time);
             ctx.request_repaint_after(char_time);
         }
     }
 
     fn terminal_send_command(&mut self) {
-        let command = std::mem::take(&mut self.terminal_command);
+        let command = std::mem::take(&mut self.terminal.command);
         let blank = command.is_empty();
         let count = self.terminal_enqueue_text(&command, true);
         if count > 0 {
@@ -196,15 +153,15 @@ impl RusTairApp {
     }
 
     fn terminal_send_program(&mut self) {
-        if self.terminal_program.is_empty() {
+        if self.terminal.program.is_empty() {
             return;
         }
-        let program = self.terminal_program.clone();
+        let program = self.terminal.program.clone();
         let count = self.terminal_enqueue_text(&program, true);
         if count > 0 {
             self.status = format!(
                 "Terminal program queued: {count} bytes at {}",
-                self.terminal_speed.label()
+                self.terminal.speed.label()
             );
         }
     }
@@ -218,8 +175,8 @@ impl RusTairApp {
         // Manual control keys should not sit behind a pasted BASIC listing.
         // They still wait for the Altair's one-byte receive register to become
         // free, but otherwise take priority over queued paste data.
-        self.terminal_input_queue.push_front(byte & 0x7f);
-        self.terminal_rx_next_at = Some(Instant::now());
+        self.terminal.input_queue.push_front(byte & 0x7f);
+        self.terminal.rx_next_at = Some(Instant::now());
         self.status = format!("Terminal queued {name}");
     }
 
@@ -237,7 +194,7 @@ impl RusTairApp {
                     self.status = format!(
                         "Terminal queued {count} bytes from {} at {}",
                         path.display(),
-                        self.terminal_speed.label()
+                        self.terminal.speed.label()
                     );
                 }
             }
@@ -251,7 +208,7 @@ impl RusTairApp {
             let width = (ui.available_width() - 122.0).max(80.0);
             let response = ui.add_sized(
                 [width, 26.0],
-                egui::TextEdit::singleline(&mut self.terminal_command)
+                egui::TextEdit::singleline(&mut self.terminal.command)
                     .font(egui::TextStyle::Monospace)
                     .hint_text("command (blank + Enter sends CR)"),
             );
@@ -274,18 +231,18 @@ impl RusTairApp {
                 self.terminal_send_program();
             }
             if ui.button("Clear editor").clicked() {
-                self.terminal_program.clear();
+                self.terminal.program.clear();
             }
         });
         ui.small(format!(
             "Paste one or many lines. Input is paced at {}; newlines become carriage returns.",
-            self.terminal_speed.label()
+            self.terminal.speed.label()
         ));
 
         let editor_height = (ui.available_height() - 8.0).max(30.0);
         ui.add_sized(
             [ui.available_width(), editor_height],
-            egui::TextEdit::multiline(&mut self.terminal_program)
+            egui::TextEdit::multiline(&mut self.terminal.program)
                 .font(egui::TextStyle::Monospace)
                 .desired_width(f32::INFINITY),
         );
@@ -302,7 +259,7 @@ impl RusTairApp {
                     ui.set_min_height(output_height);
                     ui.add(
                         egui::Label::new(
-                            egui::RichText::new(&self.terminal_output)
+                            egui::RichText::new(&self.terminal.output)
                                 .monospace()
                                 .size(15.0),
                         )
@@ -316,27 +273,27 @@ impl RusTairApp {
         egui::TopBottomPanel::top("terminal-menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 if ui.button("Clear").clicked() {
-                    self.terminal_output.clear();
-                    self.terminal_last_was_cr = false;
+                    self.terminal.output.clear();
+                    self.terminal.last_was_cr = false;
                 }
                 if ui.button("Send text/BASIC file…").clicked() {
                     self.load_terminal_text_file();
                 }
                 ui.separator();
                 ui.label("Speed:");
-                let previous_speed = self.terminal_speed;
+                let previous_speed = self.terminal.speed;
                 egui::ComboBox::from_id_salt("terminal-speed")
-                    .selected_text(self.terminal_speed.label())
+                    .selected_text(self.terminal.speed.label())
                     .show_ui(ui, |ui| {
                         for speed in TerminalSpeed::ALL {
-                            ui.selectable_value(&mut self.terminal_speed, speed, speed.label());
+                            ui.selectable_value(&mut self.terminal.speed, speed, speed.label());
                         }
                     });
-                if self.terminal_speed != previous_speed && !self.terminal_input_queue.is_empty() {
-                    self.terminal_rx_next_at = Some(Instant::now());
+                if self.terminal.speed != previous_speed && !self.terminal.input_queue.is_empty() {
+                    self.terminal.rx_next_at = Some(Instant::now());
                 }
                 ui.separator();
-                ui.checkbox(&mut self.terminal_uppercase, "Uppercase input");
+                ui.checkbox(&mut self.terminal.uppercase, "Uppercase input");
                 ui.separator();
                 if ui.button("CTRL-C").clicked() {
                     self.terminal_send_control(0x03, "CTRL-C");
@@ -350,11 +307,11 @@ impl RusTairApp {
         egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
             ui.small(format!(
                 "TEXT TERMINAL  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
-                self.terminal_speed.label(),
-                self.terminal_input_queue.len(),
+                self.terminal.speed.label(),
+                self.terminal.input_queue.len(),
                 self.machine.bus.serial_rx_len(),
                 if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
-                self.terminal_output.len(),
+                self.terminal.output.len(),
             ));
         });
 
@@ -460,7 +417,7 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn show_terminal_viewport(&mut self, parent_ctx: &egui::Context) {
-        if !self.terminal_window_open {
+        if !self.terminal.window_open {
             return;
         }
 
@@ -474,7 +431,7 @@ impl RusTairApp {
             |terminal_ctx, _class| {
                 self.draw_terminal_window(terminal_ctx);
                 if terminal_ctx.input(|i| i.viewport().close_requested()) {
-                    self.terminal_window_open = false;
+                    self.terminal.window_open = false;
                 }
             },
         );
