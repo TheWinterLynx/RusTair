@@ -56,6 +56,41 @@ impl eframe::App for RusTairApp {
                     }
                 });
 
+                ui.menu_button("Configuration", |ui| {
+                    ui.menu_button("Memory", |ui| {
+                        ui.label(format!(
+                            "Installed RAM: {}",
+                            self.config.machine.ram_size.label()
+                        ));
+                        ui.separator();
+
+                        for ram_size in RamSize::ALL {
+                            let selected = self.config.machine.ram_size == ram_size;
+                            if ui.selectable_label(selected, ram_size.label()).clicked() {
+                                self.apply_memory_configuration(
+                                    ram_size,
+                                    self.config.machine.ram_init,
+                                );
+                                ui.close();
+                            }
+                        }
+
+                        ui.separator();
+                        ui.menu_button("Power-on contents", |ui| {
+                            for ram_init in RamInit::ALL {
+                                let selected = self.config.machine.ram_init == ram_init;
+                                if ui.selectable_label(selected, ram_init.label()).clicked() {
+                                    self.apply_memory_configuration(
+                                        self.config.machine.ram_size,
+                                        ram_init,
+                                    );
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+                });
+
                 ui.separator();
                 if ui.button("ASR-33 TELETYPE").clicked() {
                     self.asr33.window_open = true;
