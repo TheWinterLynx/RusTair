@@ -27,11 +27,11 @@ impl RusTairApp {
                     self.machine.set_running(false);
                     self.machine.reset();
                 }
-                self.tty_tx_started = None;
+                self.asr33.tx_started = None;
                 self.machine.bus.clear_protection();
                 self.machine.bus.load(0, &bytes);
                 self.machine.cpu.pc = 0;
-                self.tty_window_open = true;
+                self.asr33.window_open = true;
                 self.machine.set_running(true);
                 self.status = "Microsoft 4K BASIC loaded and running".into();
             }
