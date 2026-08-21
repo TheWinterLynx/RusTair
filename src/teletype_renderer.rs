@@ -98,29 +98,60 @@ impl RusTairApp {
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
         if legend.is_empty() { return; }
 
-        // Register the overlay to the centre of the photographed top face, not
-        // to the whole cylindrical body. Two-line legends sit a fraction higher
-        // so both rows stay comfortably inside the circular top surface.
+        // Place legends relative to the photographed top face, not the full
+        // cylinder. Multiline legends are painted one line at a time so their
+        // baseline spacing cannot drag the whole block toward the lower edge.
         let multiline = legend.contains('\n');
-        let multiline = legend.contains('\n');
-        let legend_ratio = match (pose, multiline) {
-            (0, true) => 0.290,
-            (0, false) => 0.300,
-            (_, true) => 0.360,
-            (_, false) => 0.370,
-        };
         let special_y_nudge = if special { -2.0 } else { 0.0 };
-        let legend_y = base_y - target_h * (1.0 - legend_ratio) + special_y_nudge;
-        let compact = multiline || legend.len() > 4;
-        let font_factor = if compact { 0.145 } else { 0.225 };
-        let font_size = (114.0 * font_factor * scale).max(5.0);
-        ui.painter().text(
-            origin + Vec2::new(socket_x * scale, legend_y * scale),
-            egui::Align2::CENTER_CENTER,
-            legend,
-            FontId::monospace(font_size),
-            Color32::from_rgb(47, 44, 38),
-        );
+        let text_color = Color32::from_rgb(47, 44, 38);
+
+        if multiline {
+            let face_ratio = if pose == 0 { 0.215 } else { 0.285 };
+            let face_y =
+                base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
+            let line_gap = if special { 14.0 } else { 13.0 };
+            let font_size = (114.0 * 0.145 * scale).max(5.0);
+            let mut lines = legend.lines();
+            let upper = lines.next().unwrap_or("");
+            let lower = lines.next().unwrap_or("");
+
+            ui.painter().text(
+                origin
+                    + Vec2::new(
+                        socket_x * scale,
+                        (face_y - line_gap * 0.5) * scale,
+                    ),
+                egui::Align2::CENTER_CENTER,
+                upper,
+                FontId::monospace(font_size),
+                text_color,
+            );
+            ui.painter().text(
+                origin
+                    + Vec2::new(
+                        socket_x * scale,
+                        (face_y + line_gap * 0.5) * scale,
+                    ),
+                egui::Align2::CENTER_CENTER,
+                lower,
+                FontId::monospace(font_size),
+                text_color,
+            );
+        } else {
+            let face_ratio = if pose == 0 { 0.245 } else { 0.315 };
+            let legend_y =
+                base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
+            let compact = legend.len() > 4;
+            let font_factor = if compact { 0.145 } else { 0.225 };
+            let font_size = (114.0 * font_factor * scale).max(5.0);
+            ui.painter().text(
+                origin + Vec2::new(socket_x * scale, legend_y * scale),
+                egui::Align2::CENTER_CENTER,
+                legend,
+                FontId::monospace(font_size),
+                text_color,
+            );
+        }
     }
 
     fn draw_spacebar_pose(
