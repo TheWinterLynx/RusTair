@@ -178,7 +178,10 @@ impl RusTairApp {
     }
 
     fn process_tty_keyboard(&mut self, ctx: &egui::Context) {
-        let mut bytes = Vec::new();
+        // Each entry keeps the byte sent to the Altair separate from the key cap
+        // that should move on the ASR-33. This matters for control characters:
+        // Ctrl+A sends 0x01, but visually it is still the A key being struck.
+        let mut keystrokes: Vec<(u8, Option<u8>)> = Vec::new();
         let mut any_key = false;
 
         ctx.input(|input| {
@@ -187,25 +190,26 @@ impl RusTairApp {
                     egui::Event::Text(text) => {
                         any_key = true;
                         for b in text.bytes() {
-                            bytes.push(b.to_ascii_uppercase());
+                            let byte = b.to_ascii_uppercase();
+                            keystrokes.push((byte, Some(byte)));
                         }
                     }
                     egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
                         any_key = true;
-                        // A desktop Enter represents the complete "new line"
-                        // action: return the carriage and advance the paper one
-                        // line. The physical ASR-33 RETURN and LINE FEED keys
-                        // remain individually available on the rendered keyboard.
-                        bytes.push(b'\r');
-                        bytes.push(b'\n');
+                        // Desktop Enter is the complete newline action. Animate
+                        // RETURN once while still transmitting the required CR/LF
+                        // pair; otherwise the immediately following LF replaces
+                        // RETURN as the only visible key animation.
+                        keystrokes.push((b'\r', Some(b'\r')));
+                        keystrokes.push((b'\n', None));
                     }
                     egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
                         any_key = true;
-                        bytes.push(0x7f);
+                        keystrokes.push((0x7f, Some(0x7f)));
                     }
                     egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
                         any_key = true;
-                        bytes.push(0x1b);
+                        keystrokes.push((0x1b, Some(0x1b)));
                     }
                     egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.ctrl => {
                         any_key = true;
@@ -225,7 +229,9 @@ impl RusTairApp {
                             egui::Key::Y=>Some(b'Y'), egui::Key::Z=>Some(b'Z'),
                             _=>None,
                         };
-                        if let Some(letter) = letter { bytes.push(letter - 64); }
+                        if let Some(letter) = letter {
+                            keystrokes.push((letter - 64, Some(letter)));
+                        }
                     }
                     _ => {}
                 }
@@ -237,8 +243,10 @@ impl RusTairApp {
             return;
         }
 
-        for byte in bytes {
-            self.animate_keyboard_byte(byte, ctx);
+        for (byte, visual_byte) in keystrokes {
+            if let Some(visual_byte) = visual_byte {
+                self.animate_keyboard_byte(visual_byte, ctx);
+            }
             self.send_tty_byte(byte);
         }
     }
@@ -295,7 +303,13 @@ impl RusTairApp {
                 }
             }
             kind => {
-                if let Some(byte) = teletype::key_to_byte(kind, self.tty.shift_down, self.tty.control_down) {
+                // PC modifiers also affect mouse-clicked ASR-33 keys. Keep them
+                // separate from tty.shift_down/control_down so releasing the PC
+                // keyboard cannot cancel a modifier held on the photographed UI.
+                let modifiers = ctx.input(|input| input.modifiers);
+                let shifted = self.tty.shift_down || modifiers.shift;
+                let controlled = self.tty.control_down || modifiers.ctrl;
+                if let Some(byte) = teletype::key_to_byte(kind, shifted, controlled) {
                     self.send_tty_byte(byte);
                 }
             }
