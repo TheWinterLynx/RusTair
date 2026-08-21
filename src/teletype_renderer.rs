@@ -109,30 +109,27 @@ impl RusTairApp {
             let face_ratio = if pose == 0 { 0.215 } else { 0.285 };
             let face_y =
                 base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
-            let line_gap = if special { 17.0 } else { 19.0 };
             let font_factor = if special { 0.115 } else { 0.130 };
             let font_size = (114.0 * font_factor * scale).max(5.0);
+            // Keep the separation in screen pixels. At small teletype scales
+            // font_size reaches its 5px floor, so scaling line_gap again would
+            // collapse the two rows on top of each other.
+            let line_gap = font_size * if special { 1.35 } else { 1.45 };
+            let legend_x = origin.x + socket_x * scale;
+            let face_screen_y = origin.y + face_y * scale;
             let mut lines = legend.lines();
             let upper = lines.next().unwrap_or("");
             let lower = lines.next().unwrap_or("");
 
             ui.painter().text(
-                origin
-                    + Vec2::new(
-                        socket_x * scale,
-                        (face_y - line_gap * 0.5) * scale,
-                    ),
+                Pos2::new(legend_x, face_screen_y - line_gap * 0.5),
                 egui::Align2::CENTER_CENTER,
                 upper,
                 FontId::monospace(font_size),
                 text_color,
             );
             ui.painter().text(
-                origin
-                    + Vec2::new(
-                        socket_x * scale,
-                        (face_y + line_gap * 0.5) * scale,
-                    ),
+                Pos2::new(legend_x, face_screen_y + line_gap * 0.5),
                 egui::Align2::CENTER_CENTER,
                 lower,
                 FontId::monospace(font_size),
