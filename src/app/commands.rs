@@ -47,9 +47,23 @@ impl RusTairApp {
                 self.machine.bus.clear_protection();
                 self.machine.bus.load(0, &bytes);
                 self.machine.cpu.pc = 0;
+
+                // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
+                // on a completely writable 64 KiB machine and overwrites itself.
+                // The one-shot guard makes only that probe observe FFFFh as
+                // non-writable; it automatically restores normal 64 KiB RAM on
+                // the matching read, so other software still sees full memory.
+                let full_memory_probe_guard =
+                    self.machine.arm_basic32_full_memory_probe_guard();
+
                 self.asr33.window_open = true;
                 self.machine.set_running(true);
-                self.status = "Microsoft 4K BASIC loaded and running".into();
+                self.status = if full_memory_probe_guard {
+                    "Microsoft 4K BASIC loaded and running — 64 KiB memory-probe compatibility active"
+                        .into()
+                } else {
+                    "Microsoft 4K BASIC loaded and running".into()
+                };
             }
             Err(e) => self.status = format!("4K BASIC asset missing: {e}"),
         }
