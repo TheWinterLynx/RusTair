@@ -305,6 +305,7 @@ impl AltairMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SerialBoard;
 
     #[test]
     fn protection_is_per_1k_board() {
@@ -398,32 +399,54 @@ mod tests {
     #[test]
     fn sio_status_tracks_transmit_holding_register() {
         let mut bus = AltairBus::default();
+        assert_eq!(bus.serial_board(), SerialBoard::Sio88);
 
-        assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
+        assert_eq!(bus.input(0x10), 0x00);
 
         bus.output(0x01, b'A');
         assert!(bus.tx_busy());
-        assert_eq!(bus.input(0x10) & 0x02, 0x00);
         assert_eq!(bus.input(0x00) & 0xc0, 0xc0);
         assert_eq!(bus.serial_tx_front(), Some(b'A'));
 
         bus.serial_tx_complete();
         assert!(!bus.tx_busy());
-        assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
     }
 
     #[test]
-    fn receive_status_matches_reference_ports() {
+    fn two_sio_status_tracks_transmit_holding_register() {
+        let mut bus = AltairBus::default();
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+
+        assert_eq!(bus.input(0x10) & 0x02, 0x02);
+        assert_eq!(bus.input(0x00), 0xff);
+
+        bus.output(0x11, b'A');
+        assert!(bus.tx_busy());
+        assert_eq!(bus.input(0x10) & 0x02, 0x00);
+        assert_eq!(bus.serial_tx_front(), Some(b'A'));
+
+        bus.serial_tx_complete();
+        assert!(!bus.tx_busy());
+        assert_eq!(bus.input(0x10) & 0x02, 0x02);
+    }
+
+    #[test]
+    fn receive_status_matches_selected_serial_board() {
         let mut bus = AltairBus::default();
         assert_eq!(bus.input(0x00) & 0x01, 0x01);
-        assert_eq!(bus.input(0x10) & 0x01, 0x00);
 
         bus.serial_receive(b'K');
         assert_eq!(bus.input(0x00) & 0x01, 0x00);
-        assert_eq!(bus.input(0x10) & 0x01, 0x01);
         assert_eq!(bus.input(0x01), b'K');
+
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(bus.input(0x10) & 0x01, 0x00);
+
+        bus.serial_receive(b'2');
+        assert_eq!(bus.input(0x10) & 0x01, 0x01);
+        assert_eq!(bus.input(0x11), b'2');
     }
 
     #[test]
