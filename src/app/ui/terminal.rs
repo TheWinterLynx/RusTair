@@ -156,8 +156,8 @@ impl RusTairApp {
         // Model a one-character receive register. Pasted programs are kept in
         // our host-side queue and are only presented to the Altair after the
         // previous character has been consumed by software. This prevents a
-        // large paste from being dumped into serial_rx all at once.
-        if !self.machine.bus.serial_rx.is_empty() {
+        // large paste from being dumped into the receive register all at once.
+        if !self.machine.bus.serial_rx_empty() {
             ctx.request_repaint_after(Duration::from_millis(1));
             return;
         }
@@ -170,7 +170,7 @@ impl RusTairApp {
         }
 
         if let Some(byte) = self.terminal_input_queue.pop_front() {
-            self.machine.bus.serial_rx.push_back(byte & 0x7f);
+            self.machine.bus.serial_receive(byte & 0x7f);
         }
 
         if self.terminal_input_queue.is_empty() {
@@ -352,7 +352,7 @@ impl RusTairApp {
                 "TEXT TERMINAL  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
                 self.terminal_speed.label(),
                 self.terminal_input_queue.len(),
-                self.machine.bus.serial_rx.len(),
+                self.machine.bus.serial_rx_len(),
                 if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
                 self.terminal_output.len(),
             ));
