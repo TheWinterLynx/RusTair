@@ -290,10 +290,8 @@ impl RusTairApp {
             + feed_offset)
             .max(machine.top());
 
-        // The physical sheet continues well below the print line and passes
-        // behind the moving typewheel. Keeping this tail in the paper layer
-        // (body -> paper -> typewheel) makes it look as if the sheet is fed up
-        // from inside the mechanism instead of starting at the glass edge.
+        // The physical sheet continues below the print line and behind the
+        // moving typewheel, with a little overlap under the foreground lip.
         const PAPER_TAIL_DEPTH: f32 = 0.080;
         let sheet_bottom =
             origin.y + (teletype::PRINT_TOP + TTY_H * PAPER_TAIL_DEPTH) * scale;
@@ -405,12 +403,9 @@ impl RusTairApp {
         let right = (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH + side_margin)
             .min(TTY_W);
 
-        // Only restore the lower front lip. The previous foreground slice began
-        // above PRINT_TOP and covered the whole paper tail, making the sheet
-        // appear to start at the platen. Starting below the typewheel sill keeps
-        // the paper visible behind the rotor while still letting it disappear
-        // naturally into the machine at the bottom.
-        let top = (teletype::PRINT_TOP + TTY_H * 0.067).max(0.0);
+        // Restore the front lip slightly higher so the sheet appears to emerge
+        // directly from under the rotor rather than a few pixels too low.
+        let top = (teletype::PRINT_TOP + TTY_H * 0.061).max(0.0);
         let bottom = (teletype::PRINT_TOP + TTY_H * 0.086).min(TTY_H);
 
         let target = Rect::from_min_max(
@@ -620,21 +615,9 @@ impl RusTairApp {
             Color32::from_rgb(right_shade, right_shade, right_shade),
         );
 
-        if let Some(body) = &self.tex.tty_body {
-            let lip_top = sill_y - TTY_H * 0.004;
-            let lip_bottom = sill_y + TTY_H * 0.012;
-            let lip_left = (center_x - head_width * 0.72).max(0.0);
-            let lip_right = (center_x + head_width * 0.72).min(TTY_W);
-            let lip_target = Rect::from_min_max(
-                origin + Vec2::new(lip_left * scale, lip_top * scale),
-                origin + Vec2::new(lip_right * scale, lip_bottom * scale),
-            );
-            let lip_source = Rect::from_min_max(
-                Pos2::new(lip_left / TTY_W, lip_top / TTY_H),
-                Pos2::new(lip_right / TTY_W, lip_bottom / TTY_H),
-            );
-            ui.painter().image(body.id(), lip_target, lip_source, Color32::WHITE);
-        }
+        // Do not paste a local body slice over the head: on the old dark well it
+        // was invisible, but over the extended paper it becomes an opaque black
+        // rectangle. The global paper foreground already provides the occlusion.
 
         if lift > 0.0 || returning {
             ui.ctx().request_repaint_after(Duration::from_millis(8));
