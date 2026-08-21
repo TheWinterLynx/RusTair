@@ -102,11 +102,12 @@ impl RusTairApp {
         // to the whole cylindrical body. Two-line legends sit a fraction higher
         // so both rows stay comfortably inside the circular top surface.
         let multiline = legend.contains('\n');
+        let multiline = legend.contains('\n');
         let legend_ratio = match (pose, multiline) {
-            (0, true) => 0.315,
-            (0, false) => 0.325,
-            (_, true) => 0.385,
-            (_, false) => 0.395,
+            (0, true) => 0.290,
+            (0, false) => 0.300,
+            (_, true) => 0.360,
+            (_, false) => 0.370,
         };
         let special_y_nudge = if special { -2.0 } else { 0.0 };
         let legend_y = base_y - target_h * (1.0 - legend_ratio) + special_y_nudge;
