@@ -1,0 +1,46 @@
+name: modular-refactor-migration
+
+on:
+  push:
+    branches:
+      - agent/modular-architecture-refactor
+
+permissions:
+  contents: write
+
+jobs:
+  refactor-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/modular-architecture-refactor
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply one-shot source migration
+        run: python scripts/refactor_modular.py
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Commit validated refactor
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src scripts/refactor_modular.py .github/workflows/refactor-modular.yml
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "Refactor source tree into real Rust modules"
+            git push origin HEAD:agent/modular-architecture-refactor
+          }
