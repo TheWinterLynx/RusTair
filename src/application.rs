@@ -142,18 +142,18 @@ impl RusTairApp {
                     pixel[3] = ((pixel[3] as u16 * 72) / 255) as u8;
                 }
 
-                // Keep the square asset undistorted, but make the cover a little
-                // narrower and lower so its side walls sit inside the ASR-33
-                // opening and its lower lip aligns with the physical glass sill.
-                let glass_side = (image.width() as f32 * 0.825).round() as u32;
+                // Second-pass calibration from the rendered screenshot: shrink
+                // the square overlay further and move it lower so the physical
+                // cover fits the ASR-33 opening instead of floating above it.
+                let glass_side = (image.width() as f32 * 0.790).round() as u32;
                 let glass = image::imageops::resize(
                     &glass,
                     glass_side,
                     glass_side,
                     image::imageops::FilterType::Lanczos3,
                 );
-                let glass_x = (image.width() as f32 * 0.086).round() as i64;
-                let glass_y = -((image.height() as f32 * 0.132).round() as i64);
+                let glass_x = (image.width() as f32 * 0.106).round() as i64;
+                let glass_y = -((image.height() as f32 * 0.098).round() as i64);
                 image::imageops::overlay(&mut image, &glass, glass_x, glass_y);
             }
         }
