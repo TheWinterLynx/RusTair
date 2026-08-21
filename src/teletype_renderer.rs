@@ -275,6 +275,22 @@ impl RusTairApp {
         (font_size * 1.03).max(6.0)
     }
 
+    fn paper_emergence_y(&self) -> f32 {
+        const REST_TOP_RATIO: f32 = 0.355;
+        const REST_WIDTH_SCALE: f32 = 0.96;
+        const WHEEL_FRACTION: f32 = 0.70;
+
+        let Some(head) = &self.tex.tty_head else {
+            return teletype::PRINT_TOP + TTY_H * 0.058;
+        };
+        let texture_size = head.size_vec2();
+        let head_aspect = texture_size.y / texture_size.x.max(1.0);
+        let head_width = TTY_W * 0.060 * REST_WIDTH_SCALE;
+        let head_height = head_width * head_aspect;
+
+        TTY_H * REST_TOP_RATIO + head_height * WHEEL_FRACTION
+    }
+
     fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
         if self.tty.output.is_empty() { return; }
 
@@ -290,11 +306,11 @@ impl RusTairApp {
             + feed_offset)
             .max(machine.top());
 
-        // The physical sheet continues below the print line and behind the
-        // moving typewheel, with a little overlap under the foreground lip.
-        const PAPER_TAIL_DEPTH: f32 = 0.080;
-        let sheet_bottom =
-            origin.y + (teletype::PRINT_TOP + TTY_H * PAPER_TAIL_DEPTH) * scale;
+        // Tie the lower edge to the real rest-position base of the typewheel
+        // sprite. A tiny overlap is hidden by the foreground body slice below.
+        let emergence_y = self.paper_emergence_y();
+        const PAPER_OVERLAP: f32 = 3.0;
+        let sheet_bottom = origin.y + (emergence_y + PAPER_OVERLAP) * scale;
         if sheet_top >= sheet_bottom { return; }
 
         let char_width = self.tty.char_width_image_px();
@@ -339,15 +355,17 @@ impl RusTairApp {
             );
         }
 
-        let contact_y = origin.y + (teletype::PRINT_TOP - TTY_H * 0.010) * scale;
-        let contact_h = (TTY_H * 0.008 * scale).max(1.0);
+        // Keep the platen/contact shade immediately above the rotor base instead
+        // of leaving a broad floating band across the middle of the sheet.
+        let contact_y = origin.y + emergence_y * scale;
+        let contact_h = (3.0 * scale).max(0.6);
         painter.rect_filled(
             Rect::from_min_max(
                 Pos2::new(bottom_left + 2.0 * scale, contact_y - contact_h),
                 Pos2::new(bottom_right - 2.0 * scale, contact_y),
             ),
             0.0,
-            Color32::from_rgba_unmultiplied(38, 34, 30, 24),
+            Color32::from_rgba_unmultiplied(38, 34, 30, 16),
         );
 
         if sheet_top > machine.top() + 1.0 {
@@ -403,10 +421,10 @@ impl RusTairApp {
         let right = (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH + side_margin)
             .min(TTY_W);
 
-        // Restore the front lip slightly higher so the sheet appears to emerge
-        // directly from under the rotor rather than a few pixels too low.
-        let top = (teletype::PRINT_TOP + TTY_H * 0.061).max(0.0);
-        let bottom = (teletype::PRINT_TOP + TTY_H * 0.086).min(TTY_H);
+        // The body begins exactly at the rest-position base of the rotor. This
+        // masks the small paper overlap and makes the sheet emerge from behind it.
+        let top = self.paper_emergence_y().clamp(0.0, TTY_H);
+        let bottom = (top + TTY_H * 0.025).min(TTY_H);
 
         let target = Rect::from_min_max(
             origin + Vec2::new(left * scale, top * scale),
