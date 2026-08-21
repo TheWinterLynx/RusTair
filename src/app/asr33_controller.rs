@@ -134,7 +134,7 @@ impl RusTairApp {
         if self.tty.mode == TtyMode::Off { return; }
         let byte = byte & 0x7f;
         self.tty.last_key_byte = Some(byte);
-        self.machine.bus.serial_rx.push_back(byte);
+        self.machine.bus.serial_receive(byte);
         let events = self.tty.print_local(byte);
         self.play_print_events(&events);
     }
@@ -170,7 +170,7 @@ impl RusTairApp {
             // Feed the Altair exactly like keyboard-originated serial input, but
             // at the real Model 33 rate of ten characters per second. Answerback
             // does not strike the local printer; it is a transmitter mechanism.
-            self.machine.bus.serial_rx.push_back(byte & 0x7f);
+            self.machine.bus.serial_receive(byte & 0x7f);
         }
 
         if self.tty_answerback_queue.is_empty() {
@@ -186,7 +186,7 @@ impl RusTairApp {
 
         if let Some(started) = self.tty_tx_started {
             if now.duration_since(started) >= TTY_CHAR_TIME {
-                self.machine.bus.serial_tx.pop_front();
+                self.machine.bus.serial_tx_complete();
                 self.tty_tx_started = None;
             } else {
                 ctx.request_repaint_after(Duration::from_millis(5));
@@ -209,7 +209,7 @@ impl RusTairApp {
         }
 
         if self.tty_tx_started.is_none() {
-            if let Some(&byte) = self.machine.bus.serial_tx.front() {
+            if let Some(byte) = self.machine.bus.serial_tx_front() {
                 let was_off = self.tty.mode == TtyMode::Off;
                 let events = self.tty.print_serial(byte);
                 if was_off && self.tty.mode == TtyMode::Line {
