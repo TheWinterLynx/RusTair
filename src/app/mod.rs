@@ -1,6 +1,5 @@
 mod asr33_controller;
 mod runtime;
-mod serial_router;
 mod terminal_serial;
 mod ui;
 
@@ -10,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
-use self::serial_router::{SerialEndpoint, SerialRouter};
 use self::ui::terminal::TerminalSpeed;
 use crate::audio::AudioEngine;
+use crate::io::serial_router::{SerialEndpoint, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
