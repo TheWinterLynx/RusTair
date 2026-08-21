@@ -44,6 +44,7 @@ impl RusTairApp {
                     self.machine.reset();
                 }
                 self.asr33.tx_started = None;
+                self.terminal.tx_started = None;
                 self.machine.bus.clear_protection();
                 self.machine.bus.load(0, &bytes);
                 self.machine.cpu.pc = 0;
@@ -63,7 +64,16 @@ impl RusTairApp {
                     false
                 };
 
-                self.asr33.window_open = true;
+                // The bundled BASIC console drivers use the installed board's
+                // primary serial interface (Port 0). Opening BASIC must not move
+                // any cable: simply reveal whichever RusTair device is physically
+                // attached to that port, if any.
+                match self.serial_router.device_on(SerialConnection::Port0) {
+                    Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
+                    Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
+                    None => {}
+                }
+
                 self.machine.set_running(true);
                 self.status = if full_memory_probe_guard {
                     "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active"
