@@ -4,19 +4,9 @@ impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
-        // Keep emulation work bounded to roughly one visual frame. The previous
-        // 50 ms / 200k-cycle catch-up window could occasionally execute a large
-        // CPU burst on the UI thread after an OS scheduling hiccup, producing a
-        // visible whole-panel stutter/flash. At normal cadence this still runs
-        // the 2 MHz CPU at the requested rate (about 32k cycles per 16 ms frame),
-        // but deliberately drops excessive backlog instead of blocking drawing.
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
-        // Preserve the existing user-visible rule that closing the text terminal
-        // hands the serial line back to the ASR-33, but make that ownership
-        // transition explicit instead of inferring routing everywhere from a
-        // window boolean.
         if !self.terminal.window_open
             && self.serial_router.endpoint() == SerialEndpoint::TextTerminal
         {
@@ -31,8 +21,7 @@ impl eframe::App for RusTairApp {
 
         if let Some(until) = self.reset_flash_until {
             if now >= until {
-                self.machine.address_leds = 0;
-                self.machine.bus.data_leds = 0;
+                self.machine.set_panel_lamps(0, 0);
                 self.reset_flash_until = None;
             } else {
                 ctx.request_repaint_after(PANEL_FRAME);
@@ -72,8 +61,6 @@ impl eframe::App for RusTairApp {
                     self.asr33.window_open = true;
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
-                    // Cancel any in-progress ASR-33 holding-register timer when
-                    // explicitly handing the serial line to the text terminal.
                     self.asr33.tx_started = None;
                     self.terminal.tx_started = None;
                     self.serial_router.select(SerialEndpoint::TextTerminal);
