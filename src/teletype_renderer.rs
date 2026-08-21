@@ -35,18 +35,22 @@ impl RusTairApp {
         pose: u8,
         legend_override: Option<&str>,
     ) {
-        // The GIMP poses are authored by shortening the physical cap. Do not
-        // anchor them by their old generated-image bottom coordinates: that made
-        // a press look as if the key rose out of the socket. Instead every pose
-        // is centred on the calibrated socket X and receives an explicit
-        // downward travel as the cap is depressed.
-        const KEY_CANVAS_WIDTH: f32 = 170.0; // ~12% larger than the previous render
-        const REST_BOTTOM_OFFSET: f32 = 38.0;
+        // The current GIMP assets already encode the vertical key travel: MID
+        // and DOWN were made by shortening the cap upward from a common base.
+        // Therefore every pose MUST share one fixed lower anchor at the socket.
+        // Adding a pose-dependent Y translation made the lower edge move too,
+        // which visually compressed the key from both ends instead of making
+        // the top descend into the keyboard.
+        const KEY_CANVAS_WIDTH: f32 = 170.0;
+        // Seat the cap a little deeper than the previous pass. This hides the
+        // exposed lower rim of the clean-body socket while retaining a small
+        // contact shadow around the sides.
+        const SOCKET_BASE_OFFSET: f32 = 50.0;
 
-        let (texture, travel_y, legend_ratio) = match pose {
-            1 => (&self.tex.tty_key_mid, 18.0, 0.43),
-            2 => (&self.tex.tty_key_down, 36.0, 0.50),
-            _ => (&self.tex.tty_key_up, 0.0, 0.36),
+        let (texture, legend_ratio) = match pose {
+            1 => (&self.tex.tty_key_mid, 0.43),
+            2 => (&self.tex.tty_key_down, 0.50),
+            _ => (&self.tex.tty_key_up, 0.36),
         };
         let Some(texture) = texture else { return; };
 
@@ -64,12 +68,17 @@ impl RusTairApp {
         };
         let target_w = KEY_CANVAS_WIDTH * width_factor;
         let target_h = KEY_CANVAS_WIDTH * texture_aspect;
-        let bottom_y = socket_y + REST_BOTTOM_OFFSET + travel_y;
+
+        // Critical registration rule: the bottom of UP/MID/DOWN is identical.
+        // The GIMP artwork supplies the decreasing height itself, so the top
+        // face moves downward naturally while the key remains seated in the
+        // same physical socket.
+        let base_y = socket_y + SOCKET_BASE_OFFSET;
         let target = Rect::from_min_size(
             origin
                 + Vec2::new(
                     (socket_x - target_w * 0.5) * scale,
-                    (bottom_y - target_h) * scale,
+                    (base_y - target_h) * scale,
                 ),
             Vec2::new(target_w * scale, target_h * scale),
         );
@@ -86,10 +95,11 @@ impl RusTairApp {
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
         if legend.is_empty() { return; }
 
-        // The overlay follows the physical top face: as MID/DOWN move into the
-        // keyboard, their legends move down with them instead of floating at a
-        // fixed logical hit-box coordinate.
-        let legend_y = bottom_y - target_h * (1.0 - legend_ratio);
+        // Keep the overlay attached to the upper face encoded in each asset.
+        // Because the sprite base no longer moves between poses, the legend now
+        // follows only the real top-face descent and cannot appear to rise out
+        // of the socket or collapse from below.
+        let legend_y = base_y - target_h * (1.0 - legend_ratio);
         let compact = legend.contains('\n') || legend.len() > 4;
         let font_factor = if compact { 0.145 } else { 0.225 };
         let font_size = (114.0 * font_factor * scale).max(5.0);
