@@ -1,4 +1,5 @@
 use super::super::*;
+use super::front_panel_assets::SwitchSpriteId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SwitchPosition {
@@ -11,32 +12,6 @@ enum SwitchPosition {
 enum SwitchKind {
     TwoPosition,
     ThreePosition,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum SwitchSpriteId {
-    WhiteUp,
-    WhiteCenter,
-    WhiteDown,
-}
-
-#[derive(Clone, Copy)]
-enum SwitchAlphaMode {
-    Preserve,
-    RemoveBlack,
-}
-
-const _: SwitchAlphaMode = SwitchAlphaMode::RemoveBlack;
-
-#[derive(Clone, Copy)]
-struct SwitchSpriteAsset {
-    path: &'static str,
-    canvas_size: (f32, f32),
-    crop_min: (f32, f32),
-    crop_max: (f32, f32),
-    pivot: (f32, f32),
-    source_to_panel: f32,
-    alpha_mode: SwitchAlphaMode,
 }
 
 #[derive(Clone, Copy)]
@@ -63,46 +38,6 @@ impl SwitchConfig {
             SwitchPosition::Up => Some(self.up),
             SwitchPosition::Center => self.center,
             SwitchPosition::Down => Some(self.down),
-        }
-    }
-}
-
-impl SwitchSpriteId {
-    fn asset(self) -> SwitchSpriteAsset {
-        const CANVAS: (f32, f32) = (32.0, 96.0);
-        const CROP_MIN: (f32, f32) = (0.0, 0.0);
-        const CROP_MAX: (f32, f32) = (32.0, 96.0);
-        const SOCKET_PIVOT: (f32, f32) = (15.5, 47.5);
-        const SOURCE_TO_PANEL: f32 = 1.30;
-
-        match self {
-            SwitchSpriteId::WhiteUp => SwitchSpriteAsset {
-                path: "assets/panels/white-pivot/switch_up.png",
-                canvas_size: CANVAS,
-                crop_min: CROP_MIN,
-                crop_max: CROP_MAX,
-                pivot: SOCKET_PIVOT,
-                source_to_panel: SOURCE_TO_PANEL,
-                alpha_mode: SwitchAlphaMode::Preserve,
-            },
-            SwitchSpriteId::WhiteCenter => SwitchSpriteAsset {
-                path: "assets/panels/white-pivot/switch_center.png",
-                canvas_size: CANVAS,
-                crop_min: CROP_MIN,
-                crop_max: CROP_MAX,
-                pivot: SOCKET_PIVOT,
-                source_to_panel: SOURCE_TO_PANEL,
-                alpha_mode: SwitchAlphaMode::Preserve,
-            },
-            SwitchSpriteId::WhiteDown => SwitchSpriteAsset {
-                path: "assets/panels/white-pivot/switch_down.png",
-                canvas_size: CANVAS,
-                crop_min: CROP_MIN,
-                crop_max: CROP_MAX,
-                pivot: SOCKET_PIVOT,
-                source_to_panel: SOURCE_TO_PANEL,
-                alpha_mode: SwitchAlphaMode::Preserve,
-            },
         }
     }
 }
@@ -154,55 +89,7 @@ const SWITCH_PROTECT: SwitchConfig = switch_config("PROTECT", 1152.6, 563.4, 76.
 const SWITCH_AUX1: SwitchConfig = switch_config("AUX 1", 1285.8, 559.8, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
 const SWITCH_AUX2: SwitchConfig = switch_config("AUX 2", 1423.8, 562.2, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
 
-const CONTROL_SWITCHES: [SwitchConfig; 9] = [
-    SWITCH_POWER, SWITCH_RUN_STOP, SWITCH_SINGLE_STEP, SWITCH_EXAMINE,
-    SWITCH_DEPOSIT, SWITCH_RESET, SWITCH_PROTECT, SWITCH_AUX1, SWITCH_AUX2,
-];
-
 impl RusTairApp {
-    fn load_switch_sprite_texture(
-        ctx: &egui::Context,
-        sprite: SwitchSpriteId,
-    ) -> Option<egui::TextureHandle> {
-        let asset = sprite.asset();
-        let bytes = std::fs::read(asset.path).ok()?;
-        let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-        if matches!(asset.alpha_mode, SwitchAlphaMode::RemoveBlack) {
-            for pixel in image.pixels_mut() {
-                let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
-                if brightness <= 2 {
-                    pixel[3] = 0;
-                } else if brightness < 16 {
-                    pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
-                }
-            }
-        }
-        let size = [image.width() as usize, image.height() as usize];
-        Some(ctx.load_texture(
-            asset.path,
-            egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
-            egui::TextureOptions::LINEAR,
-        ))
-    }
-
-    pub(in crate::app) fn load_switch_textures(
-        ctx: &egui::Context,
-    ) -> HashMap<&'static str, egui::TextureHandle> {
-        let mut textures = HashMap::new();
-        for switch in SENSE_SWITCHES.iter().chain(CONTROL_SWITCHES.iter()) {
-            for position in [SwitchPosition::Up, SwitchPosition::Center, SwitchPosition::Down] {
-                let Some(pose) = switch.pose(position) else { continue; };
-                let sprite = pose.sprite;
-                let key = sprite.asset().path;
-                if textures.contains_key(key) { continue; }
-                if let Some(texture) = Self::load_switch_sprite_texture(ctx, sprite) {
-                    textures.insert(key, texture);
-                }
-            }
-        }
-        textures
-    }
-
     fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, on: bool) {
         if !self.machine.powered || !on { return; }
         let center = origin + Vec2::new(x * scale, y * scale);
