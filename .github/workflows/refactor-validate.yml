@@ -1,0 +1,20 @@
+name: validate-modular-refactor
+
+on:
+  push:
+    branches:
+      - agent/modular-architecture-refactor
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --all-targets
+      - name: Build release
+        run: cargo build --release
