@@ -18,6 +18,10 @@ const TTY_H: f32 = teletype::IMAGE_H;
 
 const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(100);
+// A Model 33 answer-back drum has a finite coded message. The technical manual
+// specifies that answer-back messages are preceded by CR/LF; this 15-character
+// sequence fits comfortably within the drum and gives RusTair a period identity.
+const TTY_ANSWERBACK: &[u8] = b"\r\nRUSTAIR ASR33";
 const KEY_TAP_TIME: Duration = Duration::from_millis(50);
 const PRINT_HEAD_STRIKE_TIME: Duration = Duration::from_millis(84);
 const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
@@ -89,6 +93,8 @@ struct RusTairApp {
     terminal_rx_next_at: Option<Instant>,
     terminal_tx_started: Option<Instant>,
     tty_tx_started: Option<Instant>,
+    tty_answerback_queue: VecDeque<u8>,
+    tty_answerback_next_at: Option<Instant>,
     audio: AudioEngine,
     last_tick: Instant,
     last_tape_tick: Instant,
@@ -265,6 +271,8 @@ impl RusTairApp {
             terminal_rx_next_at: None,
             terminal_tx_started: None,
             tty_tx_started: None,
+            tty_answerback_queue: VecDeque::new(),
+            tty_answerback_next_at: None,
             audio: AudioEngine::new(),
             last_tick: now,
             last_tape_tick: now,
