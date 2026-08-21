@@ -150,7 +150,7 @@ pub const KEYS: &[Key] = &[
 
     // Spacebar visual/hit target calibrated to the photographed long socket.
     // The previous position sat a few pixels high and slightly left at runtime.
-    Key::new(KeyKind::Space, 1244.0, 2640.0, 671.0, 120.0),
+    Key::new(KeyKind::Space, 1220.0, 2652.0, 671.0, 120.0),
 ];
 
 pub fn hit_test(x: f32, y: f32) -> Option<&'static Key> {
