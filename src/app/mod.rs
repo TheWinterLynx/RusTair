@@ -1,4 +1,5 @@
 mod asr33_controller;
+mod commands;
 mod runtime;
 mod terminal_serial;
 mod terminal_state;
