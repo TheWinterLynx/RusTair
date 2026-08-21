@@ -16,7 +16,6 @@ pub(in crate::app) struct Tex {
     pub(in crate::app) tty_keys: Option<egui::TextureHandle>,
     pub(in crate::app) tty_key_up: Option<egui::TextureHandle>,
     pub(in crate::app) tty_key_mid: Option<egui::TextureHandle>,
-    pub(in crate::app) tty_key_down: Option<egui::TextureHandle>,
     pub(in crate::app) tty_spacebar_up: Option<egui::TextureHandle>,
     pub(in crate::app) tty_spacebar_mid: Option<egui::TextureHandle>,
     pub(in crate::app) tty_head: Option<egui::TextureHandle>,
@@ -46,11 +45,6 @@ impl Tex {
                 ctx,
                 "tty-key-mid",
                 "assets/asr33_key_mid.png",
-            ),
-            tty_key_down: Self::load_key_pose_texture(
-                ctx,
-                "tty-key-down",
-                "assets/asr33_key_down.png",
             ),
             tty_spacebar_up: Self::load_key_pose_texture(
                 ctx,
