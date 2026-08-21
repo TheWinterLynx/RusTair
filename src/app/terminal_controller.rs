@@ -1,9 +1,9 @@
 use super::*;
 
 impl RusTairApp {
-    /// Queue host text for delivery to the Altair through the selected serial
-    /// endpoint. Text normalization and queue state belong to TerminalState;
-    /// this controller only applies machine/application policy.
+    /// Queue host text for delivery to the Altair through the Text Terminal's
+    /// currently selected physical serial connection. Text may remain queued
+    /// while disconnected and starts flowing once a cable is attached.
     pub(in crate::app) fn terminal_enqueue_text(
         &mut self,
         text: &str,
@@ -23,13 +23,12 @@ impl RusTairApp {
             self.terminal.clear_input_timing_if_empty();
             return;
         }
-        if !self.machine.powered {
+        if !self.machine.powered || !self.terminal_connection().is_connected() {
             return;
         }
 
-        // Model a one-character receive register. On 88-2SIO the text terminal
-        // is physically attached to Port 1, so its RX register is independent
-        // from the ASR-33 attached to Port 0.
+        // Model a one-character receive register on whichever physical port the
+        // Text Terminal is currently attached to.
         if !self.terminal_serial_rx_empty() {
             ctx.request_repaint_after(Duration::from_millis(1));
             return;
