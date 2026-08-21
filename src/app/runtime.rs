@@ -14,7 +14,7 @@ impl eframe::App for RusTairApp {
         self.last_tick = now;
 
         self.update_paper_tape();
-        if self.terminal_window_open {
+        if self.serial_router.endpoint() == SerialEndpoint::TextTerminal {
             self.process_terminal_input(ctx);
         }
 
@@ -34,14 +34,12 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        // The two serial displays are alternative endpoints. The ASR-33 path
-        // keeps its fixed 100 ms mechanical character interval (10 cps), while
-        // the text terminal uses its independently selectable baud rate.
-        if self.terminal_window_open {
-            self.process_terminal_serial(ctx);
-        } else {
-            self.process_tty_serial(ctx);
-            self.process_tty_answerback(ctx);
+        match self.serial_router.endpoint() {
+            SerialEndpoint::InternalAsr33 => {
+                self.process_tty_serial(ctx);
+                self.process_tty_answerback(ctx);
+            }
+            SerialEndpoint::TextTerminal => self.process_terminal_serial(ctx),
         }
         self.update_teletype_mechanics(ctx);
 
@@ -72,11 +70,10 @@ impl eframe::App for RusTairApp {
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
                     // Cancel any in-progress ASR-33 holding-register timer when
-                    // handing the serial line to the text terminal. The ASR-33
-                    // algorithm itself remains unchanged and will start a fresh
-                    // mechanical interval when the text terminal is closed.
+                    // explicitly handing the serial line to the text terminal.
                     self.tty_tx_started = None;
                     self.terminal_tx_started = None;
+                    self.serial_router.select(SerialEndpoint::TextTerminal);
                     self.terminal_window_open = true;
                 }
                 ui.separator();
