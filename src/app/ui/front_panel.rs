@@ -37,8 +37,6 @@ enum SwitchAlphaMode {
     RemoveBlack,
 }
 
-// Keep the optional black-background cleanup path part of the supported asset
-// pipeline even though the active switch set currently preserves alpha.
 const _: SwitchAlphaMode = SwitchAlphaMode::RemoveBlack;
 
 #[derive(Clone, Copy)]
@@ -82,11 +80,6 @@ impl SwitchConfig {
 
 impl SwitchSpriteId {
     fn asset(self) -> SwitchSpriteAsset {
-        // These are the aligned 32x96 sprites from agent/aligned-switch-sprites.
-        // All three states use exactly the same fixed socket pivot. The
-        // 1.30 panel scale makes the 32px-wide fixed base render at 41.6 panel
-        // pixels, slightly larger than the ~39px panel socket so the artwork
-        // fully covers the socket underneath while only the lever appears to move.
         const CANVAS: (f32, f32) = (32.0, 96.0);
         const CROP_MIN: (f32, f32) = (0.0, 0.0);
         const CROP_MAX: (f32, f32) = (32.0, 96.0);
@@ -143,72 +136,34 @@ const fn switch_config(
     SwitchConfig { name, socket: (x, y), hit_size: (hit_w, hit_h), kind, up, center, down }
 }
 
-// Sense switches are indexed by the actual 8080 bit number: [0] = A0 on the
-// far right, [15] = A15 on the far left. Edit each pose's offset/scale here.
 const SENSE_SWITCHES: [SwitchConfig; 16] = [
-    switch_config("A0",  1665.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A1",  1597.8, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A2",  1527.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A3",  1426.2, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A4",  1359.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A5",  1290.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A6",  1192.2, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A7",  1122.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A8",  1053.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A9",   953.4, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A10",  883.8, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A11",  816.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A12",  718.2, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A13",  648.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A14",  576.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
-    switch_config("A15",  480.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A0", 1665.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A1", 1597.8, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A2", 1527.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A3", 1426.2, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A4", 1359.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A5", 1290.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A6", 1192.2, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A7", 1122.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A8", 1053.0, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A9", 953.4, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A10", 883.8, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A11", 816.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A12", 718.2, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A13", 648.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A14", 576.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
+    switch_config("A15", 480.6, 425.8, 72.0, 92.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0)),
 ];
 
-const SWITCH_POWER: SwitchConfig = switch_config(
-    "POWER", 151.8, 562.2, 76.0, 96.0, SwitchKind::TwoPosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None,
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_RUN_STOP: SwitchConfig = switch_config(
-    "RUN / STOP", 477.0, 562.2, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_SINGLE_STEP: SwitchConfig = switch_config(
-    "SINGLE STEP", 610.2, 561.0, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_EXAMINE: SwitchConfig = switch_config(
-    "EXAMINE", 748.2, 562.2, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_DEPOSIT: SwitchConfig = switch_config(
-    "DEPOSIT", 885.0, 562.2, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_RESET: SwitchConfig = switch_config(
-    "RESET", 1018.2, 559.8, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_PROTECT: SwitchConfig = switch_config(
-    "PROTECT", 1152.6, 563.4, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_AUX1: SwitchConfig = switch_config(
-    "AUX 1", 1285.8, 559.8, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
-const SWITCH_AUX2: SwitchConfig = switch_config(
-    "AUX 2", 1423.8, 562.2, 76.0, 96.0, SwitchKind::ThreePosition,
-    pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)),
-    pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0),
-);
+const SWITCH_POWER: SwitchConfig = switch_config("POWER", 151.8, 562.2, 76.0, 96.0, SwitchKind::TwoPosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), None, pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_RUN_STOP: SwitchConfig = switch_config("RUN / STOP", 477.0, 562.2, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_SINGLE_STEP: SwitchConfig = switch_config("SINGLE STEP", 610.2, 561.0, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_EXAMINE: SwitchConfig = switch_config("EXAMINE", 748.2, 562.2, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_DEPOSIT: SwitchConfig = switch_config("DEPOSIT", 885.0, 562.2, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_RESET: SwitchConfig = switch_config("RESET", 1018.2, 559.8, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_PROTECT: SwitchConfig = switch_config("PROTECT", 1152.6, 563.4, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_AUX1: SwitchConfig = switch_config("AUX 1", 1285.8, 559.8, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
+const SWITCH_AUX2: SwitchConfig = switch_config("AUX 2", 1423.8, 562.2, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
 
 const CONTROL_SWITCHES: [SwitchConfig; 9] = [
     SWITCH_POWER, SWITCH_RUN_STOP, SWITCH_SINGLE_STEP, SWITCH_EXAMINE,
@@ -339,7 +294,7 @@ impl RusTairApp {
 
     pub(in crate::app) fn set_altair_power(&mut self, on: bool) {
         self.machine.power(on);
-        self.tty_tx_started = None;
+        self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
             self.machine.address_leds = 0xffff;
@@ -383,7 +338,7 @@ impl RusTairApp {
         if let Some(next) = self.momentary_switch(ui, origin, scale, SWITCH_DEPOSIT, "DEPOSIT / DEPOSIT NEXT") { self.machine.deposit(next); }
         if self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR").is_some() {
             self.machine.reset();
-            self.tty_tx_started = None;
+            self.asr33.tx_started = None;
             self.machine.address_leds = 0xffff;
             self.machine.bus.data_leds = 0xff;
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
