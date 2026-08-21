@@ -1,20 +1,16 @@
+mod memory;
+
 use std::collections::VecDeque;
 
-use rand::RngCore;
-
 use crate::cpu8080::{Bus, Cpu8080};
+use memory::Memory;
 
-pub const MEM_SIZE: usize = 8 * 1024;
+pub use memory::{MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
+
 pub const CLOCK_HZ: u32 = 2_000_000;
 
-// The captured simulator models 8 KiB of RAM. For the original front-panel
-// PROTECT/UNPROTECT function we represent that RAM as eight MITS-style 1 KiB
-// static-memory boards, each with its own protection latch.
-pub const MEMORY_BOARD_SIZE: usize = 1024;
-pub const MEMORY_BOARD_COUNT: usize = MEM_SIZE / MEMORY_BOARD_SIZE;
-
 pub struct AltairBus {
-    pub memory: [u8; MEM_SIZE],
+    memory: Memory,
     pub panel_switches: u16,
     pub data_leds: u8,
     pub serial_rx: VecDeque<u8>,
@@ -22,18 +18,16 @@ pub struct AltairBus {
     /// the byte here until the mechanical print interval has elapsed. That is
     /// how the status ports expose BUSY/READY to software running on the 8080.
     pub serial_tx: VecDeque<u8>,
-    pub memory_protected: [bool; MEMORY_BOARD_COUNT],
 }
 
 impl Default for AltairBus {
     fn default() -> Self {
         let mut s = Self {
-            memory: [0; MEM_SIZE],
+            memory: Memory::default(),
             panel_switches: 0,
             data_leds: 0,
             serial_rx: VecDeque::new(),
             serial_tx: VecDeque::new(),
-            memory_protected: [false; MEMORY_BOARD_COUNT],
         };
         s.randomize();
         s
@@ -42,40 +36,30 @@ impl Default for AltairBus {
 
 impl AltairBus {
     pub fn randomize(&mut self) {
-        rand::rng().fill_bytes(&mut self.memory);
+        self.memory.randomize();
     }
 
     /// Programmatic image loading intentionally bypasses the front-panel write
     /// protection latch. POWER ON clears all protection first, matching the
     /// hardware-reset behaviour expected by the emulator.
     pub fn load(&mut self, address: u16, bytes: &[u8]) {
-        let start = address as usize;
-        if start >= MEM_SIZE {
-            return;
-        }
-        let len = bytes.len().min(MEM_SIZE - start);
-        self.memory[start..start + len].copy_from_slice(&bytes[..len]);
+        self.memory.load(address, bytes);
     }
 
     pub fn clear_protection(&mut self) {
-        self.memory_protected.fill(false);
+        self.memory.clear_protection();
     }
 
     pub fn board_index(address: u16) -> Option<usize> {
-        let address = address as usize;
-        (address < MEM_SIZE).then_some(address / MEMORY_BOARD_SIZE)
+        Memory::board_index(address)
     }
 
     pub fn is_protected(&self, address: u16) -> bool {
-        Self::board_index(address)
-            .map(|index| self.memory_protected[index])
-            .unwrap_or(false)
+        self.memory.is_protected(address)
     }
 
     pub fn set_protected(&mut self, address: u16, protected: bool) {
-        if let Some(index) = Self::board_index(address) {
-            self.memory_protected[index] = protected;
-        }
+        self.memory.set_protected(address, protected);
     }
 
     pub fn tx_busy(&self) -> bool {
@@ -85,16 +69,11 @@ impl AltairBus {
 
 impl Bus for AltairBus {
     fn read(&mut self, address: u16) -> u8 {
-        self.memory.get(address as usize).copied().unwrap_or(0)
+        self.memory.read(address)
     }
 
     fn write(&mut self, address: u16, value: u8) {
-        if self.is_protected(address) {
-            return;
-        }
-        if let Some(b) = self.memory.get_mut(address as usize) {
-            *b = value;
-        }
+        self.memory.write(address, value);
     }
 
     fn input(&mut self, port: u8) -> u8 {
@@ -268,19 +247,19 @@ mod tests {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.address_leds = 0x0400;
-        machine.bus.memory[0x0400] = 0x12;
+        machine.bus.load(0x0400, &[0x12]);
         machine.protect_current_board(true);
 
         machine.bus.write(0x0400, 0x34);
-        assert_eq!(machine.bus.memory[0x0400], 0x12);
+        assert_eq!(machine.bus.read(0x0400), 0x12);
 
         machine.bus.panel_switches = 0x0056;
         machine.deposit(false);
-        assert_eq!(machine.bus.memory[0x0400], 0x12);
+        assert_eq!(machine.bus.read(0x0400), 0x12);
 
         machine.protect_current_board(false);
         machine.deposit(false);
-        assert_eq!(machine.bus.memory[0x0400], 0x56);
+        assert_eq!(machine.bus.read(0x0400), 0x56);
     }
 
     #[test]
