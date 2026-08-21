@@ -89,6 +89,37 @@ impl eframe::App for RusTairApp {
                             }
                         });
                     });
+
+                    ui.menu_button("Compatibility", |ui| {
+                        ui.label("Software workarounds (off = historically faithful)");
+                        ui.separator();
+
+                        let mut basic32_workaround =
+                            self.config.compatibility.basic32_64k_probe_workaround;
+                        if ui
+                            .checkbox(
+                                &mut basic32_workaround,
+                                "BASIC 3.2 64K memory-probe workaround",
+                            )
+                            .changed()
+                        {
+                            self.config.compatibility.basic32_64k_probe_workaround =
+                                basic32_workaround;
+                            if !basic32_workaround {
+                                self.machine.bus.clear_transient_memory_guards();
+                            }
+                            self.status = if basic32_workaround {
+                                "Compatibility enabled: BASIC 3.2 64K memory-probe workaround"
+                                    .into()
+                            } else {
+                                "Compatibility disabled: authentic BASIC 3.2 64K bug is reproducible"
+                                    .into()
+                            };
+                        }
+                        ui.small(
+                            "When enabled, bundled BASIC 3.2 avoids its 64K MEMORY SIZE wraparound bug. Disable it to reproduce the original hang.",
+                        );
+                    });
                 });
 
                 ui.separator();
