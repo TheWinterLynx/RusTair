@@ -22,10 +22,6 @@ impl FrontPanelPort {
         self.switches
     }
 
-    pub(super) fn set_switches(&mut self, value: u16) {
-        self.switches = value;
-    }
-
     pub(super) fn toggle_switch(&mut self, bit: usize) {
         if bit < 16 {
             self.switches ^= 1u16 << bit;
