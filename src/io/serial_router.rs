@@ -4,9 +4,10 @@ pub(crate) enum SerialEndpoint {
     TextTerminal,
 }
 
-/// Owns the selection of the host-side endpoint attached to the Altair serial
-/// interface. Endpoint windows may control this selection, but the runtime does
-/// not infer serial ownership from UI visibility.
+/// Selects which host endpoint owns the single physical connection of a
+/// MITS 88-SIO. A fully populated 88-2SIO does not use this as a multiplexer:
+/// RusTair wires its Port 0 to the ASR-33 and Port 1 to the Text Terminal so
+/// both serial links can operate simultaneously.
 pub(crate) struct SerialRouter {
     endpoint: SerialEndpoint,
 }
