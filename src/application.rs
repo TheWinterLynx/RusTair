@@ -17,7 +17,7 @@ const TTY_W: f32 = teletype::IMAGE_W;
 const TTY_H: f32 = teletype::IMAGE_H;
 
 const PANEL_FRAME: Duration = Duration::from_millis(16);
-const TTY_CHAR_TIME: Duration = Duration::from_millis(90);
+const TTY_CHAR_TIME: Duration = Duration::from_millis(100);
 const KEY_TAP_TIME: Duration = Duration::from_millis(50);
 const PRINT_HEAD_STRIKE_TIME: Duration = Duration::from_millis(84);
 const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
