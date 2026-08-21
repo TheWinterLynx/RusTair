@@ -27,9 +27,10 @@ impl RusTairApp {
             return;
         }
 
-        // Model a one-character receive register. Host-side queued input only
-        // advances after guest software consumes the previous byte.
-        if !self.machine.bus.serial_rx_empty() {
+        // Model a one-character receive register. On 88-2SIO the text terminal
+        // is physically attached to Port 1, so its RX register is independent
+        // from the ASR-33 attached to Port 0.
+        if !self.terminal_serial_rx_empty() {
             ctx.request_repaint_after(Duration::from_millis(1));
             return;
         }
@@ -42,7 +43,7 @@ impl RusTairApp {
         }
 
         if let Some((byte, next_delay)) = self.terminal.take_due_input(now) {
-            self.machine.bus.serial_receive(byte & 0x7f);
+            self.terminal_serial_receive(byte & 0x7f);
             if !self.terminal.input_is_empty() {
                 if next_delay.is_zero() {
                     ctx.request_repaint();
