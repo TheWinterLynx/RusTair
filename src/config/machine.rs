@@ -78,10 +78,55 @@ impl Default for RamInit {
     }
 }
 
+/// MITS serial interface installed in the emulated Altair.
+///
+/// The standard MITS console port assignments are used. Only the selected
+/// board decodes its ports; this is hardware configuration, not a compatibility
+/// alias that exposes both interfaces at once.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SerialBoard {
+    Sio88,
+    TwoSio88,
+}
+
+impl SerialBoard {
+    pub const ALL: [Self; 2] = [Self::Sio88, Self::TwoSio88];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Sio88 => "MITS 88-SIO",
+            Self::TwoSio88 => "MITS 88-2SIO",
+        }
+    }
+
+    pub const fn status_port(self) -> u8 {
+        match self {
+            Self::Sio88 => 0x00,
+            Self::TwoSio88 => 0x10,
+        }
+    }
+
+    pub const fn data_port(self) -> u8 {
+        match self {
+            Self::Sio88 => 0x01,
+            Self::TwoSio88 => 0x11,
+        }
+    }
+}
+
+impl Default for SerialBoard {
+    fn default() -> Self {
+        // Preserve the current bundled BASIC 3.2 startup with the front-panel
+        // sense switches left at zero.
+        Self::Sio88
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct MachineConfig {
     pub ram_size: RamSize,
     pub ram_init: RamInit,
+    pub serial_board: SerialBoard,
 }
 
 /// Optional software compatibility workarounds.
@@ -107,5 +152,10 @@ mod tests {
     fn compatibility_workarounds_are_opt_in() {
         let config = AppConfig::default();
         assert!(!config.compatibility.basic32_64k_probe_workaround);
+    }
+
+    #[test]
+    fn default_serial_board_is_88_sio() {
+        assert_eq!(AppConfig::default().machine.serial_board, SerialBoard::Sio88);
     }
 }
