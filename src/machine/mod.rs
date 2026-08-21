@@ -208,7 +208,8 @@ impl AltairMachine {
             self.bus.panel_switches()
         };
         self.address_leds = address;
-        self.bus.set_data_leds(self.bus.read(address));
+        let value = self.bus.read(address);
+        self.bus.set_data_leds(value);
         self.cpu.pc = address;
     }
 
@@ -224,7 +225,8 @@ impl AltairMachine {
         self.address_leds = address;
         let value = self.bus.panel_switches() as u8;
         self.bus.write(address, value);
-        self.bus.set_data_leds(self.bus.read(address));
+        let displayed = self.bus.read(address);
+        self.bus.set_data_leds(displayed);
     }
 
     pub fn protect_current_board(&mut self, protected: bool) {
