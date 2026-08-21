@@ -35,6 +35,7 @@ pub enum KeyKind {
     Delete,
     Repeat,
     Break,
+    HereIs,
     Space,
     Control,
     Shift,
@@ -101,7 +102,7 @@ pub const KEYS: &[Key] = &[
     Key::centered(KeyKind::Character("0"), 2044.0, 2023.0, W, H),
     Key::centered(KeyKind::Character(":*"), 2202.0, 2023.0, W, H),
     Key::centered(KeyKind::Character("-="), 2358.0, 2023.0, W, H),
-    // HERE IS is present physically at x=2517 but is not an ASCII data key.
+    Key::centered(KeyKind::HereIs, 2517.0, 2023.0, W, H),
 
     // QWERTY row
     Key::centered(KeyKind::Escape, 546.0, 2190.0, W, H),
@@ -177,7 +178,7 @@ pub fn key_to_byte(kind: KeyKind, shifted: bool, control: bool) -> Option<u8> {
         // closest useful representation until line-level serial is modelled.
         KeyKind::Break => return Some(0x00),
         KeyKind::Space => return Some(b' '),
-        KeyKind::Repeat | KeyKind::Control | KeyKind::Shift => return None,
+        KeyKind::Repeat | KeyKind::HereIs | KeyKind::Control | KeyKind::Shift => return None,
     };
 
     ch = ch.to_ascii_uppercase();
@@ -426,6 +427,13 @@ mod tests {
     fn calibrated_hitbox_finds_a_key() {
         let k = hit_test(732.0, 2358.0).unwrap();
         assert_eq!(key_to_byte(k.kind, false, false), Some(b'A'));
+    }
+
+    #[test]
+    fn here_is_is_physical_but_not_a_single_ascii_key() {
+        let k = hit_test(2517.0, 2023.0).unwrap();
+        assert_eq!(k.kind, KeyKind::HereIs);
+        assert_eq!(key_to_byte(k.kind, false, false), None);
     }
 
     #[test]
