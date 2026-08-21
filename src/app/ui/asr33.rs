@@ -325,8 +325,6 @@ impl RusTairApp {
         }
 
         let drag_id = egui::Id::new("asr33-paper-roller-dragging");
-        let dragging = ui.ctx().data(|data| data.get_temp::<bool>(drag_id).unwrap_or(false));
-
         if response.drag_started() && pointer.is_some_and(|p| roller.contains(p)) {
             ui.ctx().data_mut(|data| data.insert_temp(drag_id, true));
         }
@@ -808,17 +806,23 @@ impl RusTairApp {
             }
         }
 
-        if !self.tty.tape_in.is_empty() || self.tty.capture_to_tape {
+        let tape_reading = self.tty.tape_input_pending();
+        let tape_punching = self.tty.tape_capture_enabled();
+        if tape_reading || tape_punching {
             let tape = Rect::from_min_size(
                 Pos2::new(rect.left() + 18.0 * scale, rect.bottom() - 250.0 * scale),
                 Vec2::new(520.0 * scale, 115.0 * scale),
             );
             ui.painter().rect_filled(tape, 3.0, Color32::from_rgb(224, 210, 160));
-            let n = if self.tty.capture_to_tape { self.tty.tape_out.len() } else { self.tty.tape_in.len() };
+            let n = if tape_punching {
+                self.tty.punched_tape_len()
+            } else {
+                self.tty.tape_input_len()
+            };
             ui.painter().text(
                 tape.center(),
                 egui::Align2::CENTER_CENTER,
-                if self.tty.capture_to_tape {
+                if tape_punching {
                     format!("PUNCHING PAPER TAPE  {n} bytes")
                 } else {
                     format!("READING PAPER TAPE  {n} bytes")
