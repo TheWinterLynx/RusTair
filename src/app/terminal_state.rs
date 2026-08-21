@@ -242,11 +242,12 @@ mod tests {
     #[test]
     fn enqueue_normalizes_newlines_and_uppercases_input() {
         let mut terminal = TerminalState::default();
+        terminal.speed = TerminalSpeed::Instant;
         let now = Instant::now();
         assert_eq!(terminal.enqueue_text("a\nb\r\nc", true, now), 6);
 
         let mut bytes = Vec::new();
-        while let Some((byte, _)) = terminal.take_due_input(now + Duration::from_secs(1)) {
+        while let Some((byte, _)) = terminal.take_due_input(now) {
             bytes.push(byte);
         }
         assert_eq!(bytes, b"A\rB\rC\r");
