@@ -18,6 +18,8 @@ pub(super) struct Memory {
     protected: [bool; MEMORY_BOARD_COUNT],
     installed_size: usize,
     init_mode: RamInit,
+    basic32_probe_guard: bool,
+    basic32_probe_write: Option<u8>,
 }
 
 impl Default for Memory {
@@ -27,6 +29,8 @@ impl Default for Memory {
             protected: [false; MEMORY_BOARD_COUNT],
             installed_size: MEM_SIZE,
             init_mode: RamInit::Random,
+            basic32_probe_guard: false,
+            basic32_probe_write: None,
         }
     }
 }
@@ -44,6 +48,7 @@ impl Memory {
     }
 
     pub(super) fn initialize(&mut self) {
+        self.clear_transient_guards();
         self.bytes.fill(0);
         if self.init_mode == RamInit::Random {
             rand::rng().fill_bytes(&mut self.bytes[..self.installed_size]);
@@ -53,8 +58,30 @@ impl Memory {
     /// Force random contents in the installed RAM without changing the chosen
     /// power-on initialization mode.
     pub(super) fn randomize(&mut self) {
+        self.clear_transient_guards();
         self.bytes.fill(0);
         rand::rng().fill_bytes(&mut self.bytes[..self.installed_size]);
+    }
+
+    /// Altair BASIC 3.2 probes for the first non-writable address when the user
+    /// presses RETURN at `MEMORY SIZE?`. On a completely writable 64 KiB address
+    /// space its 16-bit pointer wraps from FFFFh to 0000h and the probe destroys
+    /// BASIC itself. Arm a one-shot sentinel at FFFFh only for that bundled
+    /// legacy BASIC startup. The first probe write is rejected and its matching
+    /// read returns a different value, after which the guard automatically
+    /// disappears and FFFFh becomes ordinary RAM again.
+    pub(super) fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
+        self.clear_transient_guards();
+        if self.installed_size != MAX_MEM_SIZE {
+            return false;
+        }
+        self.basic32_probe_guard = true;
+        true
+    }
+
+    pub(super) fn clear_transient_guards(&mut self) {
+        self.basic32_probe_guard = false;
+        self.basic32_probe_write = None;
     }
 
     /// Programmatic image loading intentionally bypasses front-panel write
@@ -95,10 +122,18 @@ impl Memory {
         }
     }
 
-    pub(super) fn read(&self, address: u16) -> u8 {
+    pub(super) fn read(&mut self, address: u16) -> u8 {
         if address as usize >= self.installed_size {
             return 0;
         }
+
+        if address == u16::MAX && self.basic32_probe_guard {
+            if let Some(written) = self.basic32_probe_write.take() {
+                self.basic32_probe_guard = false;
+                return written ^ 0xff;
+            }
+        }
+
         self.bytes[address as usize]
     }
 
@@ -106,6 +141,12 @@ impl Memory {
         if address as usize >= self.installed_size || self.is_protected(address) {
             return;
         }
+
+        if address == u16::MAX && self.basic32_probe_guard {
+            self.basic32_probe_write = Some(value);
+            return;
+        }
+
         self.bytes[address as usize] = value;
     }
 }
