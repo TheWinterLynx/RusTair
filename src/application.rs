@@ -50,6 +50,8 @@ struct Tex {
     tty_key_up: Option<egui::TextureHandle>,
     tty_key_mid: Option<egui::TextureHandle>,
     tty_key_down: Option<egui::TextureHandle>,
+    tty_spacebar_up: Option<egui::TextureHandle>,
+    tty_spacebar_mid: Option<egui::TextureHandle>,
     tty_head: Option<egui::TextureHandle>,
     tty_line_local: Option<egui::TextureHandle>,
     tty_knob: Option<egui::TextureHandle>,
@@ -235,11 +237,16 @@ impl RusTairApp {
                 tty_body: Self::load_texture(&cc.egui_ctx, "tty-body", "assets/asr33_body_clean.png"),
                 // The old full-keyboard overlay is deliberately disabled. The
                 // clean body contains the key wells and each key is now painted
-                // independently from three aligned photographic poses.
+                // independently from aligned photographic poses.
                 tty_keys: None,
                 tty_key_up: Self::load_key_pose_texture(&cc.egui_ctx, "tty-key-up", "assets/asr33_key_up.png"),
                 tty_key_mid: Self::load_key_pose_texture(&cc.egui_ctx, "tty-key-mid", "assets/asr33_key_mid.png"),
                 tty_key_down: Self::load_key_pose_texture(&cc.egui_ctx, "tty-key-down", "assets/asr33_key_down.png"),
+                // These assets were uploaded with the historical `as33_` prefix.
+                // Keep their repository names intact and render them through the
+                // same vertical-padding crop used by the normal key poses.
+                tty_spacebar_up: Self::load_key_pose_texture(&cc.egui_ctx, "tty-spacebar-up", "assets/as33_spacebar_up.png"),
+                tty_spacebar_mid: Self::load_key_pose_texture(&cc.egui_ctx, "tty-spacebar-mid", "assets/as33_spacebar_mid.png"),
                 tty_head: Self::load_texture(&cc.egui_ctx, "tty-head", "assets/asr33head.png"),
                 tty_line_local: Self::load_texture(&cc.egui_ctx, "tty-line-local", "assets/asrlinelocal.png"),
                 tty_knob: Self::load_texture(&cc.egui_ctx, "tty-knob", "assets/asrlinelocalknob.png"),
