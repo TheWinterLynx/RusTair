@@ -205,7 +205,10 @@ impl RusTairApp {
                     }
                     egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
                         any_key = true;
-                        keystrokes.push((0x7f, Some(0x7f)));
+                        // Altair BASIC 3.2 uses underscore as its line-editor
+                        // erase character. Keep the ASR-33 DELETE/RUBOUT cap as
+                        // the visual counterpart to the modern PC Backspace key.
+                        keystrokes.push((b'_', Some(0x7f)));
                     }
                     egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
                         any_key = true;
