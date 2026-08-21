@@ -22,19 +22,24 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Apply one-shot source migration
-        run: python scripts/refactor_modular.py
-
-      - name: Format
-        run: cargo fmt --all -- --check
-
-      - name: Test
-        run: cargo test --all-targets
-
-      - name: Build release
-        run: cargo build --release
+      - name: Apply migration and validate
+        id: validate
+        shell: pwsh
+        run: |
+          $log = "refactor-validation.log"
+          Remove-Item $log -ErrorAction SilentlyContinue
+          function Invoke-Checked([string]$command) {
+            "`n>>> $command" | Tee-Object -FilePath $log -Append
+            Invoke-Expression "$command 2>&1" | Tee-Object -FilePath $log -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Invoke-Checked "python scripts/refactor_modular.py"
+          Invoke-Checked "cargo fmt --all -- --check"
+          Invoke-Checked "cargo test --all-targets"
+          Invoke-Checked "cargo build --release"
 
       - name: Commit validated refactor
+        if: success()
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
@@ -42,5 +47,17 @@ jobs:
           git add -- src scripts/refactor_modular.py .github/workflows/refactor-modular.yml
           if (-not (git diff --cached --quiet)) {
             git commit -m "Refactor source tree into real Rust modules"
+            git push origin HEAD:agent/modular-architecture-refactor
+          }
+
+      - name: Publish failure diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if (Test-Path refactor-validation.log) {
+            git add -- refactor-validation.log
+            git commit -m "Record modular refactor validation failure"
             git push origin HEAD:agent/modular-architecture-refactor
           }
