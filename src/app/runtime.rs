@@ -69,12 +69,12 @@ impl eframe::App for RusTairApp {
 
                 ui.separator();
                 if ui.button("ASR-33 TELETYPE").clicked() {
-                    self.tty_window_open = true;
+                    self.asr33.window_open = true;
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
                     // Cancel any in-progress ASR-33 holding-register timer when
                     // explicitly handing the serial line to the text terminal.
-                    self.tty_tx_started = None;
+                    self.asr33.tx_started = None;
                     self.terminal.tx_started = None;
                     self.serial_router.select(SerialEndpoint::TextTerminal);
                     self.terminal.window_open = true;
