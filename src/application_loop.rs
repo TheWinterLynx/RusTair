@@ -32,15 +32,14 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        // The two serial displays are alternative endpoints. Most importantly,
-        // the ASR-33 path below is the original implementation, completely
-        // untouched by the text-terminal baud selector. While the text terminal
-        // is open it owns TX; when it is closed the ASR-33 resumes its original
-        // ~90 ms mechanical character timing exactly as before.
+        // The two serial displays are alternative endpoints. The ASR-33 path
+        // keeps its fixed 100 ms mechanical character interval (10 cps), while
+        // the text terminal uses its independently selectable baud rate.
         if self.terminal_window_open {
             self.process_terminal_serial(ctx);
         } else {
             self.process_tty_serial(ctx);
+            self.process_tty_answerback(ctx);
         }
         self.update_teletype_mechanics(ctx);
 
