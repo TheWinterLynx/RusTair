@@ -250,7 +250,10 @@ impl RusTairApp {
         let velocity = 8.0 / 0.030;
 
         if self.pressed_key.is_some() {
-            self.key_displacement = (self.key_displacement + velocity * dt).min(40.0);
+            // The MID asset already gives a convincing full press. Keep the
+            // animation state below the renderer's DOWN threshold (8 px) so
+            // the visual cycle is simply UP -> MID -> UP.
+            self.key_displacement = (self.key_displacement + velocity * dt).min(7.0);
         } else if self.key_displacement > 0.0 {
             self.key_displacement = (self.key_displacement - velocity * dt).max(0.0);
             if self.key_displacement == 0.0 { self.animated_key = None; }
