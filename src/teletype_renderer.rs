@@ -186,9 +186,21 @@ impl RusTairApp {
     }
 
     fn draw_pressed_key(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
+        let pc_modifiers = ui.ctx().input(|input| input.modifiers);
+
         for (index, key) in teletype::KEYS.iter().copied().enumerate() {
+            // egui 0.32 exposes Shift/Ctrl as aggregate modifiers rather than
+            // left/right physical key events. Keep the ASR modifier caps visibly
+            // held for the whole chord; either PC Shift therefore depresses both
+            // photographed SHIFT caps, while either PC Ctrl depresses CTRL.
+            let pc_modifier_down = match key.kind {
+                KeyKind::Shift => pc_modifiers.shift,
+                KeyKind::Control => pc_modifiers.ctrl,
+                _ => false,
+            };
             let pose = u8::from(
-                self.animated_key == Some(index) && self.key_displacement > 0.0,
+                pc_modifier_down
+                    || (self.animated_key == Some(index) && self.key_displacement > 0.0),
             );
 
             if matches!(key.kind, KeyKind::Space) {
