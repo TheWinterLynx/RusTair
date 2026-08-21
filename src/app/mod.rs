@@ -16,7 +16,7 @@ use self::terminal_state::{TerminalSpeed, TerminalState};
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::config::{AppConfig, RamInit, RamSize, SerialBoard};
-use crate::io::serial_router::{SerialEndpoint, SerialRouter};
+use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
@@ -99,7 +99,7 @@ impl RusTairApp {
             audio: AudioEngine::new(),
             last_tick: now,
             reset_flash_until: None,
-            status: "Ready — 8 KiB RAM — MITS 88-SIO".into(),
+            status: "Ready — 8 KiB RAM — MITS 88-SIO — ASR-33 connected".into(),
         }
     }
 
@@ -128,70 +128,214 @@ impl RusTairApp {
 
         self.config.machine.serial_board = serial_board;
         self.machine.configure_serial_board(serial_board);
+        self.serial_router.reset_for_board(serial_board);
         self.asr33.tx_started = None;
+        self.asr33.answerback.clear();
         self.terminal.tx_started = None;
         self.reset_flash_until = None;
 
-        // SerialRouter remains the cable selector for the single-port 88-SIO.
-        // A fully populated 88-2SIO has two simultaneous physical ports, so the
-        // ASR-33 owns Port 0 and the Text Terminal owns Port 1 independently.
-        if serial_board == SerialBoard::TwoSio88 {
-            self.serial_router.select(SerialEndpoint::InternalAsr33);
-        }
-
         self.status = match serial_board {
             SerialBoard::Sio88 => {
-                "Serial board configured: MITS 88-SIO — 00h/01h; one serial connection; machine reset"
+                "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset"
                     .into()
             }
             SerialBoard::TwoSio88 => {
-                "Serial board configured: MITS 88-2SIO — Port 0 10h/11h → ASR-33; Port 1 12h/13h → Text Terminal; machine reset"
+                "Serial board configured: MITS 88-2SIO — ASR-33 → Port 0 (10h/11h), Text Terminal → Port 1 (12h/13h); machine reset"
                     .into()
             }
         };
     }
 
-    fn terminal_uses_2sio_port1(&self) -> bool {
-        self.config.machine.serial_board == SerialBoard::TwoSio88
+    fn serial_device_name(device: SerialDevice) -> &'static str {
+        match device {
+            SerialDevice::InternalAsr33 => "ASR-33",
+            SerialDevice::TextTerminal => "Text Terminal",
+        }
+    }
+
+    fn serial_connection_label(
+        board: SerialBoard,
+        connection: SerialConnection,
+    ) -> &'static str {
+        match (board, connection) {
+            (_, SerialConnection::Disconnected) => "Disconnected",
+            (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [00h/01h]",
+            (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable",
+            (SerialBoard::TwoSio88, SerialConnection::Port0) => {
+                "88-2SIO Port 0 [10h/11h]"
+            }
+            (SerialBoard::TwoSio88, SerialConnection::Port1) => {
+                "88-2SIO Port 1 [12h/13h]"
+            }
+        }
+    }
+
+    fn serial_connection(&self, device: SerialDevice) -> SerialConnection {
+        self.serial_router.connection(device)
+    }
+
+    fn set_serial_connection(&mut self, device: SerialDevice, connection: SerialConnection) {
+        if self.config.machine.serial_board == SerialBoard::Sio88
+            && connection == SerialConnection::Port1
+        {
+            return;
+        }
+        if self.serial_router.connection(device) == connection {
+            return;
+        }
+
+        let displaced = self.serial_router.connect(device, connection);
+        self.asr33.tx_started = None;
+        self.terminal.tx_started = None;
+        if displaced == Some(SerialDevice::InternalAsr33)
+            || (device == SerialDevice::InternalAsr33
+                && connection == SerialConnection::Disconnected)
+        {
+            self.asr33.answerback.clear();
+        }
+
+        let device_name = Self::serial_device_name(device);
+        let connection_name =
+            Self::serial_connection_label(self.config.machine.serial_board, connection);
+        self.status = if let Some(displaced) = displaced {
+            format!(
+                "{device_name} connected to {connection_name}; {} disconnected from that port",
+                Self::serial_device_name(displaced)
+            )
+        } else {
+            format!("{device_name}: {connection_name}")
+        };
+    }
+
+    fn serial_rx_empty_at(&self, connection: SerialConnection) -> bool {
+        match connection {
+            SerialConnection::Disconnected => true,
+            SerialConnection::Port0 => self.machine.bus.serial_rx_empty(),
+            SerialConnection::Port1 => self.machine.bus.serial_port1_rx_empty(),
+        }
+    }
+
+    fn serial_rx_len_at(&self, connection: SerialConnection) -> usize {
+        match connection {
+            SerialConnection::Disconnected => 0,
+            SerialConnection::Port0 => self.machine.bus.serial_rx_len(),
+            SerialConnection::Port1 => self.machine.bus.serial_port1_rx_len(),
+        }
+    }
+
+    fn serial_receive_at(&mut self, connection: SerialConnection, byte: u8) {
+        match connection {
+            SerialConnection::Disconnected => {}
+            SerialConnection::Port0 => self.machine.bus.serial_receive(byte),
+            SerialConnection::Port1 => self.machine.bus.serial_port1_receive(byte),
+        }
+    }
+
+    fn serial_tx_busy_at(&self, connection: SerialConnection) -> bool {
+        match connection {
+            SerialConnection::Disconnected => false,
+            SerialConnection::Port0 => self.machine.bus.tx_busy(),
+            SerialConnection::Port1 => self.machine.bus.serial_port1_tx_busy(),
+        }
+    }
+
+    fn serial_tx_front_at(&self, connection: SerialConnection) -> Option<u8> {
+        match connection {
+            SerialConnection::Disconnected => None,
+            SerialConnection::Port0 => self.machine.bus.serial_tx_front(),
+            SerialConnection::Port1 => self.machine.bus.serial_port1_tx_front(),
+        }
+    }
+
+    fn serial_tx_complete_at(&mut self, connection: SerialConnection) -> Option<u8> {
+        match connection {
+            SerialConnection::Disconnected => None,
+            SerialConnection::Port0 => self.machine.bus.serial_tx_complete(),
+            SerialConnection::Port1 => self.machine.bus.serial_port1_tx_complete(),
+        }
+    }
+
+    fn asr_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::InternalAsr33)
+    }
+
+    fn asr_serial_rx_empty(&self) -> bool {
+        self.serial_rx_empty_at(self.asr_connection())
+    }
+
+    fn asr_serial_rx_len(&self) -> usize {
+        self.serial_rx_len_at(self.asr_connection())
+    }
+
+    fn asr_serial_receive(&mut self, byte: u8) {
+        let connection = self.asr_connection();
+        self.serial_receive_at(connection, byte);
+    }
+
+    fn asr_serial_tx_busy(&self) -> bool {
+        self.serial_tx_busy_at(self.asr_connection())
+    }
+
+    fn asr_serial_tx_front(&self) -> Option<u8> {
+        self.serial_tx_front_at(self.asr_connection())
+    }
+
+    fn asr_serial_tx_complete(&mut self) -> Option<u8> {
+        let connection = self.asr_connection();
+        self.serial_tx_complete_at(connection)
+    }
+
+    fn terminal_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::TextTerminal)
     }
 
     fn terminal_serial_rx_empty(&self) -> bool {
-        if self.terminal_uses_2sio_port1() {
-            self.machine.bus.serial_port1_rx_empty()
-        } else {
-            self.machine.bus.serial_rx_empty()
-        }
+        self.serial_rx_empty_at(self.terminal_connection())
+    }
+
+    fn terminal_serial_rx_len(&self) -> usize {
+        self.serial_rx_len_at(self.terminal_connection())
     }
 
     fn terminal_serial_receive(&mut self, byte: u8) {
-        if self.terminal_uses_2sio_port1() {
-            self.machine.bus.serial_port1_receive(byte);
-        } else {
-            self.machine.bus.serial_receive(byte);
-        }
+        let connection = self.terminal_connection();
+        self.serial_receive_at(connection, byte);
     }
 
     fn terminal_serial_tx_busy(&self) -> bool {
-        if self.terminal_uses_2sio_port1() {
-            self.machine.bus.serial_port1_tx_busy()
-        } else {
-            self.machine.bus.tx_busy()
-        }
+        self.serial_tx_busy_at(self.terminal_connection())
     }
 
     fn terminal_serial_tx_front(&self) -> Option<u8> {
-        if self.terminal_uses_2sio_port1() {
-            self.machine.bus.serial_port1_tx_front()
-        } else {
-            self.machine.bus.serial_tx_front()
-        }
+        self.serial_tx_front_at(self.terminal_connection())
     }
 
     fn terminal_serial_tx_complete(&mut self) -> Option<u8> {
-        if self.terminal_uses_2sio_port1() {
-            self.machine.bus.serial_port1_tx_complete()
-        } else {
-            self.machine.bus.serial_tx_complete()
+        let connection = self.terminal_connection();
+        self.serial_tx_complete_at(connection)
+    }
+
+    /// A UART keeps transmitting even with no cable attached. Once a byte has
+    /// left an unconnected port, discard it rather than leaving guest software
+    /// permanently waiting for TX READY.
+    fn service_disconnected_serial_ports(&mut self) {
+        if self
+            .serial_router
+            .device_on(SerialConnection::Port0)
+            .is_none()
+            && self.machine.bus.tx_busy()
+        {
+            self.machine.bus.serial_tx_complete();
+        }
+
+        if self.config.machine.serial_board == SerialBoard::TwoSio88
+            && self
+                .serial_router
+                .device_on(SerialConnection::Port1)
+                .is_none()
+            && self.machine.bus.serial_port1_tx_busy()
+        {
+            self.machine.bus.serial_port1_tx_complete();
         }
     }
 
