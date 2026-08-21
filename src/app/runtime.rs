@@ -7,21 +7,8 @@ impl eframe::App for RusTairApp {
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
-        let two_sio = self.config.machine.serial_board == SerialBoard::TwoSio88;
-
-        // The 88-SIO has one physical serial connection, so closing the text
-        // terminal reconnects that single cable to the ASR-33. A fully populated
-        // 88-2SIO has two independent ports and both endpoints remain connected.
-        if !two_sio
-            && !self.terminal.window_open
-            && self.serial_router.endpoint() == SerialEndpoint::TextTerminal
-        {
-            self.terminal.tx_started = None;
-            self.serial_router.select(SerialEndpoint::InternalAsr33);
-        }
-
         self.update_paper_tape();
-        if two_sio || self.serial_router.endpoint() == SerialEndpoint::TextTerminal {
+        if self.terminal_connection().is_connected() {
             self.process_terminal_input(ctx);
         }
 
@@ -40,21 +27,16 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        if two_sio {
-            // Port 0 (10h/11h) is connected to the ASR-33 and Port 1
-            // (12h/13h) to the Text Terminal. They run simultaneously.
+        // External devices are routed by their physical cable connection, not
+        // by which UI window happens to be visible.
+        if self.asr_connection().is_connected() {
             self.process_tty_serial(ctx);
             self.process_tty_answerback(ctx);
-            self.process_terminal_serial(ctx);
-        } else {
-            match self.serial_router.endpoint() {
-                SerialEndpoint::InternalAsr33 => {
-                    self.process_tty_serial(ctx);
-                    self.process_tty_answerback(ctx);
-                }
-                SerialEndpoint::TextTerminal => self.process_terminal_serial(ctx),
-            }
         }
+        if self.terminal_connection().is_connected() {
+            self.process_terminal_serial(ctx);
+        }
+        self.service_disconnected_serial_ports();
         self.update_teletype_mechanics(ctx);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
@@ -110,25 +92,34 @@ impl eframe::App for RusTairApp {
                         match current {
                             SerialBoard::Sio88 => {
                                 ui.small(format!(
-                                    "Port: {:02X}h status / {:02X}h data",
+                                    "Port 0: {:02X}h status / {:02X}h data",
                                     current.status_port(),
                                     current.data_port()
                                 ));
-                                ui.small("One physical connection: ASR-33 or Text Terminal");
                             }
                             SerialBoard::TwoSio88 => {
                                 ui.small(format!(
-                                    "Port 0: {:02X}h status/control / {:02X}h data → ASR-33",
+                                    "Port 0: {:02X}h status/control / {:02X}h data",
                                     current.status_port(),
                                     current.data_port()
                                 ));
                                 ui.small(format!(
-                                    "Port 1: {:02X}h status/control / {:02X}h data → Text Terminal",
+                                    "Port 1: {:02X}h status/control / {:02X}h data",
                                     current.port1_status_port().unwrap_or(0),
                                     current.port1_data_port().unwrap_or(0)
                                 ));
                             }
                         }
+                        ui.separator();
+                        ui.label("External wiring:");
+                        ui.small(format!(
+                            "ASR-33 → {}",
+                            Self::serial_connection_label(current, self.asr_connection())
+                        ));
+                        ui.small(format!(
+                            "Text Terminal → {}",
+                            Self::serial_connection_label(current, self.terminal_connection())
+                        ));
                         ui.separator();
 
                         for serial_board in SerialBoard::ALL {
@@ -143,6 +134,9 @@ impl eframe::App for RusTairApp {
                         }
 
                         ui.separator();
+                        ui.small(
+                            "Cable selection is available inside each terminal window. A port can have only one attached device.",
+                        );
                         ui.small(
                             "Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.",
                         );
@@ -182,19 +176,9 @@ impl eframe::App for RusTairApp {
 
                 ui.separator();
                 if ui.button("ASR-33 TELETYPE").clicked() {
-                    if !two_sio {
-                        self.asr33.tx_started = None;
-                        self.terminal.tx_started = None;
-                        self.serial_router.select(SerialEndpoint::InternalAsr33);
-                    }
                     self.asr33.window_open = true;
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
-                    if !two_sio {
-                        self.asr33.tx_started = None;
-                        self.terminal.tx_started = None;
-                        self.serial_router.select(SerialEndpoint::TextTerminal);
-                    }
                     self.terminal.window_open = true;
                 }
                 ui.separator();
