@@ -1,3 +1,5 @@
+use super::super::*;
+
 impl RusTairApp {
     fn teletype_key_legend(kind: KeyKind) -> String {
         match kind {
@@ -704,7 +706,7 @@ impl RusTairApp {
         }
     }
 
-    fn draw_teletype(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app) fn draw_teletype(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
         let scale = (available.x / TTY_W).min(available.y / TTY_H).clamp(0.12, 1.5);
         let (rect, response) = ui.allocate_exact_size(

@@ -1,15 +1,20 @@
-#[allow(dead_code)]
-mod cpu8080;
-mod altair_machine;
+mod asr33_controller;
+mod runtime;
+mod terminal_serial;
+mod ui;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
-use altair_machine::{AltairMachine, CLOCK_HZ};
-use rustair::audio::AudioEngine;
-use rustair::teletype::{self, KeyKind, Mode as TtyMode, PrintEvent, Teletype};
+
+use crate::audio::AudioEngine;
+use crate::machine::{AltairMachine, CLOCK_HZ};
+use crate::peripherals::asr33::{
+    self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
+};
+use self::ui::terminal::TerminalSpeed;
 
 const PANEL_W: f32 = 1935.0;
 const PANEL_H: f32 = 813.0;
@@ -49,7 +54,7 @@ const HLDA_LED: (f32, f32) = (344.9, 290.7);
 
 struct Tex {
     panel: Option<egui::TextureHandle>,
-    switch_sprites: HashMap<SwitchSpriteId, egui::TextureHandle>,
+    switch_sprites: HashMap<&'static str, egui::TextureHandle>,
     tty_body: Option<egui::TextureHandle>,
     tty_keys: Option<egui::TextureHandle>,
     tty_key_up: Option<egui::TextureHandle>,
@@ -62,7 +67,7 @@ struct Tex {
     tty_knob: Option<egui::TextureHandle>,
 }
 
-fn main() -> eframe::Result {
+pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("RusTair — MITS Altair 8800")
@@ -181,43 +186,6 @@ impl RusTairApp {
         ))
     }
 
-    fn load_switch_sprite_texture(ctx: &egui::Context, sprite: SwitchSpriteId) -> Option<egui::TextureHandle> {
-        let asset = sprite.asset();
-        let bytes = std::fs::read(asset.path).ok()?;
-        let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-        if matches!(asset.alpha_mode, SwitchAlphaMode::RemoveBlack) {
-            for pixel in image.pixels_mut() {
-                let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
-                if brightness <= 2 {
-                    pixel[3] = 0;
-                } else if brightness < 16 {
-                    pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
-                }
-            }
-        }
-        let size = [image.width() as usize, image.height() as usize];
-        Some(ctx.load_texture(
-            asset.path,
-            egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
-            egui::TextureOptions::LINEAR,
-        ))
-    }
-
-    fn load_switch_textures(ctx: &egui::Context) -> HashMap<SwitchSpriteId, egui::TextureHandle> {
-        let mut textures = HashMap::new();
-        for switch in SENSE_SWITCHES.iter().chain(CONTROL_SWITCHES.iter()) {
-            for position in [SwitchPosition::Up, SwitchPosition::Center, SwitchPosition::Down] {
-                let Some(pose) = switch.pose(position) else { continue; };
-                let sprite = pose.sprite;
-                if textures.contains_key(&sprite) { continue; }
-                if let Some(texture) = Self::load_switch_sprite_texture(ctx, sprite) {
-                    textures.insert(sprite, texture);
-                }
-            }
-        }
-        textures
-    }
-
     fn install_teletype_font(ctx: &egui::Context) {
         let Ok(bytes) = std::fs::read("assets/teletype.ttf") else { return; };
         let mut fonts = egui::FontDefinitions::default();
@@ -309,13 +277,3 @@ impl RusTairApp {
         )
     }
 }
-
-include!("front_panel.rs");
-// Keep the optional black-background cleanup path exercised so the enum variant
-// remains part of the supported switch-asset pipeline without triggering dead-code warnings.
-const _: SwitchAlphaMode = SwitchAlphaMode::RemoveBlack;
-include!("teletype_controller.rs");
-include!("teletype_renderer.rs");
-include!("teletype_io.rs");
-include!("terminal.rs");
-include!("application_loop.rs");

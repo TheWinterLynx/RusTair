@@ -1,5 +1,7 @@
+use super::super::{egui, Duration, Instant, Pos2, Rect, RusTairApp, Sense};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TerminalSpeed {
+pub(in crate::app) enum TerminalSpeed {
     Instant,
     Baud300,
     Baud1200,
@@ -8,7 +10,7 @@ enum TerminalSpeed {
 }
 
 impl TerminalSpeed {
-    const ALL: [Self; 5] = [
+    pub(in crate::app) const ALL: [Self; 5] = [
         Self::Instant,
         Self::Baud300,
         Self::Baud1200,
@@ -16,7 +18,7 @@ impl TerminalSpeed {
         Self::Baud9600,
     ];
 
-    fn label(self) -> &'static str {
+    pub(in crate::app) fn label(self) -> &'static str {
         match self {
             Self::Instant => "Instant",
             Self::Baud300 => "300 baud",
@@ -29,7 +31,7 @@ impl TerminalSpeed {
     // One asynchronous serial character is modelled as 10 bits: start,
     // 8 data bits and stop. The ASR-33 keeps its separate mechanical timing;
     // these rates belong only to the electronic text terminal.
-    fn char_time(self) -> Duration {
+    pub(in crate::app) fn char_time(self) -> Duration {
         match self {
             Self::Instant => Duration::ZERO,
             Self::Baud300 => Duration::from_micros(33_333),
@@ -47,7 +49,7 @@ const TERMINAL_OUTPUT_MIN_HEIGHT: f32 = 100.0;
 const TERMINAL_SPLITTER_THICKNESS: f32 = 6.0;
 
 impl RusTairApp {
-    fn terminal_receive_byte(&mut self, byte: u8) {
+    pub(in crate::app) fn terminal_receive_byte(&mut self, byte: u8) {
         match byte & 0x7f {
             b'\r' => {
                 if !self.terminal_output.ends_with('\n') {
@@ -142,7 +144,7 @@ impl RusTairApp {
         count
     }
 
-    fn process_terminal_input(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn process_terminal_input(&mut self, ctx: &egui::Context) {
         if self.terminal_input_queue.is_empty() {
             self.terminal_rx_next_at = None;
             return;
@@ -457,7 +459,7 @@ impl RusTairApp {
         });
     }
 
-    fn show_terminal_viewport(&mut self, parent_ctx: &egui::Context) {
+    pub(in crate::app) fn show_terminal_viewport(&mut self, parent_ctx: &egui::Context) {
         if !self.terminal_window_open {
             return;
         }

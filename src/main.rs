@@ -1,2 +1,3 @@
-mod terminal_serial;
-include!("application.rs");
+fn main() -> eframe::Result {
+    rustair::app::run()
+}

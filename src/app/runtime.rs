@@ -1,3 +1,5 @@
+use super::*;
+
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();

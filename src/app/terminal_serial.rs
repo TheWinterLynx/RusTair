@@ -1,13 +1,10 @@
-use eframe::egui;
-use std::time::Instant;
-
-use crate::RusTairApp;
+use super::*;
 
 impl RusTairApp {
     /// Drive the Altair TX holding register only when the text terminal owns the
     /// serial line. This is deliberately separate from `process_tty_serial` so
     /// changing the text-terminal baud rate cannot alter the ASR-33 timing.
-    pub(crate) fn process_terminal_serial(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn process_terminal_serial(&mut self, ctx: &egui::Context) {
         if !self.terminal_window_open {
             self.terminal_tx_started = None;
             return;

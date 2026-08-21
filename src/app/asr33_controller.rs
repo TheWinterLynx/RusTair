@@ -1,3 +1,5 @@
+use super::*;
+
 impl RusTairApp {
     // ----------------------- ASR-33 -----------------------
 
@@ -57,7 +59,7 @@ impl RusTairApp {
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
-    fn update_teletype_mechanics(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn update_teletype_mechanics(&mut self, ctx: &egui::Context) {
         self.process_tty_repeat(ctx);
         let now = Instant::now();
 
@@ -104,7 +106,7 @@ impl RusTairApp {
         }
     }
 
-    fn set_tty_mode(&mut self, mode: TtyMode) {
+    pub(in crate::app) fn set_tty_mode(&mut self, mode: TtyMode) {
         if mode == self.tty.mode { return; }
         self.tty.set_mode(mode);
         self.audio.play_once("assets/powerbtn.mp3");
@@ -153,7 +155,7 @@ impl RusTairApp {
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
-    fn process_tty_answerback(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn process_tty_answerback(&mut self, ctx: &egui::Context) {
         if self.terminal_window_open || self.tty_answerback_queue.is_empty() {
             return;
         }
@@ -179,7 +181,7 @@ impl RusTairApp {
         }
     }
 
-    fn process_tty_serial(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn process_tty_serial(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
 
         if let Some(started) = self.tty_tx_started {
@@ -258,7 +260,7 @@ impl RusTairApp {
         }
     }
 
-    fn process_tty_keyboard(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn process_tty_keyboard(&mut self, ctx: &egui::Context) {
         // Each entry keeps the byte sent to the Altair separate from the key cap
         // that should move on the ASR-33. This matters for control characters:
         // Ctrl+A sends 0x01, but visually it is still the A key being struck.
@@ -414,7 +416,7 @@ impl RusTairApp {
         }
     }
 
-    fn press_tty_key(&mut self, index: usize, ctx: &egui::Context) {
+    pub(in crate::app) fn press_tty_key(&mut self, index: usize, ctx: &egui::Context) {
         if self.tty.mode == TtyMode::Off {
             self.flash_tty_power(ctx);
             return;
@@ -459,7 +461,7 @@ impl RusTairApp {
         ctx.request_repaint_after(Duration::from_millis(8));
     }
 
-    fn release_tty_key(&mut self) {
+    pub(in crate::app) fn release_tty_key(&mut self) {
         if let Some(index) = self.pressed_key.take() {
             match teletype::KEYS[index].kind {
                 KeyKind::Shift => self.tty.shift_down = false,

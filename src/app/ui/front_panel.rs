@@ -1,3 +1,5 @@
+use super::super::*;
+
 // Front-panel switch model, sprite registry and rendering.
 //
 // Every physical switch uses the same SwitchConfig structure. Two-position
@@ -34,6 +36,10 @@ enum SwitchAlphaMode {
     Preserve,
     RemoveBlack,
 }
+
+// Keep the optional black-background cleanup path part of the supported asset
+// pipeline even though the active switch set currently preserves alpha.
+const _: SwitchAlphaMode = SwitchAlphaMode::RemoveBlack;
 
 #[derive(Clone, Copy)]
 struct SwitchSpriteAsset {
@@ -210,6 +216,49 @@ const CONTROL_SWITCHES: [SwitchConfig; 9] = [
 ];
 
 impl RusTairApp {
+    fn load_switch_sprite_texture(
+        ctx: &egui::Context,
+        sprite: SwitchSpriteId,
+    ) -> Option<egui::TextureHandle> {
+        let asset = sprite.asset();
+        let bytes = std::fs::read(asset.path).ok()?;
+        let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        if matches!(asset.alpha_mode, SwitchAlphaMode::RemoveBlack) {
+            for pixel in image.pixels_mut() {
+                let brightness = pixel[0].max(pixel[1]).max(pixel[2]);
+                if brightness <= 2 {
+                    pixel[3] = 0;
+                } else if brightness < 16 {
+                    pixel[3] = (((brightness - 2) as u16 * 255) / 14) as u8;
+                }
+            }
+        }
+        let size = [image.width() as usize, image.height() as usize];
+        Some(ctx.load_texture(
+            asset.path,
+            egui::ColorImage::from_rgba_unmultiplied(size, &image.into_raw()),
+            egui::TextureOptions::LINEAR,
+        ))
+    }
+
+    pub(in crate::app) fn load_switch_textures(
+        ctx: &egui::Context,
+    ) -> HashMap<&'static str, egui::TextureHandle> {
+        let mut textures = HashMap::new();
+        for switch in SENSE_SWITCHES.iter().chain(CONTROL_SWITCHES.iter()) {
+            for position in [SwitchPosition::Up, SwitchPosition::Center, SwitchPosition::Down] {
+                let Some(pose) = switch.pose(position) else { continue; };
+                let sprite = pose.sprite;
+                let key = sprite.asset().path;
+                if textures.contains_key(key) { continue; }
+                if let Some(texture) = Self::load_switch_sprite_texture(ctx, sprite) {
+                    textures.insert(key, texture);
+                }
+            }
+        }
+        textures
+    }
+
     fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, on: bool) {
         if !self.machine.powered || !on { return; }
         let center = origin + Vec2::new(x * scale, y * scale);
@@ -219,7 +268,7 @@ impl RusTairApp {
     }
 
     fn switch_texture(&self, sprite: SwitchSpriteId) -> Option<&egui::TextureHandle> {
-        self.tex.switch_sprites.get(&sprite)
+        self.tex.switch_sprites.get(sprite.asset().path)
     }
 
     fn draw_switch_sprite(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, switch: SwitchConfig, position: SwitchPosition) {
@@ -288,7 +337,7 @@ impl RusTairApp {
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
-    fn set_altair_power(&mut self, on: bool) {
+    pub(in crate::app) fn set_altair_power(&mut self, on: bool) {
         self.machine.power(on);
         self.tty_tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
@@ -303,7 +352,7 @@ impl RusTairApp {
         }
     }
 
-    fn draw_altair(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
         let scale = (available.x / PANEL_W).min(available.y / PANEL_H).clamp(0.2, 2.5);
         let (whole, _) = ui.allocate_exact_size(Vec2::new(PANEL_W * scale, PANEL_H * scale), Sense::hover());

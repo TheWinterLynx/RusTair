@@ -1,5 +1,7 @@
+use super::super::*;
+
 impl RusTairApp {
-    fn update_paper_tape(&mut self) {
+    pub(in crate::app) fn update_paper_tape(&mut self) {
         if self.last_tape_tick.elapsed() < Duration::from_millis(30) { return; }
         self.last_tape_tick = Instant::now();
         if self.machine.bus.serial_rx.is_empty() {
@@ -34,7 +36,7 @@ impl RusTairApp {
         }
     }
 
-    fn load_bundled_basic(&mut self) {
+    pub(in crate::app) fn load_bundled_basic(&mut self) {
         match std::fs::read("assets/4kbas32.bin") {
             Ok(bytes) => {
                 if !self.machine.powered {
@@ -115,7 +117,7 @@ impl RusTairApp {
         });
     }
 
-    fn show_tty_viewport(&mut self, parent_ctx: &egui::Context) {
+    pub(in crate::app) fn show_tty_viewport(&mut self, parent_ctx: &egui::Context) {
         if !self.tty_window_open { return; }
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-asr33"),
