@@ -1,9 +1,9 @@
 mod memory;
-
-use std::collections::VecDeque;
+mod serial;
 
 use crate::cpu8080::{Bus, Cpu8080};
 use memory::Memory;
+use serial::SerialPort;
 
 pub use memory::{MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 
@@ -11,23 +11,18 @@ pub const CLOCK_HZ: u32 = 2_000_000;
 
 pub struct AltairBus {
     memory: Memory,
+    serial: SerialPort,
     pub panel_switches: u16,
     pub data_leds: u8,
-    pub serial_rx: VecDeque<u8>,
-    /// One-byte transmit holding register. The ASR-33 side deliberately leaves
-    /// the byte here until the mechanical print interval has elapsed. That is
-    /// how the status ports expose BUSY/READY to software running on the 8080.
-    pub serial_tx: VecDeque<u8>,
 }
 
 impl Default for AltairBus {
     fn default() -> Self {
         let mut s = Self {
             memory: Memory::default(),
+            serial: SerialPort::default(),
             panel_switches: 0,
             data_leds: 0,
-            serial_rx: VecDeque::new(),
-            serial_tx: VecDeque::new(),
         };
         s.randomize();
         s
@@ -63,37 +58,36 @@ impl AltairBus {
     }
 
     /// Queue one byte as data arriving from the currently attached terminal.
-    /// Endpoint code uses this instead of reaching into the emulated UART queue.
+    /// Endpoint code uses this instead of reaching into the emulated UART state.
     pub fn serial_receive(&mut self, byte: u8) {
-        self.serial_rx.push_back(byte);
+        self.serial.receive(byte);
     }
 
     pub fn serial_rx_empty(&self) -> bool {
-        self.serial_rx.is_empty()
+        self.serial.rx_empty()
     }
 
     pub fn serial_rx_len(&self) -> usize {
-        self.serial_rx.len()
+        self.serial.rx_len()
     }
 
     /// Byte currently held for transmission by the emulated serial interface.
     /// The endpoint deliberately leaves it pending until its own timing says the
     /// character has completed, preserving the guest-visible BUSY/READY state.
     pub fn serial_tx_front(&self) -> Option<u8> {
-        self.serial_tx.front().copied()
+        self.serial.tx_front()
     }
 
     pub fn serial_tx_complete(&mut self) -> Option<u8> {
-        self.serial_tx.pop_front()
+        self.serial.complete_tx()
     }
 
     pub fn tx_busy(&self) -> bool {
-        !self.serial_tx.is_empty()
+        self.serial.tx_busy()
     }
 
     pub fn clear_serial(&mut self) {
-        self.serial_rx.clear();
-        self.serial_tx.clear();
+        self.serial.clear();
     }
 }
 
@@ -118,14 +112,14 @@ impl Bus for AltairBus {
                 let tx_busy = self.tx_busy();
                 (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
             }
-            0x01 => self.serial_rx.pop_front().unwrap_or(0),
+            0x01 => self.serial.read_rx().unwrap_or(0),
 
             // MITS 2SIO / 8251 convention: bit 0 = RX ready, bit 1 = TX ready.
             0x10 => {
                 (if self.serial_rx_empty() { 0 } else { 0x01 })
                     | (if self.tx_busy() { 0 } else { 0x02 })
             }
-            0x11 => self.serial_rx.pop_front().unwrap_or(0),
+            0x11 => self.serial.read_rx().unwrap_or(0),
             _ => 0,
         }
     }
@@ -133,13 +127,7 @@ impl Bus for AltairBus {
     fn output(&mut self, port: u8, value: u8) {
         match port {
             0xff => self.data_leds = value,
-            0x01 | 0x11 => {
-                // The browser reference effectively has one text-box-sized TX
-                // holding register. Correct software polls READY before writing;
-                // if it does not, a new write replaces the old pending byte.
-                self.serial_tx.clear();
-                self.serial_tx.push_back(value);
-            }
+            0x01 | 0x11 => self.serial.write_tx(value),
             _ => {}
         }
     }
