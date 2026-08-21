@@ -1,5 +1,6 @@
 mod asr33_controller;
 mod runtime;
+mod serial_router;
 mod terminal_serial;
 mod ui;
 
@@ -9,12 +10,13 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
+use self::serial_router::{SerialEndpoint, SerialRouter};
+use self::ui::terminal::TerminalSpeed;
 use crate::audio::AudioEngine;
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
-use self::ui::terminal::TerminalSpeed;
 
 const PANEL_W: f32 = 1935.0;
 const PANEL_H: f32 = 813.0;
@@ -84,6 +86,7 @@ pub fn run() -> eframe::Result {
 
 struct RusTairApp {
     machine: AltairMachine,
+    serial_router: SerialRouter,
     tex: Tex,
     tty: Teletype,
     tty_window_open: bool,
@@ -206,6 +209,7 @@ impl RusTairApp {
         let now = Instant::now();
         Self {
             machine: AltairMachine::default(),
+            serial_router: SerialRouter::default(),
             tex: Tex {
                 panel: Self::load_texture(&cc.egui_ctx, "front-panel", "assets/panels/white-pivot/panel.png"),
                 switch_sprites: Self::load_switch_textures(&cc.egui_ctx),
