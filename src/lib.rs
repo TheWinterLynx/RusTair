@@ -1,5 +1,6 @@
 pub mod app;
 pub mod audio;
+pub mod config;
 pub mod cpu8080;
 pub mod io;
 pub mod machine;
