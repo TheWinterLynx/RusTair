@@ -117,16 +117,15 @@ impl RusTairApp {
         ))
     }
 
-    /// Load one ASR-33 key pose after removing transparent canvas padding.
+    /// Load one ASR-33 key pose while removing only transparent vertical padding.
     ///
-    /// The GIMP UP/MID/DOWN files intentionally shorten the physical key from
-    /// its top while keeping the lower edge as the mechanical reference. Their
-    /// PNG canvases, however, can contain different amounts of transparent
-    /// padding. If we render the complete canvases, that invisible padding
-    /// becomes part of the geometry and a pressed key can appear to rise even
-    /// though the artwork itself was authored correctly. Cropping to the alpha
-    /// bounds makes the renderer's bottom anchor the *visible key bottom* for
-    /// every pose.
+    /// The GIMP UP/MID/DOWN files encode the press correctly by shortening the
+    /// visible key from the top while retaining a common mechanical bottom. We
+    /// therefore trim transparent rows so that the renderer can anchor that real
+    /// lower edge. The original canvas width is deliberately preserved: cropping
+    /// left/right made the visible cap suddenly fill the whole 170 px render box,
+    /// enlarged every key by roughly one third and also discarded the horizontal
+    /// registration authored in GIMP.
     fn load_key_pose_texture(
         ctx: &egui::Context,
         name: &str,
@@ -136,32 +135,28 @@ impl RusTairApp {
         let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
         let (width, height) = image.dimensions();
 
-        let mut min_x = width;
         let mut min_y = height;
-        let mut max_x = 0u32;
         let mut max_y = 0u32;
         let mut found = false;
 
         // Ignore the almost-transparent anti-aliased fringe so a single halo
-        // pixel cannot enlarge the crop and reintroduce pose-dependent padding.
+        // pixel cannot enlarge the vertical crop and reintroduce pose padding.
         const ALPHA_THRESHOLD: u8 = 8;
-        for (x, y, pixel) in image.enumerate_pixels() {
+        for (_x, y, pixel) in image.enumerate_pixels() {
             if pixel[3] <= ALPHA_THRESHOLD {
                 continue;
             }
             found = true;
-            min_x = min_x.min(x);
             min_y = min_y.min(y);
-            max_x = max_x.max(x);
             max_y = max_y.max(y);
         }
 
         let cropped = if found {
             image::imageops::crop_imm(
                 &image,
-                min_x,
+                0,
                 min_y,
-                max_x - min_x + 1,
+                width,
                 max_y - min_y + 1,
             )
             .to_image()
