@@ -290,7 +290,13 @@ impl RusTairApp {
             + feed_offset)
             .max(machine.top());
 
-        let sheet_bottom = origin.y + (teletype::PRINT_TOP + TTY_H * 0.032) * scale;
+        // The physical sheet continues well below the print line and passes
+        // behind the moving typewheel. Keeping this tail in the paper layer
+        // (body -> paper -> typewheel) makes it look as if the sheet is fed up
+        // from inside the mechanism instead of starting at the glass edge.
+        const PAPER_TAIL_DEPTH: f32 = 0.080;
+        let sheet_bottom =
+            origin.y + (teletype::PRINT_TOP + TTY_H * PAPER_TAIL_DEPTH) * scale;
         if sheet_top >= sheet_bottom { return; }
 
         let char_width = self.tty.char_width_image_px();
@@ -398,8 +404,14 @@ impl RusTairApp {
         let left = (teletype::PRINT_LEFT - side_margin).max(0.0);
         let right = (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH + side_margin)
             .min(TTY_W);
-        let top = (teletype::PRINT_TOP - TTY_H * 0.008).max(0.0);
-        let bottom = (teletype::PRINT_TOP + TTY_H * 0.046).min(TTY_H);
+
+        // Only restore the lower front lip. The previous foreground slice began
+        // above PRINT_TOP and covered the whole paper tail, making the sheet
+        // appear to start at the platen. Starting below the typewheel sill keeps
+        // the paper visible behind the rotor while still letting it disappear
+        // naturally into the machine at the bottom.
+        let top = (teletype::PRINT_TOP + TTY_H * 0.067).max(0.0);
+        let bottom = (teletype::PRINT_TOP + TTY_H * 0.086).min(TTY_H);
 
         let target = Rect::from_min_max(
             origin + Vec2::new(left * scale, top * scale),
