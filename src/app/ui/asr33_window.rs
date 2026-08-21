@@ -4,9 +4,9 @@ impl RusTairApp {
     pub(in crate::app) fn update_paper_tape(&mut self) {
         if self.last_tape_tick.elapsed() < Duration::from_millis(30) { return; }
         self.last_tape_tick = Instant::now();
-        if self.machine.bus.serial_rx.is_empty() {
+        if self.machine.bus.serial_rx_empty() {
             if let Some(byte) = self.tty.next_tape_byte() {
-                self.machine.bus.serial_rx.push_back(byte);
+                self.machine.bus.serial_receive(byte);
             }
         }
     }
@@ -109,7 +109,7 @@ impl RusTairApp {
                     TtyMode::Line => "LINE",
                     TtyMode::Local => "LOCAL",
                 },
-                self.machine.bus.serial_rx.len(),
+                self.machine.bus.serial_rx_len(),
                 if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
                 self.tty.column,
                 self.tty.paper_width,
