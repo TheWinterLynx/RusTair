@@ -16,6 +16,7 @@ impl RusTairApp {
             KeyKind::Delete => "DELETE".into(),
             KeyKind::Repeat => "REPT".into(),
             KeyKind::Break => "BREAK".into(),
+            KeyKind::HereIs => "HERE\nIS".into(),
             KeyKind::Space => String::new(),
             KeyKind::Control => "CTRL".into(),
             KeyKind::Shift => "SHIFT".into(),
@@ -58,6 +59,7 @@ impl RusTairApp {
                     | KeyKind::Delete
                     | KeyKind::Repeat
                     | KeyKind::Break
+                    | KeyKind::HereIs
                     | KeyKind::Control
                     | KeyKind::Shift
             );
@@ -229,19 +231,6 @@ impl RusTairApp {
                 );
             }
         }
-
-        self.draw_key_pose(
-            ui,
-            origin,
-            scale,
-            KeyKind::Character(" "),
-            2460.0,
-            1974.5,
-            114.0,
-            97.0,
-            0,
-            Some("HERE\nIS"),
-        );
     }
 
     fn paper_feed_offset(&self, now: Instant, line_height: f32) -> f32 {
