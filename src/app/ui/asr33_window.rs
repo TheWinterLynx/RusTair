@@ -36,18 +36,14 @@ impl RusTairApp {
                 if ui.button("Read tape…").clicked() {
                     self.load_paper_tape();
                 }
-                let punch_label = if self.tty.capture_to_tape {
-                    "Finish punch"
-                } else {
-                    "Punch tape"
-                };
+                let punching = self.tty.tape_capture_enabled();
+                let punch_label = if punching { "Finish punch" } else { "Punch tape" };
                 if ui.button(punch_label).clicked() {
-                    if self.tty.capture_to_tape {
-                        self.tty.capture_to_tape = false;
+                    if punching {
+                        self.tty.finish_tape_punch();
                         self.save_punched_tape();
                     } else {
-                        self.tty.tape_out.clear();
-                        self.tty.capture_to_tape = true;
+                        self.tty.start_tape_punch();
                     }
                 }
             });
