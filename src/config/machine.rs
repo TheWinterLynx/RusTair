@@ -98,3 +98,14 @@ pub struct AppConfig {
     pub machine: MachineConfig,
     pub compatibility: CompatibilityConfig,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatibility_workarounds_are_opt_in() {
+        let config = AppConfig::default();
+        assert!(!config.compatibility.basic32_64k_probe_workaround);
+    }
+}
