@@ -148,9 +148,9 @@ pub const KEYS: &[Key] = &[
     Key::centered(KeyKind::Character("/?"), 2267.0, 2530.0, W, H),
     Key::centered(KeyKind::Shift, 2429.0, 2530.0, MOD_W, MOD_H),
 
-    // The spacebar remains a real hit target; its own three-pose sprite will
-    // be added separately in the next keyboard pass.
-    Key::new(KeyKind::Space, 1240.0, 2627.0, 671.0, 120.0),
+    // Spacebar visual/hit target calibrated to the photographed long socket.
+    // The previous position sat a few pixels high and slightly left at runtime.
+    Key::new(KeyKind::Space, 1244.0, 2640.0, 671.0, 120.0),
 ];
 
 pub fn hit_test(x: f32, y: f32) -> Option<&'static Key> {
