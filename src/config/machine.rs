@@ -156,10 +156,29 @@ pub struct CompatibilityConfig {
     pub basic32_64k_probe_workaround: bool,
 }
 
+/// Application convenience behaviour that does not change emulated hardware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PreferencesConfig {
+    /// Reveal the device physically connected to the bundled BASIC console port
+    /// after loading BASIC. This never changes serial cable assignments.
+    pub auto_open_basic_console: bool,
+}
+
+impl Default for PreferencesConfig {
+    fn default() -> Self {
+        Self {
+            // Preserve the historical RusTair UI behaviour unless the user opts
+            // out; the preference only controls window visibility.
+            auto_open_basic_console: true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct AppConfig {
     pub machine: MachineConfig,
     pub compatibility: CompatibilityConfig,
+    pub preferences: PreferencesConfig,
 }
 
 #[cfg(test)]
@@ -170,6 +189,11 @@ mod tests {
     fn compatibility_workarounds_are_opt_in() {
         let config = AppConfig::default();
         assert!(!config.compatibility.basic32_64k_probe_workaround);
+    }
+
+    #[test]
+    fn basic_console_auto_open_preserves_previous_default() {
+        assert!(AppConfig::default().preferences.auto_open_basic_console);
     }
 
     #[test]
