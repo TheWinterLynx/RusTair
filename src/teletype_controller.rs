@@ -287,9 +287,23 @@ impl RusTairApp {
                             continue;
                         }
 
-                        any_key = true;
-                        for b in text.bytes() {
-                            let byte = b.to_ascii_uppercase();
+                        // Treat the PC keyboard as an adapter for the physical
+                        // ASR-33 keyboard, not as a generic Unicode terminal.
+                        // Iterate Unicode scalar values (never raw UTF-8 bytes),
+                        // uppercase ordinary ASCII letters, and accept only the
+                        // Model 33 printable repertoire 0x20..=0x5f. Characters
+                        // such as ñ, ´, ç, º, ª, {, }, ~, etc. simply do not
+                        // exist on this keyboard and must produce no serial data.
+                        for ch in text.chars() {
+                            let ch = ch.to_ascii_uppercase();
+                            if !ch.is_ascii() {
+                                continue;
+                            }
+                            let byte = ch as u8;
+                            if !(0x20..=0x5f).contains(&byte) {
+                                continue;
+                            }
+                            any_key = true;
                             keystrokes.push((byte, Some(byte)));
                         }
                     }
