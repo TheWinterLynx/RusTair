@@ -84,7 +84,17 @@ pub struct MachineConfig {
     pub ram_init: RamInit,
 }
 
+/// Optional software compatibility workarounds.
+///
+/// These default to disabled so the emulator reproduces original hardware and
+/// software behaviour unless the user explicitly opts into a workaround.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct CompatibilityConfig {
+    pub basic32_64k_probe_workaround: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct AppConfig {
     pub machine: MachineConfig,
+    pub compatibility: CompatibilityConfig,
 }
