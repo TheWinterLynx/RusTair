@@ -3,12 +3,13 @@ mod io_devices;
 mod memory;
 mod serial;
 
+use crate::config::{RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
 use front_panel::FrontPanelPort;
 use io_devices::IoDevices;
 use memory::Memory;
 
-pub use memory::{MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
+pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 
 pub const CLOCK_HZ: u32 = 2_000_000;
 
@@ -25,12 +26,24 @@ impl Default for AltairBus {
             io: IoDevices::default(),
             panel: FrontPanelPort::default(),
         };
-        s.randomize();
+        s.initialize_memory();
         s
     }
 }
 
 impl AltairBus {
+    pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
+        self.memory.configure(size, init_mode);
+    }
+
+    pub fn installed_ram_bytes(&self) -> usize {
+        self.memory.installed_size()
+    }
+
+    pub fn initialize_memory(&mut self) {
+        self.memory.initialize();
+    }
+
     pub fn randomize(&mut self) {
         self.memory.randomize();
     }
@@ -147,6 +160,20 @@ impl Default for AltairMachine {
 }
 
 impl AltairMachine {
+    pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
+        self.running = false;
+        self.bus.configure_memory(size, init_mode);
+        self.cpu.reset();
+        self.address_leds = 0;
+        self.bus.set_data_leds(0);
+        self.bus.clear_serial();
+        self.wait_led = self.powered;
+    }
+
+    pub fn installed_ram_bytes(&self) -> usize {
+        self.bus.installed_ram_bytes()
+    }
+
     pub fn power(&mut self, on: bool) {
         self.powered = on;
         self.running = false;
@@ -158,7 +185,7 @@ impl AltairMachine {
             self.address_leds = 0;
             self.bus.set_data_leds(0);
             self.bus.clear_serial();
-            self.bus.randomize();
+            self.bus.initialize_memory();
         }
     }
 
@@ -305,6 +332,31 @@ mod tests {
         machine.bus.set_protected(0, true);
         machine.power(true);
         assert!(!machine.bus.is_protected(0));
+    }
+
+    #[test]
+    fn configured_ram_limits_guest_visible_memory() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
+
+        machine.bus.load(0x00ff, &[0xaa, 0xbb]);
+        assert_eq!(machine.bus.read(0x00ff), 0xaa);
+        assert_eq!(machine.bus.read(0x0100), 0x00);
+
+        machine.bus.write(0x0100, 0x55);
+        assert_eq!(machine.bus.read(0x0100), 0x00);
+        assert_eq!(machine.installed_ram_bytes(), 256);
+    }
+
+    #[test]
+    fn zeroed_power_on_mode_is_reapplied_on_power_off() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::K1, RamInit::Zeroed);
+        machine.bus.write(0x0010, 0x5a);
+        assert_eq!(machine.bus.read(0x0010), 0x5a);
+
+        machine.power(false);
+        assert_eq!(machine.bus.read(0x0010), 0x00);
     }
 
     #[test]
