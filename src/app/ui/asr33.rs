@@ -1,3 +1,5 @@
+use super::super::*;
+
 impl RusTairApp {
     fn teletype_key_legend(kind: KeyKind) -> String {
         match kind {
@@ -101,8 +103,7 @@ impl RusTairApp {
 
         if multiline {
             let face_ratio = if pose == 0 { 0.215 } else { 0.285 };
-            let face_y =
-                base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
+            let face_y = base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
             let font_factor = if special { 0.115 } else { 0.130 };
             let font_size = (114.0 * font_factor * scale).max(5.0);
             let line_gap = font_size * if special { 1.35 } else { 1.45 };
@@ -128,8 +129,7 @@ impl RusTairApp {
             );
         } else {
             let face_ratio = if pose == 0 { 0.245 } else { 0.315 };
-            let legend_y =
-                base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
+            let legend_y = base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
             let compact = legend.len() > 4;
             let font_factor = if compact { 0.145 } else { 0.225 };
             let font_size = (114.0 * font_factor * scale).max(5.0);
@@ -151,7 +151,7 @@ impl RusTairApp {
         x: f32,
         y: f32,
         w: f32,
-        h: f32,
+        _h: f32,
         pose: u8,
     ) {
         const SPACEBAR_VISUAL_SCALE: f32 = 1.045;
@@ -164,7 +164,8 @@ impl RusTairApp {
         };
         let Some(texture) = texture else { return; };
 
-        let (socket_x, socket_y) = (x + w * 0.5, y + h * 0.5);
+        let socket_x = x + w * 0.5;
+        let socket_y = y + _h * 0.5;
         let texture_size = texture.size_vec2();
         let texture_aspect = texture_size.y / texture_size.x.max(1.0);
         let target_w = w * SPACEBAR_VISUAL_SCALE;
@@ -191,10 +192,6 @@ impl RusTairApp {
         let pc_modifiers = ui.ctx().input(|input| input.modifiers);
 
         for (index, key) in teletype::KEYS.iter().copied().enumerate() {
-            // egui 0.32 exposes Shift/Ctrl as aggregate modifiers rather than
-            // left/right physical key events. Keep the ASR modifier caps visibly
-            // held for the whole chord; either PC Shift therefore depresses both
-            // photographed SHIFT caps, while either PC Ctrl depresses CTRL.
             let pc_modifier_down = match key.kind {
                 KeyKind::Shift => pc_modifiers.shift,
                 KeyKind::Control => pc_modifiers.ctrl,
@@ -202,7 +199,8 @@ impl RusTairApp {
             };
             let pose = u8::from(
                 pc_modifier_down
-                    || (self.animated_key == Some(index) && self.key_displacement > 0.0),
+                    || (self.asr33.keyboard.animated_key == Some(index)
+                        && self.asr33.keyboard.displacement > 0.0),
             );
 
             if matches!(key.kind, KeyKind::Space) {
@@ -234,7 +232,7 @@ impl RusTairApp {
     }
 
     fn paper_feed_offset(&self, now: Instant, line_height: f32) -> f32 {
-        let Some(until) = self.paper_feed_until else { return 0.0; };
+        let Some(until) = self.asr33.mechanics.paper_feed_until else { return 0.0; };
         let Some(remaining) = until.checked_duration_since(now) else { return 0.0; };
         let total = PAPER_FEED_TIME.as_secs_f32().max(0.001);
         line_height * (remaining.as_secs_f32() / total).clamp(0.0, 1.0)
@@ -303,12 +301,7 @@ impl RusTairApp {
     }
 
     fn reset_paper_view_for_printing(&self, ui: &egui::Ui) {
-        let printing = self.print_head_raise_until.is_some()
-            || self.print_head_impact_at.is_some()
-            || self.print_head_auto_return_at.is_some()
-            || self.print_head_carriage_return_until.is_some()
-            || self.paper_feed_until.is_some();
-        if printing {
+        if self.asr33.mechanics.printing_active() {
             ui.ctx().data_mut(|data| {
                 data.insert_temp(egui::Id::new("asr33-paper-view-offset-lines"), 0.0_f32);
                 data.insert_temp(egui::Id::new("asr33-paper-roller-dragging"), false);
@@ -332,14 +325,12 @@ impl RusTairApp {
         }
 
         let drag_id = egui::Id::new("asr33-paper-roller-dragging");
-        let mut dragging = ui.ctx().data(|data| data.get_temp::<bool>(drag_id).unwrap_or(false));
-
         if response.drag_started() && pointer.is_some_and(|p| roller.contains(p)) {
-            dragging = true;
             ui.ctx().data_mut(|data| data.insert_temp(drag_id, true));
         }
 
         let pointer_down = ui.ctx().input(|i| i.pointer.primary_down());
+        let dragging = ui.ctx().data(|data| data.get_temp::<bool>(drag_id).unwrap_or(false));
         if dragging && pointer_down {
             let delta_y = ui.ctx().input(|i| i.pointer.delta().y);
             if delta_y.abs() > f32::EPSILON {
@@ -534,8 +525,7 @@ impl RusTairApp {
                 if byte == b' ' {
                     continue;
                 }
-                let (jitter_x, jitter_y, ink) =
-                    Self::ink_character_style(absolute_line, column, byte);
+                let (jitter_x, jitter_y, ink) = Self::ink_character_style(absolute_line, column, byte);
                 let blue = ink.saturating_sub(3);
 
                 painter.text(
@@ -553,7 +543,7 @@ impl RusTairApp {
     }
 
     fn print_head_lift(&self, now: Instant) -> f32 {
-        let Some(until) = self.print_head_raise_until else { return 0.0; };
+        let Some(until) = self.asr33.mechanics.print_head_raise_until else { return 0.0; };
         let Some(remaining) = until.checked_duration_since(now) else { return 0.0; };
         let total = PRINT_HEAD_STRIKE_TIME.as_secs_f32().max(0.001);
         let elapsed = (1.0 - remaining.as_secs_f32() / total).clamp(0.0, 1.0);
@@ -575,14 +565,15 @@ impl RusTairApp {
         let now = Instant::now();
         let lift = self.print_head_lift(now);
         let returning = self
+            .asr33
+            .mechanics
             .print_head_carriage_return_until
             .is_some_and(|until| now < until);
 
         let char_pitch = self.paper_char_pitch_image_px();
         let last_column = self.tty.paper_width.saturating_sub(1);
         let active_column = self.tty.column.saturating_sub(1).min(last_column);
-        let target_center_x = teletype::PRINT_LEFT
-            + (active_column as f32 + 0.5) * char_pitch;
+        let target_center_x = teletype::PRINT_LEFT + (active_column as f32 + 0.5) * char_pitch;
 
         let travel_time = if returning {
             PRINT_HEAD_CARRIAGE_RETURN_TIME.as_secs_f32()
@@ -595,7 +586,7 @@ impl RusTairApp {
             travel_time,
         );
 
-        let (slot, level) = teletype::typewheel_position(self.print_head_glyph);
+        let (slot, level) = teletype::typewheel_position(self.asr33.mechanics.print_head_glyph);
         let slot_target = (slot as f32 - 7.5) / 7.5;
         let level_target = (level as f32 - 1.5) / 1.5;
         let slot_pose = ui.ctx().animate_value_with_time(
@@ -704,7 +695,7 @@ impl RusTairApp {
         }
     }
 
-    fn draw_teletype(&mut self, ui: &mut egui::Ui) {
+    pub(in crate::app) fn draw_teletype(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
         let scale = (available.x / TTY_W).min(available.y / TTY_H).clamp(0.12, 1.5);
         let (rect, response) = ui.allocate_exact_size(
@@ -741,9 +732,14 @@ impl RusTairApp {
             selector_size,
         );
 
-        let flashing = self.tty_power_flash_until.is_some_and(|until| Instant::now() < until);
+        let flashing = self
+            .asr33
+            .power_flash_until
+            .is_some_and(|until| Instant::now() < until);
         if flashing {
-            let remaining = self.tty_power_flash_until
+            let remaining = self
+                .asr33
+                .power_flash_until
                 .and_then(|until| until.checked_duration_since(Instant::now()))
                 .map(|d| d.as_secs_f32())
                 .unwrap_or(0.0);
@@ -767,7 +763,7 @@ impl RusTairApp {
                     } else if xp > 0.56 && yp > 0.40 && yp < 0.80 {
                         self.set_tty_mode(TtyMode::Local);
                     }
-                } else if self.pressed_key.is_none() {
+                } else if self.asr33.keyboard.pressed_key.is_none() {
                     let ix = (pointer.x - rect.left()) / scale;
                     let iy = (pointer.y - rect.top()) / scale;
                     if let Some(index) = teletype::KEYS.iter().position(|k| k.contains(ix, iy)) {
@@ -778,7 +774,7 @@ impl RusTairApp {
         }
 
         let pointer_down = ui.ctx().input(|i| i.pointer.any_down());
-        if !pointer_down && self.key_auto_release_at.is_none() {
+        if !pointer_down && self.asr33.keyboard.auto_release_at.is_none() {
             self.release_tty_key();
         }
         self.draw_pressed_key(ui, origin, scale);
@@ -810,17 +806,23 @@ impl RusTairApp {
             }
         }
 
-        if !self.tty.tape_in.is_empty() || self.tty.capture_to_tape {
+        let tape_reading = self.tty.tape_input_pending();
+        let tape_punching = self.tty.tape_capture_enabled();
+        if tape_reading || tape_punching {
             let tape = Rect::from_min_size(
                 Pos2::new(rect.left() + 18.0 * scale, rect.bottom() - 250.0 * scale),
                 Vec2::new(520.0 * scale, 115.0 * scale),
             );
             ui.painter().rect_filled(tape, 3.0, Color32::from_rgb(224, 210, 160));
-            let n = if self.tty.capture_to_tape { self.tty.tape_out.len() } else { self.tty.tape_in.len() };
+            let n = if tape_punching {
+                self.tty.punched_tape_len()
+            } else {
+                self.tty.tape_input_len()
+            };
             ui.painter().text(
                 tape.center(),
                 egui::Align2::CENTER_CENTER,
-                if self.tty.capture_to_tape {
+                if tape_punching {
                     format!("PUNCHING PAPER TAPE  {n} bytes")
                 } else {
                     format!("READING PAPER TAPE  {n} bytes")

@@ -1,39 +1,29 @@
-use std::collections::VecDeque;
-
-use rand::RngCore;
+mod front_panel;
+mod io_devices;
+mod memory;
+mod serial;
 
 use crate::cpu8080::{Bus, Cpu8080};
+use front_panel::FrontPanelPort;
+use io_devices::IoDevices;
+use memory::Memory;
 
-pub const MEM_SIZE: usize = 8 * 1024;
+pub use memory::{MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
+
 pub const CLOCK_HZ: u32 = 2_000_000;
 
-// The captured simulator models 8 KiB of RAM. For the original front-panel
-// PROTECT/UNPROTECT function we represent that RAM as eight MITS-style 1 KiB
-// static-memory boards, each with its own protection latch.
-pub const MEMORY_BOARD_SIZE: usize = 1024;
-pub const MEMORY_BOARD_COUNT: usize = MEM_SIZE / MEMORY_BOARD_SIZE;
-
 pub struct AltairBus {
-    pub memory: [u8; MEM_SIZE],
-    pub panel_switches: u16,
-    pub data_leds: u8,
-    pub serial_rx: VecDeque<u8>,
-    /// One-byte transmit holding register. The ASR-33 side deliberately leaves
-    /// the byte here until the mechanical print interval has elapsed. That is
-    /// how the status ports expose BUSY/READY to software running on the 8080.
-    pub serial_tx: VecDeque<u8>,
-    pub memory_protected: [bool; MEMORY_BOARD_COUNT],
+    memory: Memory,
+    io: IoDevices,
+    panel: FrontPanelPort,
 }
 
 impl Default for AltairBus {
     fn default() -> Self {
         let mut s = Self {
-            memory: [0; MEM_SIZE],
-            panel_switches: 0,
-            data_leds: 0,
-            serial_rx: VecDeque::new(),
-            serial_tx: VecDeque::new(),
-            memory_protected: [false; MEMORY_BOARD_COUNT],
+            memory: Memory::default(),
+            io: IoDevices::default(),
+            panel: FrontPanelPort::default(),
         };
         s.randomize();
         s
@@ -42,96 +32,94 @@ impl Default for AltairBus {
 
 impl AltairBus {
     pub fn randomize(&mut self) {
-        rand::rng().fill_bytes(&mut self.memory);
+        self.memory.randomize();
     }
 
-    /// Programmatic image loading intentionally bypasses the front-panel write
-    /// protection latch. POWER ON clears all protection first, matching the
-    /// hardware-reset behaviour expected by the emulator.
     pub fn load(&mut self, address: u16, bytes: &[u8]) {
-        let start = address as usize;
-        if start >= MEM_SIZE {
-            return;
-        }
-        let len = bytes.len().min(MEM_SIZE - start);
-        self.memory[start..start + len].copy_from_slice(&bytes[..len]);
+        self.memory.load(address, bytes);
     }
 
     pub fn clear_protection(&mut self) {
-        self.memory_protected.fill(false);
+        self.memory.clear_protection();
     }
 
     pub fn board_index(address: u16) -> Option<usize> {
-        let address = address as usize;
-        (address < MEM_SIZE).then_some(address / MEMORY_BOARD_SIZE)
+        Memory::board_index(address)
     }
 
     pub fn is_protected(&self, address: u16) -> bool {
-        Self::board_index(address)
-            .map(|index| self.memory_protected[index])
-            .unwrap_or(false)
+        self.memory.is_protected(address)
     }
 
     pub fn set_protected(&mut self, address: u16, protected: bool) {
-        if let Some(index) = Self::board_index(address) {
-            self.memory_protected[index] = protected;
-        }
+        self.memory.set_protected(address, protected);
+    }
+
+    pub fn serial_receive(&mut self, byte: u8) {
+        self.io.serial_receive(byte);
+    }
+
+    pub fn serial_rx_empty(&self) -> bool {
+        self.io.serial_rx_empty()
+    }
+
+    pub fn serial_rx_len(&self) -> usize {
+        self.io.serial_rx_len()
+    }
+
+    pub fn serial_tx_front(&self) -> Option<u8> {
+        self.io.serial_tx_front()
+    }
+
+    pub fn serial_tx_complete(&mut self) -> Option<u8> {
+        self.io.serial_tx_complete()
     }
 
     pub fn tx_busy(&self) -> bool {
-        !self.serial_tx.is_empty()
+        self.io.serial_tx_busy()
+    }
+
+    pub fn clear_serial(&mut self) {
+        self.io.clear_serial();
+    }
+
+    fn panel_switches(&self) -> u16 {
+        self.panel.switches()
+    }
+
+    fn toggle_panel_switch(&mut self, bit: usize) {
+        self.panel.toggle_switch(bit);
+    }
+
+    fn data_leds(&self) -> u8 {
+        self.panel.data_leds()
+    }
+
+    fn set_data_leds(&mut self, value: u8) {
+        self.panel.set_data_leds(value);
     }
 }
 
 impl Bus for AltairBus {
     fn read(&mut self, address: u16) -> u8 {
-        self.memory.get(address as usize).copied().unwrap_or(0)
+        self.memory.read(address)
     }
 
     fn write(&mut self, address: u16, value: u8) {
-        if self.is_protected(address) {
-            return;
-        }
-        if let Some(b) = self.memory.get_mut(address as usize) {
-            *b = value;
-        }
+        self.memory.write(address, value);
     }
 
     fn input(&mut self, port: u8) -> u8 {
         match port {
-            0xff => (self.panel_switches >> 8) as u8,
-
-            // MITS 88-SIO status convention used by the S2JS reference.
-            // Bit 0 is set when the receive buffer is empty, while bits 6/7
-            // are set while the transmit holding register is occupied.
-            0x00 => {
-                let rx_empty = self.serial_rx.is_empty();
-                let tx_busy = self.tx_busy();
-                (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
-            }
-            0x01 => self.serial_rx.pop_front().unwrap_or(0),
-
-            // MITS 2SIO / 8251 convention: bit 0 = RX ready, bit 1 = TX ready.
-            0x10 => {
-                (if self.serial_rx.is_empty() { 0 } else { 0x01 })
-                    | (if self.tx_busy() { 0 } else { 0x02 })
-            }
-            0x11 => self.serial_rx.pop_front().unwrap_or(0),
-            _ => 0,
+            0xff => self.panel.input(),
+            _ => self.io.input(port),
         }
     }
 
     fn output(&mut self, port: u8, value: u8) {
         match port {
-            0xff => self.data_leds = value,
-            0x01 | 0x11 => {
-                // The browser reference effectively has one text-box-sized TX
-                // holding register. Correct software polls READY before writing;
-                // if it does not, a new write replaces the old pending byte.
-                self.serial_tx.clear();
-                self.serial_tx.push_back(value);
-            }
-            _ => {}
+            0xff => self.panel.output(value),
+            _ => self.io.output(port, value),
         }
     }
 }
@@ -141,8 +129,8 @@ pub struct AltairMachine {
     pub bus: AltairBus,
     pub powered: bool,
     pub running: bool,
-    pub address_leds: u16,
-    pub wait_led: bool,
+    address_leds: u16,
+    wait_led: bool,
 }
 
 impl Default for AltairMachine {
@@ -168,9 +156,8 @@ impl AltairMachine {
         } else {
             self.wait_led = false;
             self.address_leds = 0;
-            self.bus.data_leds = 0;
-            self.bus.serial_rx.clear();
-            self.bus.serial_tx.clear();
+            self.bus.set_data_leds(0);
+            self.bus.clear_serial();
             self.bus.randomize();
         }
     }
@@ -180,9 +167,8 @@ impl AltairMachine {
         self.running = false;
         self.wait_led = true;
         self.address_leds = 0;
-        self.bus.data_leds = 0;
-        self.bus.serial_rx.clear();
-        self.bus.serial_tx.clear();
+        self.bus.set_data_leds(0);
+        self.bus.clear_serial();
     }
 
     pub fn set_running(&mut self, run: bool) {
@@ -215,10 +201,11 @@ impl AltairMachine {
         let address = if next {
             self.address_leds.wrapping_add(1)
         } else {
-            self.bus.panel_switches
+            self.bus.panel_switches()
         };
         self.address_leds = address;
-        self.bus.data_leds = self.bus.read(address);
+        let value = self.bus.read(address);
+        self.bus.set_data_leds(value);
         self.cpu.pc = address;
     }
 
@@ -232,9 +219,10 @@ impl AltairMachine {
             self.address_leds
         };
         self.address_leds = address;
-        let value = self.bus.panel_switches as u8;
+        let value = self.bus.panel_switches() as u8;
         self.bus.write(address, value);
-        self.bus.data_leds = self.bus.read(address);
+        let displayed = self.bus.read(address);
+        self.bus.set_data_leds(displayed);
     }
 
     pub fn protect_current_board(&mut self, protected: bool) {
@@ -246,6 +234,31 @@ impl AltairMachine {
 
     pub fn current_board_protected(&self) -> bool {
         self.powered && self.bus.is_protected(self.address_leds)
+    }
+
+    pub fn panel_switches(&self) -> u16 {
+        self.bus.panel_switches()
+    }
+
+    pub fn toggle_sense_switch(&mut self, bit: usize) {
+        self.bus.toggle_panel_switch(bit);
+    }
+
+    pub fn address_leds(&self) -> u16 {
+        self.address_leds
+    }
+
+    pub fn data_leds(&self) -> u8 {
+        self.bus.data_leds()
+    }
+
+    pub fn wait_led(&self) -> bool {
+        self.wait_led
+    }
+
+    pub fn set_panel_lamps(&mut self, address: u16, data: u8) {
+        self.address_leds = address;
+        self.bus.set_data_leds(data);
     }
 }
 
@@ -267,20 +280,23 @@ mod tests {
     fn protected_board_blocks_cpu_and_front_panel_writes() {
         let mut machine = AltairMachine::default();
         machine.power(true);
-        machine.address_leds = 0x0400;
-        machine.bus.memory[0x0400] = 0x12;
+        machine.set_panel_lamps(0x0400, 0);
+        machine.bus.load(0x0400, &[0x12]);
         machine.protect_current_board(true);
 
         machine.bus.write(0x0400, 0x34);
-        assert_eq!(machine.bus.memory[0x0400], 0x12);
+        assert_eq!(machine.bus.read(0x0400), 0x12);
 
-        machine.bus.panel_switches = 0x0056;
+        for bit in [1, 2, 4, 6] {
+            machine.toggle_sense_switch(bit);
+        }
+        assert_eq!(machine.panel_switches(), 0x0056);
         machine.deposit(false);
-        assert_eq!(machine.bus.memory[0x0400], 0x12);
+        assert_eq!(machine.bus.read(0x0400), 0x12);
 
         machine.protect_current_board(false);
         machine.deposit(false);
-        assert_eq!(machine.bus.memory[0x0400], 0x56);
+        assert_eq!(machine.bus.read(0x0400), 0x56);
     }
 
     #[test]
@@ -295,7 +311,6 @@ mod tests {
     fn sio_status_tracks_transmit_holding_register() {
         let mut bus = AltairBus::default();
 
-        // Empty TX register: 2SIO says transmitter ready; SIO busy bits clear.
         assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
 
@@ -303,8 +318,9 @@ mod tests {
         assert!(bus.tx_busy());
         assert_eq!(bus.input(0x10) & 0x02, 0x00);
         assert_eq!(bus.input(0x00) & 0xc0, 0xc0);
+        assert_eq!(bus.serial_tx_front(), Some(b'A'));
 
-        bus.serial_tx.pop_front();
+        bus.serial_tx_complete();
         assert!(!bus.tx_busy());
         assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
@@ -313,12 +329,23 @@ mod tests {
     #[test]
     fn receive_status_matches_reference_ports() {
         let mut bus = AltairBus::default();
-        assert_eq!(bus.input(0x00) & 0x01, 0x01); // SIO: 1 means RX empty
-        assert_eq!(bus.input(0x10) & 0x01, 0x00); // 2SIO: 0 means no RX data
+        assert_eq!(bus.input(0x00) & 0x01, 0x01);
+        assert_eq!(bus.input(0x10) & 0x01, 0x00);
 
-        bus.serial_rx.push_back(b'K');
+        bus.serial_receive(b'K');
         assert_eq!(bus.input(0x00) & 0x01, 0x00);
         assert_eq!(bus.input(0x10) & 0x01, 0x01);
         assert_eq!(bus.input(0x01), b'K');
+    }
+
+    #[test]
+    fn front_panel_port_is_encapsulated_by_machine_api() {
+        let mut machine = AltairMachine::default();
+        machine.toggle_sense_switch(15);
+        assert_eq!(machine.panel_switches(), 0x8000);
+        assert_eq!(machine.bus.input(0xff), 0x80);
+
+        machine.bus.output(0xff, 0xa5);
+        assert_eq!(machine.data_leds(), 0xa5);
     }
 }

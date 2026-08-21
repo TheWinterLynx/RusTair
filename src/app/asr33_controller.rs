@@ -1,31 +1,31 @@
+use super::*;
+
 impl RusTairApp {
     // ----------------------- ASR-33 -----------------------
 
     fn play_print_events(&mut self, events: &[PrintEvent]) {
         let now = Instant::now();
+        let mechanics = &mut self.asr33.mechanics;
         for event in events {
             match event {
                 PrintEvent::Printable(byte) => {
-                    self.print_head_glyph = *byte;
-                    self.print_head_raise_until = Some(now + PRINT_HEAD_STRIKE_TIME);
-                    self.print_head_impact_at = Some(now + PRINT_HEAD_IMPACT_DELAY);
+                    mechanics.print_head_glyph = *byte;
+                    mechanics.print_head_raise_until = Some(now + PRINT_HEAD_STRIKE_TIME);
+                    mechanics.print_head_impact_at = Some(now + PRINT_HEAD_IMPACT_DELAY);
                 }
                 PrintEvent::CarriageReturn => {
                     self.audio.play_once("assets/crpadded.mp3");
-                    self.print_head_auto_return_at = None;
-                    self.print_head_raise_until = None;
-                    self.print_head_impact_at = None;
-                    self.print_head_carriage_return_until =
+                    mechanics.print_head_auto_return_at = None;
+                    mechanics.print_head_raise_until = None;
+                    mechanics.print_head_impact_at = None;
+                    mechanics.print_head_carriage_return_until =
                         Some(now + PRINT_HEAD_CARRIAGE_RETURN_TIME);
                 }
                 PrintEvent::LineFeed => {
-                    self.paper_feed_until = Some(now + PAPER_FEED_TIME);
+                    mechanics.paper_feed_until = Some(now + PAPER_FEED_TIME);
                 }
                 PrintEvent::AutomaticReturn => {
-                    // Let the 72nd character finish its impact first. At the
-                    // end of that strike update_teletype_mechanics starts the
-                    // real-looking carriage sweep and paper feed together.
-                    self.print_head_auto_return_at = Some(now + PRINT_HEAD_STRIKE_TIME);
+                    mechanics.print_head_auto_return_at = Some(now + PRINT_HEAD_STRIKE_TIME);
                 }
                 PrintEvent::Bell => self.audio.play_once("assets/bellpadded.mp3"),
             }
@@ -33,7 +33,7 @@ impl RusTairApp {
     }
 
     fn process_tty_repeat(&mut self, ctx: &egui::Context) {
-        let repeat_held = self.pressed_key.is_some_and(|index| {
+        let repeat_held = self.asr33.keyboard.pressed_key.is_some_and(|index| {
             matches!(teletype::KEYS[index].kind, KeyKind::Repeat)
         });
         if !repeat_held {
@@ -51,88 +51,98 @@ impl RusTairApp {
             }
             ctx.data_mut(|data| data.insert_temp(timer_id, now + TTY_CHAR_TIME));
         }
-
-        // REPT is a mechanical ten-character-per-second action. Keep ticking
-        // while the photographed key is physically held by the mouse.
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
-    fn update_teletype_mechanics(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn update_teletype_mechanics(&mut self, ctx: &egui::Context) {
         self.process_tty_repeat(ctx);
         let now = Instant::now();
 
-        if self.print_head_impact_at.is_some_and(|at| now >= at) {
+        if self
+            .asr33
+            .mechanics
+            .print_head_impact_at
+            .is_some_and(|at| now >= at)
+        {
             self.audio.play_once("assets/printcharpadded.mp3");
-            self.print_head_impact_at = None;
+            self.asr33.mechanics.print_head_impact_at = None;
         }
 
         if self
+            .asr33
+            .mechanics
             .print_head_auto_return_at
             .is_some_and(|at| now >= at)
         {
-            self.print_head_auto_return_at = None;
+            self.asr33.mechanics.print_head_auto_return_at = None;
             if self.tty.complete_auto_wrap() {
                 self.audio.play_once("assets/crpadded.mp3");
-                self.print_head_raise_until = None;
-                self.print_head_impact_at = None;
-                self.print_head_carriage_return_until =
+                self.asr33.mechanics.print_head_raise_until = None;
+                self.asr33.mechanics.print_head_impact_at = None;
+                self.asr33.mechanics.print_head_carriage_return_until =
                     Some(now + PRINT_HEAD_CARRIAGE_RETURN_TIME);
-                self.paper_feed_until = Some(now + PAPER_FEED_TIME);
+                self.asr33.mechanics.paper_feed_until = Some(now + PAPER_FEED_TIME);
             }
         }
 
-        if self.print_head_raise_until.is_some_and(|until| now >= until) {
-            self.print_head_raise_until = None;
+        if self
+            .asr33
+            .mechanics
+            .print_head_raise_until
+            .is_some_and(|until| now >= until)
+        {
+            self.asr33.mechanics.print_head_raise_until = None;
         }
         if self
+            .asr33
+            .mechanics
             .print_head_carriage_return_until
             .is_some_and(|until| now >= until)
         {
-            self.print_head_carriage_return_until = None;
+            self.asr33.mechanics.print_head_carriage_return_until = None;
         }
-        if self.paper_feed_until.is_some_and(|until| now >= until) {
-            self.paper_feed_until = None;
+        if self
+            .asr33
+            .mechanics
+            .paper_feed_until
+            .is_some_and(|until| now >= until)
+        {
+            self.asr33.mechanics.paper_feed_until = None;
         }
 
-        if self.print_head_impact_at.is_some()
-            || self.print_head_auto_return_at.is_some()
-            || self.print_head_raise_until.is_some()
-            || self.print_head_carriage_return_until.is_some()
-            || self.paper_feed_until.is_some()
-        {
+        if self.asr33.mechanics.printing_active() {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
     }
 
-    fn set_tty_mode(&mut self, mode: TtyMode) {
-        if mode == self.tty.mode { return; }
+    pub(in crate::app) fn set_tty_mode(&mut self, mode: TtyMode) {
+        if mode == self.tty.mode {
+            return;
+        }
         self.tty.set_mode(mode);
         self.audio.play_once("assets/powerbtn.mp3");
-        self.tty_power_flash_until = None;
+        self.asr33.power_flash_until = None;
         if mode == TtyMode::Off {
             self.audio.stop_loop("tty-motor");
-            self.print_head_raise_until = None;
-            self.print_head_impact_at = None;
-            self.print_head_auto_return_at = None;
-            self.print_head_carriage_return_until = None;
-            self.paper_feed_until = None;
-            self.tty_answerback_queue.clear();
-            self.tty_answerback_next_at = None;
+            self.asr33.mechanics.clear_motion();
+            self.asr33.answerback.clear();
         } else {
             self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
         }
     }
 
     fn flash_tty_power(&mut self, ctx: &egui::Context) {
-        self.tty_power_flash_until = Some(Instant::now() + Duration::from_secs(2));
+        self.asr33.power_flash_until = Some(Instant::now() + Duration::from_secs(2));
         ctx.request_repaint_after(PANEL_FRAME);
     }
 
     fn send_tty_byte(&mut self, byte: u8) {
-        if self.tty.mode == TtyMode::Off { return; }
+        if self.tty.mode == TtyMode::Off {
+            return;
+        }
         let byte = byte & 0x7f;
         self.tty.last_key_byte = Some(byte);
-        self.machine.bus.serial_rx.push_back(byte);
+        self.machine.bus.serial_receive(byte);
         let events = self.tty.print_local(byte);
         self.play_print_events(&events);
     }
@@ -143,71 +153,60 @@ impl RusTairApp {
             return;
         }
 
-        // The mechanical drum cannot start a second message while it is already
-        // revolving. Ignore repeated HERE IS/ENQ triggers until this cycle ends.
-        if self.tty_answerback_queue.is_empty() {
-            self.tty_answerback_queue
-                .extend(TTY_ANSWERBACK.iter().copied());
-            self.tty_answerback_next_at = Some(Instant::now());
-        }
+        self.asr33.answerback.trigger(Instant::now());
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
-    fn process_tty_answerback(&mut self, ctx: &egui::Context) {
-        if self.terminal_window_open || self.tty_answerback_queue.is_empty() {
+    pub(in crate::app) fn process_tty_answerback(&mut self, ctx: &egui::Context) {
+        if self.serial_router.endpoint() != SerialEndpoint::InternalAsr33
+            || !self.asr33.answerback.pending()
+        {
             return;
         }
 
         let now = Instant::now();
-        if self.tty_answerback_next_at.is_some_and(|at| now < at) {
+        if self.asr33.answerback.time_until_next(now).is_some() {
             ctx.request_repaint_after(Duration::from_millis(5));
             return;
         }
 
-        if let Some(byte) = self.tty_answerback_queue.pop_front() {
-            // Feed the Altair exactly like keyboard-originated serial input, but
-            // at the real Model 33 rate of ten characters per second. Answerback
-            // does not strike the local printer; it is a transmitter mechanism.
-            self.machine.bus.serial_rx.push_back(byte & 0x7f);
+        if let Some(byte) = self.asr33.answerback.take_due(now, TTY_CHAR_TIME) {
+            self.machine.bus.serial_receive(byte & 0x7f);
         }
 
-        if self.tty_answerback_queue.is_empty() {
-            self.tty_answerback_next_at = None;
-        } else {
-            self.tty_answerback_next_at = Some(now + TTY_CHAR_TIME);
+        if self.asr33.answerback.pending() {
             ctx.request_repaint_after(Duration::from_millis(5));
         }
     }
 
-    fn process_tty_serial(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn process_tty_serial(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
 
-        if let Some(started) = self.tty_tx_started {
+        if let Some(started) = self.asr33.tx_started {
             if now.duration_since(started) >= TTY_CHAR_TIME {
-                self.machine.bus.serial_tx.pop_front();
-                self.tty_tx_started = None;
+                self.machine.bus.serial_tx_complete();
+                self.asr33.tx_started = None;
             } else {
                 ctx.request_repaint_after(Duration::from_millis(5));
                 return;
             }
         }
 
-        // A real ASR-33 cannot accept the next print operation while its
-        // carriage is returning from the right margin. Hold the UART queue
-        // instead of silently throwing characters away during the sweep.
         let carriage_returning = self
+            .asr33
+            .mechanics
             .print_head_carriage_return_until
             .is_some_and(|until| now < until);
         if self.tty.auto_wrap_pending()
-            || self.print_head_auto_return_at.is_some()
+            || self.asr33.mechanics.print_head_auto_return_at.is_some()
             || carriage_returning
         {
             ctx.request_repaint_after(Duration::from_millis(5));
             return;
         }
 
-        if self.tty_tx_started.is_none() {
-            if let Some(&byte) = self.machine.bus.serial_tx.front() {
+        if self.asr33.tx_started.is_none() {
+            if let Some(byte) = self.machine.bus.serial_tx_front() {
                 let was_off = self.tty.mode == TtyMode::Off;
                 let events = self.tty.print_serial(byte);
                 if was_off && self.tty.mode == TtyMode::Line {
@@ -216,13 +215,11 @@ impl RusTairApp {
                 }
                 self.play_print_events(&events);
 
-                // ENQ (WRU, 0x05) remotely trips the same answer-back mechanism
-                // as pressing HERE IS on the keyboard.
                 if byte & 0x7f == 0x05 {
                     self.start_tty_answerback(ctx);
                 }
 
-                self.tty_tx_started = Some(now);
+                self.asr33.tx_started = Some(now);
                 ctx.request_repaint_after(PANEL_FRAME);
             }
         }
@@ -249,19 +246,17 @@ impl RusTairApp {
 
     fn animate_keyboard_byte(&mut self, byte: u8, ctx: &egui::Context) {
         if let Some(index) = Self::key_index_for_byte(byte) {
-            self.animated_key = Some(index);
-            self.pressed_key = Some(index);
-            self.key_auto_release_at = Some(Instant::now() + KEY_TAP_TIME);
-            self.key_displacement = 0.0;
-            self.key_anim_tick = Instant::now();
+            let keyboard = &mut self.asr33.keyboard;
+            keyboard.animated_key = Some(index);
+            keyboard.pressed_key = Some(index);
+            keyboard.auto_release_at = Some(Instant::now() + KEY_TAP_TIME);
+            keyboard.displacement = 0.0;
+            keyboard.anim_tick = Instant::now();
             ctx.request_repaint_after(Duration::from_millis(8));
         }
     }
 
-    fn process_tty_keyboard(&mut self, ctx: &egui::Context) {
-        // Each entry keeps the byte sent to the Altair separate from the key cap
-        // that should move on the ASR-33. This matters for control characters:
-        // Ctrl+A sends 0x01, but visually it is still the A key being struck.
+    pub(in crate::app) fn process_tty_keyboard(&mut self, ctx: &egui::Context) {
         let mut keystrokes: Vec<(u8, Option<u8>)> = Vec::new();
         let mut any_key = false;
 
@@ -269,10 +264,6 @@ impl RusTairApp {
             for (event_index, event) in input.events.iter().enumerate() {
                 match event {
                     egui::Event::Text(text) => {
-                        // egui-winit emits the Key event immediately before its
-                        // Text event. Discard Text belonging to an OS typematic
-                        // repeat so holding a PC key is one ASR-33 keypress; the
-                        // dedicated REPT key below is the only repeat mechanism.
                         let host_autorepeat = event_index.checked_sub(1).is_some_and(|previous| {
                             matches!(
                                 input.events[previous],
@@ -287,13 +278,6 @@ impl RusTairApp {
                             continue;
                         }
 
-                        // Treat the PC keyboard as an adapter for the physical
-                        // ASR-33 keyboard, not as a generic Unicode terminal.
-                        // Iterate Unicode scalar values (never raw UTF-8 bytes),
-                        // uppercase ordinary ASCII letters, and accept only the
-                        // Model 33 printable repertoire 0x20..=0x5f. Characters
-                        // such as ñ, ´, ç, º, ª, {, }, ~, etc. simply do not
-                        // exist on this keyboard and must produce no serial data.
                         for ch in text.chars() {
                             let ch = ch.to_ascii_uppercase();
                             if !ch.is_ascii() {
@@ -314,10 +298,6 @@ impl RusTairApp {
                         ..
                     } => {
                         any_key = true;
-                        // Desktop Enter is the complete newline action. Animate
-                        // RETURN once while still transmitting the required CR/LF
-                        // pair; otherwise the immediately following LF replaces
-                        // RETURN as the only visible key animation.
                         keystrokes.push((b'\r', Some(b'\r')));
                         keystrokes.push((b'\n', None));
                     }
@@ -328,9 +308,6 @@ impl RusTairApp {
                         ..
                     } => {
                         any_key = true;
-                        // Altair BASIC 3.2 uses underscore as its line-editor
-                        // erase character. Keep the ASR-33 DELETE/RUBOUT cap as
-                        // the visual counterpart to the modern PC Backspace key.
                         keystrokes.push((b'_', Some(0x7f)));
                     }
                     egui::Event::Key {
@@ -376,7 +353,9 @@ impl RusTairApp {
         });
 
         if self.tty.mode == TtyMode::Off {
-            if any_key { self.flash_tty_power(ctx); }
+            if any_key {
+                self.flash_tty_power(ctx);
+            }
             return;
         }
 
@@ -388,44 +367,49 @@ impl RusTairApp {
         }
     }
 
-    fn update_key_animation(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn update_key_animation(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
-        if self.key_auto_release_at.is_some_and(|until| now >= until) {
-            self.pressed_key = None;
-            self.key_auto_release_at = None;
+        let keyboard = &mut self.asr33.keyboard;
+        if keyboard.auto_release_at.is_some_and(|until| now >= until) {
+            keyboard.pressed_key = None;
+            keyboard.auto_release_at = None;
         }
 
-        let dt = now.duration_since(self.key_anim_tick).as_secs_f32().min(0.05);
-        self.key_anim_tick = now;
+        let dt = now.duration_since(keyboard.anim_tick).as_secs_f32().min(0.05);
+        keyboard.anim_tick = now;
         let velocity = 8.0 / 0.030;
 
-        if self.pressed_key.is_some() {
-            // The MID asset already gives a convincing full press. Keep the
-            // animation state below the renderer's DOWN threshold (8 px) so
-            // the visual cycle is simply UP -> MID -> UP.
-            self.key_displacement = (self.key_displacement + velocity * dt).min(7.0);
-        } else if self.key_displacement > 0.0 {
-            self.key_displacement = (self.key_displacement - velocity * dt).max(0.0);
-            if self.key_displacement == 0.0 { self.animated_key = None; }
+        if keyboard.pressed_key.is_some() {
+            keyboard.displacement = (keyboard.displacement + velocity * dt).min(7.0);
+        } else if keyboard.displacement > 0.0 {
+            keyboard.displacement = (keyboard.displacement - velocity * dt).max(0.0);
+            if keyboard.displacement == 0.0 {
+                keyboard.animated_key = None;
+            }
         }
 
-        if self.key_displacement > 0.0 || self.pressed_key.is_some() {
+        if keyboard.displacement > 0.0 || keyboard.pressed_key.is_some() {
             ctx.request_repaint_after(Duration::from_millis(8));
         }
     }
 
-    fn press_tty_key(&mut self, index: usize, ctx: &egui::Context) {
+    pub(in crate::app) fn press_tty_key(&mut self, index: usize, ctx: &egui::Context) {
         if self.tty.mode == TtyMode::Off {
             self.flash_tty_power(ctx);
             return;
         }
-        if self.pressed_key.is_some() { return; }
+        if self.asr33.keyboard.pressed_key.is_some() {
+            return;
+        }
 
-        self.pressed_key = Some(index);
-        self.animated_key = Some(index);
-        self.key_auto_release_at = None;
-        self.key_displacement = 0.0;
-        self.key_anim_tick = Instant::now();
+        {
+            let keyboard = &mut self.asr33.keyboard;
+            keyboard.pressed_key = Some(index);
+            keyboard.animated_key = Some(index);
+            keyboard.auto_release_at = None;
+            keyboard.displacement = 0.0;
+            keyboard.anim_tick = Instant::now();
+        }
 
         let key = teletype::KEYS[index];
         match key.kind {
@@ -434,8 +418,6 @@ impl RusTairApp {
             KeyKind::HereIs => self.start_tty_answerback(ctx),
             KeyKind::Repeat => {
                 if let Some(byte) = self.tty.last_key_byte {
-                    // First repetition is immediate, then the mechanical REPT
-                    // control retransmits at the same 10 cps as the keyboard.
                     self.send_tty_byte(byte);
                     let timer_id = egui::Id::new("asr33-repeat-next-at");
                     ctx.data_mut(|data| {
@@ -445,9 +427,6 @@ impl RusTairApp {
                 }
             }
             kind => {
-                // PC modifiers also affect mouse-clicked ASR-33 keys. Keep them
-                // separate from tty.shift_down/control_down so releasing the PC
-                // keyboard cannot cancel a modifier held on the photographed UI.
                 let modifiers = ctx.input(|input| input.modifiers);
                 let shifted = self.tty.shift_down || modifiers.shift;
                 let controlled = self.tty.control_down || modifiers.ctrl;
@@ -459,14 +438,14 @@ impl RusTairApp {
         ctx.request_repaint_after(Duration::from_millis(8));
     }
 
-    fn release_tty_key(&mut self) {
-        if let Some(index) = self.pressed_key.take() {
+    pub(in crate::app) fn release_tty_key(&mut self) {
+        if let Some(index) = self.asr33.keyboard.pressed_key.take() {
             match teletype::KEYS[index].kind {
                 KeyKind::Shift => self.tty.shift_down = false,
                 KeyKind::Control => self.tty.control_down = false,
                 _ => {}
             }
         }
-        self.key_auto_release_at = None;
+        self.asr33.keyboard.auto_release_at = None;
     }
 }

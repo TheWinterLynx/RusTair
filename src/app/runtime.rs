@@ -1,25 +1,27 @@
+use super::*;
+
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
-        // Keep emulation work bounded to roughly one visual frame. The previous
-        // 50 ms / 200k-cycle catch-up window could occasionally execute a large
-        // CPU burst on the UI thread after an OS scheduling hiccup, producing a
-        // visible whole-panel stutter/flash. At normal cadence this still runs
-        // the 2 MHz CPU at the requested rate (about 32k cycles per 16 ms frame),
-        // but deliberately drops excessive backlog instead of blocking drawing.
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
+        if !self.terminal.window_open
+            && self.serial_router.endpoint() == SerialEndpoint::TextTerminal
+        {
+            self.terminal.tx_started = None;
+            self.serial_router.select(SerialEndpoint::InternalAsr33);
+        }
+
         self.update_paper_tape();
-        if self.terminal_window_open {
+        if self.serial_router.endpoint() == SerialEndpoint::TextTerminal {
             self.process_terminal_input(ctx);
         }
 
         if let Some(until) = self.reset_flash_until {
             if now >= until {
-                self.machine.address_leds = 0;
-                self.machine.bus.data_leds = 0;
+                self.machine.set_panel_lamps(0, 0);
                 self.reset_flash_until = None;
             } else {
                 ctx.request_repaint_after(PANEL_FRAME);
@@ -32,14 +34,12 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        // The two serial displays are alternative endpoints. The ASR-33 path
-        // keeps its fixed 100 ms mechanical character interval (10 cps), while
-        // the text terminal uses its independently selectable baud rate.
-        if self.terminal_window_open {
-            self.process_terminal_serial(ctx);
-        } else {
-            self.process_tty_serial(ctx);
-            self.process_tty_answerback(ctx);
+        match self.serial_router.endpoint() {
+            SerialEndpoint::InternalAsr33 => {
+                self.process_tty_serial(ctx);
+                self.process_tty_answerback(ctx);
+            }
+            SerialEndpoint::TextTerminal => self.process_terminal_serial(ctx),
         }
         self.update_teletype_mechanics(ctx);
 
@@ -47,15 +47,7 @@ impl eframe::App for RusTairApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Load binary…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            match std::fs::read(&path) {
-                                Ok(bytes) => {
-                                    self.machine.bus.load(0, &bytes);
-                                    self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
-                                }
-                                Err(e) => self.status = format!("Load failed: {e}"),
-                            }
-                        }
+                        self.load_binary_dialog();
                         ui.close();
                     }
                     if ui.button("Load bundled Microsoft 4K BASIC").clicked() {
@@ -66,16 +58,13 @@ impl eframe::App for RusTairApp {
 
                 ui.separator();
                 if ui.button("ASR-33 TELETYPE").clicked() {
-                    self.tty_window_open = true;
+                    self.asr33.window_open = true;
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
-                    // Cancel any in-progress ASR-33 holding-register timer when
-                    // handing the serial line to the text terminal. The ASR-33
-                    // algorithm itself remains unchanged and will start a fresh
-                    // mechanical interval when the text terminal is closed.
-                    self.tty_tx_started = None;
-                    self.terminal_tx_started = None;
-                    self.terminal_window_open = true;
+                    self.asr33.tx_started = None;
+                    self.terminal.tx_started = None;
+                    self.serial_router.select(SerialEndpoint::TextTerminal);
+                    self.terminal.window_open = true;
                 }
                 ui.separator();
                 let mut muted = self.audio.muted();

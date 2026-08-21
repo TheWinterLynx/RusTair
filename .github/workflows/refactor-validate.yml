@@ -1,0 +1,24 @@
+name: validate-modular-refactor
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: modular-refactor-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --all-targets
+      - name: Build release
+        run: cargo build --release
