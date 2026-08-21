@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod cpu8080;
 mod altair_machine;
 
@@ -295,6 +296,9 @@ impl RusTairApp {
 }
 
 include!("front_panel.rs");
+// Keep the optional black-background cleanup path exercised so the enum variant
+// remains part of the supported switch-asset pipeline without triggering dead-code warnings.
+const _: SwitchAlphaMode = SwitchAlphaMode::RemoveBlack;
 include!("teletype_controller.rs");
 include!("teletype_renderer.rs");
 include!("teletype_io.rs");
