@@ -270,9 +270,23 @@ impl RusTairApp {
     }
 
     fn paper_line_height(&self, scale: f32) -> f32 {
-        let char_width = self.tty.char_width_image_px();
-        let font_size = (char_width * 1.63 * scale).max(5.0);
+        // Keep the glyph size/line height unchanged while the horizontal pitch
+        // is widened below. That creates real white space between characters
+        // instead of merely scaling the glyphs up together with the cells.
+        let glyph_width = self.tty.char_width_image_px();
+        let font_size = (glyph_width * 1.63 * scale).max(5.0);
         (font_size * 1.03).max(6.0)
+    }
+
+    fn paper_char_pitch_image_px(&self) -> f32 {
+        // The previous cell pitch made the Model 33 typeface look almost kerned.
+        // Keep 72 mechanical columns, but spread their centres by ten percent.
+        const CHAR_PITCH_SCALE: f32 = 1.10;
+        self.tty.char_width_image_px() * CHAR_PITCH_SCALE
+    }
+
+    fn paper_printable_width(&self) -> f32 {
+        self.paper_char_pitch_image_px() * self.tty.paper_width.max(1) as f32
     }
 
     fn paper_emergence_y(&self) -> f32 {
@@ -292,11 +306,14 @@ impl RusTairApp {
         let feed_offset = self.paper_feed_offset(Instant::now(), line_height);
         let line_count = self.tty.output.split('\n').count().max(1) as f32;
 
-        const LEADER_LINES: f32 = 4.5;
-        let sheet_top = (print_baseline
+        // Treat the sheet as an endless roll: every LF moves the leading edge
+        // one line upward and exposes fresh paper at the fixed rotor feed point.
+        // Do not clamp sheet_top to the machine; once it passes the top of the
+        // image the painter simply clips it, so the roll can continue forever.
+        const LEADER_LINES: f32 = 2.0;
+        let sheet_top = print_baseline
             - (line_count + LEADER_LINES) * line_height
-            + feed_offset)
-            .max(machine.top());
+            + feed_offset;
 
         // Tie the lower edge to the actual visible base of the typewheel. A tiny
         // overlap is hidden by the foreground body slice below.
@@ -305,14 +322,14 @@ impl RusTairApp {
         let sheet_bottom = origin.y + (emergence_y + PAPER_OVERLAP) * scale;
         if sheet_top >= sheet_bottom { return; }
 
-        let char_width = self.tty.char_width_image_px();
-        let side_margin = char_width * 1.8 * scale;
+        let char_pitch = self.paper_char_pitch_image_px();
+        let side_margin = char_pitch * 1.8 * scale;
         let bottom_left = origin.x + teletype::PRINT_LEFT * scale - side_margin;
         let bottom_right = origin.x
-            + (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH) * scale
+            + (teletype::PRINT_LEFT + self.paper_printable_width()) * scale
             + side_margin;
 
-        let taper = (char_width * 0.38 * scale).max(0.8 * scale);
+        let taper = (char_pitch * 0.38 * scale).max(0.8 * scale);
         let top_left = bottom_left + taper;
         let top_right = bottom_right - taper;
         let top_left_y = sheet_top + 0.9 * scale;
@@ -407,10 +424,10 @@ impl RusTairApp {
         if self.tty.output.is_empty() { return; }
         let Some(body) = &self.tex.tty_body else { return; };
 
-        let char_width = self.tty.char_width_image_px();
-        let side_margin = char_width * 2.4;
+        let char_pitch = self.paper_char_pitch_image_px();
+        let side_margin = char_pitch * 2.4;
         let left = (teletype::PRINT_LEFT - side_margin).max(0.0);
-        let right = (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH + side_margin)
+        let right = (teletype::PRINT_LEFT + self.paper_printable_width() + side_margin)
             .min(TTY_W);
 
         // The body begins exactly at the visible base of the rotor. This masks
@@ -430,9 +447,9 @@ impl RusTairApp {
     }
 
     fn draw_paper_text(&self, ui: &mut egui::Ui, paper: Rect, scale: f32) {
-        let char_width = self.tty.char_width_image_px();
-        let char_cell = char_width * scale;
-        let font_size = (char_width * 1.63 * scale).max(5.0);
+        let glyph_width = self.tty.char_width_image_px();
+        let char_cell = self.paper_char_pitch_image_px() * scale;
+        let font_size = (glyph_width * 1.63 * scale).max(5.0);
         let line_height = (font_size * 1.03).max(6.0);
 
         let baseline_inset = TTY_H * 0.024 * scale;
@@ -503,11 +520,11 @@ impl RusTairApp {
             .print_head_carriage_return_until
             .is_some_and(|until| now < until);
 
-        let char_width = self.tty.char_width_image_px();
+        let char_pitch = self.paper_char_pitch_image_px();
         let last_column = self.tty.paper_width.saturating_sub(1);
         let active_column = self.tty.column.saturating_sub(1).min(last_column);
         let target_center_x = teletype::PRINT_LEFT
-            + (active_column as f32 + 0.5) * char_width;
+            + (active_column as f32 + 0.5) * char_pitch;
 
         let travel_time = if returning {
             PRINT_HEAD_CARRIAGE_RETURN_TIME.as_secs_f32()
@@ -650,7 +667,7 @@ impl RusTairApp {
         let paper = Rect::from_min_max(
             origin + Vec2::new(teletype::PRINT_LEFT * scale, 0.0),
             origin + Vec2::new(
-                (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH) * scale,
+                (teletype::PRINT_LEFT + self.paper_printable_width()) * scale,
                 teletype::PRINT_TOP * scale,
             ),
         );
