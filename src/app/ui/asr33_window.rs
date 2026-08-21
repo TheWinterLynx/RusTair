@@ -2,8 +2,10 @@ use super::super::*;
 
 impl RusTairApp {
     pub(in crate::app) fn update_paper_tape(&mut self) {
-        if self.last_tape_tick.elapsed() < Duration::from_millis(30) { return; }
-        self.last_tape_tick = Instant::now();
+        if self.asr33.last_tape_tick.elapsed() < Duration::from_millis(30) {
+            return;
+        }
+        self.asr33.last_tape_tick = Instant::now();
         if self.machine.bus.serial_rx_empty() {
             if let Some(byte) = self.tty.next_tape_byte() {
                 self.machine.bus.serial_receive(byte);
@@ -28,9 +30,17 @@ impl RusTairApp {
                 ui.separator();
                 ui.label(format!("{} columns", self.tty.paper_width));
                 ui.separator();
-                if ui.button("Clear paper").clicked() { self.tty.clear_paper(); }
-                if ui.button("Read tape…").clicked() { self.load_paper_tape(); }
-                let punch_label = if self.tty.capture_to_tape { "Finish punch" } else { "Punch tape" };
+                if ui.button("Clear paper").clicked() {
+                    self.tty.clear_paper();
+                }
+                if ui.button("Read tape…").clicked() {
+                    self.load_paper_tape();
+                }
+                let punch_label = if self.tty.capture_to_tape {
+                    "Finish punch"
+                } else {
+                    "Punch tape"
+                };
                 if ui.button(punch_label).clicked() {
                     if self.tty.capture_to_tape {
                         self.tty.capture_to_tape = false;
@@ -48,7 +58,11 @@ impl RusTairApp {
         self.update_key_animation(ctx);
         self.draw_tty_menu(ctx);
 
-        if self.tty_power_flash_until.is_some_and(|until| Instant::now() < until) {
+        if self
+            .asr33
+            .power_flash_until
+            .is_some_and(|until| Instant::now() < until)
+        {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
@@ -72,7 +86,9 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn show_tty_viewport(&mut self, parent_ctx: &egui::Context) {
-        if !self.tty_window_open { return; }
+        if !self.asr33.window_open {
+            return;
+        }
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-asr33"),
             egui::ViewportBuilder::default()
@@ -83,7 +99,7 @@ impl RusTairApp {
             |tty_ctx, _class| {
                 self.draw_tty_window(tty_ctx);
                 if tty_ctx.input(|i| i.viewport().close_requested()) {
-                    self.tty_window_open = false;
+                    self.asr33.window_open = false;
                     self.set_tty_mode(TtyMode::Off);
                 }
             },
