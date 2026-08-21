@@ -276,19 +276,11 @@ impl RusTairApp {
     }
 
     fn paper_emergence_y(&self) -> f32 {
-        const REST_TOP_RATIO: f32 = 0.355;
-        const REST_WIDTH_SCALE: f32 = 0.96;
-        const WHEEL_FRACTION: f32 = 0.70;
-
-        let Some(head) = &self.tex.tty_head else {
-            return teletype::PRINT_TOP + TTY_H * 0.058;
-        };
-        let texture_size = head.size_vec2();
-        let head_aspect = texture_size.y / texture_size.x.max(1.0);
-        let head_width = TTY_W * 0.060 * REST_WIDTH_SCALE;
-        let head_height = head_width * head_aspect;
-
-        TTY_H * REST_TOP_RATIO + head_height * WHEEL_FRACTION
+        // draw_print_head clips the moving sprite at this physical sill. That
+        // clip is therefore the *actual visible base* of the rotor in the UI;
+        // using the nominal 70% wheel split put the paper about 12px too low.
+        const GLASS_SILL_RATIO: f32 = 0.380;
+        TTY_H * GLASS_SILL_RATIO
     }
 
     fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
@@ -306,8 +298,8 @@ impl RusTairApp {
             + feed_offset)
             .max(machine.top());
 
-        // Tie the lower edge to the real rest-position base of the typewheel
-        // sprite. A tiny overlap is hidden by the foreground body slice below.
+        // Tie the lower edge to the actual visible base of the typewheel. A tiny
+        // overlap is hidden by the foreground body slice below.
         let emergence_y = self.paper_emergence_y();
         const PAPER_OVERLAP: f32 = 3.0;
         let sheet_bottom = origin.y + (emergence_y + PAPER_OVERLAP) * scale;
@@ -421,8 +413,8 @@ impl RusTairApp {
         let right = (teletype::PRINT_LEFT + teletype::PRINTABLE_WIDTH + side_margin)
             .min(TTY_W);
 
-        // The body begins exactly at the rest-position base of the rotor. This
-        // masks the small paper overlap and makes the sheet emerge from behind it.
+        // The body begins exactly at the visible base of the rotor. This masks
+        // the small paper overlap and makes the sheet emerge from behind it.
         let top = self.paper_emergence_y().clamp(0.0, TTY_H);
         let bottom = (top + TTY_H * 0.025).min(TTY_H);
 
@@ -549,13 +541,12 @@ impl RusTairApp {
 
         const REST_TOP_RATIO: f32 = 0.355;
         const STRIKE_TOP_RATIO: f32 = 0.322;
-        const GLASS_SILL_RATIO: f32 = 0.380;
 
         let rest_top = TTY_H * REST_TOP_RATIO;
         let strike_top = TTY_H * STRIKE_TOP_RATIO;
         let selection_height = level_pose * TTY_H * 0.0042;
         let top_y = rest_top + (strike_top - rest_top) * lift + selection_height;
-        let sill_y = TTY_H * GLASS_SILL_RATIO;
+        let sill_y = self.paper_emergence_y();
 
         let head_rect = Rect::from_min_size(
             origin + Vec2::new(
