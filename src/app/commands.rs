@@ -50,16 +50,26 @@ impl RusTairApp {
 
                 // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
                 // on a completely writable 64 KiB machine and overwrites itself.
-                // The one-shot guard makes only that probe observe FFFFh as
-                // non-writable; it automatically restores normal 64 KiB RAM on
-                // the matching read, so other software still sees full memory.
-                let full_memory_probe_guard =
-                    self.machine.arm_basic32_full_memory_probe_guard();
+                // Faithful emulation leaves that bug intact by default. Users may
+                // explicitly opt into a one-shot FFFFh probe workaround from the
+                // Compatibility menu when they prefer convenience over fidelity.
+                let full_memory_probe_guard = if self
+                    .config
+                    .compatibility
+                    .basic32_64k_probe_workaround
+                {
+                    self.machine.arm_basic32_full_memory_probe_guard()
+                } else {
+                    false
+                };
 
                 self.asr33.window_open = true;
                 self.machine.set_running(true);
                 self.status = if full_memory_probe_guard {
-                    "Microsoft 4K BASIC loaded and running — 64 KiB memory-probe compatibility active"
+                    "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active"
+                        .into()
+                } else if self.machine.installed_ram_bytes() == 64 * 1024 {
+                    "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled"
                         .into()
                 } else {
                     "Microsoft 4K BASIC loaded and running".into()
