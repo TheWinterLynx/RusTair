@@ -62,8 +62,38 @@ impl AltairBus {
         self.memory.set_protected(address, protected);
     }
 
+    /// Queue one byte as data arriving from the currently attached terminal.
+    /// Endpoint code uses this instead of reaching into the emulated UART queue.
+    pub fn serial_receive(&mut self, byte: u8) {
+        self.serial_rx.push_back(byte);
+    }
+
+    pub fn serial_rx_empty(&self) -> bool {
+        self.serial_rx.is_empty()
+    }
+
+    pub fn serial_rx_len(&self) -> usize {
+        self.serial_rx.len()
+    }
+
+    /// Byte currently held for transmission by the emulated serial interface.
+    /// The endpoint deliberately leaves it pending until its own timing says the
+    /// character has completed, preserving the guest-visible BUSY/READY state.
+    pub fn serial_tx_front(&self) -> Option<u8> {
+        self.serial_tx.front().copied()
+    }
+
+    pub fn serial_tx_complete(&mut self) -> Option<u8> {
+        self.serial_tx.pop_front()
+    }
+
     pub fn tx_busy(&self) -> bool {
         !self.serial_tx.is_empty()
+    }
+
+    pub fn clear_serial(&mut self) {
+        self.serial_rx.clear();
+        self.serial_tx.clear();
     }
 }
 
@@ -84,7 +114,7 @@ impl Bus for AltairBus {
             // Bit 0 is set when the receive buffer is empty, while bits 6/7
             // are set while the transmit holding register is occupied.
             0x00 => {
-                let rx_empty = self.serial_rx.is_empty();
+                let rx_empty = self.serial_rx_empty();
                 let tx_busy = self.tx_busy();
                 (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
             }
@@ -92,7 +122,7 @@ impl Bus for AltairBus {
 
             // MITS 2SIO / 8251 convention: bit 0 = RX ready, bit 1 = TX ready.
             0x10 => {
-                (if self.serial_rx.is_empty() { 0 } else { 0x01 })
+                (if self.serial_rx_empty() { 0 } else { 0x01 })
                     | (if self.tx_busy() { 0 } else { 0x02 })
             }
             0x11 => self.serial_rx.pop_front().unwrap_or(0),
@@ -148,8 +178,7 @@ impl AltairMachine {
             self.wait_led = false;
             self.address_leds = 0;
             self.bus.data_leds = 0;
-            self.bus.serial_rx.clear();
-            self.bus.serial_tx.clear();
+            self.bus.clear_serial();
             self.bus.randomize();
         }
     }
@@ -160,8 +189,7 @@ impl AltairMachine {
         self.wait_led = true;
         self.address_leds = 0;
         self.bus.data_leds = 0;
-        self.bus.serial_rx.clear();
-        self.bus.serial_tx.clear();
+        self.bus.clear_serial();
     }
 
     pub fn set_running(&mut self, run: bool) {
@@ -282,8 +310,9 @@ mod tests {
         assert!(bus.tx_busy());
         assert_eq!(bus.input(0x10) & 0x02, 0x00);
         assert_eq!(bus.input(0x00) & 0xc0, 0xc0);
+        assert_eq!(bus.serial_tx_front(), Some(b'A'));
 
-        bus.serial_tx.pop_front();
+        bus.serial_tx_complete();
         assert!(!bus.tx_busy());
         assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
@@ -295,7 +324,7 @@ mod tests {
         assert_eq!(bus.input(0x00) & 0x01, 0x01); // SIO: 1 means RX empty
         assert_eq!(bus.input(0x10) & 0x01, 0x00); // 2SIO: 0 means no RX data
 
-        bus.serial_rx.push_back(b'K');
+        bus.serial_receive(b'K');
         assert_eq!(bus.input(0x00) & 0x01, 0x00);
         assert_eq!(bus.input(0x10) & 0x01, 0x01);
         assert_eq!(bus.input(0x01), b'K');
