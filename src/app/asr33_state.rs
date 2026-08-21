@@ -20,7 +20,7 @@ impl Asr33State {
             answerback: Answerback::default(),
             last_tape_tick: now,
             power_flash_until: None,
-            mechanics: Asr33MechanicsState::default(),
+            mechanics: Asr33MechanicsState::new(),
             keyboard: Asr33KeyboardState::new(now),
         }
     }
