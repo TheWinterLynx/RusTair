@@ -64,10 +64,9 @@ impl RusTairApp {
             return;
         };
 
-        match std::fs::write(&path, &self.tty.tape_out) {
-            Ok(_) => {
-                self.status = format!("Punched tape saved: {} bytes", self.tty.tape_out.len())
-            }
+        let tape = self.tty.punched_tape();
+        match std::fs::write(&path, tape) {
+            Ok(_) => self.status = format!("Punched tape saved: {} bytes", tape.len()),
             Err(e) => self.status = format!("Paper tape save failed: {e}"),
         }
     }
