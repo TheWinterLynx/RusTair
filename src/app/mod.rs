@@ -131,12 +131,68 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.reset_flash_until = None;
-        self.status = format!(
-            "Serial board configured: {} — status {:02X}h, data {:02X}h; machine reset",
-            serial_board.label(),
-            serial_board.status_port(),
-            serial_board.data_port()
-        );
+
+        // SerialRouter remains the cable selector for the single-port 88-SIO.
+        // A fully populated 88-2SIO has two simultaneous physical ports, so the
+        // ASR-33 owns Port 0 and the Text Terminal owns Port 1 independently.
+        if serial_board == SerialBoard::TwoSio88 {
+            self.serial_router.select(SerialEndpoint::InternalAsr33);
+        }
+
+        self.status = match serial_board {
+            SerialBoard::Sio88 => {
+                "Serial board configured: MITS 88-SIO — 00h/01h; one serial connection; machine reset"
+                    .into()
+            }
+            SerialBoard::TwoSio88 => {
+                "Serial board configured: MITS 88-2SIO — Port 0 10h/11h → ASR-33; Port 1 12h/13h → Text Terminal; machine reset"
+                    .into()
+            }
+        };
+    }
+
+    fn terminal_uses_2sio_port1(&self) -> bool {
+        self.config.machine.serial_board == SerialBoard::TwoSio88
+    }
+
+    fn terminal_serial_rx_empty(&self) -> bool {
+        if self.terminal_uses_2sio_port1() {
+            self.machine.bus.serial_port1_rx_empty()
+        } else {
+            self.machine.bus.serial_rx_empty()
+        }
+    }
+
+    fn terminal_serial_receive(&mut self, byte: u8) {
+        if self.terminal_uses_2sio_port1() {
+            self.machine.bus.serial_port1_receive(byte);
+        } else {
+            self.machine.bus.serial_receive(byte);
+        }
+    }
+
+    fn terminal_serial_tx_busy(&self) -> bool {
+        if self.terminal_uses_2sio_port1() {
+            self.machine.bus.serial_port1_tx_busy()
+        } else {
+            self.machine.bus.tx_busy()
+        }
+    }
+
+    fn terminal_serial_tx_front(&self) -> Option<u8> {
+        if self.terminal_uses_2sio_port1() {
+            self.machine.bus.serial_port1_tx_front()
+        } else {
+            self.machine.bus.serial_tx_front()
+        }
+    }
+
+    fn terminal_serial_tx_complete(&mut self) -> Option<u8> {
+        if self.terminal_uses_2sio_port1() {
+            self.machine.bus.serial_port1_tx_complete()
+        } else {
+            self.machine.bus.serial_tx_complete()
+        }
     }
 
     fn image(ui: &mut egui::Ui, texture: &egui::TextureHandle, rect: Rect) {
