@@ -482,7 +482,6 @@ impl RusTairApp {
         let origin = rect.min;
 
         if let Some(t) = &self.tex.tty_body { Self::image(ui, t, rect); }
-        if let Some(t) = &self.tex.tty_keys { Self::image(ui, t, rect); }
 
         // The moving paper is a separate layer over the photographed machine
         // and under ink/typewheel. As LF advances, its free edge and all ink
@@ -502,6 +501,11 @@ impl RusTairApp {
         // appears to travel behind the platen/glass rather than ending on top.
         self.draw_paper_foreground(ui, origin, scale);
         self.draw_print_head(ui, rect, origin, scale);
+
+        // In this experimental branch tty_keys is also the prepared foreground
+        // cover texture. Draw it only here so there is one glass layer, in front
+        // of paper and print head instead of being baked into the background.
+        if let Some(t) = &self.tex.tty_keys { Self::image(ui, t, rect); }
 
         let selector_size = Vec2::new(
             TTY_W * 0.18 * scale,
