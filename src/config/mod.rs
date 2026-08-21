@@ -1,3 +1,5 @@
 mod machine;
 
-pub use machine::{AppConfig, CompatibilityConfig, MachineConfig, RamInit, RamSize, SerialBoard};
+pub use machine::{
+    AppConfig, CompatibilityConfig, MachineConfig, PreferencesConfig, RamInit, RamSize, SerialBoard,
+};
