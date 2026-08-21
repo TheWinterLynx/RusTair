@@ -1,16 +1,5 @@
 use super::super::*;
 
-// Front-panel switch model, sprite registry and rendering.
-//
-// Every physical switch uses the same SwitchConfig structure. Two-position
-// switches have center: None; spring-centred three-position switches have
-// center: Some(...). Every available pose has its own sprite, X/Y offset and
-// scale, so each physical switch can be calibrated independently.
-//
-// Offsets are panel pixels: +X right, -X left, +Y down, -Y up.
-// To add a new artwork variant, add a SwitchSpriteId, describe its asset in
-// SwitchSpriteId::asset(), then reference the new ID from any individual pose.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SwitchPosition {
     Up,
@@ -251,11 +240,11 @@ impl RusTairApp {
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
         let response = ui.allocate_rect(hit, Sense::click());
         if response.clicked() {
-            self.machine.bus.panel_switches ^= 1u16 << bit;
+            self.machine.toggle_sense_switch(bit);
             self.audio.play_once("assets/click.mp3");
         }
         if response.hovered() { response.clone().on_hover_text(format!("Sense switch {}", switch.name)); }
-        let position = if self.machine.bus.panel_switches & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
+        let position = if self.machine.panel_switches() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
@@ -297,8 +286,7 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
-            self.machine.address_leds = 0xffff;
-            self.machine.bus.data_leds = 0xff;
+            self.machine.set_panel_lamps(0xffff, 0xff);
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
             self.audio.start_loop("altair-fan", "assets/fan.mp3");
         } else {
@@ -317,10 +305,10 @@ impl RusTairApp {
 
         for bit in 0..16 { self.sense_switch(ui, origin, scale, bit); }
         for bit in 0..16 {
-            self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, self.machine.address_leds & (1u16 << bit) != 0);
+            self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, self.machine.address_leds() & (1u16 << bit) != 0);
         }
         for bit in 0..8 {
-            self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, self.machine.bus.data_leds & (1u8 << bit) != 0);
+            self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, self.machine.data_leds() & (1u8 << bit) != 0);
         }
         self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte);
         self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected());
@@ -328,7 +316,7 @@ impl RusTairApp {
         self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, true);
         self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, true);
         self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted);
-        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, self.machine.wait_led);
+        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, self.machine.wait_led());
         self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, false);
 
         self.draw_power(ui, origin, scale);
@@ -339,8 +327,7 @@ impl RusTairApp {
         if self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR").is_some() {
             self.machine.reset();
             self.asr33.tx_started = None;
-            self.machine.address_leds = 0xffff;
-            self.machine.bus.data_leds = 0xff;
+            self.machine.set_panel_lamps(0xffff, 0xff);
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
         }
         if let Some(unprotect) = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT") {
