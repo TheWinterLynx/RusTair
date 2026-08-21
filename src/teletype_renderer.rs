@@ -49,9 +49,6 @@ impl RusTairApp {
         let texture_size = texture.size_vec2();
         let texture_aspect = texture_size.y / texture_size.x.max(1.0);
 
-        // The real ASR-33 uses slightly larger caps for the non-alphanumeric
-        // controls. Scale them uniformly so they gain diameter without becoming
-        // the horizontally stretched pills used by the first keyboard pass.
         let special = legend_override.is_some()
             || matches!(
                 kind,
@@ -74,8 +71,6 @@ impl RusTairApp {
         let target_w = KEY_CANVAS_WIDTH * size_factor;
         let target_h = target_w * texture_aspect;
 
-        // UP and MID share one physical lower edge. The GIMP artwork itself
-        // contains the shorter MID pose, so the cap only moves down from above.
         let base_y = socket_y + SOCKET_BASE_OFFSET;
         let target = Rect::from_min_size(
             origin
@@ -98,9 +93,6 @@ impl RusTairApp {
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
         if legend.is_empty() { return; }
 
-        // Place legends relative to the photographed top face, not the full
-        // cylinder. Multiline legends are painted one line at a time so their
-        // baseline spacing cannot drag the whole block toward the lower edge.
         let multiline = legend.contains('\n');
         let special_y_nudge = if special { -2.0 } else { 0.0 };
         let text_color = Color32::from_rgb(47, 44, 38);
@@ -111,9 +103,6 @@ impl RusTairApp {
                 base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
             let font_factor = if special { 0.115 } else { 0.130 };
             let font_size = (114.0 * font_factor * scale).max(5.0);
-            // Keep the separation in screen pixels. At small teletype scales
-            // font_size reaches its 5px floor, so scaling line_gap again would
-            // collapse the two rows on top of each other.
             let line_gap = font_size * if special { 1.35 } else { 1.45 };
             let legend_x = origin.x + socket_x * scale;
             let face_screen_y = origin.y + face_y * scale;
@@ -163,9 +152,6 @@ impl RusTairApp {
         h: f32,
         pose: u8,
     ) {
-        // Slightly overlap the photographed well on all sides. At 0.98 the
-        // socket rim was still visible; 1.045 matches the real bar/well ratio
-        // while keeping the matrix centre as the only horizontal reference.
         const SPACEBAR_VISUAL_SCALE: f32 = 1.045;
         const SPACEBAR_BASE_OFFSET: f32 = 55.0;
 
@@ -232,8 +218,6 @@ impl RusTairApp {
             }
         }
 
-        // HERE IS is physical but does not emit an ASCII byte. The legend
-        // override also marks it as a slightly larger special cap above.
         self.draw_key_pose(
             ui,
             origin,
@@ -270,17 +254,12 @@ impl RusTairApp {
     }
 
     fn paper_line_height(&self, scale: f32) -> f32 {
-        // Keep the glyph size/line height unchanged while the horizontal pitch
-        // is widened below. That creates real white space between characters
-        // instead of merely scaling the glyphs up together with the cells.
         let glyph_width = self.tty.char_width_image_px();
         let font_size = (glyph_width * 1.63 * scale).max(5.0);
         (font_size * 1.03).max(6.0)
     }
 
     fn paper_char_pitch_image_px(&self) -> f32 {
-        // The previous cell pitch made the Model 33 typeface look almost kerned.
-        // Keep 72 mechanical columns, but spread their centres by ten percent.
         const CHAR_PITCH_SCALE: f32 = 1.10;
         self.tty.char_width_image_px() * CHAR_PITCH_SCALE
     }
@@ -290,11 +269,88 @@ impl RusTairApp {
     }
 
     fn paper_emergence_y(&self) -> f32 {
-        // draw_print_head clips the moving sprite at this physical sill. That
-        // clip is therefore the *actual visible base* of the rotor in the UI;
-        // using the nominal 70% wheel split put the paper about 12px too low.
         const GLASS_SILL_RATIO: f32 = 0.380;
         TTY_H * GLASS_SILL_RATIO
+    }
+
+    fn paper_view_offset_lines(&self, ui: &egui::Ui) -> f32 {
+        ui.ctx().data(|data| {
+            data.get_temp::<f32>(egui::Id::new("asr33-paper-view-offset-lines"))
+                .unwrap_or(0.0)
+        })
+    }
+
+    fn set_paper_view_offset_lines(&self, ui: &egui::Ui, value: f32) {
+        let max = self.max_paper_rewind_lines();
+        ui.ctx().data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new("asr33-paper-view-offset-lines"),
+                value.clamp(0.0, max),
+            );
+        });
+    }
+
+    fn max_paper_rewind_lines(&self) -> f32 {
+        self.tty.output.split('\n').count().saturating_sub(1) as f32
+    }
+
+    fn paper_roller_rect(&self, origin: Pos2, scale: f32) -> Rect {
+        Rect::from_min_max(
+            origin + Vec2::new(0.0, 650.0 * scale),
+            origin + Vec2::new(310.0 * scale, 1050.0 * scale),
+        )
+    }
+
+    fn reset_paper_view_for_printing(&self, ui: &egui::Ui) {
+        let printing = self.print_head_raise_until.is_some()
+            || self.print_head_impact_at.is_some()
+            || self.print_head_auto_return_at.is_some()
+            || self.print_head_carriage_return_until.is_some()
+            || self.paper_feed_until.is_some();
+        if printing {
+            ui.ctx().data_mut(|data| {
+                data.insert_temp(egui::Id::new("asr33-paper-view-offset-lines"), 0.0_f32);
+                data.insert_temp(egui::Id::new("asr33-paper-roller-dragging"), false);
+            });
+        }
+    }
+
+    fn update_paper_roller_interaction(
+        &self,
+        ui: &mut egui::Ui,
+        response: &egui::Response,
+        origin: Pos2,
+        scale: f32,
+    ) {
+        if self.tty.output.is_empty() { return; }
+
+        let roller = self.paper_roller_rect(origin, scale);
+        let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
+        if pointer.is_some_and(|p| roller.contains(p)) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+
+        let drag_id = egui::Id::new("asr33-paper-roller-dragging");
+        let mut dragging = ui.ctx().data(|data| data.get_temp::<bool>(drag_id).unwrap_or(false));
+
+        if response.drag_started() && pointer.is_some_and(|p| roller.contains(p)) {
+            dragging = true;
+            ui.ctx().data_mut(|data| data.insert_temp(drag_id, true));
+        }
+
+        let pointer_down = ui.ctx().input(|i| i.pointer.primary_down());
+        if dragging && pointer_down {
+            let delta_y = ui.ctx().input(|i| i.pointer.delta().y);
+            if delta_y.abs() > f32::EPSILON {
+                let line_height = self.paper_line_height(scale).max(1.0);
+                let current = self.paper_view_offset_lines(ui);
+                let next = current + delta_y / line_height;
+                self.set_paper_view_offset_lines(ui, next);
+                ui.ctx().request_repaint();
+            }
+        } else if dragging {
+            ui.ctx().data_mut(|data| data.insert_temp(drag_id, false));
+        }
     }
 
     fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
@@ -305,18 +361,15 @@ impl RusTairApp {
         let print_baseline = origin.y + teletype::PRINT_TOP * scale - baseline_inset;
         let feed_offset = self.paper_feed_offset(Instant::now(), line_height);
         let line_count = self.tty.output.split('\n').count().max(1) as f32;
+        let rewind_offset = self.paper_view_offset_lines(ui).min(self.max_paper_rewind_lines())
+            * line_height;
 
-        // Treat the sheet as an endless roll: every LF moves the leading edge
-        // one line upward and exposes fresh paper at the fixed rotor feed point.
-        // Do not clamp sheet_top to the machine; once it passes the top of the
-        // image the painter simply clips it, so the roll can continue forever.
         const LEADER_LINES: f32 = 2.0;
         let sheet_top = print_baseline
             - (line_count + LEADER_LINES) * line_height
-            + feed_offset;
+            + feed_offset
+            + rewind_offset;
 
-        // Tie the lower edge to the actual visible base of the typewheel. A tiny
-        // overlap is hidden by the foreground body slice below.
         let emergence_y = self.paper_emergence_y();
         const PAPER_OVERLAP: f32 = 3.0;
         let sheet_bottom = origin.y + (emergence_y + PAPER_OVERLAP) * scale;
@@ -364,8 +417,6 @@ impl RusTairApp {
             );
         }
 
-        // Keep the platen/contact shade immediately above the rotor base instead
-        // of leaving a broad floating band across the middle of the sheet.
         let contact_y = origin.y + emergence_y * scale;
         let contact_h = (3.0 * scale).max(0.6);
         painter.rect_filled(
@@ -430,8 +481,6 @@ impl RusTairApp {
         let right = (teletype::PRINT_LEFT + self.paper_printable_width() + side_margin)
             .min(TTY_W);
 
-        // The body begins exactly at the visible base of the rotor. This masks
-        // the small paper overlap and makes the sheet emerge from behind it.
         let top = self.paper_emergence_y().clamp(0.0, TTY_H);
         let bottom = (top + TTY_H * 0.025).min(TTY_H);
 
@@ -460,16 +509,24 @@ impl RusTairApp {
         let now = Instant::now();
         let feed_offset = self.paper_feed_offset(now, line_height);
         let extra_line = usize::from(feed_offset > 0.01);
+        let rewind_lines = self.paper_view_offset_lines(ui).min(self.max_paper_rewind_lines());
+        let rewind_extra = rewind_lines.ceil() as usize;
 
         let lines: Vec<&str> = self.tty.output.split('\n').collect();
-        let first = lines.len().saturating_sub(max_lines + extra_line);
+        let first = lines
+            .len()
+            .saturating_sub(max_lines + extra_line + rewind_extra);
         let visible = &lines[first..];
         let painter = ui.painter().with_clip_rect(paper);
         let font = FontId::new(font_size, FontFamily::Name("teletype".into()));
+        let rewind_offset = rewind_lines * line_height;
 
         for (row, line) in visible.iter().enumerate() {
             let from_bottom = visible.len() - 1 - row;
-            let baseline = print_baseline - from_bottom as f32 * line_height + feed_offset;
+            let baseline = print_baseline
+                - from_bottom as f32 * line_height
+                + feed_offset
+                + rewind_offset;
             let absolute_line = first + row;
 
             for (column, byte) in line.bytes().take(self.tty.paper_width).enumerate() {
@@ -641,10 +698,6 @@ impl RusTairApp {
             Color32::from_rgb(right_shade, right_shade, right_shade),
         );
 
-        // Do not paste a local body slice over the head: on the old dark well it
-        // was invisible, but over the extended paper it becomes an opaque black
-        // rectangle. The global paper foreground already provides the occlusion.
-
         if lift > 0.0 || returning {
             ui.ctx().request_repaint_after(Duration::from_millis(8));
         }
@@ -658,6 +711,9 @@ impl RusTairApp {
             Sense::click_and_drag(),
         );
         let origin = rect.min;
+
+        self.reset_paper_view_for_printing(ui);
+        self.update_paper_roller_interaction(ui, &response, origin, scale);
 
         if let Some(t) = &self.tex.tty_body { Self::image(ui, t, rect); }
         if let Some(t) = &self.tex.tty_keys { Self::image(ui, t, rect); }
