@@ -58,15 +58,7 @@ impl eframe::App for RusTairApp {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Load binary…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            match std::fs::read(&path) {
-                                Ok(bytes) => {
-                                    self.machine.bus.load(0, &bytes);
-                                    self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
-                                }
-                                Err(e) => self.status = format!("Load failed: {e}"),
-                            }
-                        }
+                        self.load_binary_dialog();
                         ui.close();
                     }
                     if ui.button("Load bundled Microsoft 4K BASIC").clicked() {
