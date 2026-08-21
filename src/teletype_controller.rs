@@ -102,7 +102,9 @@ impl RusTairApp {
 
     fn send_tty_byte(&mut self, byte: u8) {
         if self.tty.mode == TtyMode::Off { return; }
-        self.machine.bus.serial_rx.push_back(byte & 0x7f);
+        let byte = byte & 0x7f;
+        self.tty.last_key_byte = Some(byte);
+        self.machine.bus.serial_rx.push_back(byte);
         let events = self.tty.print_local(byte);
         self.play_print_events(&events);
     }
@@ -160,7 +162,7 @@ impl RusTairApp {
             KeyKind::CarriageReturn => byte == b'\r',
             KeyKind::Delete => byte == 0x7f,
             KeyKind::Space => byte == b' ',
-            KeyKind::Control | KeyKind::Shift => false,
+            KeyKind::Repeat | KeyKind::Break | KeyKind::Control | KeyKind::Shift => false,
         })
     }
 
@@ -276,6 +278,14 @@ impl RusTairApp {
         match key.kind {
             KeyKind::Shift => self.tty.shift_down = true,
             KeyKind::Control => self.tty.control_down = true,
+            KeyKind::Repeat => {
+                // REPT is a real keyboard control: pressing it re-transmits the
+                // last key code. Continuous typematic repeat can be layered on
+                // later without changing the matrix or the key identity.
+                if let Some(byte) = self.tty.last_key_byte {
+                    self.send_tty_byte(byte);
+                }
+            }
             kind => {
                 if let Some(byte) = teletype::key_to_byte(kind, self.tty.shift_down, self.tty.control_down) {
                     self.send_tty_byte(byte);
