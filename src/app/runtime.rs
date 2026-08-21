@@ -13,6 +13,17 @@ impl eframe::App for RusTairApp {
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
+        // Preserve the existing user-visible rule that closing the text terminal
+        // hands the serial line back to the ASR-33, but make that ownership
+        // transition explicit instead of inferring routing everywhere from a
+        // window boolean.
+        if !self.terminal_window_open
+            && self.serial_router.endpoint() == SerialEndpoint::TextTerminal
+        {
+            self.terminal_tx_started = None;
+            self.serial_router.select(SerialEndpoint::InternalAsr33);
+        }
+
         self.update_paper_tape();
         if self.serial_router.endpoint() == SerialEndpoint::TextTerminal {
             self.process_terminal_input(ctx);
