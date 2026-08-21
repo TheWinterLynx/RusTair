@@ -90,6 +90,33 @@ impl eframe::App for RusTairApp {
                         });
                     });
 
+                    ui.menu_button("Serial board", |ui| {
+                        let current = self.config.machine.serial_board;
+                        ui.label(format!("Installed board: {}", current.label()));
+                        ui.small(format!(
+                            "Console status/data ports: {:02X}h/{:02X}h",
+                            current.status_port(),
+                            current.data_port()
+                        ));
+                        ui.separator();
+
+                        for serial_board in SerialBoard::ALL {
+                            let selected = current == serial_board;
+                            if ui
+                                .selectable_label(selected, serial_board.label())
+                                .clicked()
+                            {
+                                self.apply_serial_board_configuration(serial_board);
+                                ui.close();
+                            }
+                        }
+
+                        ui.separator();
+                        ui.small(
+                            "Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.",
+                        );
+                    });
+
                     ui.menu_button("Compatibility", |ui| {
                         ui.label("Software workarounds (off = historically faithful)");
                         ui.separator();
