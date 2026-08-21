@@ -24,9 +24,6 @@ impl RusTairApp {
                     self.paper_feed_until = Some(now + PAPER_FEED_TIME);
                 }
                 PrintEvent::AutomaticReturn => {
-                    // Let the 72nd character finish its impact first. At the
-                    // end of that strike update_teletype_mechanics starts the
-                    // real-looking carriage sweep and paper feed together.
                     self.print_head_auto_return_at = Some(now + PRINT_HEAD_STRIKE_TIME);
                 }
                 PrintEvent::Bell => self.audio.play_once("assets/bellpadded.mp3"),
@@ -53,9 +50,6 @@ impl RusTairApp {
             }
             ctx.data_mut(|data| data.insert_temp(timer_id, now + TTY_CHAR_TIME));
         }
-
-        // REPT is a mechanical ten-character-per-second action. Keep ticking
-        // while the photographed key is physically held by the mouse.
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
@@ -145,8 +139,6 @@ impl RusTairApp {
             return;
         }
 
-        // The mechanical drum cannot start a second message while it is already
-        // revolving. Ignore repeated HERE IS/ENQ triggers until this cycle ends.
         if self.tty_answerback_queue.is_empty() {
             self.tty_answerback_queue
                 .extend(TTY_ANSWERBACK.iter().copied());
@@ -156,7 +148,7 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn process_tty_answerback(&mut self, ctx: &egui::Context) {
-        if self.terminal_window_open || self.tty_answerback_queue.is_empty() {
+        if self.terminal.window_open || self.tty_answerback_queue.is_empty() {
             return;
         }
 
@@ -167,9 +159,6 @@ impl RusTairApp {
         }
 
         if let Some(byte) = self.tty_answerback_queue.pop_front() {
-            // Feed the Altair exactly like keyboard-originated serial input, but
-            // at the real Model 33 rate of ten characters per second. Answerback
-            // does not strike the local printer; it is a transmitter mechanism.
             self.machine.bus.serial_receive(byte & 0x7f);
         }
 
@@ -194,9 +183,6 @@ impl RusTairApp {
             }
         }
 
-        // A real ASR-33 cannot accept the next print operation while its
-        // carriage is returning from the right margin. Hold the UART queue
-        // instead of silently throwing characters away during the sweep.
         let carriage_returning = self
             .print_head_carriage_return_until
             .is_some_and(|until| now < until);
@@ -218,8 +204,6 @@ impl RusTairApp {
                 }
                 self.play_print_events(&events);
 
-                // ENQ (WRU, 0x05) remotely trips the same answer-back mechanism
-                // as pressing HERE IS on the keyboard.
                 if byte & 0x7f == 0x05 {
                     self.start_tty_answerback(ctx);
                 }
@@ -261,9 +245,6 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn process_tty_keyboard(&mut self, ctx: &egui::Context) {
-        // Each entry keeps the byte sent to the Altair separate from the key cap
-        // that should move on the ASR-33. This matters for control characters:
-        // Ctrl+A sends 0x01, but visually it is still the A key being struck.
         let mut keystrokes: Vec<(u8, Option<u8>)> = Vec::new();
         let mut any_key = false;
 
@@ -271,10 +252,6 @@ impl RusTairApp {
             for (event_index, event) in input.events.iter().enumerate() {
                 match event {
                     egui::Event::Text(text) => {
-                        // egui-winit emits the Key event immediately before its
-                        // Text event. Discard Text belonging to an OS typematic
-                        // repeat so holding a PC key is one ASR-33 keypress; the
-                        // dedicated REPT key below is the only repeat mechanism.
                         let host_autorepeat = event_index.checked_sub(1).is_some_and(|previous| {
                             matches!(
                                 input.events[previous],
@@ -289,13 +266,6 @@ impl RusTairApp {
                             continue;
                         }
 
-                        // Treat the PC keyboard as an adapter for the physical
-                        // ASR-33 keyboard, not as a generic Unicode terminal.
-                        // Iterate Unicode scalar values (never raw UTF-8 bytes),
-                        // uppercase ordinary ASCII letters, and accept only the
-                        // Model 33 printable repertoire 0x20..=0x5f. Characters
-                        // such as ñ, ´, ç, º, ª, {, }, ~, etc. simply do not
-                        // exist on this keyboard and must produce no serial data.
                         for ch in text.chars() {
                             let ch = ch.to_ascii_uppercase();
                             if !ch.is_ascii() {
@@ -316,10 +286,6 @@ impl RusTairApp {
                         ..
                     } => {
                         any_key = true;
-                        // Desktop Enter is the complete newline action. Animate
-                        // RETURN once while still transmitting the required CR/LF
-                        // pair; otherwise the immediately following LF replaces
-                        // RETURN as the only visible key animation.
                         keystrokes.push((b'\r', Some(b'\r')));
                         keystrokes.push((b'\n', None));
                     }
@@ -330,9 +296,6 @@ impl RusTairApp {
                         ..
                     } => {
                         any_key = true;
-                        // Altair BASIC 3.2 uses underscore as its line-editor
-                        // erase character. Keep the ASR-33 DELETE/RUBOUT cap as
-                        // the visual counterpart to the modern PC Backspace key.
                         keystrokes.push((b'_', Some(0x7f)));
                     }
                     egui::Event::Key {
@@ -402,9 +365,6 @@ impl RusTairApp {
         let velocity = 8.0 / 0.030;
 
         if self.pressed_key.is_some() {
-            // The MID asset already gives a convincing full press. Keep the
-            // animation state below the renderer's DOWN threshold (8 px) so
-            // the visual cycle is simply UP -> MID -> UP.
             self.key_displacement = (self.key_displacement + velocity * dt).min(7.0);
         } else if self.key_displacement > 0.0 {
             self.key_displacement = (self.key_displacement - velocity * dt).max(0.0);
@@ -436,8 +396,6 @@ impl RusTairApp {
             KeyKind::HereIs => self.start_tty_answerback(ctx),
             KeyKind::Repeat => {
                 if let Some(byte) = self.tty.last_key_byte {
-                    // First repetition is immediate, then the mechanical REPT
-                    // control retransmits at the same 10 cps as the keyboard.
                     self.send_tty_byte(byte);
                     let timer_id = egui::Id::new("asr33-repeat-next-at");
                     ctx.data_mut(|data| {
@@ -447,9 +405,6 @@ impl RusTairApp {
                 }
             }
             kind => {
-                // PC modifiers also affect mouse-clicked ASR-33 keys. Keep them
-                // separate from tty.shift_down/control_down so releasing the PC
-                // keyboard cannot cancel a modifier held on the photographed UI.
                 let modifiers = ctx.input(|input| input.modifiers);
                 let shifted = self.tty.shift_down || modifiers.shift;
                 let controlled = self.tty.control_down || modifiers.ctrl;
