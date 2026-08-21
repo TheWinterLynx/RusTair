@@ -64,14 +64,14 @@ impl RusTairApp {
                     false
                 };
 
-                // The bundled BASIC console drivers use the installed board's
-                // primary serial interface (Port 0). Opening BASIC must not move
-                // any cable: simply reveal whichever RusTair device is physically
-                // attached to that port, if any.
-                match self.serial_router.device_on(SerialConnection::Port0) {
-                    Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
-                    Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
-                    None => {}
+                // Auto-open is only a UI convenience. It never moves cables or
+                // changes which physical device BASIC is actually talking to.
+                if self.config.preferences.auto_open_basic_console {
+                    match self.serial_router.device_on(SerialConnection::Port0) {
+                        Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
+                        Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
+                        None => {}
+                    }
                 }
 
                 self.machine.set_running(true);
@@ -81,8 +81,10 @@ impl RusTairApp {
                 } else if self.machine.installed_ram_bytes() == 64 * 1024 {
                     "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled"
                         .into()
+                } else if self.config.preferences.auto_open_basic_console {
+                    "Microsoft 4K BASIC loaded and running — console auto-open enabled".into()
                 } else {
-                    "Microsoft 4K BASIC loaded and running".into()
+                    "Microsoft 4K BASIC loaded and running — console auto-open disabled".into()
                 };
             }
             Err(e) => self.status = format!("4K BASIC asset missing: {e}"),
