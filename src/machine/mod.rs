@@ -87,10 +87,6 @@ impl AltairBus {
         self.panel.switches()
     }
 
-    fn set_panel_switches(&mut self, value: u16) {
-        self.panel.set_switches(value);
-    }
-
     fn toggle_panel_switch(&mut self, bit: usize) {
         self.panel.toggle_switch(bit);
     }
@@ -291,7 +287,10 @@ mod tests {
         machine.bus.write(0x0400, 0x34);
         assert_eq!(machine.bus.read(0x0400), 0x12);
 
-        machine.bus.set_panel_switches(0x0056);
+        for bit in [1, 2, 4, 6] {
+            machine.toggle_sense_switch(bit);
+        }
+        assert_eq!(machine.panel_switches(), 0x0056);
         machine.deposit(false);
         assert_eq!(machine.bus.read(0x0400), 0x12);
 
