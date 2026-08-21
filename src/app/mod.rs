@@ -1,6 +1,7 @@
 mod asr33_controller;
 mod runtime;
 mod terminal_serial;
+mod terminal_state;
 mod ui;
 
 use std::collections::{HashMap, VecDeque};
@@ -9,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
-use self::ui::terminal::TerminalSpeed;
+use self::terminal_state::{TerminalSpeed, TerminalState};
 use crate::audio::AudioEngine;
 use crate::io::serial_router::{SerialEndpoint, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
@@ -89,16 +90,7 @@ struct RusTairApp {
     tex: Tex,
     tty: Teletype,
     tty_window_open: bool,
-    terminal_window_open: bool,
-    terminal_output: String,
-    terminal_command: String,
-    terminal_program: String,
-    terminal_uppercase: bool,
-    terminal_last_was_cr: bool,
-    terminal_speed: TerminalSpeed,
-    terminal_input_queue: VecDeque<u8>,
-    terminal_rx_next_at: Option<Instant>,
-    terminal_tx_started: Option<Instant>,
+    terminal: TerminalState,
     tty_tx_started: Option<Instant>,
     tty_answerback_queue: VecDeque<u8>,
     tty_answerback_next_at: Option<Instant>,
@@ -231,16 +223,7 @@ impl RusTairApp {
             },
             tty: Teletype::default(),
             tty_window_open: false,
-            terminal_window_open: false,
-            terminal_output: String::new(),
-            terminal_command: String::new(),
-            terminal_program: String::new(),
-            terminal_uppercase: true,
-            terminal_last_was_cr: false,
-            terminal_speed: TerminalSpeed::Baud9600,
-            terminal_input_queue: VecDeque::new(),
-            terminal_rx_next_at: None,
-            terminal_tx_started: None,
+            terminal: TerminalState::default(),
             tty_tx_started: None,
             tty_answerback_queue: VecDeque::new(),
             tty_answerback_next_at: None,
