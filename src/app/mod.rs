@@ -5,7 +5,7 @@ mod terminal_serial;
 mod terminal_state;
 mod ui;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
@@ -16,7 +16,7 @@ use crate::audio::AudioEngine;
 use crate::io::serial_router::{SerialEndpoint, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
-    self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
+    self as teletype, Answerback, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
 
 const PANEL_W: f32 = 1935.0;
@@ -26,10 +26,6 @@ const TTY_H: f32 = teletype::IMAGE_H;
 
 const PANEL_FRAME: Duration = Duration::from_millis(16);
 const TTY_CHAR_TIME: Duration = Duration::from_millis(100);
-// A Model 33 answer-back drum has a finite coded message. The technical manual
-// specifies that answer-back messages are preceded by CR/LF; this 15-character
-// sequence fits comfortably within the drum and gives RusTair a period identity.
-const TTY_ANSWERBACK: &[u8] = b"\r\nRUSTAIR ASR33";
 const KEY_TAP_TIME: Duration = Duration::from_millis(50);
 const PRINT_HEAD_STRIKE_TIME: Duration = Duration::from_millis(84);
 const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
@@ -78,8 +74,7 @@ struct RusTairApp {
     tty_window_open: bool,
     terminal: TerminalState,
     tty_tx_started: Option<Instant>,
-    tty_answerback_queue: VecDeque<u8>,
-    tty_answerback_next_at: Option<Instant>,
+    tty_answerback: Answerback,
     audio: AudioEngine,
     last_tick: Instant,
     last_tape_tick: Instant,
@@ -113,8 +108,7 @@ impl RusTairApp {
             tty_window_open: false,
             terminal: TerminalState::default(),
             tty_tx_started: None,
-            tty_answerback_queue: VecDeque::new(),
-            tty_answerback_next_at: None,
+            tty_answerback: Answerback::default(),
             audio: AudioEngine::new(),
             last_tick: now,
             last_tape_tick: now,
