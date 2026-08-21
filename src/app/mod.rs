@@ -1,4 +1,5 @@
 mod asr33_controller;
+mod asr33_state;
 mod commands;
 mod runtime;
 mod terminal_serial;
@@ -10,13 +11,14 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
+use self::asr33_state::Asr33State;
 use self::terminal_state::{TerminalSpeed, TerminalState};
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::io::serial_router::{SerialEndpoint, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
-    self as teletype, Answerback, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
+    self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
 
 const PANEL_W: f32 = 1935.0;
@@ -71,26 +73,11 @@ struct RusTairApp {
     serial_router: SerialRouter,
     tex: Tex,
     tty: Teletype,
-    tty_window_open: bool,
+    asr33: Asr33State,
     terminal: TerminalState,
-    tty_tx_started: Option<Instant>,
-    tty_answerback: Answerback,
     audio: AudioEngine,
     last_tick: Instant,
-    last_tape_tick: Instant,
     reset_flash_until: Option<Instant>,
-    print_head_raise_until: Option<Instant>,
-    print_head_impact_at: Option<Instant>,
-    print_head_auto_return_at: Option<Instant>,
-    print_head_glyph: u8,
-    print_head_carriage_return_until: Option<Instant>,
-    paper_feed_until: Option<Instant>,
-    tty_power_flash_until: Option<Instant>,
-    animated_key: Option<usize>,
-    pressed_key: Option<usize>,
-    key_auto_release_at: Option<Instant>,
-    key_displacement: f32,
-    key_anim_tick: Instant,
     status: String,
 }
 
@@ -105,26 +92,11 @@ impl RusTairApp {
             serial_router: SerialRouter::default(),
             tex: Tex::load(&cc.egui_ctx, switch_sprites),
             tty: Teletype::default(),
-            tty_window_open: false,
+            asr33: Asr33State::new(now),
             terminal: TerminalState::default(),
-            tty_tx_started: None,
-            tty_answerback: Answerback::default(),
             audio: AudioEngine::new(),
             last_tick: now,
-            last_tape_tick: now,
             reset_flash_until: None,
-            print_head_raise_until: None,
-            print_head_impact_at: None,
-            print_head_auto_return_at: None,
-            print_head_glyph: b' ',
-            print_head_carriage_return_until: None,
-            paper_feed_until: None,
-            tty_power_flash_until: None,
-            animated_key: None,
-            pressed_key: None,
-            key_auto_release_at: None,
-            key_displacement: 0.0,
-            key_anim_tick: now,
             status: "Ready — modular front-panel switches".into(),
         }
     }
