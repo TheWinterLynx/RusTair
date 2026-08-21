@@ -142,21 +142,18 @@ impl RusTairApp {
                     pixel[3] = ((pixel[3] as u16 * 72) / 255) as u8;
                 }
 
-                // Keep the square asset undistorted. Its visible glass occupies
-                // only the middle band of the source image, so place the square
-                // partly above the teletype canvas. These calibration values put
-                // the visible cover at roughly x=245..2776, y=502..1142 in the
-                // 3008x2983 ASR-33 image, with its lower lip matching the current
-                // renderer's glass sill near 0.380 * TTY_H.
-                let glass_side = (image.width() as f32 * 0.858).round() as u32;
+                // Keep the square asset undistorted, but make the cover a little
+                // narrower and lower so its side walls sit inside the ASR-33
+                // opening and its lower lip aligns with the physical glass sill.
+                let glass_side = (image.width() as f32 * 0.825).round() as u32;
                 let glass = image::imageops::resize(
                     &glass,
                     glass_side,
                     glass_side,
                     image::imageops::FilterType::Lanczos3,
                 );
-                let glass_x = (image.width() as f32 * 0.0705).round() as i64;
-                let glass_y = -((image.height() as f32 * 0.152).round() as i64);
+                let glass_x = (image.width() as f32 * 0.086).round() as i64;
+                let glass_y = -((image.height() as f32 * 0.132).round() as i64);
                 image::imageops::overlay(&mut image, &glass, glass_x, glass_y);
             }
         }
