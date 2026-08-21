@@ -1,9 +1,10 @@
+mod io_devices;
 mod memory;
 mod serial;
 
 use crate::cpu8080::{Bus, Cpu8080};
+use io_devices::IoDevices;
 use memory::Memory;
-use serial::SerialPort;
 
 pub use memory::{MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 
@@ -11,7 +12,7 @@ pub const CLOCK_HZ: u32 = 2_000_000;
 
 pub struct AltairBus {
     memory: Memory,
-    serial: SerialPort,
+    io: IoDevices,
     pub panel_switches: u16,
     pub data_leds: u8,
 }
@@ -20,7 +21,7 @@ impl Default for AltairBus {
     fn default() -> Self {
         let mut s = Self {
             memory: Memory::default(),
-            serial: SerialPort::default(),
+            io: IoDevices::default(),
             panel_switches: 0,
             data_leds: 0,
         };
@@ -60,34 +61,34 @@ impl AltairBus {
     /// Queue one byte as data arriving from the currently attached terminal.
     /// Endpoint code uses this instead of reaching into the emulated UART state.
     pub fn serial_receive(&mut self, byte: u8) {
-        self.serial.receive(byte);
+        self.io.serial_receive(byte);
     }
 
     pub fn serial_rx_empty(&self) -> bool {
-        self.serial.rx_empty()
+        self.io.serial_rx_empty()
     }
 
     pub fn serial_rx_len(&self) -> usize {
-        self.serial.rx_len()
+        self.io.serial_rx_len()
     }
 
     /// Byte currently held for transmission by the emulated serial interface.
     /// The endpoint deliberately leaves it pending until its own timing says the
     /// character has completed, preserving the guest-visible BUSY/READY state.
     pub fn serial_tx_front(&self) -> Option<u8> {
-        self.serial.tx_front()
+        self.io.serial_tx_front()
     }
 
     pub fn serial_tx_complete(&mut self) -> Option<u8> {
-        self.serial.complete_tx()
+        self.io.serial_tx_complete()
     }
 
     pub fn tx_busy(&self) -> bool {
-        self.serial.tx_busy()
+        self.io.serial_tx_busy()
     }
 
     pub fn clear_serial(&mut self) {
-        self.serial.clear();
+        self.io.clear_serial();
     }
 }
 
@@ -103,32 +104,14 @@ impl Bus for AltairBus {
     fn input(&mut self, port: u8) -> u8 {
         match port {
             0xff => (self.panel_switches >> 8) as u8,
-
-            // MITS 88-SIO status convention used by the S2JS reference.
-            // Bit 0 is set when the receive buffer is empty, while bits 6/7
-            // are set while the transmit holding register is occupied.
-            0x00 => {
-                let rx_empty = self.serial_rx_empty();
-                let tx_busy = self.tx_busy();
-                (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
-            }
-            0x01 => self.serial.read_rx().unwrap_or(0),
-
-            // MITS 2SIO / 8251 convention: bit 0 = RX ready, bit 1 = TX ready.
-            0x10 => {
-                (if self.serial_rx_empty() { 0 } else { 0x01 })
-                    | (if self.tx_busy() { 0 } else { 0x02 })
-            }
-            0x11 => self.serial.read_rx().unwrap_or(0),
-            _ => 0,
+            _ => self.io.input(port),
         }
     }
 
     fn output(&mut self, port: u8, value: u8) {
         match port {
             0xff => self.data_leds = value,
-            0x01 | 0x11 => self.serial.write_tx(value),
-            _ => {}
+            _ => self.io.output(port, value),
         }
     }
 }
