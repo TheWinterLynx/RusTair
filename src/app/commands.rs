@@ -9,6 +9,15 @@ impl RusTairApp {
 
         match std::fs::read(&path) {
             Ok(bytes) => {
+                let installed = self.machine.installed_ram_bytes();
+                if bytes.len() > installed {
+                    self.status = format!(
+                        "Load failed: {} bytes require more than the installed {} KiB RAM",
+                        bytes.len(),
+                        installed / 1024
+                    );
+                    return;
+                }
                 self.machine.bus.load(0, &bytes);
                 self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
             }
@@ -21,6 +30,13 @@ impl RusTairApp {
     pub(in crate::app) fn load_bundled_basic(&mut self) {
         match std::fs::read("assets/4kbas32.bin") {
             Ok(bytes) => {
+                if bytes.len() > self.machine.installed_ram_bytes() {
+                    self.status = format!(
+                        "Microsoft 4K BASIC requires at least 4 KiB RAM; {} is installed",
+                        self.config.machine.ram_size.label()
+                    );
+                    return;
+                }
                 if !self.machine.powered {
                     self.set_altair_power(true);
                 } else {
