@@ -7,7 +7,7 @@ mod ui;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, FontId, Pos2, Rect, Sense, Vec2};
+use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::terminal_state::{TerminalSpeed, TerminalState};
 use self::ui::assets::Tex;
