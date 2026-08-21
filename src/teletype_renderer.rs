@@ -14,6 +14,8 @@ impl RusTairApp {
             KeyKind::LineFeed => "LINE\nFEED".into(),
             KeyKind::CarriageReturn => "RETURN".into(),
             KeyKind::Delete => "DELETE".into(),
+            KeyKind::Repeat => "REPT".into(),
+            KeyKind::Break => "BREAK".into(),
             KeyKind::Space => String::new(),
             KeyKind::Control => "CTRL".into(),
             KeyKind::Shift => "SHIFT".into(),
@@ -33,35 +35,45 @@ impl RusTairApp {
         pose: u8,
         legend_override: Option<&str>,
     ) {
-        // The three generated assets use the same 700x700 canvas. Their cap
-        // bottoms are deliberately registered at y=680, so the panel-side
-        // pivot never moves; only the amount of key body/stem above the well
-        // changes. Each pose has a slightly different photographed cap width,
-        // so compensate for that here to preserve the exact apparent width.
-        const SPRITE_SIZE: f32 = 700.0;
-        const CAP_BOTTOM: f32 = 680.0;
-        const UP_CAP_HEIGHT: f32 = 642.0; // 680 - 38
+        // The GIMP poses are authored by shortening the physical cap. Do not
+        // anchor them by their old generated-image bottom coordinates: that made
+        // a press look as if the key rose out of the socket. Instead every pose
+        // is centred on the calibrated socket X and receives an explicit
+        // downward travel as the cap is depressed.
+        const KEY_CANVAS_WIDTH: f32 = 170.0; // ~12% larger than the previous render
+        const REST_BOTTOM_OFFSET: f32 = 38.0;
 
-        let (texture, cap_left, cap_top, cap_width) = match pose {
-            1 => (&self.tex.tty_key_mid, 85.0, 103.0, 517.0),
-            2 => (&self.tex.tty_key_down, 84.0, 153.0, 531.0),
-            _ => (&self.tex.tty_key_up, 87.0, 38.0, 524.0),
+        let (texture, travel_y, legend_ratio) = match pose {
+            1 => (&self.tex.tty_key_mid, 18.0, 0.43),
+            2 => (&self.tex.tty_key_down, 36.0, 0.50),
+            _ => (&self.tex.tty_key_up, 0.0, 0.36),
         };
         let Some(texture) = texture else { return; };
 
-        // Preserve the original ASR-33 coordinate table exactly. In the UP
-        // pose the photographed key cap occupies x..x+w and y..y+h+40. MID
-        // and DOWN keep that same lower contact line while their upper face
-        // descends into the key well.
-        let sx = w / cap_width;
-        let sy = (h + 40.0) / UP_CAP_HEIGHT;
-        let cap_bottom_y = y + h + 40.0;
-        let target_left = x - cap_left * sx;
-        let target_top = cap_bottom_y - CAP_BOTTOM * sy;
+        let (socket_x, socket_y) = (x + w * 0.5, y + h * 0.5);
+        let texture_size = texture.size_vec2();
+        let texture_aspect = texture_size.y / texture_size.x.max(1.0);
+
+        // CTRL and SHIFT are physically broader than the normal cylindrical
+        // caps. Until dedicated assets are added, use only a restrained X
+        // stretch rather than the old 150/114 deformation.
+        let width_factor = if matches!(kind, KeyKind::Control | KeyKind::Shift) {
+            1.12
+        } else {
+            1.0
+        };
+        let target_w = KEY_CANVAS_WIDTH * width_factor;
+        let target_h = KEY_CANVAS_WIDTH * texture_aspect;
+        let bottom_y = socket_y + REST_BOTTOM_OFFSET + travel_y;
         let target = Rect::from_min_size(
-            origin + Vec2::new(target_left * scale, target_top * scale),
-            Vec2::new(SPRITE_SIZE * sx * scale, SPRITE_SIZE * sy * scale),
+            origin
+                + Vec2::new(
+                    (socket_x - target_w * 0.5) * scale,
+                    (bottom_y - target_h) * scale,
+                ),
+            Vec2::new(target_w * scale, target_h * scale),
         );
+
         ui.painter().image(
             texture.id(),
             target,
@@ -74,17 +86,15 @@ impl RusTairApp {
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
         if legend.is_empty() { return; }
 
-        // Put the legend on the photographed upper face rather than at the
-        // fixed hit-box centre. This means the lettering follows the real MID
-        // and DOWN geometry without translating the sprite by hand.
-        let cap_top_y = cap_bottom_y - (CAP_BOTTOM - cap_top) * sy;
-        let cap_height = (CAP_BOTTOM - cap_top) * sy;
-        let legend_y = cap_top_y + cap_height * 0.34;
+        // The overlay follows the physical top face: as MID/DOWN move into the
+        // keyboard, their legends move down with them instead of floating at a
+        // fixed logical hit-box coordinate.
+        let legend_y = bottom_y - target_h * (1.0 - legend_ratio);
         let compact = legend.contains('\n') || legend.len() > 4;
         let font_factor = if compact { 0.145 } else { 0.225 };
-        let font_size = (w * font_factor * scale).max(5.0);
+        let font_size = (114.0 * font_factor * scale).max(5.0);
         ui.painter().text(
-            origin + Vec2::new((x + w * 0.5) * scale, legend_y * scale),
+            origin + Vec2::new(socket_x * scale, legend_y * scale),
             egui::Align2::CENTER_CENTER,
             legend,
             FontId::monospace(font_size),
@@ -93,19 +103,17 @@ impl RusTairApp {
     }
 
     fn draw_pressed_key(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        // This used to erase one rectangular patch of the photographed
-        // keyboard and slide the original key pixels downward. That looked
-        // like a sticker moving over the panel. We now rebuild the complete
-        // keyboard from aligned photographic UP/MID/DOWN poses every frame.
         for (index, key) in teletype::KEYS.iter().copied().enumerate() {
-            // The current clean body still contains its original space bar.
-            // Keep it untouched until its own wide three-pose asset is made.
+            // The spacebar is already a real key in the matrix, but its wide
+            // three-pose visual asset is intentionally deferred to the next
+            // pass. Leaving the clean socket visible is preferable to stretching
+            // a cylindrical key into a fake bar.
             if matches!(key.kind, KeyKind::Space) {
                 continue;
             }
 
             let pose = if self.animated_key == Some(index) && self.key_displacement > 0.0 {
-                if self.key_displacement < 6.0 { 1 } else { 2 }
+                if self.key_displacement < 8.0 { 1 } else { 2 }
             } else {
                 0
             };
@@ -123,16 +131,15 @@ impl RusTairApp {
             );
         }
 
-        // The photographed Model 33 has a non-functional HERE IS key which is
-        // intentionally absent from the emulator's key map. Fill its well as a
-        // decorative UP key so the original 13-key number-row layout remains.
+        // HERE IS is a physical, non-ASCII key. Keep it decorative, but place
+        // it on the same calibrated socket grid as the real keys.
         self.draw_key_pose(
             ui,
             origin,
             scale,
             KeyKind::Character(" "),
-            2480.0,
-            1918.0,
+            2460.0,
+            1974.5,
             114.0,
             97.0,
             0,
