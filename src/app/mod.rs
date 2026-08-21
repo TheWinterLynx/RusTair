@@ -7,7 +7,6 @@ mod terminal_serial;
 mod terminal_state;
 mod ui;
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
@@ -87,11 +86,10 @@ impl RusTairApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         Tex::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
-        let switch_sprites = Self::load_switch_textures(&cc.egui_ctx);
         Self {
             machine: AltairMachine::default(),
             serial_router: SerialRouter::default(),
-            tex: Tex::load(&cc.egui_ctx, switch_sprites),
+            tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
             terminal: TerminalState::default(),
