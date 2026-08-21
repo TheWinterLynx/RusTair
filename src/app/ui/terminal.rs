@@ -1,4 +1,7 @@
-use super::super::{egui, Instant, Pos2, Rect, RusTairApp, Sense, TerminalSpeed};
+use super::super::{
+    egui, Instant, Pos2, Rect, RusTairApp, Sense, SerialBoard, SerialConnection, SerialDevice,
+    TerminalSpeed,
+};
 
 const TERMINAL_INPUT_DEFAULT_HEIGHT: f32 = 235.0;
 const TERMINAL_INPUT_MIN_HEIGHT: f32 = 115.0;
@@ -73,9 +76,44 @@ impl RusTairApp {
         });
     }
 
+    fn draw_terminal_connection_selector(&mut self, ui: &mut egui::Ui) {
+        let board = self.config.machine.serial_board;
+        let current = self.terminal_connection();
+        let mut selected = current;
+
+        ui.label("Connection:");
+        egui::ComboBox::from_id_salt("text-terminal-serial-connection")
+            .selected_text(Self::serial_connection_label(board, current))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut selected,
+                    SerialConnection::Disconnected,
+                    "Disconnected",
+                );
+                ui.selectable_value(
+                    &mut selected,
+                    SerialConnection::Port0,
+                    Self::serial_connection_label(board, SerialConnection::Port0),
+                );
+                if board == SerialBoard::TwoSio88 {
+                    ui.selectable_value(
+                        &mut selected,
+                        SerialConnection::Port1,
+                        Self::serial_connection_label(board, SerialConnection::Port1),
+                    );
+                }
+            });
+
+        if selected != current {
+            self.set_serial_connection(SerialDevice::TextTerminal, selected);
+        }
+    }
+
     fn draw_terminal_window(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("terminal-menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
+                self.draw_terminal_connection_selector(ui);
+                ui.separator();
                 if ui.button("Clear").clicked() {
                     self.terminal.clear_output();
                 }
@@ -108,12 +146,25 @@ impl RusTairApp {
         });
 
         egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
+            let connection = self.terminal_connection();
+            let connection_label =
+                Self::serial_connection_label(self.config.machine.serial_board, connection);
+            let tx = if connection.is_connected() {
+                if self.terminal_serial_tx_busy() {
+                    "BUSY"
+                } else {
+                    "READY"
+                }
+            } else {
+                "N/A"
+            };
             ui.small(format!(
-                "TEXT TERMINAL  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
+                "TEXT TERMINAL  |  {}  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
+                connection_label,
                 self.terminal.speed.label(),
                 self.terminal.input_pending_len(),
-                self.machine.bus.serial_rx_len(),
-                if self.machine.bus.tx_busy() { "BUSY" } else { "READY" },
+                self.terminal_serial_rx_len(),
+                tx,
                 self.terminal.output.len(),
             ));
         });

@@ -3,12 +3,13 @@ mod io_devices;
 mod memory;
 mod serial;
 
+use crate::config::{RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
 use front_panel::FrontPanelPort;
 use io_devices::IoDevices;
 use memory::Memory;
 
-pub use memory::{MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
+pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 
 pub const CLOCK_HZ: u32 = 2_000_000;
 
@@ -25,14 +26,34 @@ impl Default for AltairBus {
             io: IoDevices::default(),
             panel: FrontPanelPort::default(),
         };
-        s.randomize();
+        s.initialize_memory();
         s
     }
 }
 
 impl AltairBus {
+    pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
+        self.memory.configure(size, init_mode);
+    }
+
+    pub fn installed_ram_bytes(&self) -> usize {
+        self.memory.installed_size()
+    }
+
+    pub fn initialize_memory(&mut self) {
+        self.memory.initialize();
+    }
+
     pub fn randomize(&mut self) {
         self.memory.randomize();
+    }
+
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
+        self.memory.arm_basic32_full_memory_probe_guard()
+    }
+
+    pub fn clear_transient_memory_guards(&mut self) {
+        self.memory.clear_transient_guards();
     }
 
     pub fn load(&mut self, address: u16, bytes: &[u8]) {
@@ -147,6 +168,24 @@ impl Default for AltairMachine {
 }
 
 impl AltairMachine {
+    pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
+        self.running = false;
+        self.bus.configure_memory(size, init_mode);
+        self.cpu.reset();
+        self.address_leds = 0;
+        self.bus.set_data_leds(0);
+        self.bus.clear_serial();
+        self.wait_led = self.powered;
+    }
+
+    pub fn installed_ram_bytes(&self) -> usize {
+        self.bus.installed_ram_bytes()
+    }
+
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
+        self.bus.arm_basic32_full_memory_probe_guard()
+    }
+
     pub fn power(&mut self, on: bool) {
         self.powered = on;
         self.running = false;
@@ -158,11 +197,12 @@ impl AltairMachine {
             self.address_leds = 0;
             self.bus.set_data_leds(0);
             self.bus.clear_serial();
-            self.bus.randomize();
+            self.bus.initialize_memory();
         }
     }
 
     pub fn reset(&mut self) {
+        self.bus.clear_transient_memory_guards();
         self.cpu.reset();
         self.running = false;
         self.wait_led = true;
@@ -265,6 +305,7 @@ impl AltairMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SerialBoard;
 
     #[test]
     fn protection_is_per_1k_board() {
@@ -308,34 +349,104 @@ mod tests {
     }
 
     #[test]
+    fn configured_ram_limits_guest_visible_memory() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
+
+        machine.bus.load(0x00ff, &[0xaa, 0xbb]);
+        assert_eq!(machine.bus.read(0x00ff), 0xaa);
+        assert_eq!(machine.bus.read(0x0100), 0x00);
+
+        machine.bus.write(0x0100, 0x55);
+        assert_eq!(machine.bus.read(0x0100), 0x00);
+        assert_eq!(machine.installed_ram_bytes(), 256);
+    }
+
+    #[test]
+    fn zeroed_power_on_mode_is_reapplied_on_power_off() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::K1, RamInit::Zeroed);
+        machine.bus.write(0x0010, 0x5a);
+        assert_eq!(machine.bus.read(0x0010), 0x5a);
+
+        machine.power(false);
+        assert_eq!(machine.bus.read(0x0010), 0x00);
+    }
+
+    #[test]
+    fn basic32_64k_probe_guard_is_one_shot() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::K64, RamInit::Zeroed);
+
+        machine.bus.write(0xffff, 0xa5);
+        assert_eq!(machine.bus.read(0xffff), 0xa5);
+        assert!(machine.arm_basic32_full_memory_probe_guard());
+
+        machine.bus.write(0xffff, 0x37);
+        assert_ne!(machine.bus.read(0xffff), 0x37);
+
+        machine.bus.write(0xffff, 0x5a);
+        assert_eq!(machine.bus.read(0xffff), 0x5a);
+    }
+
+    #[test]
+    fn basic32_probe_guard_only_arms_for_full_64k() {
+        let mut machine = AltairMachine::default();
+        machine.configure_memory(RamSize::K48, RamInit::Zeroed);
+        assert!(!machine.arm_basic32_full_memory_probe_guard());
+    }
+
+    #[test]
     fn sio_status_tracks_transmit_holding_register() {
         let mut bus = AltairBus::default();
+        assert_eq!(bus.serial_board(), SerialBoard::Sio88);
 
-        assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
+        assert_eq!(bus.input(0x10), 0x00);
 
         bus.output(0x01, b'A');
         assert!(bus.tx_busy());
-        assert_eq!(bus.input(0x10) & 0x02, 0x00);
         assert_eq!(bus.input(0x00) & 0xc0, 0xc0);
         assert_eq!(bus.serial_tx_front(), Some(b'A'));
 
         bus.serial_tx_complete();
         assert!(!bus.tx_busy());
-        assert_eq!(bus.input(0x10) & 0x02, 0x02);
         assert_eq!(bus.input(0x00) & 0xc0, 0x00);
     }
 
     #[test]
-    fn receive_status_matches_reference_ports() {
+    fn two_sio_status_tracks_transmit_holding_register() {
+        let mut bus = AltairBus::default();
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+
+        assert_eq!(bus.input(0x10) & 0x02, 0x02);
+        assert_eq!(bus.input(0x00), 0xff);
+
+        bus.output(0x11, b'A');
+        assert!(bus.tx_busy());
+        assert_eq!(bus.input(0x10) & 0x02, 0x00);
+        assert_eq!(bus.serial_tx_front(), Some(b'A'));
+
+        bus.serial_tx_complete();
+        assert!(!bus.tx_busy());
+        assert_eq!(bus.input(0x10) & 0x02, 0x02);
+    }
+
+    #[test]
+    fn receive_status_matches_selected_serial_board() {
         let mut bus = AltairBus::default();
         assert_eq!(bus.input(0x00) & 0x01, 0x01);
-        assert_eq!(bus.input(0x10) & 0x01, 0x00);
 
         bus.serial_receive(b'K');
         assert_eq!(bus.input(0x00) & 0x01, 0x00);
-        assert_eq!(bus.input(0x10) & 0x01, 0x01);
         assert_eq!(bus.input(0x01), b'K');
+
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(bus.input(0x10) & 0x01, 0x00);
+
+        bus.serial_receive(b'2');
+        assert_eq!(bus.input(0x10) & 0x01, 0x01);
+        assert_eq!(bus.input(0x11), b'2');
     }
 
     #[test]

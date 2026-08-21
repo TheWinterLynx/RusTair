@@ -7,15 +7,8 @@ impl eframe::App for RusTairApp {
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
-        if !self.terminal.window_open
-            && self.serial_router.endpoint() == SerialEndpoint::TextTerminal
-        {
-            self.terminal.tx_started = None;
-            self.serial_router.select(SerialEndpoint::InternalAsr33);
-        }
-
         self.update_paper_tape();
-        if self.serial_router.endpoint() == SerialEndpoint::TextTerminal {
+        if self.terminal_connection().is_connected() {
             self.process_terminal_input(ctx);
         }
 
@@ -34,13 +27,16 @@ impl eframe::App for RusTairApp {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 
-        match self.serial_router.endpoint() {
-            SerialEndpoint::InternalAsr33 => {
-                self.process_tty_serial(ctx);
-                self.process_tty_answerback(ctx);
-            }
-            SerialEndpoint::TextTerminal => self.process_terminal_serial(ctx),
+        // External devices are routed by their physical cable connection, not
+        // by which UI window happens to be visible.
+        if self.asr_connection().is_connected() {
+            self.process_tty_serial(ctx);
+            self.process_tty_answerback(ctx);
         }
+        if self.terminal_connection().is_connected() {
+            self.process_terminal_serial(ctx);
+        }
+        self.service_disconnected_serial_ports();
         self.update_teletype_mechanics(ctx);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
@@ -56,14 +52,157 @@ impl eframe::App for RusTairApp {
                     }
                 });
 
+                ui.menu_button("Configuration", |ui| {
+                    ui.menu_button("Memory", |ui| {
+                        ui.label(format!(
+                            "Installed RAM: {}",
+                            self.config.machine.ram_size.label()
+                        ));
+                        ui.separator();
+
+                        for ram_size in RamSize::ALL {
+                            let selected = self.config.machine.ram_size == ram_size;
+                            if ui.selectable_label(selected, ram_size.label()).clicked() {
+                                self.apply_memory_configuration(
+                                    ram_size,
+                                    self.config.machine.ram_init,
+                                );
+                                ui.close();
+                            }
+                        }
+
+                        ui.separator();
+                        ui.menu_button("Power-on contents", |ui| {
+                            for ram_init in RamInit::ALL {
+                                let selected = self.config.machine.ram_init == ram_init;
+                                if ui.selectable_label(selected, ram_init.label()).clicked() {
+                                    self.apply_memory_configuration(
+                                        self.config.machine.ram_size,
+                                        ram_init,
+                                    );
+                                    ui.close();
+                                }
+                            }
+                        });
+                    });
+
+                    ui.menu_button("Serial board", |ui| {
+                        let current = self.config.machine.serial_board;
+                        ui.label(format!("Installed board: {}", current.label()));
+                        match current {
+                            SerialBoard::Sio88 => {
+                                ui.small(format!(
+                                    "Port 0: {:02X}h status / {:02X}h data",
+                                    current.status_port(),
+                                    current.data_port()
+                                ));
+                            }
+                            SerialBoard::TwoSio88 => {
+                                ui.small(format!(
+                                    "Port 0: {:02X}h status/control / {:02X}h data",
+                                    current.status_port(),
+                                    current.data_port()
+                                ));
+                                ui.small(format!(
+                                    "Port 1: {:02X}h status/control / {:02X}h data",
+                                    current.port1_status_port().unwrap_or(0),
+                                    current.port1_data_port().unwrap_or(0)
+                                ));
+                            }
+                        }
+                        ui.separator();
+                        ui.label("External wiring:");
+                        ui.small(format!(
+                            "ASR-33 → {}",
+                            Self::serial_connection_label(current, self.asr_connection())
+                        ));
+                        ui.small(format!(
+                            "Text Terminal → {}",
+                            Self::serial_connection_label(current, self.terminal_connection())
+                        ));
+                        ui.separator();
+
+                        for serial_board in SerialBoard::ALL {
+                            let selected = current == serial_board;
+                            if ui
+                                .selectable_label(selected, serial_board.label())
+                                .clicked()
+                            {
+                                self.apply_serial_board_configuration(serial_board);
+                                ui.close();
+                            }
+                        }
+
+                        ui.separator();
+                        ui.small(
+                            "Cable selection is available inside each terminal window. A port can have only one attached device.",
+                        );
+                        ui.small(
+                            "Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.",
+                        );
+                    });
+
+                    ui.menu_button("Preferences", |ui| {
+                        let mut auto_open_basic_console =
+                            self.config.preferences.auto_open_basic_console;
+                        if ui
+                            .checkbox(
+                                &mut auto_open_basic_console,
+                                "Auto-open BASIC console",
+                            )
+                            .changed()
+                        {
+                            self.config.preferences.auto_open_basic_console =
+                                auto_open_basic_console;
+                            self.status = if auto_open_basic_console {
+                                "Preference enabled: auto-open BASIC console".into()
+                            } else {
+                                "Preference disabled: BASIC loads without opening a terminal window"
+                                    .into()
+                            };
+                        }
+                        ui.small(
+                            "When bundled BASIC is loaded, reveal the device connected to Port 0. This never changes the serial wiring.",
+                        );
+                    });
+
+                    ui.menu_button("Compatibility", |ui| {
+                        ui.label("Software workarounds (off = historically faithful)");
+                        ui.separator();
+
+                        let mut basic32_workaround =
+                            self.config.compatibility.basic32_64k_probe_workaround;
+                        if ui
+                            .checkbox(
+                                &mut basic32_workaround,
+                                "BASIC 3.2 64K memory-probe workaround",
+                            )
+                            .changed()
+                        {
+                            self.config.compatibility.basic32_64k_probe_workaround =
+                                basic32_workaround;
+                            if !basic32_workaround {
+                                self.machine.bus.clear_transient_memory_guards();
+                            }
+                            self.status = if basic32_workaround {
+                                "Compatibility enabled: BASIC 3.2 64K memory-probe workaround"
+                                    .into()
+                            } else {
+                                "Compatibility disabled: authentic BASIC 3.2 64K bug is reproducible"
+                                    .into()
+                            };
+                        }
+                        ui.small(
+                            "When enabled, bundled BASIC 3.2 avoids its 64K MEMORY SIZE wraparound bug. Disable it to reproduce the original hang.",
+                        );
+                    });
+                });
+
                 ui.separator();
                 if ui.button("ASR-33 TELETYPE").clicked() {
                     self.asr33.window_open = true;
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
-                    self.asr33.tx_started = None;
-                    self.terminal.tx_started = None;
-                    self.serial_router.select(SerialEndpoint::TextTerminal);
                     self.terminal.window_open = true;
                 }
                 ui.separator();

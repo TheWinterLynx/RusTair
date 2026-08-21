@@ -142,7 +142,7 @@ impl RusTairApp {
         }
         let byte = byte & 0x7f;
         self.tty.last_key_byte = Some(byte);
-        self.machine.bus.serial_receive(byte);
+        self.asr_serial_receive(byte);
         let events = self.tty.print_local(byte);
         self.play_print_events(&events);
     }
@@ -152,15 +152,17 @@ impl RusTairApp {
             self.flash_tty_power(ctx);
             return;
         }
+        if !self.asr_connection().is_connected() {
+            self.asr33.answerback.clear();
+            return;
+        }
 
         self.asr33.answerback.trigger(Instant::now());
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
     pub(in crate::app) fn process_tty_answerback(&mut self, ctx: &egui::Context) {
-        if self.serial_router.endpoint() != SerialEndpoint::InternalAsr33
-            || !self.asr33.answerback.pending()
-        {
+        if !self.asr_connection().is_connected() || !self.asr33.answerback.pending() {
             return;
         }
 
@@ -171,7 +173,7 @@ impl RusTairApp {
         }
 
         if let Some(byte) = self.asr33.answerback.take_due(now, TTY_CHAR_TIME) {
-            self.machine.bus.serial_receive(byte & 0x7f);
+            self.asr_serial_receive(byte & 0x7f);
         }
 
         if self.asr33.answerback.pending() {
@@ -184,7 +186,7 @@ impl RusTairApp {
 
         if let Some(started) = self.asr33.tx_started {
             if now.duration_since(started) >= TTY_CHAR_TIME {
-                self.machine.bus.serial_tx_complete();
+                self.asr_serial_tx_complete();
                 self.asr33.tx_started = None;
             } else {
                 ctx.request_repaint_after(Duration::from_millis(5));
@@ -206,7 +208,7 @@ impl RusTairApp {
         }
 
         if self.asr33.tx_started.is_none() {
-            if let Some(byte) = self.machine.bus.serial_tx_front() {
+            if let Some(byte) = self.asr_serial_tx_front() {
                 let was_off = self.tty.mode == TtyMode::Off;
                 let events = self.tty.print_serial(byte);
                 if was_off && self.tty.mode == TtyMode::Line {

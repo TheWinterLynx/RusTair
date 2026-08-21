@@ -9,6 +9,15 @@ impl RusTairApp {
 
         match std::fs::read(&path) {
             Ok(bytes) => {
+                let installed = self.machine.installed_ram_bytes();
+                if bytes.len() > installed {
+                    self.status = format!(
+                        "Load failed: {} bytes require more than the installed {} KiB RAM",
+                        bytes.len(),
+                        installed / 1024
+                    );
+                    return;
+                }
                 self.machine.bus.load(0, &bytes);
                 self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
             }
@@ -21,6 +30,13 @@ impl RusTairApp {
     pub(in crate::app) fn load_bundled_basic(&mut self) {
         match std::fs::read("assets/4kbas32.bin") {
             Ok(bytes) => {
+                if bytes.len() > self.machine.installed_ram_bytes() {
+                    self.status = format!(
+                        "Microsoft 4K BASIC requires at least 4 KiB RAM; {} is installed",
+                        self.config.machine.ram_size.label()
+                    );
+                    return;
+                }
                 if !self.machine.powered {
                     self.set_altair_power(true);
                 } else {
@@ -28,12 +44,48 @@ impl RusTairApp {
                     self.machine.reset();
                 }
                 self.asr33.tx_started = None;
+                self.terminal.tx_started = None;
                 self.machine.bus.clear_protection();
                 self.machine.bus.load(0, &bytes);
                 self.machine.cpu.pc = 0;
-                self.asr33.window_open = true;
+
+                // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
+                // on a completely writable 64 KiB machine and overwrites itself.
+                // Faithful emulation leaves that bug intact by default. Users may
+                // explicitly opt into a one-shot FFFFh probe workaround from the
+                // Compatibility menu when they prefer convenience over fidelity.
+                let full_memory_probe_guard = if self
+                    .config
+                    .compatibility
+                    .basic32_64k_probe_workaround
+                {
+                    self.machine.arm_basic32_full_memory_probe_guard()
+                } else {
+                    false
+                };
+
+                // Auto-open is only a UI convenience. It never moves cables or
+                // changes which physical device BASIC is actually talking to.
+                if self.config.preferences.auto_open_basic_console {
+                    match self.serial_router.device_on(SerialConnection::Port0) {
+                        Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
+                        Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
+                        None => {}
+                    }
+                }
+
                 self.machine.set_running(true);
-                self.status = "Microsoft 4K BASIC loaded and running".into();
+                self.status = if full_memory_probe_guard {
+                    "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active"
+                        .into()
+                } else if self.machine.installed_ram_bytes() == 64 * 1024 {
+                    "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled"
+                        .into()
+                } else if self.config.preferences.auto_open_basic_console {
+                    "Microsoft 4K BASIC loaded and running — console auto-open enabled".into()
+                } else {
+                    "Microsoft 4K BASIC loaded and running — console auto-open disabled".into()
+                };
             }
             Err(e) => self.status = format!("4K BASIC asset missing: {e}"),
         }
