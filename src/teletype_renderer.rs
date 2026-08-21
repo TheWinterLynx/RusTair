@@ -109,8 +109,9 @@ impl RusTairApp {
             let face_ratio = if pose == 0 { 0.215 } else { 0.285 };
             let face_y =
                 base_y - target_h * (1.0 - face_ratio) + special_y_nudge;
-            let line_gap = if special { 14.0 } else { 13.0 };
-            let font_size = (114.0 * 0.145 * scale).max(5.0);
+            let line_gap = if special { 17.0 } else { 19.0 };
+            let font_factor = if special { 0.115 } else { 0.130 };
+            let font_size = (114.0 * font_factor * scale).max(5.0);
             let mut lines = legend.lines();
             let upper = lines.next().unwrap_or("");
             let lower = lines.next().unwrap_or("");
