@@ -90,6 +90,8 @@ impl RusTairApp {
             self.print_head_auto_return_at = None;
             self.print_head_carriage_return_until = None;
             self.paper_feed_until = None;
+            self.tty_answerback_queue.clear();
+            self.tty_answerback_next_at = None;
         } else {
             self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
         }
@@ -107,6 +109,48 @@ impl RusTairApp {
         self.machine.bus.serial_rx.push_back(byte);
         let events = self.tty.print_local(byte);
         self.play_print_events(&events);
+    }
+
+    fn start_tty_answerback(&mut self, ctx: &egui::Context) {
+        if self.tty.mode == TtyMode::Off {
+            self.flash_tty_power(ctx);
+            return;
+        }
+
+        // The mechanical drum cannot start a second message while it is already
+        // revolving. Ignore repeated HERE IS/ENQ triggers until this cycle ends.
+        if self.tty_answerback_queue.is_empty() {
+            self.tty_answerback_queue
+                .extend(TTY_ANSWERBACK.iter().copied());
+            self.tty_answerback_next_at = Some(Instant::now());
+        }
+        ctx.request_repaint_after(Duration::from_millis(5));
+    }
+
+    fn process_tty_answerback(&mut self, ctx: &egui::Context) {
+        if self.terminal_window_open || self.tty_answerback_queue.is_empty() {
+            return;
+        }
+
+        let now = Instant::now();
+        if self.tty_answerback_next_at.is_some_and(|at| now < at) {
+            ctx.request_repaint_after(Duration::from_millis(5));
+            return;
+        }
+
+        if let Some(byte) = self.tty_answerback_queue.pop_front() {
+            // Feed the Altair exactly like keyboard-originated serial input, but
+            // at the real Model 33 rate of ten characters per second. Answerback
+            // does not strike the local printer; it is a transmitter mechanism.
+            self.machine.bus.serial_rx.push_back(byte & 0x7f);
+        }
+
+        if self.tty_answerback_queue.is_empty() {
+            self.tty_answerback_next_at = None;
+        } else {
+            self.tty_answerback_next_at = Some(now + TTY_CHAR_TIME);
+            ctx.request_repaint_after(Duration::from_millis(5));
+        }
     }
 
     fn process_tty_serial(&mut self, ctx: &egui::Context) {
@@ -145,6 +189,13 @@ impl RusTairApp {
                     self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
                 }
                 self.play_print_events(&events);
+
+                // ENQ (WRU, 0x05) remotely trips the same answer-back mechanism
+                // as pressing HERE IS on the keyboard.
+                if byte & 0x7f == 0x05 {
+                    self.start_tty_answerback(ctx);
+                }
+
                 self.tty_tx_started = Some(now);
                 ctx.request_repaint_after(PANEL_FRAME);
             }
@@ -162,7 +213,11 @@ impl RusTairApp {
             KeyKind::CarriageReturn => byte == b'\r',
             KeyKind::Delete => byte == 0x7f,
             KeyKind::Space => byte == b' ',
-            KeyKind::Repeat | KeyKind::Break | KeyKind::Control | KeyKind::Shift => false,
+            KeyKind::Repeat
+            | KeyKind::Break
+            | KeyKind::HereIs
+            | KeyKind::Control
+            | KeyKind::Shift => false,
         })
     }
 
@@ -297,6 +352,7 @@ impl RusTairApp {
         match key.kind {
             KeyKind::Shift => self.tty.shift_down = true,
             KeyKind::Control => self.tty.control_down = true,
+            KeyKind::HereIs => self.start_tty_answerback(ctx),
             KeyKind::Repeat => {
                 // REPT is a real keyboard control: pressing it re-transmits the
                 // last key code. Continuous typematic repeat can be layered on
