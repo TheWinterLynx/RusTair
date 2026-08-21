@@ -144,6 +144,7 @@ impl AltairMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu8080::Bus;
 
     #[test]
     fn default_88_sio_does_not_alias_88_2sio_data_port() {
