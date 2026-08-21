@@ -192,7 +192,12 @@ impl RusTairApp {
                     }
                     egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
                         any_key = true;
+                        // A desktop Enter represents the complete "new line"
+                        // action: return the carriage and advance the paper one
+                        // line. The physical ASR-33 RETURN and LINE FEED keys
+                        // remain individually available on the rendered keyboard.
                         bytes.push(b'\r');
+                        bytes.push(b'\n');
                     }
                     egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
                         any_key = true;
