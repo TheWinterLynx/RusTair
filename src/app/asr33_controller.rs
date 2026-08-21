@@ -112,8 +112,7 @@ impl RusTairApp {
             self.print_head_auto_return_at = None;
             self.print_head_carriage_return_until = None;
             self.paper_feed_until = None;
-            self.tty_answerback_queue.clear();
-            self.tty_answerback_next_at = None;
+            self.tty_answerback.clear();
         } else {
             self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
         }
@@ -139,33 +138,26 @@ impl RusTairApp {
             return;
         }
 
-        if self.tty_answerback_queue.is_empty() {
-            self.tty_answerback_queue
-                .extend(TTY_ANSWERBACK.iter().copied());
-            self.tty_answerback_next_at = Some(Instant::now());
-        }
+        self.tty_answerback.trigger(Instant::now());
         ctx.request_repaint_after(Duration::from_millis(5));
     }
 
     pub(in crate::app) fn process_tty_answerback(&mut self, ctx: &egui::Context) {
-        if self.terminal.window_open || self.tty_answerback_queue.is_empty() {
+        if self.terminal.window_open || !self.tty_answerback.pending() {
             return;
         }
 
         let now = Instant::now();
-        if self.tty_answerback_next_at.is_some_and(|at| now < at) {
+        if self.tty_answerback.time_until_next(now).is_some() {
             ctx.request_repaint_after(Duration::from_millis(5));
             return;
         }
 
-        if let Some(byte) = self.tty_answerback_queue.pop_front() {
+        if let Some(byte) = self.tty_answerback.take_due(now, TTY_CHAR_TIME) {
             self.machine.bus.serial_receive(byte & 0x7f);
         }
 
-        if self.tty_answerback_queue.is_empty() {
-            self.tty_answerback_next_at = None;
-        } else {
-            self.tty_answerback_next_at = Some(now + TTY_CHAR_TIME);
+        if self.tty_answerback.pending() {
             ctx.request_repaint_after(Duration::from_millis(5));
         }
     }
