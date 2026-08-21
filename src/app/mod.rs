@@ -15,6 +15,7 @@ use self::asr33_state::Asr33State;
 use self::terminal_state::{TerminalSpeed, TerminalState};
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
+use crate::config::{AppConfig, RamInit, RamSize};
 use crate::io::serial_router::{SerialEndpoint, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
@@ -69,6 +70,7 @@ pub fn run() -> eframe::Result {
 }
 
 struct RusTairApp {
+    config: AppConfig,
     machine: AltairMachine,
     serial_router: SerialRouter,
     tex: Tex,
@@ -87,6 +89,7 @@ impl RusTairApp {
         Tex::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
         Self {
+            config: AppConfig::default(),
             machine: AltairMachine::default(),
             serial_router: SerialRouter::default(),
             tex: Tex::load(&cc.egui_ctx),
@@ -96,8 +99,26 @@ impl RusTairApp {
             audio: AudioEngine::new(),
             last_tick: now,
             reset_flash_until: None,
-            status: "Ready — modular front-panel switches".into(),
+            status: "Ready — 8 KiB RAM".into(),
         }
+    }
+
+    fn apply_memory_configuration(&mut self, ram_size: RamSize, ram_init: RamInit) {
+        if self.config.machine.ram_size == ram_size && self.config.machine.ram_init == ram_init {
+            return;
+        }
+
+        self.config.machine.ram_size = ram_size;
+        self.config.machine.ram_init = ram_init;
+        self.machine.configure_memory(ram_size, ram_init);
+        self.asr33.tx_started = None;
+        self.terminal.tx_started = None;
+        self.reset_flash_until = None;
+        self.status = format!(
+            "Memory configured: {} — {}; machine reset",
+            ram_size.label(),
+            ram_init.label()
+        );
     }
 
     fn image(ui: &mut egui::Ui, texture: &egui::TextureHandle, rect: Rect) {
