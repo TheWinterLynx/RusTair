@@ -390,7 +390,7 @@ impl RusTairApp {
         }
     }
 
-    fn update_key_animation(&mut self, ctx: &egui::Context) {
+    pub(in crate::app) fn update_key_animation(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         if self.key_auto_release_at.is_some_and(|until| now >= until) {
             self.pressed_key = None;
