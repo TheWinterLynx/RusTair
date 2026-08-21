@@ -17,10 +17,10 @@ impl eframe::App for RusTairApp {
         // hands the serial line back to the ASR-33, but make that ownership
         // transition explicit instead of inferring routing everywhere from a
         // window boolean.
-        if !self.terminal_window_open
+        if !self.terminal.window_open
             && self.serial_router.endpoint() == SerialEndpoint::TextTerminal
         {
-            self.terminal_tx_started = None;
+            self.terminal.tx_started = None;
             self.serial_router.select(SerialEndpoint::InternalAsr33);
         }
 
@@ -83,9 +83,9 @@ impl eframe::App for RusTairApp {
                     // Cancel any in-progress ASR-33 holding-register timer when
                     // explicitly handing the serial line to the text terminal.
                     self.tty_tx_started = None;
-                    self.terminal_tx_started = None;
+                    self.terminal.tx_started = None;
                     self.serial_router.select(SerialEndpoint::TextTerminal);
-                    self.terminal_window_open = true;
+                    self.terminal.window_open = true;
                 }
                 ui.separator();
                 let mut muted = self.audio.muted();
