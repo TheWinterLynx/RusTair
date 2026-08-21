@@ -32,7 +32,33 @@ impl RusTairApp {
         }
     }
 
+    fn process_tty_repeat(&mut self, ctx: &egui::Context) {
+        let repeat_held = self.pressed_key.is_some_and(|index| {
+            matches!(teletype::KEYS[index].kind, KeyKind::Repeat)
+        });
+        if !repeat_held {
+            return;
+        }
+
+        let now = Instant::now();
+        let timer_id = egui::Id::new("asr33-repeat-next-at");
+        let next_at = ctx.data(|data| data.get_temp::<Instant>(timer_id));
+        let next_at = next_at.unwrap_or(now + TTY_CHAR_TIME);
+
+        if now >= next_at {
+            if let Some(byte) = self.tty.last_key_byte {
+                self.send_tty_byte(byte);
+            }
+            ctx.data_mut(|data| data.insert_temp(timer_id, now + TTY_CHAR_TIME));
+        }
+
+        // REPT is a mechanical ten-character-per-second action. Keep ticking
+        // while the photographed key is physically held by the mouse.
+        ctx.request_repaint_after(Duration::from_millis(5));
+    }
+
     fn update_teletype_mechanics(&mut self, ctx: &egui::Context) {
+        self.process_tty_repeat(ctx);
         let now = Instant::now();
 
         if self.print_head_impact_at.is_some_and(|at| now >= at) {
@@ -240,16 +266,39 @@ impl RusTairApp {
         let mut any_key = false;
 
         ctx.input(|input| {
-            for event in &input.events {
+            for (event_index, event) in input.events.iter().enumerate() {
                 match event {
                     egui::Event::Text(text) => {
+                        // egui-winit emits the Key event immediately before its
+                        // Text event. Discard Text belonging to an OS typematic
+                        // repeat so holding a PC key is one ASR-33 keypress; the
+                        // dedicated REPT key below is the only repeat mechanism.
+                        let host_autorepeat = event_index.checked_sub(1).is_some_and(|previous| {
+                            matches!(
+                                input.events[previous],
+                                egui::Event::Key {
+                                    pressed: true,
+                                    repeat: true,
+                                    ..
+                                }
+                            )
+                        });
+                        if host_autorepeat {
+                            continue;
+                        }
+
                         any_key = true;
                         for b in text.bytes() {
                             let byte = b.to_ascii_uppercase();
                             keystrokes.push((byte, Some(byte)));
                         }
                     }
-                    egui::Event::Key { key: egui::Key::Enter, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => {
                         any_key = true;
                         // Desktop Enter is the complete newline action. Animate
                         // RETURN once while still transmitting the required CR/LF
@@ -258,18 +307,34 @@ impl RusTairApp {
                         keystrokes.push((b'\r', Some(b'\r')));
                         keystrokes.push((b'\n', None));
                     }
-                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => {
                         any_key = true;
                         // Altair BASIC 3.2 uses underscore as its line-editor
                         // erase character. Keep the ASR-33 DELETE/RUBOUT cap as
                         // the visual counterpart to the modern PC Backspace key.
                         keystrokes.push((b'_', Some(0x7f)));
                     }
-                    egui::Event::Key { key: egui::Key::Escape, pressed: true, .. } => {
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => {
                         any_key = true;
                         keystrokes.push((0x1b, Some(0x1b)));
                     }
-                    egui::Event::Key { key, pressed: true, modifiers, .. } if modifiers.ctrl => {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } if modifiers.ctrl => {
                         any_key = true;
                         let letter = match key {
                             egui::Key::A=>Some(b'A'), egui::Key::B=>Some(b'B'),
@@ -354,11 +419,15 @@ impl RusTairApp {
             KeyKind::Control => self.tty.control_down = true,
             KeyKind::HereIs => self.start_tty_answerback(ctx),
             KeyKind::Repeat => {
-                // REPT is a real keyboard control: pressing it re-transmits the
-                // last key code. Continuous typematic repeat can be layered on
-                // later without changing the matrix or the key identity.
                 if let Some(byte) = self.tty.last_key_byte {
+                    // First repetition is immediate, then the mechanical REPT
+                    // control retransmits at the same 10 cps as the keyboard.
                     self.send_tty_byte(byte);
+                    let timer_id = egui::Id::new("asr33-repeat-next-at");
+                    ctx.data_mut(|data| {
+                        data.insert_temp(timer_id, Instant::now() + TTY_CHAR_TIME)
+                    });
+                    ctx.request_repaint_after(Duration::from_millis(5));
                 }
             }
             kind => {
