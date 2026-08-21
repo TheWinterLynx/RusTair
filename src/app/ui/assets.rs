@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use eframe::egui::{self, FontFamily};
 
+use super::front_panel_assets::load_switch_textures;
+
 /// GPU/UI resources used by the application renderers.
 ///
 /// Keeping asset loading here prevents the application composition root from
@@ -23,17 +25,14 @@ pub(in crate::app) struct Tex {
 }
 
 impl Tex {
-    pub(in crate::app) fn load(
-        ctx: &egui::Context,
-        switch_sprites: HashMap<&'static str, egui::TextureHandle>,
-    ) -> Self {
+    pub(in crate::app) fn load(ctx: &egui::Context) -> Self {
         Self {
             panel: Self::load_texture(
                 ctx,
                 "front-panel",
                 "assets/panels/white-pivot/panel.png",
             ),
-            switch_sprites,
+            switch_sprites: load_switch_textures(ctx),
             tty_body: Self::load_texture(ctx, "tty-body", "assets/asr33_body_clean.png"),
             // The clean body contains the key wells and each key is painted
             // independently from aligned photographic poses.
