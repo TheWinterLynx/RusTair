@@ -35,22 +35,16 @@ impl RusTairApp {
         pose: u8,
         legend_override: Option<&str>,
     ) {
-        // The current GIMP assets already encode the vertical key travel: MID
-        // and DOWN were made by shortening the cap upward from a common base.
-        // Therefore every pose MUST share one fixed lower anchor at the socket.
-        // Adding a pose-dependent Y translation made the lower edge move too,
-        // which visually compressed the key from both ends instead of making
-        // the top descend into the keyboard.
+        // The current GIMP assets encode the vertical travel themselves. Keep
+        // one fixed lower anchor and use only UP/MID: DOWN proved visually too
+        // deep for the short ASR-33 key stroke.
         const KEY_CANVAS_WIDTH: f32 = 170.0;
-        // Seat the cap a little deeper than the previous pass. This hides the
-        // exposed lower rim of the clean-body socket while retaining a small
-        // contact shadow around the sides.
         const SOCKET_BASE_OFFSET: f32 = 50.0;
 
-        let (texture, legend_ratio) = match pose {
-            1 => (&self.tex.tty_key_mid, 0.43),
-            2 => (&self.tex.tty_key_down, 0.50),
-            _ => (&self.tex.tty_key_up, 0.36),
+        let (texture, legend_ratio) = if pose == 0 {
+            (&self.tex.tty_key_up, 0.36)
+        } else {
+            (&self.tex.tty_key_mid, 0.43)
         };
         let Some(texture) = texture else { return; };
 
@@ -69,10 +63,8 @@ impl RusTairApp {
         let target_w = KEY_CANVAS_WIDTH * width_factor;
         let target_h = KEY_CANVAS_WIDTH * texture_aspect;
 
-        // Critical registration rule: the bottom of UP/MID/DOWN is identical.
-        // The GIMP artwork supplies the decreasing height itself, so the top
-        // face moves downward naturally while the key remains seated in the
-        // same physical socket.
+        // UP and MID share exactly the same visible lower edge. Only the upper
+        // face descends, so the key reads as being pushed into the socket.
         let base_y = socket_y + SOCKET_BASE_OFFSET;
         let target = Rect::from_min_size(
             origin
@@ -95,10 +87,6 @@ impl RusTairApp {
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
         if legend.is_empty() { return; }
 
-        // Keep the overlay attached to the upper face encoded in each asset.
-        // Because the sprite base no longer moves between poses, the legend now
-        // follows only the real top-face descent and cannot appear to rise out
-        // of the socket or collapse from below.
         let legend_y = base_y - target_h * (1.0 - legend_ratio);
         let compact = legend.contains('\n') || legend.len() > 4;
         let font_factor = if compact { 0.145 } else { 0.225 };
@@ -112,33 +100,88 @@ impl RusTairApp {
         );
     }
 
+    fn draw_spacebar_pose(
+        &self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        pose: u8,
+    ) {
+        // The spacebar is already a real KeyKind::Space entry in KEYS. Render
+        // its dedicated wide asset around that exact matrix centre instead of
+        // stretching a cylindrical key. As with the normal keys, the GIMP MID
+        // asset carries the press geometry and shares one fixed lower anchor.
+        const SPACEBAR_VISUAL_SCALE: f32 = 0.98;
+        const SPACEBAR_BASE_OFFSET: f32 = 46.0;
+
+        let texture = if pose == 0 {
+            &self.tex.tty_spacebar_up
+        } else {
+            &self.tex.tty_spacebar_mid
+        };
+        let Some(texture) = texture else { return; };
+
+        let (socket_x, socket_y) = (x + w * 0.5, y + h * 0.5);
+        let texture_size = texture.size_vec2();
+        let texture_aspect = texture_size.y / texture_size.x.max(1.0);
+        let target_w = w * SPACEBAR_VISUAL_SCALE;
+        let target_h = target_w * texture_aspect;
+        let base_y = socket_y + SPACEBAR_BASE_OFFSET;
+
+        let target = Rect::from_min_size(
+            origin
+                + Vec2::new(
+                    (socket_x - target_w * 0.5) * scale,
+                    (base_y - target_h) * scale,
+                ),
+            Vec2::new(target_w * scale, target_h * scale),
+        );
+        ui.painter().image(
+            texture.id(),
+            target,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    }
+
     fn draw_pressed_key(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
         for (index, key) in teletype::KEYS.iter().copied().enumerate() {
-            // The spacebar is already a real key in the matrix, but its wide
-            // three-pose visual asset is intentionally deferred to the next
-            // pass. Leaving the clean socket visible is preferable to stretching
-            // a cylindrical key into a fake bar.
-            if matches!(key.kind, KeyKind::Space) {
-                continue;
-            }
-
-            let pose = if self.animated_key == Some(index) && self.key_displacement > 0.0 {
-                if self.key_displacement < 8.0 { 1 } else { 2 }
-            } else {
-                0
-            };
-            self.draw_key_pose(
-                ui,
-                origin,
-                scale,
-                key.kind,
-                key.x,
-                key.y,
-                key.w,
-                key.h,
-                pose,
-                None,
+            // The keyboard now deliberately has only two visual states: UP and
+            // MID. This is the same short-stroke animation for normal keys and
+            // for the dedicated spacebar assets.
+            let pose = u8::from(
+                self.animated_key == Some(index) && self.key_displacement > 0.0,
             );
+
+            if matches!(key.kind, KeyKind::Space) {
+                self.draw_spacebar_pose(
+                    ui,
+                    origin,
+                    scale,
+                    key.x,
+                    key.y,
+                    key.w,
+                    key.h,
+                    pose,
+                );
+            } else {
+                self.draw_key_pose(
+                    ui,
+                    origin,
+                    scale,
+                    key.kind,
+                    key.x,
+                    key.y,
+                    key.w,
+                    key.h,
+                    pose,
+                    None,
+                );
+            }
         }
 
         // HERE IS is a physical, non-ASCII key. Keep it decorative, but place
