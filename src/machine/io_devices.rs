@@ -133,6 +133,10 @@ impl IoDevices {
         self.serial[1].rx_empty()
     }
 
+    pub(super) fn port1_rx_len(&self) -> usize {
+        self.serial[1].rx_len()
+    }
+
     pub(super) fn port1_tx_front(&self) -> Option<u8> {
         self.serial[1].tx_front()
     }
@@ -170,6 +174,10 @@ impl AltairBus {
 
     pub fn serial_port1_rx_empty(&self) -> bool {
         self.io.port1_rx_empty()
+    }
+
+    pub fn serial_port1_rx_len(&self) -> usize {
+        self.io.port1_rx_len()
     }
 
     pub fn serial_port1_tx_front(&self) -> Option<u8> {
@@ -242,6 +250,7 @@ mod tests {
 
         io.port1_receive(b'B');
         assert_eq!(io.input(SIO2_PORT1_STATUS) & 0x01, 0x01);
+        assert_eq!(io.port1_rx_len(), 1);
         assert_eq!(io.input(SIO2_PORT1_DATA), b'B');
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x01, 0x00);
     }
