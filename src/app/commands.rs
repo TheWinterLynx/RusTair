@@ -70,4 +70,28 @@ impl RusTairApp {
             Err(e) => self.status = format!("Paper tape save failed: {e}"),
         }
     }
+
+    pub(in crate::app) fn load_terminal_text_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Text / BASIC", &["txt", "bas", "basic"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                let count = self.terminal_enqueue_text(&text, true);
+                if count > 0 {
+                    self.status = format!(
+                        "Terminal queued {count} bytes from {} at {}",
+                        path.display(),
+                        self.terminal.speed.label()
+                    );
+                }
+            }
+            Err(e) => self.status = format!("Terminal file load failed: {e}"),
+        }
+    }
 }
