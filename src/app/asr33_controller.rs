@@ -41,15 +41,16 @@ impl RusTairApp {
         }
 
         let now = Instant::now();
+        let char_time = self.asr_char_time();
         let timer_id = egui::Id::new("asr33-repeat-next-at");
         let next_at = ctx.data(|data| data.get_temp::<Instant>(timer_id));
-        let next_at = next_at.unwrap_or(now + TTY_CHAR_TIME);
+        let next_at = next_at.unwrap_or(now + char_time);
 
         if now >= next_at {
             if let Some(byte) = self.tty.last_key_byte {
                 self.send_tty_byte(byte);
             }
-            ctx.data_mut(|data| data.insert_temp(timer_id, now + TTY_CHAR_TIME));
+            ctx.data_mut(|data| data.insert_temp(timer_id, now + char_time));
         }
         ctx.request_repaint_after(Duration::from_millis(5));
     }
@@ -172,7 +173,8 @@ impl RusTairApp {
             return;
         }
 
-        if let Some(byte) = self.asr33.answerback.take_due(now, TTY_CHAR_TIME) {
+        let char_time = self.asr_char_time();
+        if let Some(byte) = self.asr33.answerback.take_due(now, char_time) {
             self.asr_serial_receive(byte & 0x7f);
         }
 
@@ -183,13 +185,14 @@ impl RusTairApp {
 
     pub(in crate::app) fn process_tty_serial(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
+        let char_time = self.asr_char_time();
 
         if let Some(started) = self.asr33.tx_started {
-            if now.duration_since(started) >= TTY_CHAR_TIME {
+            if char_time.is_zero() || now.duration_since(started) >= char_time {
                 self.asr_serial_tx_complete();
                 self.asr33.tx_started = None;
             } else {
-                ctx.request_repaint_after(Duration::from_millis(5));
+                ctx.request_repaint_after(char_time - now.duration_since(started));
                 return;
             }
         }
@@ -221,8 +224,14 @@ impl RusTairApp {
                     self.start_tty_answerback(ctx);
                 }
 
-                self.asr33.tx_started = Some(now);
-                ctx.request_repaint_after(PANEL_FRAME);
+                if char_time.is_zero() {
+                    self.asr_serial_tx_complete();
+                    self.asr33.tx_started = None;
+                    ctx.request_repaint();
+                } else {
+                    self.asr33.tx_started = Some(now);
+                    ctx.request_repaint_after(char_time);
+                }
             }
         }
     }
@@ -422,8 +431,9 @@ impl RusTairApp {
                 if let Some(byte) = self.tty.last_key_byte {
                     self.send_tty_byte(byte);
                     let timer_id = egui::Id::new("asr33-repeat-next-at");
+                    let char_time = self.asr_char_time();
                     ctx.data_mut(|data| {
-                        data.insert_temp(timer_id, Instant::now() + TTY_CHAR_TIME)
+                        data.insert_temp(timer_id, Instant::now() + char_time)
                     });
                     ctx.request_repaint_after(Duration::from_millis(5));
                 }

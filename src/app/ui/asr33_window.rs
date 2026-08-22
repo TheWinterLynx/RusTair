@@ -46,6 +46,22 @@ impl RusTairApp {
         }
     }
 
+    fn draw_tty_speed_selector(&mut self, ui: &mut egui::Ui) {
+        let current = self.config.peripherals.asr33_speed;
+        let mut selected = current;
+        ui.label("Speed:");
+        egui::ComboBox::from_id_salt("asr33-speed")
+            .selected_text(current.label())
+            .show_ui(ui, |ui| {
+                for speed in Asr33Speed::ALL {
+                    ui.selectable_value(&mut selected, speed, speed.label());
+                }
+            });
+        if selected != current {
+            self.set_asr_speed(selected);
+        }
+    }
+
     fn draw_tty_menu(&mut self, ctx: &egui::Context) {
         self.process_tty_keyboard(ctx);
         egui::TopBottomPanel::top("tty-menu").show(ctx, |ui| {
@@ -62,6 +78,8 @@ impl RusTairApp {
                 }
                 ui.separator();
                 self.draw_tty_connection_selector(ui);
+                ui.separator();
+                self.draw_tty_speed_selector(ui);
                 ui.separator();
                 ui.label(format!("{} columns", self.tty.paper_width));
                 ui.separator();
@@ -105,21 +123,18 @@ impl RusTairApp {
             let connection_label =
                 Self::serial_connection_label(self.config.machine.serial_board, connection);
             let tx = if connection.is_connected() {
-                if self.asr_serial_tx_busy() {
-                    "BUSY"
-                } else {
-                    "READY"
-                }
+                if self.asr_serial_tx_busy() { "BUSY" } else { "READY" }
             } else {
                 "N/A"
             };
             ui.small(format!(
-                "ASR-33 {}  |  {}  |  RX {}  |  TX {}  |  column {}/{}",
+                "ASR-33 {}  |  {}  |  {}  |  RX {}  |  TX {}  |  column {}/{}",
                 match self.tty.mode {
                     TtyMode::Off => "OFF",
                     TtyMode::Line => "LINE",
                     TtyMode::Local => "LOCAL",
                 },
+                self.config.peripherals.asr33_speed.label(),
                 connection_label,
                 self.asr_serial_rx_len(),
                 tx,

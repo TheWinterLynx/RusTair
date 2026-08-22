@@ -1,5 +1,6 @@
 mod machine;
 
 pub use machine::{
-    AppConfig, CompatibilityConfig, MachineConfig, PreferencesConfig, RamInit, RamSize, SerialBoard,
+    AppConfig, Asr33Speed, CompatibilityConfig, CpuModel, EmulationSpeed, MachineConfig,
+    PeripheralConfig, PreferencesConfig, RamInit, RamSize, SerialBoard, TerminalSpeed,
 };
