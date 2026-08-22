@@ -55,8 +55,13 @@ impl RusTairApp {
             .strip_prefix("0x")
             .or_else(|| trimmed.strip_prefix("0X"))
             .unwrap_or(trimmed);
-        let trimmed = trimmed.strip_suffix('h').or_else(|| trimmed.strip_suffix('H')).unwrap_or(trimmed);
-        (!trimmed.is_empty()).then(|| u16::from_str_radix(trimmed, 16).ok()).flatten()
+        let trimmed = trimmed
+            .strip_suffix('h')
+            .or_else(|| trimmed.strip_suffix('H'))
+            .unwrap_or(trimmed);
+        (!trimmed.is_empty())
+            .then(|| u16::from_str_radix(trimmed, 16).ok())
+            .flatten()
     }
 
     fn select_memory_address(state: &mut MemoryViewerUiState, address: u16, jump: bool) {
@@ -87,11 +92,12 @@ impl RusTairApp {
                     for board in 0..(MAX_MEM_SIZE / MEMORY_BOARD_SIZE) {
                         let start = board * MEMORY_BOARD_SIZE;
                         let installed_board = start < installed;
-                        let protected = installed_board && self.machine.bus.is_protected(start as u16);
+                        let protected =
+                            installed_board && self.machine.bus.is_protected(start as u16);
                         let mut label = egui::RichText::new(if protected {
-                            format!("P {:04X}", start)
+                            format!("P {start:04X}")
                         } else {
-                            format!("  {:04X}", start)
+                            format!("  {start:04X}")
                         })
                         .monospace();
                         if !installed_board {
@@ -183,13 +189,24 @@ impl RusTairApp {
             Self::select_memory_address(state, pc, true);
         }
 
+        ui.spacing_mut().item_spacing.x = 2.0;
         ui.horizontal(|ui| {
-            ui.add_sized([54.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
-            ui.add_sized([20.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("P").monospace().strong()));
+            ui.add_sized(
+                [54.0, ROW_HEIGHT],
+                egui::Label::new(egui::RichText::new("ADDR").monospace().strong()),
+            );
+            ui.add_sized(
+                [20.0, ROW_HEIGHT],
+                egui::Label::new(egui::RichText::new("P").monospace().strong()),
+            );
             for column in 0..BYTES_PER_ROW {
                 ui.add_sized(
                     [28.0, ROW_HEIGHT],
-                    egui::Label::new(egui::RichText::new(format!("{column:02X}")).monospace().strong()),
+                    egui::Label::new(
+                        egui::RichText::new(format!("{column:02X}"))
+                            .monospace()
+                            .strong(),
+                    ),
                 );
             }
             ui.separator();
@@ -218,7 +235,8 @@ impl RusTairApp {
                     .contains(&(state.selected_address as usize));
 
                 ui.horizontal(|ui| {
-                    let mut address_text = egui::RichText::new(format!("{start:04X}")).monospace();
+                    let mut address_text =
+                        egui::RichText::new(format!("{start:04X}")).monospace();
                     if row_contains_pc {
                         address_text = address_text.strong();
                     }
@@ -243,7 +261,8 @@ impl RusTairApp {
                         match self.machine.bus.peek_memory(address) {
                             Some(byte) => {
                                 ascii.push(Self::printable_ascii(byte));
-                                let mut text = egui::RichText::new(format!("{byte:02X}")).monospace();
+                                let mut text =
+                                    egui::RichText::new(format!("{byte:02X}")).monospace();
                                 if address == pc {
                                     text = text.strong().background_color(pc_fill);
                                 }
@@ -263,7 +282,11 @@ impl RusTairApp {
                                     address,
                                     byte,
                                     byte,
-                                    if protected { " — protected board" } else { "" }
+                                    if protected {
+                                        " — protected board"
+                                    } else {
+                                        ""
+                                    }
                                 ));
                             }
                             None => {
@@ -271,7 +294,9 @@ impl RusTairApp {
                                 ui.add_sized(
                                     [28.0, ROW_HEIGHT],
                                     egui::Label::new(
-                                        egui::RichText::new("--").monospace().color(weak_color),
+                                        egui::RichText::new("--")
+                                            .monospace()
+                                            .color(weak_color),
                                     ),
                                 );
                             }
@@ -309,7 +334,11 @@ impl RusTairApp {
         }
     }
 
-    fn draw_memory_viewer_window(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
+    fn draw_memory_viewer_window(
+        &mut self,
+        ctx: &egui::Context,
+        state: &mut MemoryViewerUiState,
+    ) {
         egui::TopBottomPanel::top("memory-viewer-toolbar").show(ctx, |ui| {
             self.draw_memory_toolbar(ui, state);
         });
@@ -335,8 +364,8 @@ impl RusTairApp {
             egui::ViewportId::from_hash_of("rustair-memory-viewer"),
             egui::ViewportBuilder::default()
                 .with_title("RusTair — RAM Viewer")
-                .with_inner_size([760.0, 760.0])
-                .with_min_inner_size([650.0, 420.0])
+                .with_inner_size([900.0, 760.0])
+                .with_min_inner_size([740.0, 420.0])
                 .with_resizable(true),
             |memory_ctx, _class| {
                 self.draw_memory_viewer_window(memory_ctx, &mut state);
