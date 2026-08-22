@@ -6,7 +6,7 @@ description = "Native Rust MITS Altair 8800 emulator"
 license = "BSD-2-Clause"
 
 [dependencies]
-eframe = { version = "0.32", default-features = true }
+eframe = { version = "0.32", default-features = true, features = ["wgpu"] }
 egui_extras = { version = "0.32", features = ["image"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 rodio = { version = "0.21", default-features = false, features = ["mp3", "playback"] }
