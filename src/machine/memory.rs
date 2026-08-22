@@ -95,6 +95,39 @@ impl Memory {
         self.bytes[start..start + len].copy_from_slice(&data[..len]);
     }
 
+    /// Inspect a physical RAM byte without triggering any guest-visible read
+    /// side effects. This is intentionally separate from `read`: debugger and
+    /// visualizer tools must not consume transient compatibility guards such as
+    /// the BASIC 3.2 FFFFh probe sentinel.
+    pub(super) fn peek(&self, address: u16) -> Option<u8> {
+        let index = address as usize;
+        (index < self.installed_size).then_some(self.bytes[index])
+    }
+
+    /// Debugger/editor write to the physical RAM backing store.
+    ///
+    /// This never writes into uninstalled address space and intentionally does
+    /// not participate in guest-visible compatibility guards. When
+    /// `respect_protection` is true it also honors RusTair's current 1 KiB
+    /// front-panel protection granularity; false is an explicit debugger
+    /// override.
+    pub(super) fn debugger_write(
+        &mut self,
+        address: u16,
+        value: u8,
+        respect_protection: bool,
+    ) -> bool {
+        let index = address as usize;
+        if index >= self.installed_size {
+            return false;
+        }
+        if respect_protection && self.is_protected(address) {
+            return false;
+        }
+        self.bytes[index] = value;
+        true
+    }
+
     pub(super) fn clear_protection(&mut self) {
         self.protected.fill(false);
     }
@@ -148,5 +181,71 @@ impl Memory {
         }
 
         self.bytes[address as usize] = value;
+    }
+}
+
+impl super::AltairBus {
+    /// Non-invasive debugger read. `None` means that address is outside the
+    /// physically installed RAM rather than a stored zero byte.
+    pub fn peek_memory(&self, address: u16) -> Option<u8> {
+        self.memory.peek(address)
+    }
+
+    /// Edit installed RAM from the debugger. This bypasses guest-visible memory
+    /// side effects; callers choose whether the current protection latch is
+    /// honored or deliberately overridden.
+    pub fn debugger_write_memory(
+        &mut self,
+        address: u16,
+        value: u8,
+        respect_protection: bool,
+    ) -> bool {
+        self.memory
+            .debugger_write(address, value, respect_protection)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peek_distinguishes_uninstalled_memory() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::Bytes256, RamInit::Zeroed);
+        assert_eq!(memory.peek(0x00ff), Some(0));
+        assert_eq!(memory.peek(0x0100), None);
+    }
+
+    #[test]
+    fn peek_does_not_consume_basic32_probe_guard() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K64, RamInit::Zeroed);
+        assert!(memory.arm_basic32_full_memory_probe_guard());
+
+        memory.write(0xffff, 0x37);
+        assert_eq!(memory.peek(0xffff), Some(0));
+        assert_ne!(memory.read(0xffff), 0x37);
+    }
+
+    #[test]
+    fn debugger_write_never_creates_uninstalled_ram() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::Bytes256, RamInit::Zeroed);
+        assert!(!memory.debugger_write(0x0100, 0x5a, false));
+        assert_eq!(memory.peek(0x0100), None);
+    }
+
+    #[test]
+    fn debugger_write_can_respect_or_override_protection() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K1, RamInit::Zeroed);
+        memory.set_protected(0x0010, true);
+
+        assert!(!memory.debugger_write(0x0010, 0x12, true));
+        assert_eq!(memory.peek(0x0010), Some(0x00));
+
+        assert!(memory.debugger_write(0x0010, 0x34, false));
+        assert_eq!(memory.peek(0x0010), Some(0x34));
     }
 }
