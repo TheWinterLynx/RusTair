@@ -1,6 +1,5 @@
 use super::super::{
-    egui, Instant, Pos2, Rect, RusTairApp, Sense, SerialBoard, SerialConnection, SerialDevice,
-    TerminalSpeed,
+    egui, Pos2, Rect, RusTairApp, Sense, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed,
 };
 
 const TERMINAL_INPUT_DEFAULT_HEIGHT: f32 = 235.0;
@@ -43,7 +42,7 @@ impl RusTairApp {
         });
         ui.small(format!(
             "Paste one or many lines. Input is paced at {}; newlines become carriage returns.",
-            self.terminal.speed.label()
+            self.config.peripherals.terminal_speed.label()
         ));
 
         let editor_height = (ui.available_height() - 8.0).max(30.0);
@@ -109,29 +108,34 @@ impl RusTairApp {
         }
     }
 
+    fn draw_terminal_speed_selector(&mut self, ui: &mut egui::Ui) {
+        let current = self.config.peripherals.terminal_speed;
+        let mut selected = current;
+        ui.label("Speed:");
+        egui::ComboBox::from_id_salt("terminal-speed")
+            .selected_text(current.label())
+            .show_ui(ui, |ui| {
+                for speed in TerminalSpeed::ALL {
+                    ui.selectable_value(&mut selected, speed, speed.label());
+                }
+            });
+        if selected != current {
+            self.set_terminal_speed(selected);
+        }
+    }
+
     fn draw_terminal_window(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("terminal-menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 self.draw_terminal_connection_selector(ui);
+                ui.separator();
+                self.draw_terminal_speed_selector(ui);
                 ui.separator();
                 if ui.button("Clear").clicked() {
                     self.terminal.clear_output();
                 }
                 if ui.button("Send text/BASIC file…").clicked() {
                     self.load_terminal_text_file();
-                }
-                ui.separator();
-                ui.label("Speed:");
-                let previous_speed = self.terminal.speed;
-                egui::ComboBox::from_id_salt("terminal-speed")
-                    .selected_text(self.terminal.speed.label())
-                    .show_ui(ui, |ui| {
-                        for speed in TerminalSpeed::ALL {
-                            ui.selectable_value(&mut self.terminal.speed, speed, speed.label());
-                        }
-                    });
-                if self.terminal.speed != previous_speed && !self.terminal.input_is_empty() {
-                    self.terminal.restart_input_pacing(Instant::now());
                 }
                 ui.separator();
                 ui.checkbox(&mut self.terminal.uppercase, "Uppercase input");
@@ -150,18 +154,14 @@ impl RusTairApp {
             let connection_label =
                 Self::serial_connection_label(self.config.machine.serial_board, connection);
             let tx = if connection.is_connected() {
-                if self.terminal_serial_tx_busy() {
-                    "BUSY"
-                } else {
-                    "READY"
-                }
+                if self.terminal_serial_tx_busy() { "BUSY" } else { "READY" }
             } else {
                 "N/A"
             };
             ui.small(format!(
                 "TEXT TERMINAL  |  {}  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
                 connection_label,
-                self.terminal.speed.label(),
+                self.config.peripherals.terminal_speed.label(),
                 self.terminal.input_pending_len(),
                 self.terminal_serial_rx_len(),
                 tx,
@@ -169,8 +169,6 @@ impl RusTairApp {
             ));
         });
 
-        // Keep one explicit splitter coordinate independent of either pane's
-        // contents so the terminal layout remains stable after a drag.
         egui::CentralPanel::default().show(ctx, |ui| {
             let available = ui.available_rect_before_wrap();
             let splitter_state_id = egui::Id::new("rustair-terminal-input-height");
