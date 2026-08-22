@@ -1,46 +1,9 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use crate::config::TerminalSpeed;
+
 const TERMINAL_MAX_CHARS: usize = 200_000;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum TerminalSpeed {
-    Instant,
-    Baud300,
-    Baud1200,
-    Baud2400,
-    Baud9600,
-}
-
-impl TerminalSpeed {
-    pub(super) const ALL: [Self; 5] = [
-        Self::Instant,
-        Self::Baud300,
-        Self::Baud1200,
-        Self::Baud2400,
-        Self::Baud9600,
-    ];
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Instant => "Instant",
-            Self::Baud300 => "300 baud",
-            Self::Baud1200 => "1200 baud",
-            Self::Baud2400 => "2400 baud",
-            Self::Baud9600 => "9600 baud",
-        }
-    }
-
-    pub(super) fn char_time(self) -> Duration {
-        match self {
-            Self::Instant => Duration::ZERO,
-            Self::Baud300 => Duration::from_micros(33_333),
-            Self::Baud1200 => Duration::from_micros(8_333),
-            Self::Baud2400 => Duration::from_micros(4_167),
-            Self::Baud9600 => Duration::from_micros(1_042),
-        }
-    }
-}
 
 pub(super) struct TerminalState {
     pub(super) window_open: bool,
@@ -63,7 +26,7 @@ impl Default for TerminalState {
             command: String::new(),
             program: String::new(),
             uppercase: true,
-            speed: TerminalSpeed::Baud9600,
+            speed: TerminalSpeed::default(),
             tx_started: None,
             input_queue: VecDeque::new(),
             rx_next_at: None,
@@ -73,9 +36,6 @@ impl Default for TerminalState {
 }
 
 impl TerminalState {
-    /// Apply one seven-bit character received from the guest to the terminal
-    /// display model. CR/LF are intentionally coalesced for a conventional
-    /// text-terminal view; the ASR-33 paper model remains mechanically exact.
     pub(super) fn receive_byte(&mut self, byte: u8) {
         match byte & 0x7f {
             b'\r' => {
@@ -122,8 +82,6 @@ impl TerminalState {
         self.last_was_cr = false;
     }
 
-    /// Convert host text to the byte stream expected by the Altair terminal
-    /// interface and append it to the paced host-side input queue.
     pub(super) fn enqueue_text(
         &mut self,
         text: &str,
@@ -172,7 +130,6 @@ impl TerminalState {
         count
     }
 
-    /// Manual controls take priority over pasted/program input.
     pub(super) fn queue_control(&mut self, byte: u8, now: Instant) {
         self.input_queue.push_front(byte & 0x7f);
         self.rx_next_at = Some(now);
@@ -198,7 +155,6 @@ impl TerminalState {
             .unwrap_or(Duration::ZERO)
     }
 
-    /// Release one due byte and arm the following byte at the selected speed.
     pub(super) fn take_due_input(&mut self, now: Instant) -> Option<(u8, Duration)> {
         if self.input_due_in(now) != Duration::ZERO {
             return None;
