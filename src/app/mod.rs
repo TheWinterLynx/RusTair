@@ -12,10 +12,12 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
-use self::terminal_state::{TerminalSpeed, TerminalState};
+use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
-use crate::config::{AppConfig, RamInit, RamSize, SerialBoard};
+use crate::config::{
+    AppConfig, Asr33Speed, EmulationSpeed, RamInit, RamSize, SerialBoard, TerminalSpeed,
+};
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
@@ -28,7 +30,6 @@ const TTY_W: f32 = teletype::IMAGE_W;
 const TTY_H: f32 = teletype::IMAGE_H;
 
 const PANEL_FRAME: Duration = Duration::from_millis(16);
-const TTY_CHAR_TIME: Duration = Duration::from_millis(100);
 const KEY_TAP_TIME: Duration = Duration::from_millis(50);
 const PRINT_HEAD_STRIKE_TIME: Duration = Duration::from_millis(84);
 const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
@@ -88,19 +89,56 @@ impl RusTairApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         Tex::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
+        let config = AppConfig::default();
+        let mut terminal = TerminalState::default();
+        terminal.speed = config.peripherals.terminal_speed;
         Self {
-            config: AppConfig::default(),
+            config,
             machine: AltairMachine::default(),
             serial_router: SerialRouter::default(),
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
-            terminal: TerminalState::default(),
+            terminal,
             audio: AudioEngine::new(),
             last_tick: now,
             reset_flash_until: None,
-            status: "Ready — 8 KiB RAM — MITS 88-SIO — ASR-33 connected".into(),
+            status: "Ready — Intel 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected".into(),
         }
+    }
+
+    fn asr_char_time(&self) -> Duration {
+        self.config.peripherals.asr33_speed.char_time()
+    }
+
+    fn set_asr_speed(&mut self, speed: Asr33Speed) {
+        if self.config.peripherals.asr33_speed == speed {
+            return;
+        }
+        self.config.peripherals.asr33_speed = speed;
+        self.asr33.tx_started = None;
+        self.asr33.answerback.clear();
+        self.status = format!("ASR-33 speed: {}", speed.label());
+    }
+
+    fn set_terminal_speed(&mut self, speed: TerminalSpeed) {
+        if self.config.peripherals.terminal_speed == speed {
+            return;
+        }
+        self.config.peripherals.terminal_speed = speed;
+        self.terminal.speed = speed;
+        self.terminal.tx_started = None;
+        self.terminal.restart_input_pacing(Instant::now());
+        self.status = format!("Text Terminal speed: {}", speed.label());
+    }
+
+    fn set_emulation_speed(&mut self, speed: EmulationSpeed) {
+        if self.config.preferences.emulation_speed == speed {
+            return;
+        }
+        self.config.preferences.emulation_speed = speed;
+        self.last_tick = Instant::now();
+        self.status = format!("CPU emulation speed: {}", speed.label());
     }
 
     fn apply_memory_configuration(&mut self, ram_size: RamSize, ram_init: RamInit) {
@@ -161,12 +199,8 @@ impl RusTairApp {
             (_, SerialConnection::Disconnected) => "Disconnected",
             (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [00h/01h]",
             (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable",
-            (SerialBoard::TwoSio88, SerialConnection::Port0) => {
-                "88-2SIO Port 0 [10h/11h]"
-            }
-            (SerialBoard::TwoSio88, SerialConnection::Port1) => {
-                "88-2SIO Port 1 [12h/13h]"
-            }
+            (SerialBoard::TwoSio88, SerialConnection::Port0) => "88-2SIO Port 0 [10h/11h]",
+            (SerialBoard::TwoSio88, SerialConnection::Port1) => "88-2SIO Port 1 [12h/13h]",
         }
     }
 
@@ -315,24 +349,15 @@ impl RusTairApp {
         self.serial_tx_complete_at(connection)
     }
 
-    /// A UART keeps transmitting even with no cable attached. Once a byte has
-    /// left an unconnected port, discard it rather than leaving guest software
-    /// permanently waiting for TX READY.
     fn service_disconnected_serial_ports(&mut self) {
-        if self
-            .serial_router
-            .device_on(SerialConnection::Port0)
-            .is_none()
+        if self.serial_router.device_on(SerialConnection::Port0).is_none()
             && self.machine.bus.tx_busy()
         {
             self.machine.bus.serial_tx_complete();
         }
 
         if self.config.machine.serial_board == SerialBoard::TwoSio88
-            && self
-                .serial_router
-                .device_on(SerialConnection::Port1)
-                .is_none()
+            && self.serial_router.device_on(SerialConnection::Port1).is_none()
             && self.machine.bus.serial_port1_tx_busy()
         {
             self.machine.bus.serial_port1_tx_complete();
