@@ -61,6 +61,9 @@ pub fn run() -> eframe::Result {
             .with_title("RusTair — MITS Altair 8800")
             .with_inner_size([1500.0, 820.0])
             .with_min_inner_size([950.0, 560.0]),
+        // Diagnostic A/B: keep the RusTair render/update logic identical while
+        // moving eframe away from Glow/OpenGL's multi-viewport context switching.
+        renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
     eframe::run_native(
