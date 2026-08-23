@@ -1,15 +1,20 @@
 mod front_panel;
 mod io_devices;
 mod memory;
+mod panel_bus;
 mod serial;
+
+use std::time::Duration;
 
 use crate::config::{RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
 use front_panel::FrontPanelPort;
 use io_devices::IoDevices;
 use memory::Memory;
+use panel_bus::{PanelBusMonitor, PanelCycle};
 
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
+pub use panel_bus::PanelLampSnapshot;
 
 pub const CLOCK_HZ: u32 = 2_000_000;
 
@@ -17,6 +22,7 @@ pub struct AltairBus {
     memory: Memory,
     io: IoDevices,
     panel: FrontPanelPort,
+    panel_bus: PanelBusMonitor,
 }
 
 impl Default for AltairBus {
@@ -25,6 +31,7 @@ impl Default for AltairBus {
             memory: Memory::default(),
             io: IoDevices::default(),
             panel: FrontPanelPort::default(),
+            panel_bus: PanelBusMonitor::default(),
         };
         s.initialize_memory();
         s
@@ -112,36 +119,107 @@ impl AltairBus {
         self.panel.toggle_switch(bit);
     }
 
-    fn data_leds(&self) -> u8 {
-        self.panel.data_leds()
+    fn panel_lamps(&self) -> PanelLampSnapshot {
+        self.panel_bus.snapshot()
     }
 
-    fn set_data_leds(&mut self, value: u8) {
-        self.panel.set_data_leds(value);
+    fn panel_address(&self) -> u16 {
+        self.panel_bus.live_address()
+    }
+
+    fn panel_data(&self) -> u8 {
+        self.panel_bus.live_data()
+    }
+
+    fn force_panel_lamps(&mut self, address: u16, data: u8) {
+        self.panel_bus.force_static(address, data);
+    }
+
+    fn freeze_panel_bus(&mut self) {
+        self.panel_bus.freeze_live();
+    }
+
+    fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) {
+        self.panel_bus.commit_activity(dt, dynamic);
+    }
+
+    #[inline]
+    fn io_bus_address(port: u8) -> u16 {
+        // The 8080 duplicates its 8-bit I/O port number on A15..A8 and A7..A0.
+        u16::from(port) * 0x0101
     }
 }
 
 impl Bus for AltairBus {
     fn read(&mut self, address: u16) -> u8 {
-        self.memory.read(address)
+        let value = self.memory.read(address);
+        self.panel_bus
+            .observe(address, value, PanelCycle::MemoryRead);
+        value
     }
 
     fn write(&mut self, address: u16, value: u8) {
+        self.panel_bus
+            .observe(address, value, PanelCycle::MemoryWrite);
         self.memory.write(address, value);
     }
 
     fn input(&mut self, port: u8) -> u8 {
-        match port {
+        let value = match port {
             0xff => self.panel.input(),
             _ => self.io.input(port),
-        }
+        };
+        self.panel_bus.observe(
+            Self::io_bus_address(port),
+            value,
+            PanelCycle::InputRead,
+        );
+        value
     }
 
     fn output(&mut self, port: u8, value: u8) {
-        match port {
-            0xff => self.panel.output(value),
-            _ => self.io.output(port, value),
+        self.panel_bus.observe(
+            Self::io_bus_address(port),
+            value,
+            PanelCycle::OutputWrite,
+        );
+        // FFh is the sense-switch input on the Altair front panel, not a
+        // latched output display. Other ports are delegated to installed I/O.
+        if port != 0xff {
+            self.io.output(port, value);
         }
+    }
+
+    fn opcode_fetch(&mut self, address: u16) -> u8 {
+        let value = self.memory.read(address);
+        self.panel_bus
+            .observe(address, value, PanelCycle::InstructionFetch);
+        value
+    }
+
+    fn stack_read(&mut self, address: u16) -> u8 {
+        let value = self.memory.read(address);
+        self.panel_bus.observe(address, value, PanelCycle::StackRead);
+        value
+    }
+
+    fn stack_write(&mut self, address: u16, value: u8) {
+        self.panel_bus.observe(address, value, PanelCycle::StackWrite);
+        self.memory.write(address, value);
+    }
+
+    fn halt_ack(&mut self, address: u16, opcode: u8) {
+        self.panel_bus
+            .observe(address, opcode, PanelCycle::HaltAcknowledge);
+    }
+
+    fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
+        let cycle = if while_halted {
+            PanelCycle::InterruptAcknowledgeWhileHalted
+        } else {
+            PanelCycle::InterruptAcknowledge
+        };
+        self.panel_bus.observe(address, opcode, cycle);
     }
 }
 
@@ -150,7 +228,6 @@ pub struct AltairMachine {
     pub bus: AltairBus,
     pub powered: bool,
     pub running: bool,
-    address_leds: u16,
     wait_led: bool,
 }
 
@@ -161,7 +238,6 @@ impl Default for AltairMachine {
             bus: AltairBus::default(),
             powered: false,
             running: false,
-            address_leds: 0,
             wait_led: false,
         }
     }
@@ -172,8 +248,7 @@ impl AltairMachine {
         self.running = false;
         self.bus.configure_memory(size, init_mode);
         self.cpu.reset();
-        self.address_leds = 0;
-        self.bus.set_data_leds(0);
+        self.bus.force_panel_lamps(0, 0);
         self.bus.clear_serial();
         self.wait_led = self.powered;
     }
@@ -194,8 +269,7 @@ impl AltairMachine {
             self.reset();
         } else {
             self.wait_led = false;
-            self.address_leds = 0;
-            self.bus.set_data_leds(0);
+            self.bus.force_panel_lamps(0, 0);
             self.bus.clear_serial();
             self.bus.initialize_memory();
         }
@@ -206,8 +280,7 @@ impl AltairMachine {
         self.cpu.reset();
         self.running = false;
         self.wait_led = true;
-        self.address_leds = 0;
-        self.bus.set_data_leds(0);
+        self.bus.force_panel_lamps(0, 0);
         self.bus.clear_serial();
     }
 
@@ -217,63 +290,67 @@ impl AltairMachine {
         }
         self.running = run;
         self.wait_led = !run;
+        if !run {
+            self.bus.freeze_panel_bus();
+        }
     }
 
     pub fn step(&mut self) {
-        if !self.powered {
+        if !self.powered || self.running {
             return;
         }
         self.cpu.step(&mut self.bus);
-        self.address_leds = self.cpu.pc;
+        self.bus.freeze_panel_bus();
     }
 
     pub fn run_cycles(&mut self, cycles: u32) {
         if self.powered && self.running {
             self.cpu.run_cycles(&mut self.bus, cycles);
-            self.address_leds = self.cpu.pc;
         }
+    }
+
+    pub fn commit_panel_activity(&mut self, dt: Duration) {
+        let dynamic = self.powered && self.running && !self.cpu.halted;
+        self.bus.commit_panel_activity(dt, dynamic);
     }
 
     pub fn examine(&mut self, next: bool) {
-        if !self.powered {
+        if !self.powered || self.running {
             return;
         }
         let address = if next {
-            self.address_leds.wrapping_add(1)
+            self.bus.panel_address().wrapping_add(1)
         } else {
             self.bus.panel_switches()
         };
-        self.address_leds = address;
-        let value = self.bus.read(address);
-        self.bus.set_data_leds(value);
         self.cpu.pc = address;
+        let _ = self.bus.read(address);
+        self.bus.freeze_panel_bus();
     }
 
     pub fn deposit(&mut self, next: bool) {
-        if !self.powered {
+        if !self.powered || self.running {
             return;
         }
         let address = if next {
-            self.address_leds.wrapping_add(1)
+            self.bus.panel_address().wrapping_add(1)
         } else {
-            self.address_leds
+            self.bus.panel_address()
         };
-        self.address_leds = address;
         let value = self.bus.panel_switches() as u8;
         self.bus.write(address, value);
-        let displayed = self.bus.read(address);
-        self.bus.set_data_leds(displayed);
+        self.bus.freeze_panel_bus();
     }
 
     pub fn protect_current_board(&mut self, protected: bool) {
-        if !self.powered {
+        if !self.powered || self.running {
             return;
         }
-        self.bus.set_protected(self.address_leds, protected);
+        self.bus.set_protected(self.bus.panel_address(), protected);
     }
 
     pub fn current_board_protected(&self) -> bool {
-        self.powered && self.bus.is_protected(self.address_leds)
+        self.powered && self.bus.is_protected(self.bus.panel_address())
     }
 
     pub fn panel_switches(&self) -> u16 {
@@ -285,11 +362,15 @@ impl AltairMachine {
     }
 
     pub fn address_leds(&self) -> u16 {
-        self.address_leds
+        self.bus.panel_address()
     }
 
     pub fn data_leds(&self) -> u8 {
-        self.bus.data_leds()
+        self.bus.panel_data()
+    }
+
+    pub fn panel_lamps(&self) -> PanelLampSnapshot {
+        self.bus.panel_lamps()
     }
 
     pub fn wait_led(&self) -> bool {
@@ -297,8 +378,7 @@ impl AltairMachine {
     }
 
     pub fn set_panel_lamps(&mut self, address: u16, data: u8) {
-        self.address_leds = address;
-        self.bus.set_data_leds(data);
+        self.bus.force_panel_lamps(address, data);
     }
 }
 
@@ -450,13 +530,37 @@ mod tests {
     }
 
     #[test]
-    fn front_panel_port_is_encapsulated_by_machine_api() {
+    fn front_panel_sense_port_uses_real_io_bus_addressing() {
         let mut machine = AltairMachine::default();
         machine.toggle_sense_switch(15);
         assert_eq!(machine.panel_switches(), 0x8000);
         assert_eq!(machine.bus.input(0xff), 0x80);
+        assert_eq!(machine.address_leds(), 0xffff);
 
         machine.bus.output(0xff, 0xa5);
+        assert_eq!(machine.address_leds(), 0xffff);
         assert_eq!(machine.data_leds(), 0xa5);
+    }
+
+    #[test]
+    fn io_port_number_is_duplicated_on_the_8080_address_bus() {
+        let mut bus = AltairBus::default();
+        bus.output(0x11, 0x5a);
+        assert_eq!(bus.panel_address(), 0x1111);
+        assert_eq!(bus.panel_data(), 0x5a);
+    }
+
+    #[test]
+    fn front_panel_controls_do_not_modify_running_machine() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.set_running(true);
+        let pc = machine.cpu.pc;
+        machine.step();
+        machine.examine(false);
+        machine.deposit(false);
+        machine.protect_current_board(true);
+        assert_eq!(machine.cpu.pc, pc);
+        assert!(!machine.current_board_protected());
     }
 }
