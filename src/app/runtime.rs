@@ -4,6 +4,22 @@ impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
+        // I/O tracing is intentionally opt-in because BASIC can poll a status
+        // port many thousands of times per second. The inspector's viewport
+        // flag is the single source of truth: open = capture, closed = zero
+        // tracing overhead in the hot I/O path.
+        let io_inspector_open = ctx.data_mut(|data| {
+            *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
+        });
+        if self.machine.bus.io_trace_enabled() != io_inspector_open {
+            self.machine.bus.set_io_trace_enabled(io_inspector_open);
+        }
+        if self.external_serial.server.network_trace_enabled() != io_inspector_open {
+            self.external_serial
+                .server
+                .set_network_trace_enabled(io_inspector_open);
+        }
+
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
