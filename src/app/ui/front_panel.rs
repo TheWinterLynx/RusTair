@@ -90,12 +90,15 @@ const SWITCH_AUX1: SwitchConfig = switch_config("AUX 1", 1285.8, 559.8, 76.0, 96
 const SWITCH_AUX2: SwitchConfig = switch_config("AUX 2", 1423.8, 562.2, 76.0, 96.0, SwitchKind::ThreePosition, pose(SwitchSpriteId::WhiteUp, 0.0, 0.0, 1.0), Some(pose(SwitchSpriteId::WhiteCenter, 0.0, 0.0, 1.0)), pose(SwitchSpriteId::WhiteDown, 0.0, 0.0, 1.0));
 
 impl RusTairApp {
-    fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, on: bool) {
-        if !self.machine.powered || !on { return; }
+    fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, intensity: f32) {
+        if !self.machine.powered { return; }
+        let intensity = intensity.clamp(0.0, 1.0).sqrt();
+        if intensity < 0.015 { return; }
+        let alpha = (255.0 * intensity).round() as u8;
         let center = origin + Vec2::new(x * scale, y * scale);
-        ui.painter().circle_filled(center, 10.5 * scale, Color32::from_rgb(255, 24, 42));
-        ui.painter().circle_filled(center, 5.8 * scale, Color32::from_rgb(255, 104, 116));
-        ui.painter().circle_filled(center + Vec2::new(-2.8 * scale, -3.0 * scale), 2.0 * scale, Color32::WHITE);
+        ui.painter().circle_filled(center, 10.5 * scale, Color32::from_rgba_unmultiplied(255, 24, 42, alpha));
+        ui.painter().circle_filled(center, 5.8 * scale, Color32::from_rgba_unmultiplied(255, 104, 116, alpha));
+        ui.painter().circle_filled(center + Vec2::new(-2.8 * scale, -3.0 * scale), 2.0 * scale, Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
     }
 
     fn switch_texture(&self, sprite: SwitchSpriteId) -> Option<&egui::TextureHandle> {
@@ -173,7 +176,6 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
-            self.machine.set_panel_lamps(0xffff, 0xff);
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
             self.audio.start_loop("altair-fan", "assets/fan.mp3");
         } else {
@@ -183,6 +185,17 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui) {
+        // CPU execution accumulates bus occupancy between UI frames. Commit one
+        // perceptual frame here so MHz activity is rendered as duty-cycle
+        // brightness rather than as whichever instruction happened to finish
+        // last. PANEL_FRAME matches the normal repaint cadence.
+        self.machine.commit_panel_activity(PANEL_FRAME);
+        let mut lamps = self.machine.panel_lamps();
+        if self.reset_flash_until.is_some_and(|until| Instant::now() < until) {
+            lamps.address.fill(1.0);
+            lamps.data.fill(1.0);
+        }
+
         let available = ui.available_size();
         let scale = (available.x / PANEL_W).min(available.y / PANEL_H).clamp(0.2, 2.5);
         let (whole, _) = ui.allocate_exact_size(Vec2::new(PANEL_W * scale, PANEL_H * scale), Sense::hover());
@@ -192,19 +205,24 @@ impl RusTairApp {
 
         for bit in 0..16 { self.sense_switch(ui, origin, scale, bit); }
         for bit in 0..16 {
-            self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, self.machine.address_leds() & (1u16 << bit) != 0);
+            self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit]);
         }
         for bit in 0..8 {
-            self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, self.machine.data_leds() & (1u8 << bit) != 0);
+            self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit]);
         }
-        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, self.machine.cpu.inte);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, self.machine.current_board_protected());
-        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, true);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, true);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, true);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, self.machine.cpu.halted);
-        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, self.machine.wait_led());
-        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, false);
+
+        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, if self.machine.cpu.inte { 1.0 } else { 0.0 });
+        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, if self.machine.current_board_protected() { 1.0 } else { 0.0 });
+        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[3], STATUS_LED_Y, lamps.inp);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, lamps.m1);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[5], STATUS_LED_Y, lamps.out);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, lamps.hlta);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[7], STATUS_LED_Y, lamps.stack);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, lamps.wo);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[9], STATUS_LED_Y, lamps.int_ack);
+        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, if self.machine.wait_led() { 1.0 } else { 0.0 });
+        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, 0.0);
 
         self.draw_power(ui, origin, scale);
         if let Some(run) = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN") { self.machine.set_running(run); }
@@ -214,7 +232,6 @@ impl RusTairApp {
         if self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR").is_some() {
             self.machine.reset();
             self.asr33.tx_started = None;
-            self.machine.set_panel_lamps(0xffff, 0xff);
             self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
         }
         if let Some(unprotect) = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT") {
