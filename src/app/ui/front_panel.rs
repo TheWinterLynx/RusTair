@@ -6,11 +6,8 @@ const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 struct MomentarySwitchInteraction {
-    /// Legacy one-shot action used by RUN/STOP, STEP, EXAMINE, DEPOSIT, etc.
     action: Option<bool>,
-    /// Physical transition into an asserted up/down position.
     pressed: Option<bool>,
-    /// Physical transition back to center, including release of a latched switch.
     released: Option<bool>,
 }
 
@@ -140,8 +137,6 @@ impl RusTairApp {
                 state.press_began_on_latched = false;
                 state.long_latched_this_press = false;
             } else if state.press_started.is_some() && !primary_down && !primary_released {
-                // Pointer capture was lost. A non-latched physical assertion
-                // must be released so hardware such as RESET cannot remain stuck.
                 if !state.press_began_on_latched && !state.long_latched_this_press {
                     if let Some(direction) = state.press_direction {
                         released = Some(direction == SwitchPosition::Down);
@@ -219,7 +214,6 @@ impl RusTairApp {
         for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit]); }
         for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit]); }
 
-        // Every lamp is a passive consumer of the emulated S-100 state.
         self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte);
         self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot);
         self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr);
@@ -250,7 +244,6 @@ impl RusTairApp {
         let reset = self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR");
         if let Some(clear) = reset.pressed {
             if clear {
-                // CLR is effective as soon as the physical switch is asserted.
                 self.machine.clear_io();
                 self.asr33.tx_started = None;
                 self.terminal.tx_started = None;
@@ -258,16 +251,16 @@ impl RusTairApp {
                 self.external_com.reset_line_timing();
                 self.status = "CLR asserted: external/emulated I/O cleared; CPU state preserved".into();
             } else {
-                // RESET is level-sensitive: the held state is visible for as
-                // long as the user physically holds or latches the switch UP.
                 self.machine.assert_front_panel_reset();
                 self.status = "RESET held: ADDRESS/DATA on, status lamps off".into();
             }
+            ui.ctx().request_repaint();
         }
         if let Some(clear) = reset.released {
             if !clear {
                 self.machine.release_front_panel_reset();
                 self.status = "RESET released: 0000h fetch held in WAIT".into();
+                ui.ctx().request_repaint();
             }
         }
 
