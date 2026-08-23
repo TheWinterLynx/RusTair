@@ -182,7 +182,7 @@ impl eframe::App for RusTairApp {
                     });
 
                     ui.menu_button("Compatibility", |ui| {
-                        ui.label("Software workarounds (off = historically faithful)");
+                        ui.label("Software workarounds");
                         ui.separator();
                         let mut basic32_workaround = self.config.compatibility.basic32_64k_probe_workaround;
                         if ui.checkbox(&mut basic32_workaround, "BASIC 3.2 64K memory-probe workaround").changed() {
@@ -197,6 +197,19 @@ impl eframe::App for RusTairApp {
                             };
                         }
                         ui.small("When enabled, bundled BASIC 3.2 avoids its 64K MEMORY SIZE wraparound bug. Disable it to reproduce the original hang.");
+
+                        ui.separator();
+                        ui.label("Historical hardware behaviour");
+                        let mut historical_power_on = self.config.compatibility.historical_undefined_run_latch_power_on;
+                        if ui.checkbox(&mut historical_power_on, "Undefined RUN/STOP latch at power-on").changed() {
+                            self.config.compatibility.historical_undefined_run_latch_power_on = historical_power_on;
+                            self.status = if historical_power_on {
+                                "Historical power-on enabled: next POWER ON may start with RUN or STOP randomly".into()
+                            } else {
+                                "Historical power-on disabled: next POWER ON will safely start with STOP latch".into()
+                            };
+                        }
+                        ui.small("Original 8800 RUN/STOP latch had no guaranteed power-on state. This option is OFF by default and only affects the next POWER ON.");
                     });
                 });
 
