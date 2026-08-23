@@ -32,10 +32,9 @@ struct NetworkTraceEvent {
 /// Non-blocking raw TCP transport for one logical external serial endpoint.
 ///
 /// The transport deliberately knows nothing about MITS I/O ports. It only
-/// accepts raw bytes from host clients and exposes queues/counters to the app
-/// layer, which applies terminal semantics, serial pacing and routing to an
-/// emulated UART. The RX queue retains the originating peer so half-duplex
-/// local echo can be returned to exactly the client that typed the byte.
+/// accepts raw host bytes and exposes queues/counters to the app layer, which
+/// applies character semantics, serial pacing and routing to an emulated UART.
+/// RX entries retain their originating peer for diagnostics and trace output.
 pub(crate) struct TcpSerialServer {
     listener: Option<TcpListener>,
     active_bind: Option<(TcpListenScope, u16)>,
@@ -274,22 +273,6 @@ impl TcpSerialServer {
             } else {
                 self.dropped_tx_bytes = self.dropped_tx_bytes.saturating_add(1);
             }
-        }
-    }
-
-    /// Model a terminal's own half-duplex local echo. This is deliberately not
-    /// counted as Altair TX and is returned only to the client that originated
-    /// the keystroke. An outbound trace event with a peer identifies this local
-    /// terminal echo; guest TX trace events have no peer and are broadcast.
-    pub(crate) fn echo_byte_to_peer(&mut self, peer: SocketAddr, byte: u8) {
-        self.record_network_byte(false, byte, Some(peer));
-        let Some(client) = self.clients.iter_mut().find(|client| client.peer == peer) else {
-            return;
-        };
-        if client.tx_queue.len() < CLIENT_TX_QUEUE_LIMIT {
-            client.tx_queue.push_back(byte);
-        } else {
-            self.dropped_tx_bytes = self.dropped_tx_bytes.saturating_add(1);
         }
     }
 
