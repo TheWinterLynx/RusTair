@@ -1,6 +1,42 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+/// Character handling at the host-side serial endpoint.
+///
+/// Altair BASIC 3.2 emits terminal text with bit 7 used/set on some output
+/// bytes. Period terminals effectively treated that as 7-bit ASCII. Keep that
+/// historically useful terminal behavior as the default, while retaining an
+/// explicit byte-transparent mode for binary/protocol work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalSerialCharacterMode {
+    SevenBitAscii,
+    Raw8Bit,
+}
+
+impl ExternalSerialCharacterMode {
+    pub const ALL: [Self; 2] = [Self::SevenBitAscii, Self::Raw8Bit];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SevenBitAscii => "7-bit terminal ASCII (mask bit 7)",
+            Self::Raw8Bit => "Raw 8-bit bytes",
+        }
+    }
+
+    pub const fn transform(self, byte: u8) -> u8 {
+        match self {
+            Self::SevenBitAscii => byte & 0x7f,
+            Self::Raw8Bit => byte,
+        }
+    }
+}
+
+impl Default for ExternalSerialCharacterMode {
+    fn default() -> Self {
+        Self::SevenBitAscii
+    }
+}
+
 /// Host-side pacing for the raw TCP serial endpoint. This does not change the
 /// emulated MITS interface hardware; it only limits how quickly bytes cross the
 /// host transport boundary.
@@ -46,9 +82,9 @@ impl ExternalSerialSpeed {
         }
     }
 
-    /// Conventional asynchronous 8N1 pacing: one start bit, eight data bits,
-    /// one stop bit. The internal ASR-33 keeps its separate authentic 11-unit
-    /// 110-baud timing model.
+    /// Conventional asynchronous pacing. Ten bit-times per character is a
+    /// practical host-transport model (start + character/parity + stop). The
+    /// internal ASR-33 keeps its separate authentic 11-unit 110-baud timing.
     pub fn char_time(self) -> Duration {
         match self.baud() {
             Some(baud) => Duration::from_secs_f64(10.0 / baud as f64),
@@ -102,6 +138,7 @@ pub struct ExternalSerialConfig {
     pub listen_scope: TcpListenScope,
     pub tcp_port: u16,
     pub speed: ExternalSerialSpeed,
+    pub character_mode: ExternalSerialCharacterMode,
     pub allow_multiple_clients: bool,
 }
 
@@ -112,6 +149,7 @@ impl Default for ExternalSerialConfig {
             listen_scope: TcpListenScope::Loopback,
             tcp_port: 8800,
             speed: ExternalSerialSpeed::Baud9600,
+            character_mode: ExternalSerialCharacterMode::SevenBitAscii,
             allow_multiple_clients: false,
         }
     }
@@ -122,12 +160,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn external_tcp_is_safe_by_default() {
+    fn external_tcp_is_safe_and_terminal_friendly_by_default() {
         let config = ExternalSerialConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.listen_scope, TcpListenScope::Loopback);
         assert_eq!(config.tcp_port, 8800);
+        assert_eq!(
+            config.character_mode,
+            ExternalSerialCharacterMode::SevenBitAscii
+        );
         assert!(!config.allow_multiple_clients);
+    }
+
+    #[test]
+    fn seven_bit_terminal_mode_strips_high_bit_but_raw_mode_does_not() {
+        assert_eq!(
+            ExternalSerialCharacterMode::SevenBitAscii.transform(0xc5),
+            b'E'
+        );
+        assert_eq!(ExternalSerialCharacterMode::Raw8Bit.transform(0xc5), 0xc5);
     }
 
     #[test]
