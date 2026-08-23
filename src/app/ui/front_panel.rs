@@ -188,11 +188,24 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn set_altair_power(&mut self, on: bool) {
-        self.machine.power(on);
+        let historical_power_on = self.config.compatibility.historical_undefined_run_latch_power_on;
+        self.machine
+            .power_with_historical_run_latch(on, historical_power_on);
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
-            self.status = "Power on — original Altair 8800 requires STOP + RESET before RUN".into();
+            self.status = if historical_power_on {
+                if self.machine.running {
+                    "Power on — historical undefined RUN/STOP latch resolved to RUN; CPU may execute immediately"
+                        .into()
+                } else {
+                    "Power on — historical undefined RUN/STOP latch resolved to STOP"
+                        .into()
+                }
+            } else {
+                "Power on — safe STOP latch default; original Altair still requires RESET before normal use"
+                    .into()
+            };
             self.audio.start_loop("altair-fan", "assets/fan.mp3");
         } else {
             self.audio.stop_loop("altair-fan");
@@ -229,11 +242,34 @@ impl RusTairApp {
 
         self.draw_power(ui, origin, scale);
 
+        // RUN/STOP is a real momentary control feeding an R-S latch. Use the
+        // physical press/release levels rather than a deferred GUI click action.
         let run_stop = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN");
-        if let Some(run) = run_stop.action { self.machine.set_running(run); }
+        if let Some(run) = run_stop.pressed {
+            self.machine.assert_run_stop(run);
+            self.status = if !run && self.machine.cpu.halted && self.machine.running {
+                "STOP held while CPU is halted — no PSYNC to capture STOP; hold STOP and assert RESET"
+                    .into()
+            } else if run {
+                "RUN asserted".into()
+            } else {
+                "STOP asserted".into()
+            };
+            ui.ctx().request_repaint();
+        }
+        if let Some(run) = run_stop.released {
+            self.machine.release_run_stop(run);
+        }
 
         let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
-        if single_step.action.is_some() { self.machine.step(); }
+        // On the original 8800 only the upper contact is wired as SINGLE STEP;
+        // the lower contact has no function. The core remains instruction-level,
+        // so the implemented upper action advances one instruction.
+        if let Some(down) = single_step.action {
+            if !down {
+                self.machine.step();
+            }
+        }
 
         let examine = self.momentary_switch(ui, origin, scale, SWITCH_EXAMINE, "EXAMINE / EXAMINE NEXT");
         if let Some(next) = examine.action { self.machine.examine(next); }
@@ -244,24 +280,27 @@ impl RusTairApp {
         let reset = self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR");
         if let Some(clear) = reset.pressed {
             if clear {
-                self.machine.clear_io();
-                self.asr33.tx_started = None;
-                self.terminal.tx_started = None;
-                self.external_serial.reset_line_timing();
-                self.external_com.reset_line_timing();
-                self.status = "CLR asserted: external/emulated I/O cleared; CPU state preserved".into();
+                self.machine.assert_front_panel_clear();
+                self.status = "CLR held: S-100 EXT CLR asserted; installed I/O boards cleared".into();
             } else {
                 self.machine.assert_front_panel_reset();
-                self.status = "RESET held: ADDRESS/DATA on, status lamps off".into();
+                self.status = "RESET held: ADDRESS/DATA on, status lamps off; RUN/STOP latch preserved".into();
             }
             ui.ctx().request_repaint();
         }
         if let Some(clear) = reset.released {
-            if !clear {
+            if clear {
+                self.machine.release_front_panel_clear();
+                self.status = "CLR released: S-100 EXT CLR inactive".into();
+            } else {
                 self.machine.release_front_panel_reset();
-                self.status = "RESET released: 0000h fetch held in WAIT".into();
-                ui.ctx().request_repaint();
+                self.status = if self.machine.running {
+                    "RESET released: RUN latch preserved; execution resumes from 0000h".into()
+                } else {
+                    "RESET released: 0000h fetch held in WAIT".into()
+                };
             }
+            ui.ctx().request_repaint();
         }
 
         let protect = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT");
