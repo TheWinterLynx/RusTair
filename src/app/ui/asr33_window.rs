@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::config::TerminalDuplex;
 
 impl RusTairApp {
     pub(in crate::app) fn update_paper_tape(&mut self) {
@@ -62,6 +63,17 @@ impl RusTairApp {
         }
     }
 
+    fn draw_tty_duplex_selector(&mut self, ui: &mut egui::Ui) {
+        ui.label("DUPLEX:");
+        egui::ComboBox::from_id_salt("asr33-duplex")
+            .selected_text(self.asr33.duplex.label())
+            .show_ui(ui, |ui| {
+                for duplex in TerminalDuplex::ALL {
+                    ui.selectable_value(&mut self.asr33.duplex, duplex, duplex.label());
+                }
+            });
+    }
+
     fn draw_tty_menu(&mut self, ctx: &egui::Context) {
         self.process_tty_keyboard(ctx);
         egui::TopBottomPanel::top("tty-menu").show(ctx, |ui| {
@@ -80,6 +92,8 @@ impl RusTairApp {
                 self.draw_tty_connection_selector(ui);
                 ui.separator();
                 self.draw_tty_speed_selector(ui);
+                ui.separator();
+                self.draw_tty_duplex_selector(ui);
                 ui.separator();
                 ui.label(format!("{} columns", self.tty.paper_width));
                 ui.separator();
@@ -127,14 +141,20 @@ impl RusTairApp {
             } else {
                 "N/A"
             };
+            let duplex = if self.tty.mode == TtyMode::Local {
+                "LOCAL ONLY"
+            } else {
+                self.asr33.duplex.label()
+            };
             ui.small(format!(
-                "ASR-33 {}  |  {}  |  {}  |  RX {}  |  TX {}  |  column {}/{}",
+                "ASR-33 {}  |  {}  |  {}  |  {}  |  RX {}  |  TX {}  |  column {}/{}",
                 match self.tty.mode {
                     TtyMode::Off => "OFF",
                     TtyMode::Line => "LINE",
                     TtyMode::Local => "LOCAL",
                 },
                 self.config.peripherals.asr33_speed.label(),
+                duplex,
                 connection_label,
                 self.asr_serial_rx_len(),
                 tx,
