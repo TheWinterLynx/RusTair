@@ -14,7 +14,7 @@ const LAMP_WAIT: usize = 10;
 const LAMP_HLDA: usize = 11;
 const LAMP_COUNT: usize = 12;
 
-// Presentation persistence only. The hardware state below stays binary;
+// Presentation persistence only. The emulated hardware state remains binary;
 // this low-pass maps MHz bus transitions onto a ~60 Hz host display.
 const VISUAL_PERSISTENCE_SECS: f32 = 0.045;
 
@@ -73,6 +73,8 @@ pub(super) struct S100Signals {
     pub out: bool,
     pub hlta: bool,
     pub stack: bool,
+    /// Front-panel W/O indicator follows the physical active-low /WO line:
+    /// lit for read/input cycles, dark for write/output cycles.
     pub wo: bool,
     pub int_ack: bool,
     pub inte: bool,
@@ -81,6 +83,7 @@ pub(super) struct S100Signals {
     pub wait: bool,
     pub hold: bool,
     pub hlda: bool,
+    pub reset: bool,
     pub owner: BusOwner,
 }
 
@@ -103,6 +106,7 @@ impl Default for S100Signals {
             wait: false,
             hold: false,
             hlda: false,
+            reset: false,
             owner: BusOwner::None,
         }
     }
@@ -127,7 +131,7 @@ impl S100Signals {
         self.out = word & 0x10 != 0;
         self.hlta = word & 0x08 != 0;
         self.stack = word & 0x04 != 0;
-        self.wo = word & 0x02 == 0;
+        self.wo = word & 0x02 != 0;
         self.int_ack = word & 0x01 != 0;
     }
 
@@ -359,7 +363,7 @@ impl S100BusState {
 
     pub(super) fn set_ready(&mut self, ready: bool) {
         self.signals.ready = ready;
-        self.signals.wait = !ready;
+        self.signals.wait = !ready && !self.signals.reset;
     }
 
     pub(super) fn set_hold(&mut self, hold: bool) {
@@ -381,6 +385,7 @@ impl S100BusState {
         protected: bool,
         inte: bool,
     ) {
+        self.signals.reset = false;
         self.signals.owner = BusOwner::Cpu;
         self.signals.address = address;
         self.signals.prot = protected;
@@ -394,13 +399,58 @@ impl S100BusState {
             .sample(&self.signals, cycle.t_states().saturating_sub(1));
     }
 
-    pub(super) fn drive_front_panel_reset(
+    /// Electrical state while the physical RESET switch is held. MITS' 1975
+    /// checkout procedure specifies all ADDRESS/DATA lamps on and all status
+    /// lamps off for this phase.
+    pub(super) fn assert_front_panel_reset(&mut self) {
+        self.signals.reset = true;
+        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.address = 0xffff;
+        self.signals.data = 0xff;
+        self.signals.inte = false;
+        self.signals.prot = false;
+        self.signals.clear_status();
+        self.signals.ready = false;
+        self.signals.wait = false;
+        self.signals.hlda = false;
+        self.lamps.freeze(&self.signals);
+    }
+
+    /// State reached after RESET is released with the processor held by READY
+    /// at the start of the instruction fetch at location zero. MITS documents
+    /// MEMR, M1, W/O and WAIT lit in this state.
+    pub(super) fn release_front_panel_reset(
         &mut self,
         address: u16,
         data: u8,
         protected: bool,
         inte: bool,
     ) {
+        self.signals.reset = false;
+        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.address = address;
+        self.signals.data = data;
+        self.signals.prot = protected;
+        self.signals.inte = inte;
+        self.signals.clear_status();
+        self.signals.memr = true;
+        self.signals.m1 = true;
+        self.signals.wo = true;
+        self.signals.ready = false;
+        self.signals.wait = true;
+        self.signals.hlda = false;
+        self.lamps.freeze(&self.signals);
+    }
+
+    /// Generic stopped front-panel ownership used for undefined power-on state.
+    pub(super) fn drive_front_panel_idle(
+        &mut self,
+        address: u16,
+        data: u8,
+        protected: bool,
+        inte: bool,
+    ) {
+        self.signals.reset = false;
         self.signals.owner = BusOwner::FrontPanel;
         self.signals.address = address;
         self.signals.data = data;
@@ -418,6 +468,7 @@ impl S100BusState {
         protected: bool,
         inte: bool,
     ) {
+        self.signals.reset = false;
         self.signals.owner = BusOwner::FrontPanel;
         self.signals.address = address;
         self.signals.data = data;
@@ -426,6 +477,7 @@ impl S100BusState {
         self.signals.clear_status();
         self.signals.memr = true;
         self.signals.m1 = true;
+        self.signals.wo = true;
         self.set_ready(false);
         self.lamps.freeze(&self.signals);
     }
@@ -437,13 +489,15 @@ impl S100BusState {
         protected: bool,
         inte: bool,
     ) {
+        self.signals.reset = false;
         self.signals.owner = BusOwner::FrontPanel;
         self.signals.address = address;
         self.signals.data = data;
         self.signals.prot = protected;
         self.signals.inte = inte;
         self.signals.clear_status();
-        self.signals.wo = true;
+        // A write/output cycle drives /WO low, so the physical W/O lamp is dark.
+        self.signals.wo = false;
         self.set_ready(false);
         self.lamps.freeze(&self.signals);
     }
@@ -482,7 +536,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intel_status_words_drive_s100_status_lines() {
+    fn intel_status_words_drive_s100_status_lines_with_physical_wo_polarity() {
         let mut bus = S100BusState::default();
         bus.set_ready(true);
         bus.drive_cpu_cycle(0x1234, 0x56, S100Cycle::InstructionFetch, false, false);
@@ -491,12 +545,31 @@ mod tests {
         assert_eq!(s.data, 0x56);
         assert!(s.memr);
         assert!(s.m1);
-        assert!(!s.wo);
+        assert!(s.wo);
 
         bus.drive_cpu_cycle(0x1234, 0xaa, S100Cycle::MemoryWrite, false, false);
         let s = bus.signals();
         assert!(!s.memr);
-        assert!(s.wo);
+        assert!(!s.wo);
+    }
+
+    #[test]
+    fn reset_assert_and_release_match_mits_checkout_pattern() {
+        let mut bus = S100BusState::default();
+        bus.assert_front_panel_reset();
+        let held = bus.signals();
+        assert!(held.reset);
+        assert_eq!(held.address, 0xffff);
+        assert_eq!(held.data, 0xff);
+        assert!(!held.inte && !held.prot && !held.memr && !held.m1 && !held.wo && !held.wait);
+
+        bus.release_front_panel_reset(0, 0xa5, false, false);
+        let released = bus.signals();
+        assert!(!released.reset);
+        assert_eq!(released.address, 0);
+        assert_eq!(released.data, 0xa5);
+        assert!(released.memr && released.m1 && released.wo && released.wait);
+        assert!(!released.inte);
     }
 
     #[test]
@@ -509,17 +582,5 @@ mod tests {
         bus.set_hold(false);
         bus.freeze();
         assert_eq!(bus.snapshot().hlda, 0.0);
-    }
-
-    #[test]
-    fn front_panel_reset_does_not_invent_a_cpu_cycle() {
-        let mut bus = S100BusState::default();
-        bus.drive_front_panel_reset(0, 0xa5, false, false);
-        let s = bus.signals();
-        assert_eq!(s.owner, BusOwner::FrontPanel);
-        assert!(s.wait);
-        assert!(!s.memr);
-        assert!(!s.m1);
-        assert!(!s.wo);
     }
 }
