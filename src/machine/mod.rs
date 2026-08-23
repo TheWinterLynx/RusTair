@@ -378,6 +378,11 @@ impl AltairMachine {
     }
 
     pub fn set_panel_lamps(&mut self, address: u16, data: u8) {
+        // Reset/power lamp flashes are a presentation effect. Never allow a
+        // delayed UI timer to overwrite real bus state after software started.
+        if self.running {
+            return;
+        }
         self.bus.force_panel_lamps(address, data);
     }
 }
