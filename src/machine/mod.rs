@@ -534,7 +534,7 @@ mod tests {
         assert_eq!(released.inte, 0.0);
         assert_eq!(released.memr, 1.0);
         assert_eq!(released.m1, 1.0);
-        assert_eq!(released.wo, 1.0);
+        assert_eq!(released.wo, 0.0);
         assert_eq!(released.wait, 1.0);
     }
 
@@ -619,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn examine_and_deposit_drive_front_panel_bus_with_physical_wo_polarity() {
+    fn examine_and_deposit_drive_front_panel_bus_with_mits_wo_semantics() {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
@@ -628,11 +628,11 @@ mod tests {
         assert_eq!(machine.address_leds(), 0);
         assert_eq!(machine.data_leds(), 0x12);
         assert_eq!(machine.panel_lamps().memr, 1.0);
-        assert_eq!(machine.panel_lamps().wo, 1.0);
+        assert_eq!(machine.panel_lamps().wo, 0.0);
 
         for bit in [1, 2, 4, 6] { machine.toggle_sense_switch(bit); }
         machine.deposit(false);
         assert_eq!(machine.bus.peek_memory(0), Some(0x56));
-        assert_eq!(machine.panel_lamps().wo, 0.0);
+        assert_eq!(machine.panel_lamps().wo, 1.0);
     }
 }
