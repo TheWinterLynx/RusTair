@@ -1,5 +1,7 @@
 use super::*;
-use crate::config::{ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope};
+use crate::config::{
+    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
+};
 use crate::io::tcp_serial::TcpSerialServer;
 
 const NETWORK_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -37,10 +39,11 @@ impl RusTairApp {
         self.serial_connection(SerialDevice::ExternalTcp)
     }
 
-    /// Poll host TCP sockets and bridge the raw byte stream to whichever
-    /// emulated serial port the External TCP cable is attached to. Socket I/O
-    /// is always non-blocking; serial pacing remains wall-clock based and is
-    /// independent of CPU emulation speed.
+    /// Poll host TCP sockets and bridge the stream to whichever emulated serial
+    /// port the External TCP cable is attached to. Socket I/O is always
+    /// non-blocking; serial pacing remains wall-clock based and independent of
+    /// CPU emulation speed. Character normalization is an endpoint option:
+    /// historical terminal mode strips bit 7, while Raw 8-bit preserves bytes.
     pub(in crate::app) fn process_external_serial(&mut self, ctx: &egui::Context) {
         let config = self.external_serial.config;
         self.external_serial.server.poll(config);
@@ -82,6 +85,7 @@ impl RusTairApp {
 
                 if due_in.is_zero() {
                     if let Some(byte) = self.external_serial.server.pop_rx() {
+                        let byte = config.character_mode.transform(byte);
                         self.serial_receive_at(connection, byte);
                         if self.external_serial.server.rx_pending() == 0 {
                             self.external_serial.rx_next_at = None;
@@ -123,7 +127,8 @@ impl RusTairApp {
                 && self.serial_tx_busy_at(connection)
                 && let Some(byte) = self.serial_tx_front_at(connection)
             {
-                self.external_serial.server.broadcast_byte(byte);
+                let host_byte = config.character_mode.transform(byte);
+                self.external_serial.server.broadcast_byte(host_byte);
                 self.external_serial.server.flush_clients();
                 self.external_serial.tx_started = Some(now);
 
@@ -148,21 +153,23 @@ impl RusTairApp {
             || previous.listen_scope != next.listen_scope
             || previous.tcp_port != next.tcp_port;
         let speed_changed = previous.speed != next.speed;
+        let character_mode_changed = previous.character_mode != next.character_mode;
 
         self.external_serial.config = next;
         if listener_changed {
             self.external_serial.server.restart_on_next_poll();
         }
-        if speed_changed {
+        if speed_changed || character_mode_changed {
             self.external_serial.reset_line_timing();
         }
 
         self.status = if next.enabled {
             format!(
-                "External TCP enabled: {}:{} — {} — {} client mode",
+                "External TCP enabled: {}:{} — {} — {} — {} client mode",
                 next.listen_scope.bind_ipv4(),
                 next.tcp_port,
                 next.speed.label(),
+                next.character_mode.label(),
                 if next.allow_multiple_clients {
                     "multiple"
                 } else {
@@ -210,6 +217,17 @@ impl RusTairApp {
                 });
         });
 
+        ui.horizontal(|ui| {
+            ui.label("Character mode:");
+            egui::ComboBox::from_id_salt("external-tcp-character-mode")
+                .selected_text(config.character_mode.label())
+                .show_ui(ui, |ui| {
+                    for mode in ExternalSerialCharacterMode::ALL {
+                        ui.selectable_value(&mut config.character_mode, mode, mode.label());
+                    }
+                });
+        });
+
         ui.checkbox(
             &mut config.allow_multiple_clients,
             "Allow multiple TCP clients on this serial endpoint",
@@ -218,7 +236,8 @@ impl RusTairApp {
         if explanatory {
             ui.small("Single-client mode is the default. Extra connection attempts are rejected while one client is attached.");
             ui.small("Multiple-client mode broadcasts Altair TX to every client and merges every client's incoming bytes into the same UART RX stream.");
-            ui.small("Raw TCP carries bytes only: no Telnet negotiation is inserted or interpreted.");
+            ui.small("7-bit terminal ASCII is the default for vintage software such as Altair BASIC 3.2, which can set bit 7 on printable output. Raw 8-bit preserves every byte unchanged.");
+            ui.small("Raw TCP means no Telnet negotiation is inserted or interpreted; character mode is a separate serial-terminal transformation.");
             if config.listen_scope == TcpListenScope::AllInterfaces {
                 ui.small("LAN mode exposes the listener beyond this PC. Windows Firewall/network policy may control who can reach it.");
             }
@@ -287,8 +306,9 @@ impl RusTairApp {
                     format!("{}:{}", config.listen_scope.bind_ipv4(), config.tcp_port)
                 });
             return format!(
-                "TCP server: listening on {bind} — {clients} client{}",
-                if clients == 1 { "" } else { "s" }
+                "TCP server: listening on {bind} — {clients} client{} — {}",
+                if clients == 1 { "" } else { "s" },
+                config.character_mode.label(),
             );
         }
         "TCP server: starting…".into()
@@ -307,7 +327,7 @@ impl RusTairApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("External serial — raw TCP");
-            ui.label("Connect PuTTY or another application directly to the emulated MITS serial interface through a byte-transparent TCP socket.");
+            ui.label("Connect PuTTY or another application to the emulated MITS serial interface through a TCP transport. Terminal mode can normalize the historical 8th bit, or Raw 8-bit can preserve every byte.");
             ui.separator();
 
             let config = self.external_serial.config;
@@ -329,6 +349,9 @@ impl RusTairApp {
             egui::Grid::new("external-tcp-counters")
                 .num_columns(2)
                 .show(ui, |ui| {
+                    ui.label("Character mode");
+                    ui.monospace(config.character_mode.label());
+                    ui.end_row();
                     ui.label("Clients");
                     ui.monospace(self.external_serial.server.client_count().to_string());
                     ui.end_row();
@@ -378,6 +401,8 @@ impl RusTairApp {
             ui.separator();
             ui.collapsing("How the serial bridge behaves", |ui| {
                 ui.label("• The TCP server is a host transport; the guest still sees the selected 88-SIO/88-2SIO UART and its normal I/O addresses.");
+                ui.label("• In 7-bit terminal mode, bit 7 is masked in both directions. This matches the behavior expected by vintage ASCII-terminal software such as BASIC 3.2.");
+                ui.label("• Raw 8-bit mode performs no byte transformation and is intended for binary/protocol experiments.");
                 ui.label("• TCP may receive pasted text instantly, but bytes enter the UART at the configured line speed and only when its receive register is free.");
                 ui.label("• Guest transmit-ready timing is also paced, even when no TCP client is connected.");
                 ui.label("• With multiple clients enabled, guest output is broadcast to all clients; all client input shares one merged RX stream.");
