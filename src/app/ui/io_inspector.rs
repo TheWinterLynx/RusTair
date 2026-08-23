@@ -8,6 +8,7 @@ const SELECTED_PORT: &str = "rustair-io-inspector-selected-port";
 const WRITE_VALUE: &str = "rustair-io-inspector-write-value";
 const INJECT_BYTES: &str = "rustair-io-inspector-inject-bytes";
 const TRACE_SELECTED_ONLY: &str = "rustair-io-inspector-trace-selected-only";
+const TRACE_SHOW_STATUS_POLLS: &str = "rustair-io-inspector-show-status-polls";
 
 impl RusTairApp {
     fn set_io_inspector_open(ctx: &egui::Context, open: bool) {
@@ -86,6 +87,13 @@ impl RusTairApp {
         match self.config.machine.serial_board {
             SerialBoard::Sio88 => port == 0x01,
             SerialBoard::TwoSio88 => matches!(port, 0x11 | 0x13),
+        }
+    }
+
+    fn is_serial_status_port(&self, port: u8) -> bool {
+        match self.config.machine.serial_board {
+            SerialBoard::Sio88 => port == 0x00,
+            SerialBoard::TwoSio88 => matches!(port, 0x10 | 0x12),
         }
     }
 
@@ -392,19 +400,34 @@ impl RusTairApp {
 
     fn draw_io_trace(&mut self, ui: &mut egui::Ui, selected: u8, generation: u64) {
         ui.heading("Emulated I/O / UART trace");
-        ui.small("Adjacent identical status polls are coalesced; xN shows how many real accesses occurred. UART RX enqueue is the byte after endpoint transformations such as the 7-bit mask.");
+        ui.small("Adjacent identical accesses are coalesced; xN is the real repeat count. Serial STATUS polling is hidden by default so busy-wait loops do not bury DATA bytes.");
 
         let filter_id = egui::Id::new(TRACE_SELECTED_ONLY);
+        let status_poll_id = egui::Id::new(TRACE_SHOW_STATUS_POLLS);
         let mut selected_only =
             ui.data_mut(|data| *data.get_temp_mut_or(filter_id, false));
+        let mut show_status_polls =
+            ui.data_mut(|data| *data.get_temp_mut_or(status_poll_id, false));
+
+        let events = self.machine.bus.io_trace_snapshot();
+        let hidden_status_accesses: u64 = events
+            .iter()
+            .filter(|(_, kind, port, _, _)| *kind == 0 && self.is_serial_status_port(*port))
+            .map(|(_, _, _, _, repeat)| *repeat as u64)
+            .sum();
+
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut selected_only, "Selected port only");
-            ui.small("Use the global Clear traces & pause control before reproducing a short event.");
+            ui.checkbox(&mut show_status_polls, "Show serial STATUS polling");
+            if !show_status_polls && hidden_status_accesses != 0 {
+                ui.small(format!("{hidden_status_accesses} STATUS reads hidden"));
+            }
+            ui.small("Use Clear traces & pause before reproducing a short event.");
         });
         ui.data_mut(|data| data.insert_temp(filter_id, selected_only));
+        ui.data_mut(|data| data.insert_temp(status_poll_id, show_status_polls));
 
         let follow_newest = Self::trace_follow_newest(ui.ctx());
-        let events = self.machine.bus.io_trace_snapshot();
         egui::ScrollArea::both()
             .id_salt(("io-trace-scroll", generation))
             .max_height(270.0)
@@ -427,6 +450,9 @@ impl RusTairApp {
                             if selected_only && port != selected {
                                 continue;
                             }
+                            if !show_status_polls && kind == 0 && self.is_serial_status_port(port) {
+                                continue;
+                            }
                             ui.monospace(sequence.to_string());
                             ui.label(Self::trace_kind(kind));
                             ui.monospace(format!("{:02X}h", port));
@@ -445,7 +471,7 @@ impl RusTairApp {
 
     fn draw_network_trace(&mut self, ui: &mut egui::Ui, generation: u64) {
         ui.heading("Raw TCP trace");
-        ui.small("Inbound RX is captured before the 7-bit/8-bit character transformation. For TCP -> RusTair, 'UART value' shows what the raw byte becomes before it is queued in the emulated serial interface. Outbound TCP bytes are already post-transformation.");
+        ui.small("Inbound RX is captured before character transformation. For TCP -> RusTair, 'UART value' shows the exact byte that the selected terminal mode presents to the emulated UART. Outbound TCP bytes are already post-transformation.");
         ui.horizontal_wrapped(|ui| {
             ui.label(format!(
                 "Mode: {}",
@@ -477,7 +503,11 @@ impl RusTairApp {
                         ui.end_row();
 
                         for (sequence, inbound, byte, peer) in events {
-                            let uart_value = if inbound { mode.transform(byte) } else { byte };
+                            let uart_value = if inbound {
+                                mode.rx_transform(byte)
+                            } else {
+                                byte
+                            };
                             ui.monospace(sequence.to_string());
                             ui.label(if inbound {
                                 "TCP -> RusTair"
@@ -537,14 +567,14 @@ impl RusTairApp {
         self.draw_network_trace(ui, generation);
 
         ui.separator();
-        ui.collapsing("How to use this for the current BASIC input bug", |ui| {
-            ui.label("1. Wait until BASIC displays WANT SIN?.");
-            ui.label("2. Click Clear traces & pause. Both trace tables should become empty and stay empty.");
-            ui.label("3. Click Resume capture, immediately type Y + Enter once in PuTTY, then click Pause capture.");
-            ui.label("4. Raw TCP should show 59 (Y) followed by the line-ending byte(s).");
-            ui.label("5. Emulated I/O should show UART RX <= endpoint 59, followed by CPU IN from the DATA port returning 59.");
-            ui.label("6. If TCP has 59 but UART enqueue does not, the bridge/pacing layer is wrong. If UART has 59 but CPU IN does not, the UART/status model is wrong.");
-            ui.label("7. As an A/B test, inject 59 0D directly into the selected serial DATA port. That bypasses TCP completely.");
+        ui.collapsing("How to use the serial traces", |ui| {
+            ui.label("1. Wait until guest software is waiting for terminal input.");
+            ui.label("2. Click Clear traces & pause. Both trace tables become empty and stay empty.");
+            ui.label("3. Click Resume capture, reproduce one short input, then click Pause capture.");
+            ui.label("4. Raw TCP shows what the host application actually sent and the UART value after terminal-mode transformation.");
+            ui.label("5. Emulated I/O shows UART enqueue and the value eventually returned by the guest's DATA-port IN instruction.");
+            ui.label("6. STATUS busy-wait polling is hidden by default; enable Show serial STATUS polling only when investigating the handshake itself.");
+            ui.label("7. Inject RX can bypass TCP entirely for an A/B test of the UART and guest software.");
         });
         ui.add_space(12.0);
     }
