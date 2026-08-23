@@ -1,6 +1,7 @@
 mod asr33_controller;
 mod asr33_state;
 mod commands;
+mod external_serial;
 mod runtime;
 mod terminal_controller;
 mod terminal_serial;
@@ -12,6 +13,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
+use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
@@ -37,8 +39,8 @@ const PRINT_HEAD_CARRIAGE_RETURN_TIME: Duration = Duration::from_millis(160);
 const PAPER_FEED_TIME: Duration = Duration::from_millis(74);
 
 const ADDR_LED_X: [f32; 16] = [
-    1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0,
-    1052.7, 953.6, 884.8, 817.5, 718.5, 649.7, 579.9, 480.0,
+    1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0, 1052.7, 953.6, 884.8,
+    817.5, 718.5, 649.7, 579.9, 480.0,
 ];
 const ADDR_LED_Y: f32 = 290.3;
 
@@ -61,8 +63,8 @@ pub fn run() -> eframe::Result {
             .with_title("RusTair — MITS Altair 8800")
             .with_inner_size([1500.0, 820.0])
             .with_min_inner_size([950.0, 560.0]),
-        // Diagnostic A/B: keep the RusTair render/update logic identical while
-        // moving eframe away from Glow/OpenGL's multi-viewport context switching.
+        // WGPU avoids the Windows Glow/OpenGL multi-viewport context switching
+        // that produced intermittent full-window flicker in RusTair.
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -77,6 +79,7 @@ struct RusTairApp {
     config: AppConfig,
     machine: AltairMachine,
     serial_router: SerialRouter,
+    external_serial: ExternalSerialState,
     tex: Tex,
     tty: Teletype,
     asr33: Asr33State,
@@ -99,6 +102,7 @@ impl RusTairApp {
             config,
             machine: AltairMachine::default(),
             serial_router: SerialRouter::default(),
+            external_serial: ExternalSerialState::default(),
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
@@ -106,7 +110,8 @@ impl RusTairApp {
             audio: AudioEngine::new(),
             last_tick: now,
             reset_flash_until: None,
-            status: "Ready — Intel 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected".into(),
+            status: "Ready — Intel 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
+                .into(),
         }
     }
 
@@ -154,6 +159,7 @@ impl RusTairApp {
         self.machine.configure_memory(ram_size, ram_init);
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
+        self.external_serial.reset_line_timing();
         self.reset_flash_until = None;
         self.status = format!(
             "Memory configured: {} — {}; machine reset",
@@ -173,6 +179,7 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
         self.terminal.tx_started = None;
+        self.external_serial.reset_line_timing();
         self.reset_flash_until = None;
 
         self.status = match serial_board {
@@ -191,6 +198,7 @@ impl RusTairApp {
         match device {
             SerialDevice::InternalAsr33 => "ASR-33",
             SerialDevice::TextTerminal => "Text Terminal",
+            SerialDevice::ExternalTcp => "External TCP",
         }
     }
 
@@ -224,6 +232,7 @@ impl RusTairApp {
         let displaced = self.serial_router.connect(device, connection);
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
+        self.external_serial.reset_line_timing();
         if displaced == Some(SerialDevice::InternalAsr33)
             || (device == SerialDevice::InternalAsr33
                 && connection == SerialConnection::Disconnected)
@@ -353,14 +362,20 @@ impl RusTairApp {
     }
 
     fn service_disconnected_serial_ports(&mut self) {
-        if self.serial_router.device_on(SerialConnection::Port0).is_none()
+        if self
+            .serial_router
+            .device_on(SerialConnection::Port0)
+            .is_none()
             && self.machine.bus.tx_busy()
         {
             self.machine.bus.serial_tx_complete();
         }
 
         if self.config.machine.serial_board == SerialBoard::TwoSio88
-            && self.serial_router.device_on(SerialConnection::Port1).is_none()
+            && self
+                .serial_router
+                .device_on(SerialConnection::Port1)
+                .is_none()
             && self.machine.bus.serial_port1_tx_busy()
         {
             self.machine.bus.serial_port1_tx_complete();

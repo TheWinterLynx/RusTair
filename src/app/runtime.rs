@@ -42,6 +42,7 @@ impl eframe::App for RusTairApp {
         if self.terminal_connection().is_connected() {
             self.process_terminal_serial(ctx);
         }
+        self.process_external_serial(ctx);
         self.service_disconnected_serial_ports();
         self.update_teletype_mechanics(ctx);
 
@@ -62,7 +63,10 @@ impl eframe::App for RusTairApp {
                     ui.menu_button("CPU", |ui| {
                         let cpu = self.config.machine.cpu_model;
                         ui.label(format!("Processor: {}", cpu.label()));
-                        ui.small(format!("Authentic hardware clock: {:.1} MHz", cpu.clock_hz() as f32 / 1_000_000.0));
+                        ui.small(format!(
+                            "Authentic hardware clock: {:.1} MHz",
+                            cpu.clock_hz() as f32 / 1_000_000.0
+                        ));
                         ui.separator();
                         ui.small("The emulated hardware remains an Intel 8080 at 2 MHz. Host-side acceleration is configured under Preferences → Emulation speed.");
                     });
@@ -134,6 +138,10 @@ impl eframe::App for RusTairApp {
                             "Text Terminal → {}",
                             Self::serial_connection_label(current, self.terminal_connection())
                         ));
+                        ui.small(format!(
+                            "External TCP → {}",
+                            Self::serial_connection_label(current, self.external_tcp_connection())
+                        ));
                         ui.separator();
 
                         for serial_board in SerialBoard::ALL {
@@ -145,7 +153,7 @@ impl eframe::App for RusTairApp {
                         }
 
                         ui.separator();
-                        ui.small("Cable selection is available inside each terminal window. A port can have only one attached device.");
+                        ui.small("Each emulated serial port has one attached endpoint/cable. External TCP can optionally fan that one endpoint out to multiple network clients.");
                         ui.small("Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.");
                     });
 
@@ -182,6 +190,10 @@ impl eframe::App for RusTairApp {
                         ui.small("Peripheral timing is independent of CPU emulation speed.");
                     });
 
+                    ui.menu_button("External TCP", |ui| {
+                        self.draw_external_serial_config_menu(ui);
+                    });
+
                     ui.menu_button("Preferences", |ui| {
                         ui.menu_button("Emulation speed", |ui| {
                             for speed in EmulationSpeed::ALL {
@@ -210,7 +222,8 @@ impl eframe::App for RusTairApp {
                             self.status = if auto_open_basic_console {
                                 "Preference enabled: auto-open BASIC console".into()
                             } else {
-                                "Preference disabled: BASIC loads without opening a terminal window".into()
+                                "Preference disabled: BASIC loads without opening a terminal window"
+                                    .into()
                             };
                         }
                         ui.small("When bundled BASIC is loaded, reveal the device connected to Port 0. This never changes the serial wiring.");
@@ -235,9 +248,11 @@ impl eframe::App for RusTairApp {
                                 self.machine.bus.clear_transient_memory_guards();
                             }
                             self.status = if basic32_workaround {
-                                "Compatibility enabled: BASIC 3.2 64K memory-probe workaround".into()
+                                "Compatibility enabled: BASIC 3.2 64K memory-probe workaround"
+                                    .into()
                             } else {
-                                "Compatibility disabled: authentic BASIC 3.2 64K bug is reproducible".into()
+                                "Compatibility disabled: authentic BASIC 3.2 64K bug is reproducible"
+                                    .into()
                             };
                         }
                         ui.small("When enabled, bundled BASIC 3.2 avoids its 64K MEMORY SIZE wraparound bug. Disable it to reproduce the original hang.");
@@ -250,6 +265,9 @@ impl eframe::App for RusTairApp {
                 }
                 if ui.button("TEXT TERMINAL").clicked() {
                     self.terminal.window_open = true;
+                }
+                if ui.button("EXTERNAL SERIAL").clicked() {
+                    self.external_serial.window_open = true;
                 }
                 if ui.button("RAM VIEWER").clicked() {
                     self.open_memory_viewer(ctx);
@@ -289,6 +307,7 @@ impl eframe::App for RusTairApp {
 
         self.show_tty_viewport(ctx);
         self.show_terminal_viewport(ctx);
+        self.show_external_serial_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
     }
 }
