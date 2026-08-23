@@ -137,9 +137,13 @@ impl Cpu8080 {
 
     #[inline]
     fn push<B: Bus>(&mut self, bus: &mut B, value: u16) {
-        self.sp = self.sp.wrapping_sub(2);
+        // The 8080 decrements SP and writes the high byte first, then
+        // decrements again and writes the low byte. The final memory image is
+        // identical to a 16-bit store, but the order matters to a real panel.
+        self.sp = self.sp.wrapping_sub(1);
+        bus.stack_write(self.sp, (value >> 8) as u8);
+        self.sp = self.sp.wrapping_sub(1);
         bus.stack_write(self.sp, value as u8);
-        bus.stack_write(self.sp.wrapping_add(1), (value >> 8) as u8);
     }
 
     #[inline]
