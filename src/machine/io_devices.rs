@@ -36,6 +36,7 @@ struct IoTraceEvent {
 }
 
 struct IoTrace {
+    enabled: bool,
     events: VecDeque<IoTraceEvent>,
     ports: [IoPortActivity; 256],
     next_sequence: u64,
@@ -44,6 +45,7 @@ struct IoTrace {
 impl Default for IoTrace {
     fn default() -> Self {
         Self {
+            enabled: false,
             events: VecDeque::new(),
             ports: [IoPortActivity::default(); 256],
             next_sequence: 1,
@@ -53,6 +55,10 @@ impl Default for IoTrace {
 
 impl IoTrace {
     fn record(&mut self, kind: u8, port: u8, value: u8) {
+        if !self.enabled {
+            return;
+        }
+
         let activity = &mut self.ports[port as usize];
         match kind {
             IO_TRACE_IN => {
@@ -91,8 +97,13 @@ impl IoTrace {
         }
     }
 
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
     fn clear_events(&mut self) {
         self.events.clear();
+        self.ports.fill(IoPortActivity::default());
     }
 
     fn snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
@@ -431,6 +442,14 @@ impl AltairBus {
         self.io.trace.snapshot()
     }
 
+    pub fn io_trace_enabled(&self) -> bool {
+        self.io.trace.enabled
+    }
+
+    pub fn set_io_trace_enabled(&mut self, enabled: bool) {
+        self.io.trace.set_enabled(enabled);
+    }
+
     pub fn clear_io_trace(&mut self) {
         self.io.trace.clear_events();
     }
@@ -574,6 +593,7 @@ mod tests {
     #[test]
     fn trace_coalesces_repeated_status_polls_but_counts_them() {
         let mut io = IoDevices::default();
+        io.trace.set_enabled(true);
         for _ in 0..100 {
             assert_eq!(io.input(SIO_STATUS_PORT), 0x01);
         }
@@ -586,6 +606,7 @@ mod tests {
     #[test]
     fn debugger_can_inject_rx_without_cpu_side_effects() {
         let mut machine = AltairMachine::default();
+        machine.bus.set_io_trace_enabled(true);
         assert!(machine.bus.debugger_inject_serial_rx(SIO_DATA_PORT, b'Y'));
         assert_eq!(machine.bus.peek_io_port(SIO_DATA_PORT), b'Y');
         assert_eq!(machine.bus.debugger_input_port(SIO_DATA_PORT), b'Y');
