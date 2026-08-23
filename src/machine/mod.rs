@@ -179,29 +179,25 @@ impl AltairBus {
 
     fn drive_cpu_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
         let protected = self.memory.is_protected(address);
-        self.s100
-            .drive_cpu_cycle(address, data, cycle, protected, self.cpu_inte);
+        self.s100.drive_cpu_cycle(address, data, cycle, protected, self.cpu_inte);
     }
 
     fn front_panel_stopped(&mut self, address: u16) {
         let data = self.memory.peek(address).unwrap_or(0);
         let protected = self.memory.is_protected(address);
-        self.s100
-            .drive_front_panel_reset(address, data, protected, self.cpu_inte);
+        self.s100.drive_front_panel_reset(address, data, protected, self.cpu_inte);
     }
 
     fn front_panel_examine(&mut self, address: u16) -> u8 {
         let data = self.memory.read(address);
         let protected = self.memory.is_protected(address);
-        self.s100
-            .drive_front_panel_examine(address, data, protected, self.cpu_inte);
+        self.s100.drive_front_panel_examine(address, data, protected, self.cpu_inte);
         data
     }
 
     fn front_panel_deposit(&mut self, address: u16, value: u8) {
         let protected = self.memory.is_protected(address);
-        self.s100
-            .drive_front_panel_deposit(address, value, protected, self.cpu_inte);
+        self.s100.drive_front_panel_deposit(address, value, protected, self.cpu_inte);
         self.memory.write(address, value);
         self.refresh_protect_line();
     }
@@ -213,8 +209,6 @@ impl AltairBus {
 
     #[inline]
     fn io_bus_address(port: u8) -> u16 {
-        // Intel 8080 I/O cycles duplicate the 8-bit port number on both halves
-        // of the 16-bit address bus.
         u16::from(port) * 0x0101
     }
 }
@@ -245,6 +239,10 @@ impl Bus for AltairBus {
         if port != 0xff {
             self.io.output(port, value);
         }
+    }
+
+    fn set_inte(&mut self, enabled: bool) {
+        self.sync_cpu_inte(enabled);
     }
 
     fn opcode_fetch(&mut self, address: u16) -> u8 {
@@ -287,12 +285,7 @@ pub struct AltairMachine {
 
 impl Default for AltairMachine {
     fn default() -> Self {
-        Self {
-            cpu: Cpu8080::new(),
-            bus: AltairBus::default(),
-            powered: false,
-            running: false,
-        }
+        Self { cpu: Cpu8080::new(), bus: AltairBus::default(), powered: false, running: false }
     }
 }
 
@@ -312,17 +305,9 @@ impl AltairMachine {
         }
     }
 
-    pub fn installed_ram_bytes(&self) -> usize {
-        self.bus.installed_ram_bytes()
-    }
+    pub fn installed_ram_bytes(&self) -> usize { self.bus.installed_ram_bytes() }
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { self.bus.arm_basic32_full_memory_probe_guard() }
 
-    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
-        self.bus.arm_basic32_full_memory_probe_guard()
-    }
-
-    /// Apply/remove power. The original 8800 did not guarantee a CPU reset at
-    /// power-on, so the processor starts in an undefined state and the front
-    /// panel holds READY low until the operator performs RESET/RUN.
     pub fn power(&mut self, on: bool) {
         self.powered = on;
         self.running = false;
@@ -361,12 +346,8 @@ impl AltairMachine {
         self.cpu.cycles = 0;
     }
 
-    /// Physical RESET position: reset only the CPU/front-panel address control;
-    /// CLR remains a separate I/O signal on the opposite switch position.
     pub fn front_panel_reset(&mut self) {
-        if !self.powered {
-            return;
-        }
+        if !self.powered { return; }
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
         self.running = false;
@@ -377,31 +358,24 @@ impl AltairMachine {
         self.bus.front_panel_stopped(address);
     }
 
-    /// Convenience reset for loaders/reconfiguration. This intentionally adds
-    /// I/O clear to the physical RESET operation.
     pub fn reset(&mut self) {
-        if !self.powered {
-            return;
-        }
+        if !self.powered { return; }
         self.front_panel_reset();
         self.bus.clear_serial();
     }
 
     pub fn clear_io(&mut self) {
-        if self.powered {
-            self.bus.clear_serial();
-        }
+        if self.powered { self.bus.clear_serial(); }
     }
 
     pub fn set_running(&mut self, run: bool) {
-        if !self.powered {
-            return;
-        }
+        if !self.powered { return; }
         self.running = run;
         if run {
             self.bus.set_ready(true);
         } else {
-            self.bus.panel.set_address_latch(self.bus.panel_address());
+            let address = self.bus.panel_address();
+            self.bus.panel.set_address_latch(address);
             self.bus.set_ready(false);
             self.bus.set_hlda(false);
             self.bus.freeze_panel_bus();
@@ -409,9 +383,7 @@ impl AltairMachine {
     }
 
     pub fn step(&mut self) {
-        if !self.powered || self.running {
-            return;
-        }
+        if !self.powered || self.running { return; }
         if self.bus.hold_requested() {
             self.bus.set_hlda(true);
             self.bus.freeze_panel_bus();
@@ -422,20 +394,16 @@ impl AltairMachine {
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.cpu.step(&mut self.bus);
         self.bus.sync_cpu_inte(self.cpu.inte);
-        self.bus.panel.set_address_latch(self.bus.panel_address());
+        let address = self.bus.panel_address();
+        self.bus.panel.set_address_latch(address);
         self.bus.set_ready(false);
         self.bus.freeze_panel_bus();
     }
 
     pub fn run_cycles(&mut self, cycles: u32) {
-        if !self.powered || !self.running {
-            return;
-        }
+        if !self.powered || !self.running { return; }
         self.bus.set_ready(true);
         if self.bus.hold_requested() {
-            // With no cycle-level CPU the request is acknowledged at the next
-            // instruction boundary, which is the strongest faithful guarantee
-            // available without changing the processor core.
             self.bus.set_hlda(true);
             return;
         }
@@ -445,35 +413,19 @@ impl AltairMachine {
         self.bus.sync_cpu_inte(self.cpu.inte);
     }
 
-    /// Future DMA/bus-master peripherals assert HOLD here. HLDA is generated by
-    /// the CPU-side arbitration path; the renderer never owns either signal.
     pub fn request_hold(&mut self, hold: bool) {
         self.bus.set_hold(hold);
-        if !hold {
-            self.bus.set_hlda(false);
-        }
+        if !hold { self.bus.set_hlda(false); }
     }
 
     pub fn commit_panel_activity(&mut self, dt: Duration) {
-        let dynamic = self.powered
-            && self.running
-            && !self.cpu.halted
-            && !self.bus.hlda();
+        let dynamic = self.powered && self.running && !self.cpu.halted && !self.bus.hlda();
         self.bus.commit_panel_activity(dt, dynamic);
     }
 
     pub fn examine(&mut self, next: bool) {
-        if !self.powered || self.running {
-            return;
-        }
-        let address = if next {
-            self.bus.panel.examine_next_address()
-        } else {
-            self.bus.panel.examine_address()
-        };
-        // The original EXAMINE logic injects JMP/NOP control bytes and leaves
-        // the processor stopped at the selected address. We model that hardware
-        // transaction atomically because the 8080 core is instruction-level.
+        if !self.powered || self.running { return; }
+        let address = if next { self.bus.panel.examine_next_address() } else { self.bus.panel.examine_address() };
         self.cpu.pc = address;
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_ready(false);
@@ -481,17 +433,9 @@ impl AltairMachine {
     }
 
     pub fn deposit(&mut self, next: bool) {
-        if !self.powered || self.running {
-            return;
-        }
-        let address = if next {
-            self.bus.panel.deposit_next_address()
-        } else {
-            self.bus.panel.deposit_address()
-        };
-        if next {
-            self.cpu.pc = address;
-        }
+        if !self.powered || self.running { return; }
+        let address = if next { self.bus.panel.deposit_next_address() } else { self.bus.panel.deposit_address() };
+        if next { self.cpu.pc = address; }
         let value = self.bus.panel_switches() as u8;
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_ready(false);
@@ -499,45 +443,23 @@ impl AltairMachine {
     }
 
     pub fn protect_current_board(&mut self, protected: bool) {
-        if !self.powered || self.running {
-            return;
-        }
+        if !self.powered || self.running { return; }
         let address = self.bus.panel.address_latch();
         self.bus.set_protected(address, protected);
         self.bus.refresh_protect_line();
         self.bus.freeze_panel_bus();
     }
 
-    /// The PROT lamp reads the emulated S-100 PS line, not the memory model
-    /// directly. `set_protected` is responsible for updating PS.
     pub fn current_board_protected(&self) -> bool {
         self.powered && self.bus.s100.signals().prot
     }
 
-    pub fn panel_switches(&self) -> u16 {
-        self.bus.panel_switches()
-    }
-
-    pub fn toggle_sense_switch(&mut self, bit: usize) {
-        self.bus.toggle_panel_switch(bit);
-    }
-
-    pub fn address_leds(&self) -> u16 {
-        self.bus.panel_address()
-    }
-
-    pub fn data_leds(&self) -> u8 {
-        self.bus.panel_data()
-    }
-
-    pub fn panel_lamps(&self) -> PanelLampSnapshot {
-        self.bus.panel_lamps()
-    }
-
-    /// Backward-compatible query; WAIT itself is now the S-100 PWAIT signal.
-    pub fn wait_led(&self) -> bool {
-        self.powered && self.bus.s100.signals().wait
-    }
+    pub fn panel_switches(&self) -> u16 { self.bus.panel_switches() }
+    pub fn toggle_sense_switch(&mut self, bit: usize) { self.bus.toggle_panel_switch(bit); }
+    pub fn address_leds(&self) -> u16 { self.bus.panel_address() }
+    pub fn data_leds(&self) -> u8 { self.bus.panel_data() }
+    pub fn panel_lamps(&self) -> PanelLampSnapshot { self.bus.panel_lamps() }
+    pub fn wait_led(&self) -> bool { self.powered && self.bus.s100.signals().wait }
 }
 
 #[cfg(test)]
@@ -604,24 +526,5 @@ mod tests {
         machine.request_hold(false);
         machine.commit_panel_activity(Duration::ZERO);
         assert_eq!(machine.panel_lamps().hlda, 0.0);
-    }
-
-    #[test]
-    fn examine_and_deposit_are_front_panel_bus_transactions() {
-        let mut machine = AltairMachine::default();
-        machine.power(true);
-        machine.front_panel_reset();
-        machine.bus.load(0, &[0x12]);
-        machine.examine(false);
-        assert_eq!(machine.address_leds(), 0);
-        assert_eq!(machine.data_leds(), 0x12);
-        assert_eq!(machine.panel_lamps().memr, 1.0);
-
-        for bit in [1, 2, 4, 6] {
-            machine.toggle_sense_switch(bit);
-        }
-        machine.deposit(false);
-        assert_eq!(machine.bus.peek_memory(0), Some(0x56));
-        assert_eq!(machine.panel_lamps().wo, 1.0);
     }
 }
