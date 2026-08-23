@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use crate::config::TerminalSpeed;
+use crate::config::{TerminalDuplex, TerminalSpeed};
 
 const TERMINAL_MAX_CHARS: usize = 200_000;
 
@@ -12,6 +12,7 @@ pub(super) struct TerminalState {
     pub(super) program: String,
     pub(super) uppercase: bool,
     pub(super) speed: TerminalSpeed,
+    pub(super) duplex: TerminalDuplex,
     pub(super) tx_started: Option<Instant>,
     input_queue: VecDeque<u8>,
     rx_next_at: Option<Instant>,
@@ -27,6 +28,7 @@ impl Default for TerminalState {
             program: String::new(),
             uppercase: true,
             speed: TerminalSpeed::default(),
+            duplex: TerminalDuplex::default(),
             tx_started: None,
             input_queue: VecDeque::new(),
             rx_next_at: None,
@@ -161,6 +163,14 @@ impl TerminalState {
         }
 
         let byte = self.input_queue.pop_front()?;
+
+        // In half duplex the terminal's own receive/display path gets a local
+        // copy at the same paced character boundary used for transmission. In
+        // full duplex nothing is displayed until the host sends a byte back.
+        if self.duplex.local_echo() {
+            self.receive_byte(byte);
+        }
+
         if self.input_queue.is_empty() {
             self.rx_next_at = None;
             Some((byte, Duration::ZERO))
@@ -207,6 +217,18 @@ mod tests {
             bytes.push(byte);
         }
         assert_eq!(bytes, b"A\rB\rC\r");
+        assert!(terminal.output.is_empty());
+    }
+
+    #[test]
+    fn half_duplex_echoes_input_locally_when_it_is_transmitted() {
+        let mut terminal = TerminalState::default();
+        terminal.speed = TerminalSpeed::Instant;
+        terminal.duplex = TerminalDuplex::HalfDuplexLocalEcho;
+        let now = Instant::now();
+        terminal.enqueue_text("ab", true, now);
+        while terminal.take_due_input(now).is_some() {}
+        assert_eq!(terminal.output, "AB\n");
     }
 
     #[test]
