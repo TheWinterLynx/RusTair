@@ -73,8 +73,8 @@ pub(super) struct S100Signals {
     pub out: bool,
     pub hlta: bool,
     pub stack: bool,
-    /// Front-panel W/O indicator follows the physical active-low /WO line:
-    /// lit for read/input cycles, dark for write/output cycles.
+    /// Front-panel WO status indication: lit for WRITE memory or OUTPUT,
+    /// dark for READ memory or INPUT, matching the original MITS manual.
     pub wo: bool,
     pub int_ack: bool,
     pub inte: bool,
@@ -137,7 +137,9 @@ impl S100Signals {
         self.out = word & 0x10 != 0;
         self.hlta = word & 0x08 != 0;
         self.stack = word & 0x04 != 0;
-        self.wo = word & 0x02 != 0;
+        // Intel 8080 status D1 is the inverse of the physical write/output
+        // condition: D1=0 denotes WRITE/OUTPUT, which lights the Altair WO LED.
+        self.wo = word & 0x02 == 0;
         self.int_ack = word & 0x01 != 0;
     }
 
@@ -451,7 +453,7 @@ impl S100BusState {
         self.signals.clear_status();
         self.signals.memr = true;
         self.signals.m1 = true;
-        self.signals.wo = true;
+        self.signals.wo = false;
         self.signals.ready = run;
         self.signals.wait = !run;
         self.signals.hlda = false;
@@ -496,7 +498,7 @@ impl S100BusState {
         self.signals.clear_status();
         self.signals.memr = true;
         self.signals.m1 = true;
-        self.signals.wo = true;
+        self.signals.wo = false;
         self.set_ready(false);
         self.lamps.freeze(&self.signals);
     }
@@ -515,8 +517,7 @@ impl S100BusState {
         self.signals.prot = protected;
         self.signals.inte = inte;
         self.signals.clear_status();
-        // A write/output cycle drives /WO low, so the physical W/O lamp is dark.
-        self.signals.wo = false;
+        self.signals.wo = true;
         self.set_ready(false);
         self.lamps.freeze(&self.signals);
     }
@@ -555,7 +556,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intel_status_words_drive_s100_status_lines_with_physical_wo_polarity() {
+    fn intel_status_words_drive_s100_status_lines_with_mits_wo_semantics() {
         let mut bus = S100BusState::default();
         bus.set_ready(true);
         bus.drive_cpu_cycle(0x1234, 0x56, S100Cycle::InstructionFetch, false, false);
@@ -564,12 +565,12 @@ mod tests {
         assert_eq!(s.data, 0x56);
         assert!(s.memr);
         assert!(s.m1);
-        assert!(s.wo);
+        assert!(!s.wo);
 
         bus.drive_cpu_cycle(0x1234, 0xaa, S100Cycle::MemoryWrite, false, false);
         let s = bus.signals();
         assert!(!s.memr);
-        assert!(!s.wo);
+        assert!(s.wo);
     }
 
     #[test]
