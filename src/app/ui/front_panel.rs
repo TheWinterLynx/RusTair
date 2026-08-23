@@ -21,6 +21,7 @@ struct MomentarySwitchUiState {
     latched: Option<SwitchPosition>,
     press_started: Option<Instant>,
     press_direction: Option<SwitchPosition>,
+    press_began_on_latched: bool,
     long_latched_this_press: bool,
 }
 
@@ -152,16 +153,24 @@ impl RusTairApp {
         debug_assert_eq!(switch.kind, SwitchKind::ThreePosition);
         debug_assert!(switch.center.is_some());
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
-        let response = ui.allocate_rect(hit, Sense::click());
+        let response = ui.allocate_rect(hit, Sense::click_and_drag());
         if response.hovered() {
             response.clone().on_hover_text(format!(
                 "{label}\nHold for 3 seconds to keep the switch actuated; click it again to release."
             ));
         }
 
-        let pointer_down = response.is_pointer_button_down_on();
-        let pointer_is_down_half = response
-            .interact_pointer_pos()
+        let now = Instant::now();
+        let (primary_down, primary_pressed, primary_released, pointer_pos) = ui.ctx().input(|input| {
+            (
+                input.pointer.primary_down(),
+                input.pointer.primary_pressed(),
+                input.pointer.primary_released(),
+                input.pointer.interact_pos(),
+            )
+        });
+        let pointer_inside = pointer_pos.is_some_and(|p| hit.contains(p));
+        let pointer_is_down_half = pointer_pos
             .map(|p| p.y >= origin.y + switch.socket.1 * scale)
             .unwrap_or(false);
         let pointer_position = if pointer_is_down_half {
@@ -169,70 +178,76 @@ impl RusTairApp {
         } else {
             SwitchPosition::Up
         };
-        let now = Instant::now();
         let state_id = egui::Id::new(("rustair-momentary-switch", switch.name));
 
-        let (position, action, just_latched, released_latch) = ui.ctx().data_mut(|data| {
+        let (position, action, just_latched, released_latch, tracking_press) = ui.ctx().data_mut(|data| {
             let state = data.get_temp_mut_or(state_id, MomentarySwitchUiState::default());
             let mut action = None;
             let mut just_latched = false;
             let mut released_latch = false;
 
-            if pointer_down {
-                if state.press_started.is_none() {
-                    state.press_started = Some(now);
-                    state.press_direction = Some(pointer_position);
-                    state.long_latched_this_press = false;
-                }
+            if primary_pressed && pointer_inside && state.press_started.is_none() {
+                state.press_started = Some(now);
+                state.press_direction = Some(pointer_position);
+                state.press_began_on_latched = state.latched.is_some();
+                state.long_latched_this_press = false;
+            }
 
-                if state.latched.is_none() && !state.long_latched_this_press {
-                    state.press_direction = Some(pointer_position);
-                    if state
+            if state.press_started.is_some() && primary_down {
+                if !state.press_began_on_latched
+                    && state.latched.is_none()
+                    && !state.long_latched_this_press
+                    && state
                         .press_started
                         .is_some_and(|started| now.duration_since(started) >= MOMENTARY_LATCH_HOLD)
-                    {
-                        let direction = state.press_direction.unwrap_or(pointer_position);
-                        state.latched = Some(direction);
-                        state.long_latched_this_press = true;
-                        action = Some(direction == SwitchPosition::Down);
-                        just_latched = true;
-                    }
+                {
+                    let direction = state.press_direction.unwrap_or(pointer_position);
+                    state.latched = Some(direction);
+                    state.long_latched_this_press = true;
+                    action = Some(direction == SwitchPosition::Down);
+                    just_latched = true;
                 }
+            }
 
-                (
-                    state.latched.or(state.press_direction).unwrap_or(pointer_position),
-                    action,
-                    just_latched,
-                    released_latch,
-                )
-            } else {
-                if response.clicked() {
-                    if state.long_latched_this_press {
-                        // Releasing the mouse after the three-second hold keeps
-                        // the virtual switch physically held in that position.
-                    } else if state.latched.is_some() {
-                        state.latched = None;
-                        released_latch = true;
-                    } else {
-                        let direction = state.press_direction.unwrap_or(pointer_position);
-                        action = Some(direction == SwitchPosition::Down);
-                    }
+            if state.press_started.is_some() && primary_released {
+                if state.press_began_on_latched {
+                    state.latched = None;
+                    released_latch = true;
+                } else if !state.long_latched_this_press {
+                    let direction = state.press_direction.unwrap_or(pointer_position);
+                    action = Some(direction == SwitchPosition::Down);
                 }
-
                 state.press_started = None;
                 state.press_direction = None;
+                state.press_began_on_latched = false;
                 state.long_latched_this_press = false;
-                (
-                    state.latched.unwrap_or(SwitchPosition::Center),
-                    action,
-                    just_latched,
-                    released_latch,
-                )
+            } else if state.press_started.is_some() && !primary_down && !primary_released {
+                // Lost focus/capture without a normal release event: cancel the
+                // transient press rather than firing an action unexpectedly.
+                state.press_started = None;
+                state.press_direction = None;
+                state.press_began_on_latched = false;
+                state.long_latched_this_press = false;
             }
+
+            let tracking_press = state.press_started.is_some() && primary_down;
+            let position = if tracking_press {
+                if state.press_began_on_latched {
+                    state.latched.unwrap_or(SwitchPosition::Center)
+                } else {
+                    state.latched
+                        .or(state.press_direction)
+                        .unwrap_or(SwitchPosition::Center)
+                }
+            } else {
+                state.latched.unwrap_or(SwitchPosition::Center)
+            };
+
+            (position, action, just_latched, released_latch, tracking_press)
         });
 
         self.draw_switch_sprite(ui, origin, scale, switch, position);
-        if pointer_down {
+        if tracking_press {
             ui.ctx().request_repaint_after(Duration::from_millis(8));
         }
 
@@ -329,11 +344,7 @@ impl RusTairApp {
                 self.external_com.reset_line_timing();
                 self.status = "CLR asserted: external/emulated I/O cleared; CPU state preserved".into();
             } else {
-                self.machine.reset();
-                self.asr33.tx_started = None;
-                self.terminal.tx_started = None;
-                self.external_serial.reset_line_timing();
-                self.external_com.reset_line_timing();
+                self.machine.front_panel_reset();
                 self.status = "RESET asserted: PC returned to 0000h and machine stopped".into();
             }
         }
