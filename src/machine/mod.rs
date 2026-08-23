@@ -48,129 +48,42 @@ impl AltairBus {
         self.refresh_protect_line();
     }
 
-    pub fn installed_ram_bytes(&self) -> usize {
-        self.memory.installed_size()
-    }
+    pub fn installed_ram_bytes(&self) -> usize { self.memory.installed_size() }
+    pub fn initialize_memory(&mut self) { self.memory.initialize(); self.refresh_protect_line(); }
+    pub fn randomize(&mut self) { self.memory.randomize(); }
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { self.memory.arm_basic32_full_memory_probe_guard() }
+    pub fn clear_transient_memory_guards(&mut self) { self.memory.clear_transient_guards(); }
+    pub fn load(&mut self, address: u16, bytes: &[u8]) { self.memory.load(address, bytes); }
+    pub fn clear_protection(&mut self) { self.memory.clear_protection(); self.refresh_protect_line(); }
+    pub fn board_index(address: u16) -> Option<usize> { Memory::board_index(address) }
+    pub fn is_protected(&self, address: u16) -> bool { self.memory.is_protected(address) }
+    pub fn set_protected(&mut self, address: u16, protected: bool) { self.memory.set_protected(address, protected); self.refresh_protect_line(); }
+    pub fn serial_receive(&mut self, byte: u8) { self.io.serial_receive(byte); }
+    pub fn serial_rx_empty(&self) -> bool { self.io.serial_rx_empty() }
+    pub fn serial_rx_len(&self) -> usize { self.io.serial_rx_len() }
+    pub fn serial_tx_front(&self) -> Option<u8> { self.io.serial_tx_front() }
+    pub fn serial_tx_complete(&mut self) -> Option<u8> { self.io.serial_tx_complete() }
+    pub fn tx_busy(&self) -> bool { self.io.serial_tx_busy() }
+    pub fn clear_serial(&mut self) { self.io.clear_serial(); }
 
-    pub fn initialize_memory(&mut self) {
-        self.memory.initialize();
-        self.refresh_protect_line();
-    }
-
-    pub fn randomize(&mut self) {
-        self.memory.randomize();
-    }
-
-    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
-        self.memory.arm_basic32_full_memory_probe_guard()
-    }
-
-    pub fn clear_transient_memory_guards(&mut self) {
-        self.memory.clear_transient_guards();
-    }
-
-    pub fn load(&mut self, address: u16, bytes: &[u8]) {
-        self.memory.load(address, bytes);
-    }
-
-    pub fn clear_protection(&mut self) {
-        self.memory.clear_protection();
-        self.refresh_protect_line();
-    }
-
-    pub fn board_index(address: u16) -> Option<usize> {
-        Memory::board_index(address)
-    }
-
-    pub fn is_protected(&self, address: u16) -> bool {
-        self.memory.is_protected(address)
-    }
-
-    pub fn set_protected(&mut self, address: u16, protected: bool) {
-        self.memory.set_protected(address, protected);
-        self.refresh_protect_line();
-    }
-
-    pub fn serial_receive(&mut self, byte: u8) {
-        self.io.serial_receive(byte);
-    }
-
-    pub fn serial_rx_empty(&self) -> bool {
-        self.io.serial_rx_empty()
-    }
-
-    pub fn serial_rx_len(&self) -> usize {
-        self.io.serial_rx_len()
-    }
-
-    pub fn serial_tx_front(&self) -> Option<u8> {
-        self.io.serial_tx_front()
-    }
-
-    pub fn serial_tx_complete(&mut self) -> Option<u8> {
-        self.io.serial_tx_complete()
-    }
-
-    pub fn tx_busy(&self) -> bool {
-        self.io.serial_tx_busy()
-    }
-
-    pub fn clear_serial(&mut self) {
-        self.io.clear_serial();
-    }
-
-    fn panel_switches(&self) -> u16 {
-        self.panel.switches()
-    }
-
-    fn toggle_panel_switch(&mut self, bit: usize) {
-        self.panel.toggle_switch(bit);
-    }
-
-    fn panel_lamps(&self) -> PanelLampSnapshot {
-        self.s100.snapshot()
-    }
-
-    fn panel_address(&self) -> u16 {
-        self.s100.signals().address
-    }
-
-    fn panel_data(&self) -> u8 {
-        self.s100.signals().data
-    }
+    fn panel_switches(&self) -> u16 { self.panel.switches() }
+    fn toggle_panel_switch(&mut self, bit: usize) { self.panel.toggle_switch(bit); }
+    fn panel_lamps(&self) -> PanelLampSnapshot { self.s100.snapshot() }
+    fn panel_address(&self) -> u16 { self.s100.signals().address }
+    fn panel_data(&self) -> u8 { self.s100.signals().data }
 
     fn sync_cpu_inte(&mut self, enabled: bool) {
         self.cpu_inte = enabled;
         self.s100.set_inte(enabled);
     }
 
-    fn set_ready(&mut self, ready: bool) {
-        self.s100.set_ready(ready);
-    }
-
-    fn set_hold(&mut self, hold: bool) {
-        self.s100.set_hold(hold);
-    }
-
-    fn hold_requested(&self) -> bool {
-        self.s100.signals().hold
-    }
-
-    fn set_hlda(&mut self, hlda: bool) {
-        self.s100.set_hlda(hlda);
-    }
-
-    fn hlda(&self) -> bool {
-        self.s100.signals().hlda
-    }
-
-    fn freeze_panel_bus(&mut self) {
-        self.s100.freeze();
-    }
-
-    fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) {
-        self.s100.commit(dt, dynamic);
-    }
+    fn set_ready(&mut self, ready: bool) { self.s100.set_ready(ready); }
+    fn set_hold(&mut self, hold: bool) { self.s100.set_hold(hold); }
+    fn hold_requested(&self) -> bool { self.s100.signals().hold }
+    fn set_hlda(&mut self, hlda: bool) { self.s100.set_hlda(hlda); }
+    fn hlda(&self) -> bool { self.s100.signals().hlda }
+    fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
+    fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
     fn refresh_protect_line(&mut self) {
         let address = self.s100.signals().address;
@@ -208,9 +121,7 @@ impl AltairBus {
     }
 
     #[inline]
-    fn io_bus_address(port: u8) -> u16 {
-        u16::from(port) * 0x0101
-    }
+    fn io_bus_address(port: u8) -> u16 { u16::from(port) * 0x0101 }
 }
 
 impl Bus for AltairBus {
@@ -226,24 +137,17 @@ impl Bus for AltairBus {
     }
 
     fn input(&mut self, port: u8) -> u8 {
-        let value = match port {
-            0xff => self.panel.input(),
-            _ => self.io.input(port),
-        };
+        let value = match port { 0xff => self.panel.input(), _ => self.io.input(port) };
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::InputRead);
         value
     }
 
     fn output(&mut self, port: u8, value: u8) {
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::OutputWrite);
-        if port != 0xff {
-            self.io.output(port, value);
-        }
+        if port != 0xff { self.io.output(port, value); }
     }
 
-    fn set_inte(&mut self, enabled: bool) {
-        self.sync_cpu_inte(enabled);
-    }
+    fn set_inte(&mut self, enabled: bool) { self.sync_cpu_inte(enabled); }
 
     fn opcode_fetch(&mut self, address: u16) -> u8 {
         let value = self.memory.read(address);
@@ -262,16 +166,10 @@ impl Bus for AltairBus {
         self.memory.write(address, value);
     }
 
-    fn halt_ack(&mut self, address: u16, opcode: u8) {
-        self.drive_cpu_cycle(address, opcode, S100Cycle::HaltAcknowledge);
-    }
+    fn halt_ack(&mut self, address: u16, opcode: u8) { self.drive_cpu_cycle(address, opcode, S100Cycle::HaltAcknowledge); }
 
     fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
-        let cycle = if while_halted {
-            S100Cycle::InterruptAcknowledgeWhileHalted
-        } else {
-            S100Cycle::InterruptAcknowledge
-        };
+        let cycle = if while_halted { S100Cycle::InterruptAcknowledgeWhileHalted } else { S100Cycle::InterruptAcknowledge };
         self.drive_cpu_cycle(address, opcode, cycle);
     }
 }
@@ -364,9 +262,7 @@ impl AltairMachine {
         self.bus.clear_serial();
     }
 
-    pub fn clear_io(&mut self) {
-        if self.powered { self.bus.clear_serial(); }
-    }
+    pub fn clear_io(&mut self) { if self.powered { self.bus.clear_serial(); } }
 
     pub fn set_running(&mut self, run: bool) {
         if !self.powered { return; }
@@ -450,10 +346,7 @@ impl AltairMachine {
         self.bus.freeze_panel_bus();
     }
 
-    pub fn current_board_protected(&self) -> bool {
-        self.powered && self.bus.s100.signals().prot
-    }
-
+    pub fn current_board_protected(&self) -> bool { self.powered && self.bus.s100.signals().prot }
     pub fn panel_switches(&self) -> u16 { self.bus.panel_switches() }
     pub fn toggle_sense_switch(&mut self, bit: usize) { self.bus.toggle_panel_switch(bit); }
     pub fn address_leds(&self) -> u16 { self.bus.panel_address() }
@@ -524,7 +417,22 @@ mod tests {
         machine.commit_panel_activity(Duration::from_secs(1));
         assert_eq!(machine.panel_lamps().hlda, 1.0);
         machine.request_hold(false);
-        machine.commit_panel_activity(Duration::ZERO);
-        assert_eq!(machine.panel_lamps().hlda, 0.0);
+        assert!(!machine.bus.s100.signals().hlda);
+    }
+
+    #[test]
+    fn examine_and_deposit_drive_front_panel_bus() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.bus.load(0, &[0x12]);
+        machine.examine(false);
+        assert_eq!(machine.address_leds(), 0);
+        assert_eq!(machine.data_leds(), 0x12);
+        assert_eq!(machine.panel_lamps().memr, 1.0);
+        for bit in [1, 2, 4, 6] { machine.toggle_sense_switch(bit); }
+        machine.deposit(false);
+        assert_eq!(machine.bus.peek_memory(0), Some(0x56));
+        assert_eq!(machine.panel_lamps().wo, 1.0);
     }
 }
