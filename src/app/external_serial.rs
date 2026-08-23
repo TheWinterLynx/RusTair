@@ -10,7 +10,7 @@ const UART_BUSY_RETRY: Duration = Duration::from_millis(1);
 pub(super) struct ExternalSerialState {
     pub(super) window_open: bool,
     pub(super) config: ExternalSerialConfig,
-    server: TcpSerialServer,
+    pub(super) server: TcpSerialServer,
     tx_started: Option<Instant>,
     rx_next_at: Option<Instant>,
 }
