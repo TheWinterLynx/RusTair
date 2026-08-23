@@ -1,10 +1,12 @@
 use std::time::Instant;
 
+use crate::config::TerminalDuplex;
 use crate::peripherals::asr33::{Answerback, MechanicsState};
 
 pub(super) struct Asr33State {
     pub(super) window_open: bool,
     pub(super) tx_started: Option<Instant>,
+    pub(super) duplex: TerminalDuplex,
     pub(super) answerback: Answerback,
     pub(super) last_tape_tick: Instant,
     pub(super) power_flash_until: Option<Instant>,
@@ -17,6 +19,7 @@ impl Asr33State {
         Self {
             window_open: false,
             tx_started: None,
+            duplex: TerminalDuplex::default(),
             answerback: Answerback::default(),
             last_tape_tick: now,
             power_flash_until: None,

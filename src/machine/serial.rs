@@ -24,8 +24,19 @@ impl SerialPort {
         self.rx.len()
     }
 
+    /// Observe the next receive byte without consuming it. Debugger/inspector
+    /// code must use this rather than `read_rx`, because a real DATA-port read
+    /// has the guest-visible side effect of removing the character.
+    pub(super) fn rx_front(&self) -> Option<u8> {
+        self.rx.front().copied()
+    }
+
     pub(super) fn read_rx(&mut self) -> Option<u8> {
         self.rx.pop_front()
+    }
+
+    pub(super) fn clear_rx(&mut self) {
+        self.rx.clear();
     }
 
     pub(super) fn tx_front(&self) -> Option<u8> {
@@ -34,6 +45,10 @@ impl SerialPort {
 
     pub(super) fn complete_tx(&mut self) -> Option<u8> {
         self.tx.pop_front()
+    }
+
+    pub(super) fn clear_tx(&mut self) {
+        self.tx.clear();
     }
 
     pub(super) fn tx_busy(&self) -> bool {

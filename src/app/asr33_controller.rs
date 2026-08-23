@@ -141,11 +141,29 @@ impl RusTairApp {
         if self.tty.mode == TtyMode::Off {
             return;
         }
+
         let byte = byte & 0x7f;
         self.tty.last_key_byte = Some(byte);
-        self.asr_serial_receive(byte);
-        let events = self.tty.print_local(byte);
-        self.play_print_events(&events);
+
+        match self.tty.mode {
+            TtyMode::Off => {}
+            // LOCAL is a true offline keyboard/printer loop: the character is
+            // printed mechanically but is not injected into the Altair UART.
+            TtyMode::Local => {
+                let events = self.tty.print_local(byte);
+                self.play_print_events(&events);
+            }
+            // LINE always transmits. Half duplex additionally routes the same
+            // keyboard character to the local printer; full duplex waits for
+            // the computer to echo it back through serial TX before printing.
+            TtyMode::Line => {
+                self.asr_serial_receive(byte);
+                if self.asr33.duplex.local_echo() {
+                    let events = self.tty.print_serial(byte);
+                    self.play_print_events(&events);
+                }
+            }
+        }
     }
 
     fn start_tty_answerback(&mut self, ctx: &egui::Context) {

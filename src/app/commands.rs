@@ -45,6 +45,7 @@ impl RusTairApp {
                 }
                 self.asr33.tx_started = None;
                 self.terminal.tx_started = None;
+                self.external_serial.reset_line_timing();
                 self.machine.bus.clear_protection();
                 self.machine.bus.load(0, &bytes);
                 self.machine.cpu.pc = 0;
@@ -70,6 +71,7 @@ impl RusTairApp {
                     match self.serial_router.device_on(SerialConnection::Port0) {
                         Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
                         Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
+                        Some(SerialDevice::ExternalTcp) => self.external_serial.window_open = true,
                         None => {}
                     }
                 }

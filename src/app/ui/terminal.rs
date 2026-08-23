@@ -1,6 +1,7 @@
 use super::super::{
     egui, Pos2, Rect, RusTairApp, Sense, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed,
 };
+use crate::config::TerminalDuplex;
 
 const TERMINAL_INPUT_DEFAULT_HEIGHT: f32 = 235.0;
 const TERMINAL_INPUT_MIN_HEIGHT: f32 = 115.0;
@@ -124,12 +125,25 @@ impl RusTairApp {
         }
     }
 
+    fn draw_terminal_duplex_selector(&mut self, ui: &mut egui::Ui) {
+        ui.label("Duplex:");
+        egui::ComboBox::from_id_salt("terminal-duplex")
+            .selected_text(self.terminal.duplex.label())
+            .show_ui(ui, |ui| {
+                for duplex in TerminalDuplex::ALL {
+                    ui.selectable_value(&mut self.terminal.duplex, duplex, duplex.label());
+                }
+            });
+    }
+
     fn draw_terminal_window(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("terminal-menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 self.draw_terminal_connection_selector(ui);
                 ui.separator();
                 self.draw_terminal_speed_selector(ui);
+                ui.separator();
+                self.draw_terminal_duplex_selector(ui);
                 ui.separator();
                 if ui.button("Clear").clicked() {
                     self.terminal.clear_output();
@@ -159,9 +173,10 @@ impl RusTairApp {
                 "N/A"
             };
             ui.small(format!(
-                "TEXT TERMINAL  |  {}  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
+                "TEXT TERMINAL  |  {}  |  {}  |  {}  |  input pending {}  |  RX register {}  |  TX {}  |  {} chars",
                 connection_label,
                 self.config.peripherals.terminal_speed.label(),
+                self.terminal.duplex.label(),
                 self.terminal.input_pending_len(),
                 self.terminal_serial_rx_len(),
                 tx,
