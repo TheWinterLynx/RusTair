@@ -1,6 +1,8 @@
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+use super::terminal::TerminalDuplex;
+
 /// Character handling at the host-side serial endpoint.
 ///
 /// Altair BASIC 3.2 emits terminal text with bit 7 used/set on some output
@@ -167,6 +169,7 @@ pub struct ExternalSerialConfig {
     pub tcp_port: u16,
     pub speed: ExternalSerialSpeed,
     pub character_mode: ExternalSerialCharacterMode,
+    pub duplex: TerminalDuplex,
     pub allow_multiple_clients: bool,
 }
 
@@ -178,6 +181,7 @@ impl Default for ExternalSerialConfig {
             tcp_port: 8800,
             speed: ExternalSerialSpeed::Baud9600,
             character_mode: ExternalSerialCharacterMode::Asr33Uppercase,
+            duplex: TerminalDuplex::FullDuplexRemoteEcho,
             allow_multiple_clients: false,
         }
     }
@@ -197,6 +201,7 @@ mod tests {
             config.character_mode,
             ExternalSerialCharacterMode::Asr33Uppercase
         );
+        assert_eq!(config.duplex, TerminalDuplex::FullDuplexRemoteEcho);
         assert!(!config.allow_multiple_clients);
     }
 
