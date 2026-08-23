@@ -83,7 +83,7 @@ impl RusTairApp {
     }
 
     fn parse_hex_sequence(text: &str) -> Result<Vec<u8>, String> {
-        let normalized = text.replace([',', ';'], " ");
+        let normalized = text.replace(',', " ").replace(';', " ");
         let mut bytes = Vec::new();
         for token in normalized.split_whitespace() {
             bytes.push(Self::parse_hex_byte(token)?);
@@ -341,7 +341,7 @@ impl RusTairApp {
 
     fn draw_network_trace(&mut self, ui: &mut egui::Ui) {
         ui.heading("Raw TCP trace");
-        ui.small("RX is captured before the 7-bit/8-bit character transformation. The 'UART value' column shows what that raw incoming byte becomes before it is queued in the emulated serial interface.");
+        ui.small("Inbound RX is captured before the 7-bit/8-bit character transformation. For TCP -> RusTair, 'UART value' shows what the raw byte becomes before it is queued in the emulated serial interface. Outbound TCP bytes are already post-transformation.");
         ui.horizontal(|ui| {
             ui.label(format!(
                 "Mode: {}",
@@ -389,13 +389,22 @@ impl RusTairApp {
     fn draw_io_inspector(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Intel 8080 I/O Inspector / Editor");
-            ui.label(format!(
-                "Installed serial interface: {}   |   CPU PC: {:04X}h   |   {}",
-                self.config.machine.serial_board.label(),
-                self.machine.cpu.pc,
-                if self.machine.running { "RUNNING" } else { "STOPPED" }
-            ));
-            ui.small("Observation controls are non-invasive unless explicitly labelled CPU-style, Inject, Clear, or Complete.");
+            ui.horizontal(|ui| {
+                ui.label(format!(
+                    "Installed serial interface: {}   |   CPU PC: {:04X}h   |   {}",
+                    self.config.machine.serial_board.label(),
+                    self.machine.cpu.pc,
+                    if self.machine.running { "RUNNING" } else { "STOPPED" }
+                ));
+                if self.machine.bus.io_trace_enabled()
+                    && self.external_serial.server.network_trace_enabled()
+                {
+                    ui.strong("CAPTURE ACTIVE");
+                } else {
+                    ui.label("capture starts on next emulator frame");
+                }
+            });
+            ui.small("Tracing is enabled only while this inspector is open. Observation controls are non-invasive unless explicitly labelled CPU-style, Inject, Clear, or Complete.");
             ui.separator();
 
             let selected_id = egui::Id::new(SELECTED_PORT);
@@ -416,10 +425,10 @@ impl RusTairApp {
             ui.separator();
             ui.collapsing("How to use this for the current BASIC input bug", |ui| {
                 ui.label("1. Clear both traces while BASIC is displaying WANT SIN?.");
-                ui.label("2. Type Y and Enter in PuTTY.");
+                ui.label("2. Type Y and Enter in PuTTY exactly once.");
                 ui.label("3. Raw TCP should show 59 (Y) followed by the line-ending byte(s).");
                 ui.label("4. Emulated I/O should then show UART RX <= endpoint 59, followed by CPU IN from the DATA port returning 59.");
-                ui.label("5. If TCP has 59 but UART enqueue does not, the bridge/pacing layer is wrong. If UART has 59 but CPU IN does not, the UART/status model is wrong. If CPU IN returns 59 and BASIC still repeats the prompt, we investigate the guest input sequence around CR/LF next.");
+                ui.label("5. If TCP has 59 but UART enqueue does not, the bridge/pacing layer is wrong. If UART has 59 but CPU IN does not, the UART/status model is wrong. If CPU IN returns 59 and BASIC still repeats the prompt, inspect the CR/LF sequence immediately after it.");
                 ui.label("6. As an A/B test, inject 59 0D directly into the selected serial DATA port. That bypasses TCP completely.");
             });
         });
