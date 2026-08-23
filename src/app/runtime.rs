@@ -272,6 +272,9 @@ impl eframe::App for RusTairApp {
                 if ui.button("RAM VIEWER").clicked() {
                     self.open_memory_viewer(ctx);
                 }
+                if ui.button("I/O INSPECTOR").clicked() {
+                    self.open_io_inspector(ctx);
+                }
                 ui.separator();
                 let mut muted = self.audio.muted();
                 if ui.checkbox(&mut muted, "Mute").changed() {
@@ -309,5 +312,6 @@ impl eframe::App for RusTairApp {
         self.show_terminal_viewport(ctx);
         self.show_external_serial_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
+        self.show_io_inspector_viewport(ctx);
     }
 }
