@@ -1,6 +1,8 @@
 use super::super::*;
 use super::front_panel_assets::SwitchSpriteId;
 
+const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SwitchPosition {
     Up,
@@ -12,6 +14,14 @@ enum SwitchPosition {
 enum SwitchKind {
     TwoPosition,
     ThreePosition,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MomentarySwitchUiState {
+    latched: Option<SwitchPosition>,
+    press_started: Option<Instant>,
+    press_direction: Option<SwitchPosition>,
+    long_latched_this_press: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -143,19 +153,103 @@ impl RusTairApp {
         debug_assert!(switch.center.is_some());
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
         let response = ui.allocate_rect(hit, Sense::click());
-        if response.hovered() { response.clone().on_hover_text(label); }
-        let down = response.interact_pointer_pos().map(|p| p.y >= origin.y + switch.socket.1 * scale).unwrap_or(false);
-        let position = if response.is_pointer_button_down_on() {
-            if down { SwitchPosition::Down } else { SwitchPosition::Up }
+        if response.hovered() {
+            response.clone().on_hover_text(format!(
+                "{label}\nHold for 3 seconds to keep the switch actuated; click it again to release."
+            ));
+        }
+
+        let pointer_down = response.is_pointer_button_down_on();
+        let pointer_is_down_half = response
+            .interact_pointer_pos()
+            .map(|p| p.y >= origin.y + switch.socket.1 * scale)
+            .unwrap_or(false);
+        let pointer_position = if pointer_is_down_half {
+            SwitchPosition::Down
         } else {
-            SwitchPosition::Center
+            SwitchPosition::Up
         };
+        let now = Instant::now();
+        let state_id = egui::Id::new(("rustair-momentary-switch", switch.name));
+
+        let (position, action, just_latched, released_latch) = ui.ctx().data_mut(|data| {
+            let state = data.get_temp_mut_or(state_id, MomentarySwitchUiState::default());
+            let mut action = None;
+            let mut just_latched = false;
+            let mut released_latch = false;
+
+            if pointer_down {
+                if state.press_started.is_none() {
+                    state.press_started = Some(now);
+                    state.press_direction = Some(pointer_position);
+                    state.long_latched_this_press = false;
+                }
+
+                if state.latched.is_none() && !state.long_latched_this_press {
+                    state.press_direction = Some(pointer_position);
+                    if state
+                        .press_started
+                        .is_some_and(|started| now.duration_since(started) >= MOMENTARY_LATCH_HOLD)
+                    {
+                        let direction = state.press_direction.unwrap_or(pointer_position);
+                        state.latched = Some(direction);
+                        state.long_latched_this_press = true;
+                        action = Some(direction == SwitchPosition::Down);
+                        just_latched = true;
+                    }
+                }
+
+                (
+                    state.latched.or(state.press_direction).unwrap_or(pointer_position),
+                    action,
+                    just_latched,
+                    released_latch,
+                )
+            } else {
+                if response.clicked() {
+                    if state.long_latched_this_press {
+                        // Releasing the mouse after the three-second hold keeps
+                        // the virtual switch physically held in that position.
+                    } else if state.latched.is_some() {
+                        state.latched = None;
+                        released_latch = true;
+                    } else {
+                        let direction = state.press_direction.unwrap_or(pointer_position);
+                        action = Some(direction == SwitchPosition::Down);
+                    }
+                }
+
+                state.press_started = None;
+                state.press_direction = None;
+                state.long_latched_this_press = false;
+                (
+                    state.latched.unwrap_or(SwitchPosition::Center),
+                    action,
+                    just_latched,
+                    released_latch,
+                )
+            }
+        });
+
         self.draw_switch_sprite(ui, origin, scale, switch, position);
-        if response.is_pointer_button_down_on() { ui.ctx().request_repaint_after(Duration::from_millis(8)); }
-        if response.clicked() {
+        if pointer_down {
+            ui.ctx().request_repaint_after(Duration::from_millis(8));
+        }
+
+        if let Some(down) = action {
             self.audio.play_once("assets/click.mp3");
+            if just_latched {
+                self.status = format!(
+                    "{label} held {} — click the switch to release it",
+                    if down { "DOWN" } else { "UP" }
+                );
+            }
             Some(down)
         } else {
+            if released_latch {
+                self.audio.play_once("assets/click.mp3");
+                self.status = format!("{label} released to center");
+            }
             None
         }
     }
@@ -176,7 +270,8 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
-            self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
+            self.reset_flash_until = None;
+            self.status = "Power on — original Altair 8800 requires STOP + RESET before RUN".into();
             self.audio.start_loop("altair-fan", "assets/fan.mp3");
         } else {
             self.reset_flash_until = None;
@@ -190,11 +285,7 @@ impl RusTairApp {
         // brightness rather than as whichever instruction happened to finish
         // last. PANEL_FRAME matches the normal repaint cadence.
         self.machine.commit_panel_activity(PANEL_FRAME);
-        let mut lamps = self.machine.panel_lamps();
-        if self.reset_flash_until.is_some_and(|until| Instant::now() < until) {
-            lamps.address.fill(1.0);
-            lamps.data.fill(1.0);
-        }
+        let lamps = self.machine.panel_lamps();
 
         let available = ui.available_size();
         let scale = (available.x / PANEL_W).min(available.y / PANEL_H).clamp(0.2, 2.5);
@@ -229,10 +320,22 @@ impl RusTairApp {
         if self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP").is_some() { self.machine.step(); }
         if let Some(next) = self.momentary_switch(ui, origin, scale, SWITCH_EXAMINE, "EXAMINE / EXAMINE NEXT") { self.machine.examine(next); }
         if let Some(next) = self.momentary_switch(ui, origin, scale, SWITCH_DEPOSIT, "DEPOSIT / DEPOSIT NEXT") { self.machine.deposit(next); }
-        if self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR").is_some() {
-            self.machine.reset();
-            self.asr33.tx_started = None;
-            self.reset_flash_until = Some(Instant::now() + Duration::from_millis(500));
+        if let Some(clear) = self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR") {
+            if clear {
+                self.machine.clear_io();
+                self.asr33.tx_started = None;
+                self.terminal.tx_started = None;
+                self.external_serial.reset_line_timing();
+                self.external_com.reset_line_timing();
+                self.status = "CLR asserted: external/emulated I/O cleared; CPU state preserved".into();
+            } else {
+                self.machine.reset();
+                self.asr33.tx_started = None;
+                self.terminal.tx_started = None;
+                self.external_serial.reset_line_timing();
+                self.external_com.reset_line_timing();
+                self.status = "RESET asserted: PC returned to 0000h and machine stopped".into();
+            }
         }
         if let Some(unprotect) = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT") {
             self.machine.protect_current_board(!unprotect);
