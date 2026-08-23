@@ -6,6 +6,8 @@ mod serial;
 
 use std::time::Duration;
 
+use rand::RngCore;
+
 use crate::config::{RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
 use front_panel::FrontPanelPort;
@@ -248,9 +250,9 @@ impl AltairMachine {
         self.running = false;
         self.bus.configure_memory(size, init_mode);
         self.cpu.reset();
-        self.bus.force_panel_lamps(0, 0);
         self.bus.clear_serial();
         self.wait_led = self.powered;
+        self.latch_stopped_fetch();
     }
 
     pub fn installed_ram_bytes(&self) -> usize {
@@ -261,12 +263,23 @@ impl AltairMachine {
         self.bus.arm_basic32_full_memory_probe_guard()
     }
 
+    /// Apply/remove power to the original Altair 8800 model.
+    ///
+    /// The 8800/8800a power-on-clear did not reliably reset the 8080. Real
+    /// operators therefore performed STOP + RESET after switching power on.
+    /// We preserve that property by giving the CPU an undefined power-on state
+    /// instead of silently calling RESET. The control side starts stopped so a
+    /// GUI user can perform the documented manual reset deterministically.
     pub fn power(&mut self, on: bool) {
         self.powered = on;
         self.running = false;
         if on {
             self.bus.clear_protection();
-            self.reset();
+            self.bus.clear_transient_memory_guards();
+            self.bus.clear_serial();
+            self.randomize_power_on_cpu();
+            self.wait_led = true;
+            self.latch_stopped_fetch();
         } else {
             self.wait_led = false;
             self.bus.force_panel_lamps(0, 0);
@@ -275,12 +288,58 @@ impl AltairMachine {
         }
     }
 
+    fn randomize_power_on_cpu(&mut self) {
+        // The 8080 has no defined register/PC state until RESET is asserted.
+        // Keep the core's internal invariants sane, then randomize the externally
+        // visible state to model that undefined power-up condition.
+        self.cpu.reset();
+        let mut rng = rand::rng();
+        self.cpu.a = rng.next_u32() as u8;
+        self.cpu.b = rng.next_u32() as u8;
+        self.cpu.c = rng.next_u32() as u8;
+        self.cpu.d = rng.next_u32() as u8;
+        self.cpu.e = rng.next_u32() as u8;
+        self.cpu.h = rng.next_u32() as u8;
+        self.cpu.l = rng.next_u32() as u8;
+        self.cpu.f = ((rng.next_u32() as u8) & 0xd5) | 0x02;
+        self.cpu.pc = rng.next_u32() as u16;
+        self.cpu.sp = rng.next_u32() as u16;
+        self.cpu.inte = rng.next_u32() & 1 != 0;
+        self.cpu.halted = false;
+        self.cpu.cycles = 0;
+    }
+
+    fn latch_stopped_fetch(&mut self) {
+        if !self.powered {
+            self.bus.force_panel_lamps(0, 0);
+            return;
+        }
+        let address = self.cpu.pc;
+        let data = self.bus.peek_memory(address).unwrap_or(0);
+        self.bus
+            .panel_bus
+            .observe(address, data, PanelCycle::InstructionFetch);
+        self.bus.freeze_panel_bus();
+    }
+
     pub fn reset(&mut self) {
+        if !self.powered {
+            return;
+        }
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
         self.running = false;
         self.wait_led = true;
-        self.bus.force_panel_lamps(0, 0);
+        self.bus.clear_serial();
+        self.latch_stopped_fetch();
+    }
+
+    /// Front-panel CLR is the I/O clear side of the RESET/CLR switch. It must
+    /// not reset the 8080 or change PC; it clears attached emulated I/O state.
+    pub fn clear_io(&mut self) {
+        if !self.powered {
+            return;
+        }
         self.bus.clear_serial();
     }
 
@@ -378,8 +437,8 @@ impl AltairMachine {
     }
 
     pub fn set_panel_lamps(&mut self, address: u16, data: u8) {
-        // Reset/power lamp flashes are a presentation effect. Never allow a
-        // delayed UI timer to overwrite real bus state after software started.
+        // Utility/debug presentation override. Never overwrite live bus state
+        // while software is running.
         if self.running {
             return;
         }
@@ -406,6 +465,7 @@ mod tests {
     fn protected_board_blocks_cpu_and_front_panel_writes() {
         let mut machine = AltairMachine::default();
         machine.power(true);
+        machine.reset();
         machine.set_panel_lamps(0x0400, 0);
         machine.bus.load(0x0400, &[0x12]);
         machine.protect_current_board(true);
@@ -431,6 +491,35 @@ mod tests {
         machine.bus.set_protected(0, true);
         machine.power(true);
         assert!(!machine.bus.is_protected(0));
+    }
+
+    #[test]
+    fn reset_establishes_documented_pc_zero_fetch_state() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.bus.load(0, &[0xa5]);
+        machine.reset();
+        assert_eq!(machine.cpu.pc, 0);
+        assert_eq!(machine.address_leds(), 0);
+        assert_eq!(machine.data_leds(), 0xa5);
+        let lamps = machine.panel_lamps();
+        assert_eq!(lamps.memr, 1.0);
+        assert_eq!(lamps.m1, 1.0);
+        assert_eq!(lamps.wo, 0.0);
+        assert!(machine.wait_led());
+    }
+
+    #[test]
+    fn clr_preserves_cpu_state_but_clears_serial() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.reset();
+        machine.cpu.pc = 0x1234;
+        machine.bus.serial_receive(b'X');
+        assert_eq!(machine.bus.serial_rx_len(), 1);
+        machine.clear_io();
+        assert_eq!(machine.cpu.pc, 0x1234);
+        assert_eq!(machine.bus.serial_rx_len(), 0);
     }
 
     #[test]
@@ -559,6 +648,7 @@ mod tests {
     fn front_panel_controls_do_not_modify_running_machine() {
         let mut machine = AltairMachine::default();
         machine.power(true);
+        machine.reset();
         machine.set_running(true);
         let pc = machine.cpu.pc;
         machine.step();
