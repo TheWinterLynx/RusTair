@@ -19,7 +19,7 @@ impl TerminalDuplex {
     pub const fn label(self) -> &'static str {
         match self {
             Self::FullDuplexRemoteEcho => "Full duplex / remote echo",
-            Self::HalfDuplexLocalEcho => "Half duplex / local echo",
+            Self::HalfDuplexLocalEcho => "Half duplex / local echo (host echo off)",
         }
     }
 
