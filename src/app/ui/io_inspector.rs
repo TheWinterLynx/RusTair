@@ -64,6 +64,7 @@ impl RusTairApp {
         Self::set_trace_follow_newest(ctx, true);
         self.machine.bus.clear_io_trace();
         self.external_serial.server.clear_network_trace();
+        self.external_com.port.clear_trace();
         Self::bump_trace_view_generation(ctx);
     }
 
@@ -170,6 +171,7 @@ impl RusTairApp {
                 capture_requested = false;
                 self.machine.bus.clear_io_trace();
                 self.external_serial.server.clear_network_trace();
+                self.external_com.port.clear_trace();
                 Self::bump_trace_view_generation(&ctx);
             }
 
@@ -178,7 +180,7 @@ impl RusTairApp {
 
         Self::set_io_capture_requested(&ctx, capture_requested);
         Self::set_trace_follow_newest(&ctx, follow_newest);
-        ui.small("Clear traces & pause resets both trace views and their scroll state. Resume only when you are ready to reproduce the event you want to inspect.");
+        ui.small("Clear traces & pause resets the emulated UART, TCP and COM trace views and their scroll state. Resume only when you are ready to reproduce the event you want to inspect.");
     }
 
     fn draw_port_map(&mut self, ui: &mut egui::Ui, selected: &mut u8) {
@@ -186,8 +188,6 @@ impl RusTairApp {
         ui.small("This is a separate 8-bit address space from RAM. Click any port to inspect it. A '*' means the CPU has accessed that port since this machine session began.");
         ui.add_space(4.0);
 
-        // Keep the map useful on narrow windows instead of forcing a fixed
-        // 16-column table outside the viewport.
         let columns = ((ui.available_width() / 48.0).floor() as usize).clamp(4, 16);
         egui::Grid::new("io-port-map")
             .num_columns(columns)
@@ -375,7 +375,7 @@ impl RusTairApp {
                 }
             });
             ui.data_mut(|data| data.insert_temp(inject_id, inject_text));
-            ui.small("Example 59 0D injects ASCII 'Y' followed by carriage return, bypassing PuTTY/TCP while still exercising BASIC's UART input path.");
+            ui.small("Example 59 0D injects ASCII 'Y' followed by carriage return, bypassing host transports while still exercising the guest UART input path.");
             ui.horizontal_wrapped(|ui| {
                 if ui.button("Clear UART RX").clicked() {
                     self.machine.bus.debugger_clear_serial_rx(selected);
@@ -527,6 +527,60 @@ impl RusTairApp {
             });
     }
 
+    fn draw_com_trace(&mut self, ui: &mut egui::Ui, generation: u64) {
+        ui.heading("COM / host serial trace");
+        ui.small("Inbound RX is captured as delivered by the host serial driver before character transformation. Outbound bytes are captured after the selected character mode has been applied.");
+        ui.horizontal_wrapped(|ui| {
+            ui.label(format!("Mode: {}", self.external_com.config.character_mode.label()));
+            ui.label(format!("Framing: {}", self.external_com.config.framing_label()));
+            ui.small("This view shares the global capture/pause controls above.");
+        });
+
+        let follow_newest = Self::trace_follow_newest(ui.ctx());
+        let mode = self.external_com.config.character_mode;
+        let events = self.external_com.port.trace_snapshot();
+        egui::ScrollArea::both()
+            .id_salt(("com-byte-trace-scroll", generation))
+            .max_height(230.0)
+            .auto_shrink([false, false])
+            .stick_to_bottom(follow_newest)
+            .show(ui, |ui| {
+                egui::Grid::new(("com-byte-trace-grid", generation))
+                    .striped(true)
+                    .num_columns(7)
+                    .show(ui, |ui| {
+                        ui.strong("#");
+                        ui.strong("Direction");
+                        ui.strong("Raw");
+                        ui.strong("Raw ASCII");
+                        ui.strong("UART value");
+                        ui.strong("UART ASCII");
+                        ui.strong("Host port");
+                        ui.end_row();
+
+                        for (sequence, inbound, byte, port_name) in events {
+                            let uart_value = if inbound {
+                                mode.rx_transform(byte)
+                            } else {
+                                byte
+                            };
+                            ui.monospace(sequence.to_string());
+                            ui.label(if inbound {
+                                "COM -> RusTair"
+                            } else {
+                                "RusTair -> COM"
+                            });
+                            ui.monospace(format!("{:02X}", byte));
+                            ui.monospace(Self::byte_text(byte));
+                            ui.monospace(format!("{:02X}", uart_value));
+                            ui.monospace(Self::byte_text(uart_value));
+                            ui.monospace(port_name);
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
     fn draw_io_inspector_contents(&mut self, ui: &mut egui::Ui) {
         ui.heading("Intel 8080 I/O Inspector / Editor");
         ui.horizontal_wrapped(|ui| {
@@ -565,16 +619,18 @@ impl RusTairApp {
         self.draw_io_trace(ui, selected, generation);
         ui.separator();
         self.draw_network_trace(ui, generation);
+        ui.separator();
+        self.draw_com_trace(ui, generation);
 
         ui.separator();
         ui.collapsing("How to use the serial traces", |ui| {
-            ui.label("1. Wait until guest software is waiting for terminal input.");
-            ui.label("2. Click Clear traces & pause. Both trace tables become empty and stay empty.");
+            ui.label("1. Wait until guest software is waiting for serial input.");
+            ui.label("2. Click Clear traces & pause. All trace tables become empty and stay empty.");
             ui.label("3. Click Resume capture, reproduce one short input, then click Pause capture.");
-            ui.label("4. Raw TCP shows what the host application actually sent and the UART value after terminal-mode transformation.");
+            ui.label("4. TCP or COM trace shows what the host transport actually delivered and the UART value after character-mode transformation.");
             ui.label("5. Emulated I/O shows UART enqueue and the value eventually returned by the guest's DATA-port IN instruction.");
             ui.label("6. STATUS busy-wait polling is hidden by default; enable Show serial STATUS polling only when investigating the handshake itself.");
-            ui.label("7. Inject RX can bypass TCP entirely for an A/B test of the UART and guest software.");
+            ui.label("7. Inject RX bypasses all host transports for an A/B test of the UART and guest software.");
         });
         ui.add_space(12.0);
     }
