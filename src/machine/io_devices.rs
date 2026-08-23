@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::config::SerialBoard;
+use crate::cpu8080::Bus;
 
 use super::serial::SerialPort;
 use super::{AltairBus, AltairMachine};
@@ -455,24 +456,22 @@ impl AltairBus {
     }
 
     /// Perform an intentionally invasive read, exactly like an 8080 IN from the
-    /// selected port. DATA-port reads therefore consume one queued RX byte.
+    /// selected port. DATA-port reads therefore consume one queued RX byte and
+    /// the front-panel bus monitor sees the same IN cycle as the CPU would.
     pub fn debugger_input_port(&mut self, port: u8) -> u8 {
+        let value = <Self as Bus>::input(self, port);
         if port == 0xff {
-            let value = self.panel.input();
             self.io.trace.record(IO_TRACE_IN, port, value);
-            value
-        } else {
-            self.io.input(port)
         }
+        value
     }
 
     /// Perform an intentionally invasive OUT without changing CPU registers.
+    /// The front-panel bus monitor sees the same OUT cycle as the CPU would.
     pub fn debugger_output_port(&mut self, port: u8, value: u8) {
+        <Self as Bus>::output(self, port, value);
         if port == 0xff {
-            self.panel.output(value);
             self.io.trace.record(IO_TRACE_OUT, port, value);
-        } else {
-            self.io.output(port, value);
         }
     }
 
@@ -505,8 +504,7 @@ impl AltairMachine {
         self.bus.configure_serial_board(board);
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
-        self.address_leds = 0;
-        self.bus.set_data_leds(0);
+        self.bus.force_panel_lamps(0, 0);
         self.wait_led = self.powered;
     }
 
@@ -518,7 +516,6 @@ impl AltairMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu8080::Bus;
 
     #[test]
     fn default_88_sio_does_not_alias_88_2sio_data_ports() {
