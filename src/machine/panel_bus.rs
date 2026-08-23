@@ -1,22 +1,32 @@
 use std::time::Duration;
 
-const STATUS_MEMR: usize = 0;
-const STATUS_INP: usize = 1;
-const STATUS_M1: usize = 2;
-const STATUS_OUT: usize = 3;
-const STATUS_HLTA: usize = 4;
-const STATUS_STACK: usize = 5;
-const STATUS_WO: usize = 6;
-const STATUS_INT: usize = 7;
-const STATUS_COUNT: usize = 8;
+const LAMP_INTE: usize = 0;
+const LAMP_PROT: usize = 1;
+const LAMP_MEMR: usize = 2;
+const LAMP_INP: usize = 3;
+const LAMP_M1: usize = 4;
+const LAMP_OUT: usize = 5;
+const LAMP_HLTA: usize = 6;
+const LAMP_STACK: usize = 7;
+const LAMP_WO: usize = 8;
+const LAMP_INT: usize = 9;
+const LAMP_WAIT: usize = 10;
+const LAMP_HLDA: usize = 11;
+const LAMP_COUNT: usize = 12;
 
-// Human-visible persistence. The real LEDs followed the bus electrically; this
-// low-pass is only the rendering bridge needed to make MHz bus activity visible
-// on a 60-ish Hz display without inventing a latched display register.
+// Presentation persistence only. The hardware state below stays binary;
+// this low-pass maps MHz bus transitions onto a ~60 Hz host display.
 const VISUAL_PERSISTENCE_SECS: f32 = 0.045;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PanelCycle {
+pub(super) enum BusOwner {
+    None,
+    Cpu,
+    FrontPanel,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum S100Cycle {
     InstructionFetch,
     MemoryRead,
     MemoryWrite,
@@ -29,86 +39,102 @@ pub(super) enum PanelCycle {
     InterruptAcknowledgeWhileHalted,
 }
 
-impl PanelCycle {
-    /// Raw 8080 status word placed on D7..D0 during SYNC at the beginning of a
-    /// machine cycle. Bit 1 is the processor's active-low write/output status:
-    /// it is 0 for memory-write/output cycles and 1 for read/input cycles.
+impl S100Cycle {
     fn status_word(self) -> u8 {
         match self {
-            Self::InstructionFetch => 0xA2,              // MEMR | M1 | WO(raw)
-            Self::MemoryRead => 0x82,                   // MEMR | WO(raw)
+            Self::InstructionFetch => 0xA2,
+            Self::MemoryRead => 0x82,
             Self::MemoryWrite => 0x00,
-            Self::StackRead => 0x86,                    // MEMR | STACK | WO(raw)
-            Self::StackWrite => 0x04,                   // STACK
-            Self::InputRead => 0x42,                    // INP | WO(raw)
-            Self::OutputWrite => 0x10,                  // OUT
-            Self::InterruptAcknowledge => 0x23,         // INTA | M1 | WO(raw)
-            Self::HaltAcknowledge => 0x8A,              // MEMR | HLTA | WO(raw)
-            Self::InterruptAcknowledgeWhileHalted => 0x2B, // INTA | HLTA | M1 | WO(raw)
+            Self::StackRead => 0x86,
+            Self::StackWrite => 0x04,
+            Self::InputRead => 0x42,
+            Self::OutputWrite => 0x10,
+            Self::InterruptAcknowledge => 0x23,
+            Self::HaltAcknowledge => 0x8A,
+            Self::InterruptAcknowledgeWhileHalted => 0x2B,
         }
     }
 
-    /// Approximate T-state occupancy of the externally visible machine cycle.
-    /// We intentionally stay machine-cycle sampled rather than making the CPU
-    /// core T-state resumable.
-    fn weight(self) -> u32 {
+    fn t_states(self) -> u32 {
         match self {
-            Self::InstructionFetch => 4,
-            Self::HaltAcknowledge => 4,
-            Self::InterruptAcknowledge | Self::InterruptAcknowledgeWhileHalted => 3,
+            Self::InstructionFetch | Self::HaltAcknowledge => 4,
             _ => 3,
         }
-    }
-
-    fn display_status(self) -> [bool; STATUS_COUNT] {
-        let word = self.status_word();
-        [
-            word & 0x80 != 0, // MEMR
-            word & 0x40 != 0, // INP
-            word & 0x20 != 0, // M1
-            word & 0x10 != 0, // OUT
-            word & 0x08 != 0, // HLTA
-            word & 0x04 != 0, // STACK
-            word & 0x02 == 0, // panel WO lamp is active for WRITE/OUTPUT
-            word & 0x01 != 0, // INT/INTA
-        ]
     }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct PanelLampSnapshot {
-    pub address: [f32; 16],
-    pub data: [f32; 8],
-    pub memr: f32,
-    pub inp: f32,
-    pub m1: f32,
-    pub out: f32,
-    pub hlta: f32,
-    pub stack: f32,
-    pub wo: f32,
-    pub int_ack: f32,
+pub(super) struct S100Signals {
+    pub address: u16,
+    pub data: u8,
+    pub memr: bool,
+    pub inp: bool,
+    pub m1: bool,
+    pub out: bool,
+    pub hlta: bool,
+    pub stack: bool,
+    pub wo: bool,
+    pub int_ack: bool,
+    pub inte: bool,
+    pub prot: bool,
+    pub ready: bool,
+    pub wait: bool,
+    pub hold: bool,
+    pub hlda: bool,
+    pub owner: BusOwner,
 }
 
-impl Default for PanelLampSnapshot {
+impl Default for S100Signals {
     fn default() -> Self {
         Self {
-            address: [0.0; 16],
-            data: [0.0; 8],
-            memr: 0.0,
-            inp: 0.0,
-            m1: 0.0,
-            out: 0.0,
-            hlta: 0.0,
-            stack: 0.0,
-            wo: 0.0,
-            int_ack: 0.0,
+            address: 0,
+            data: 0,
+            memr: false,
+            inp: false,
+            m1: false,
+            out: false,
+            hlta: false,
+            stack: false,
+            wo: false,
+            int_ack: false,
+            inte: false,
+            prot: false,
+            ready: false,
+            wait: false,
+            hold: false,
+            hlda: false,
+            owner: BusOwner::None,
         }
     }
 }
 
-impl PanelLampSnapshot {
-    fn status_array(self) -> [f32; STATUS_COUNT] {
+impl S100Signals {
+    fn clear_status(&mut self) {
+        self.memr = false;
+        self.inp = false;
+        self.m1 = false;
+        self.out = false;
+        self.hlta = false;
+        self.stack = false;
+        self.wo = false;
+        self.int_ack = false;
+    }
+
+    fn apply_status_word(&mut self, word: u8) {
+        self.memr = word & 0x80 != 0;
+        self.inp = word & 0x40 != 0;
+        self.m1 = word & 0x20 != 0;
+        self.out = word & 0x10 != 0;
+        self.hlta = word & 0x08 != 0;
+        self.stack = word & 0x04 != 0;
+        self.wo = word & 0x02 == 0;
+        self.int_ack = word & 0x01 != 0;
+    }
+
+    fn lamp_states(&self) -> [bool; LAMP_COUNT] {
         [
+            self.inte,
+            self.prot,
             self.memr,
             self.inp,
             self.m1,
@@ -117,118 +143,138 @@ impl PanelLampSnapshot {
             self.stack,
             self.wo,
             self.int_ack,
+            self.wait,
+            self.hlda,
         ]
-    }
-
-    fn set_status_array(&mut self, values: [f32; STATUS_COUNT]) {
-        self.memr = values[STATUS_MEMR];
-        self.inp = values[STATUS_INP];
-        self.m1 = values[STATUS_M1];
-        self.out = values[STATUS_OUT];
-        self.hlta = values[STATUS_HLTA];
-        self.stack = values[STATUS_STACK];
-        self.wo = values[STATUS_WO];
-        self.int_ack = values[STATUS_INT];
     }
 }
 
-pub(super) struct PanelBusMonitor {
-    live_address: u16,
-    live_data: u8,
-    live_cycle: Option<PanelCycle>,
+#[derive(Clone, Copy, Debug)]
+pub struct PanelLampSnapshot {
+    pub address: [f32; 16],
+    pub data: [f32; 8],
+    pub inte: f32,
+    pub prot: f32,
+    pub memr: f32,
+    pub inp: f32,
+    pub m1: f32,
+    pub out: f32,
+    pub hlta: f32,
+    pub stack: f32,
+    pub wo: f32,
+    pub int_ack: f32,
+    pub wait: f32,
+    pub hlda: f32,
+}
+
+impl Default for PanelLampSnapshot {
+    fn default() -> Self {
+        Self {
+            address: [0.0; 16],
+            data: [0.0; 8],
+            inte: 0.0,
+            prot: 0.0,
+            memr: 0.0,
+            inp: 0.0,
+            m1: 0.0,
+            out: 0.0,
+            hlta: 0.0,
+            stack: 0.0,
+            wo: 0.0,
+            int_ack: 0.0,
+            wait: 0.0,
+            hlda: 0.0,
+        }
+    }
+}
+
+impl PanelLampSnapshot {
+    fn lamp_array(self) -> [f32; LAMP_COUNT] {
+        [
+            self.inte,
+            self.prot,
+            self.memr,
+            self.inp,
+            self.m1,
+            self.out,
+            self.hlta,
+            self.stack,
+            self.wo,
+            self.int_ack,
+            self.wait,
+            self.hlda,
+        ]
+    }
+
+    fn set_lamp_array(&mut self, values: [f32; LAMP_COUNT]) {
+        self.inte = values[LAMP_INTE];
+        self.prot = values[LAMP_PROT];
+        self.memr = values[LAMP_MEMR];
+        self.inp = values[LAMP_INP];
+        self.m1 = values[LAMP_M1];
+        self.out = values[LAMP_OUT];
+        self.hlta = values[LAMP_HLTA];
+        self.stack = values[LAMP_STACK];
+        self.wo = values[LAMP_WO];
+        self.int_ack = values[LAMP_INT];
+        self.wait = values[LAMP_WAIT];
+        self.hlda = values[LAMP_HLDA];
+    }
+}
+
+#[derive(Default)]
+struct PanelLampIntegrator {
     address_on: [u64; 16],
     data_on: [u64; 8],
-    status_on: [u64; STATUS_COUNT],
+    lamps_on: [u64; LAMP_COUNT],
     total_weight: u64,
     snapshot: PanelLampSnapshot,
 }
 
-impl Default for PanelBusMonitor {
-    fn default() -> Self {
-        Self {
-            live_address: 0,
-            live_data: 0,
-            live_cycle: None,
-            address_on: [0; 16],
-            data_on: [0; 8],
-            status_on: [0; STATUS_COUNT],
-            total_weight: 0,
-            snapshot: PanelLampSnapshot::default(),
+impl PanelLampIntegrator {
+    fn sample(&mut self, signals: &S100Signals, weight: u32) {
+        let weight = u64::from(weight);
+        if weight == 0 {
+            return;
         }
-    }
-}
-
-impl PanelBusMonitor {
-    pub(super) fn observe(&mut self, address: u16, data: u8, cycle: PanelCycle) {
-        self.live_address = address;
-        self.live_data = data;
-        self.live_cycle = Some(cycle);
-
-        let weight = u64::from(cycle.weight());
-        let status_weight = 1u64.min(weight);
-        let data_weight = weight.saturating_sub(status_weight);
-        let status_word = cycle.status_word();
-        let status = cycle.display_status();
-
         for bit in 0..16 {
-            if address & (1u16 << bit) != 0 {
+            if signals.address & (1u16 << bit) != 0 {
                 self.address_on[bit] += weight;
             }
         }
-
-        // During T1/SYNC the 8080 puts the status word on the bidirectional data
-        // bus. For the remaining externally visible portion of the cycle, the
-        // actual memory/I/O byte dominates the data lamps.
         for bit in 0..8 {
-            if status_word & (1u8 << bit) != 0 {
-                self.data_on[bit] += status_weight;
-            }
-            if data & (1u8 << bit) != 0 {
-                self.data_on[bit] += data_weight;
+            if signals.data & (1u8 << bit) != 0 {
+                self.data_on[bit] += weight;
             }
         }
-
-        for bit in 0..STATUS_COUNT {
-            if status[bit] {
-                self.status_on[bit] += weight;
+        let lamps = signals.lamp_states();
+        for bit in 0..LAMP_COUNT {
+            if lamps[bit] {
+                self.lamps_on[bit] += weight;
             }
         }
-
         self.total_weight += weight;
     }
 
-    pub(super) fn force_static(&mut self, address: u16, data: u8) {
-        self.live_address = address;
-        self.live_data = data;
-        self.live_cycle = None;
+    fn freeze(&mut self, signals: &S100Signals) {
         self.clear_activity();
-        self.snapshot.address = bits16(address);
-        self.snapshot.data = bits8(data);
-        self.snapshot.set_status_array([0.0; STATUS_COUNT]);
-    }
-
-    pub(super) fn freeze_live(&mut self) {
-        self.clear_activity();
-        self.snapshot.address = bits16(self.live_address);
-        self.snapshot.data = bits8(self.live_data);
-        let status = self
-            .live_cycle
-            .map(PanelCycle::display_status)
-            .unwrap_or([false; STATUS_COUNT]);
-        let mut values = [0.0; STATUS_COUNT];
-        for bit in 0..STATUS_COUNT {
-            values[bit] = if status[bit] { 1.0 } else { 0.0 };
+        self.snapshot.address = bits16(signals.address);
+        self.snapshot.data = bits8(signals.data);
+        let states = signals.lamp_states();
+        let mut lamps = [0.0; LAMP_COUNT];
+        for bit in 0..LAMP_COUNT {
+            lamps[bit] = if states[bit] { 1.0 } else { 0.0 };
         }
-        self.snapshot.set_status_array(values);
+        self.snapshot.set_lamp_array(lamps);
     }
 
-    pub(super) fn commit_activity(&mut self, dt: Duration, dynamic: bool) {
+    fn commit(&mut self, signals: &S100Signals, dt: Duration, dynamic: bool) {
         if !dynamic {
-            self.freeze_live();
+            self.freeze(signals);
             return;
         }
         if self.total_weight == 0 {
-            return;
+            self.sample(signals, 1);
         }
 
         let total = self.total_weight as f32;
@@ -239,11 +285,11 @@ impl PanelBusMonitor {
         for bit in 0..8 {
             target.data[bit] = self.data_on[bit] as f32 / total;
         }
-        let mut target_status = [0.0; STATUS_COUNT];
-        for bit in 0..STATUS_COUNT {
-            target_status[bit] = self.status_on[bit] as f32 / total;
+        let mut target_lamps = [0.0; LAMP_COUNT];
+        for bit in 0..LAMP_COUNT {
+            target_lamps[bit] = self.lamps_on[bit] as f32 / total;
         }
-        target.set_status_array(target_status);
+        target.set_lamp_array(target_lamps);
 
         let dt_secs = dt.as_secs_f32().max(0.000_001);
         let retention = (-dt_secs / VISUAL_PERSISTENCE_SECS).exp().clamp(0.0, 1.0);
@@ -256,33 +302,162 @@ impl PanelBusMonitor {
             self.snapshot.data[bit] =
                 self.snapshot.data[bit] * retention + target.data[bit] * inject;
         }
-        let old_status = self.snapshot.status_array();
-        let new_status = target.status_array();
-        let mut mixed_status = [0.0; STATUS_COUNT];
-        for bit in 0..STATUS_COUNT {
-            mixed_status[bit] = old_status[bit] * retention + new_status[bit] * inject;
+        let old_lamps = self.snapshot.lamp_array();
+        let new_lamps = target.lamp_array();
+        let mut mixed = [0.0; LAMP_COUNT];
+        for bit in 0..LAMP_COUNT {
+            mixed[bit] = old_lamps[bit] * retention + new_lamps[bit] * inject;
         }
-        self.snapshot.set_status_array(mixed_status);
+        self.snapshot.set_lamp_array(mixed);
         self.clear_activity();
     }
 
-    pub(super) fn snapshot(&self) -> PanelLampSnapshot {
-        self.snapshot
-    }
-
-    pub(super) fn live_address(&self) -> u16 {
-        self.live_address
-    }
-
-    pub(super) fn live_data(&self) -> u8 {
-        self.live_data
+    fn clear(&mut self) {
+        self.clear_activity();
+        self.snapshot = PanelLampSnapshot::default();
     }
 
     fn clear_activity(&mut self) {
         self.address_on.fill(0);
         self.data_on.fill(0);
-        self.status_on.fill(0);
+        self.lamps_on.fill(0);
         self.total_weight = 0;
+    }
+}
+
+pub(super) struct S100BusState {
+    signals: S100Signals,
+    lamps: PanelLampIntegrator,
+}
+
+impl Default for S100BusState {
+    fn default() -> Self {
+        Self {
+            signals: S100Signals::default(),
+            lamps: PanelLampIntegrator::default(),
+        }
+    }
+}
+
+impl S100BusState {
+    pub(super) fn signals(&self) -> S100Signals {
+        self.signals
+    }
+
+    pub(super) fn snapshot(&self) -> PanelLampSnapshot {
+        self.lamps.snapshot
+    }
+
+    pub(super) fn power_off(&mut self) {
+        self.signals = S100Signals::default();
+        self.lamps.clear();
+    }
+
+    pub(super) fn set_inte(&mut self, enabled: bool) {
+        self.signals.inte = enabled;
+    }
+
+    pub(super) fn set_ready(&mut self, ready: bool) {
+        self.signals.ready = ready;
+        self.signals.wait = !ready;
+    }
+
+    pub(super) fn set_hold(&mut self, hold: bool) {
+        self.signals.hold = hold;
+        if !hold {
+            self.signals.hlda = false;
+        }
+    }
+
+    pub(super) fn set_hlda(&mut self, acknowledged: bool) {
+        self.signals.hlda = acknowledged;
+    }
+
+    pub(super) fn drive_cpu_cycle(
+        &mut self,
+        address: u16,
+        data: u8,
+        cycle: S100Cycle,
+        protected: bool,
+        inte: bool,
+    ) {
+        self.signals.owner = BusOwner::Cpu;
+        self.signals.address = address;
+        self.signals.prot = protected;
+        self.signals.inte = inte;
+        self.signals.apply_status_word(cycle.status_word());
+
+        self.signals.data = cycle.status_word();
+        self.lamps.sample(&self.signals, 1);
+        self.signals.data = data;
+        self.lamps
+            .sample(&self.signals, cycle.t_states().saturating_sub(1));
+    }
+
+    pub(super) fn drive_front_panel_reset(
+        &mut self,
+        address: u16,
+        data: u8,
+        protected: bool,
+        inte: bool,
+    ) {
+        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.address = address;
+        self.signals.data = data;
+        self.signals.prot = protected;
+        self.signals.inte = inte;
+        self.signals.clear_status();
+        self.set_ready(false);
+        self.lamps.freeze(&self.signals);
+    }
+
+    pub(super) fn drive_front_panel_examine(
+        &mut self,
+        address: u16,
+        data: u8,
+        protected: bool,
+        inte: bool,
+    ) {
+        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.address = address;
+        self.signals.data = data;
+        self.signals.prot = protected;
+        self.signals.inte = inte;
+        self.signals.clear_status();
+        self.signals.memr = true;
+        self.signals.m1 = true;
+        self.set_ready(false);
+        self.lamps.freeze(&self.signals);
+    }
+
+    pub(super) fn drive_front_panel_deposit(
+        &mut self,
+        address: u16,
+        data: u8,
+        protected: bool,
+        inte: bool,
+    ) {
+        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.address = address;
+        self.signals.data = data;
+        self.signals.prot = protected;
+        self.signals.inte = inte;
+        self.signals.clear_status();
+        self.signals.wo = true;
+        self.set_ready(false);
+        self.lamps.freeze(&self.signals);
+    }
+
+    pub(super) fn refresh_protect(&mut self, protected: bool) {
+        self.signals.prot = protected;
+    }
+
+    pub(super) fn freeze(&mut self) {
+        self.lamps.freeze(&self.signals);
+    }
+
+    pub(super) fn commit(&mut self, dt: Duration, dynamic: bool) {
+        self.lamps.commit(&self.signals, dt, dynamic);
     }
 }
 
@@ -307,49 +482,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn intel_status_words_map_to_panel_labels() {
-        assert_eq!(PanelCycle::InstructionFetch.status_word(), 0xA2);
-        assert_eq!(PanelCycle::MemoryRead.status_word(), 0x82);
-        assert_eq!(PanelCycle::MemoryWrite.status_word(), 0x00);
-        assert_eq!(PanelCycle::StackRead.status_word(), 0x86);
-        assert_eq!(PanelCycle::StackWrite.status_word(), 0x04);
-        assert_eq!(PanelCycle::InputRead.status_word(), 0x42);
-        assert_eq!(PanelCycle::OutputWrite.status_word(), 0x10);
-        assert_eq!(PanelCycle::InterruptAcknowledge.status_word(), 0x23);
-        assert_eq!(PanelCycle::HaltAcknowledge.status_word(), 0x8A);
-        assert_eq!(PanelCycle::InterruptAcknowledgeWhileHalted.status_word(), 0x2B);
+    fn intel_status_words_drive_s100_status_lines() {
+        let mut bus = S100BusState::default();
+        bus.set_ready(true);
+        bus.drive_cpu_cycle(0x1234, 0x56, S100Cycle::InstructionFetch, false, false);
+        let s = bus.signals();
+        assert_eq!(s.address, 0x1234);
+        assert_eq!(s.data, 0x56);
+        assert!(s.memr);
+        assert!(s.m1);
+        assert!(!s.wo);
 
-        let write = PanelCycle::MemoryWrite.display_status();
-        assert!(write[STATUS_WO]);
-        assert!(!write[STATUS_MEMR]);
-        let read = PanelCycle::MemoryRead.display_status();
-        assert!(read[STATUS_MEMR]);
-        assert!(!read[STATUS_WO]);
+        bus.drive_cpu_cycle(0x1234, 0xaa, S100Cycle::MemoryWrite, false, false);
+        let s = bus.signals();
+        assert!(!s.memr);
+        assert!(s.wo);
     }
 
     #[test]
-    fn repeated_high_address_reads_dominate_killbit_style_activity() {
-        let mut monitor = PanelBusMonitor::default();
-        monitor.observe(0x0000, 0x1a, PanelCycle::InstructionFetch);
-        for _ in 0..4 {
-            monitor.observe(0x8000, 0x00, PanelCycle::MemoryRead);
-        }
-        monitor.commit_activity(Duration::from_secs(1), true);
-        let frame = monitor.snapshot();
-        assert!(frame.address[15] > 0.70);
-        assert!(frame.memr > 0.99);
+    fn hold_and_hlda_are_bus_state_not_render_constants() {
+        let mut bus = S100BusState::default();
+        bus.set_hold(true);
+        bus.set_hlda(true);
+        bus.freeze();
+        assert_eq!(bus.snapshot().hlda, 1.0);
+        bus.set_hold(false);
+        bus.freeze();
+        assert_eq!(bus.snapshot().hlda, 0.0);
     }
 
     #[test]
-    fn status_word_contributes_to_data_bus_visibility() {
-        let mut monitor = PanelBusMonitor::default();
-        monitor.observe(0x0000, 0x00, PanelCycle::InstructionFetch);
-        monitor.commit_activity(Duration::from_secs(1), true);
-        let frame = monitor.snapshot();
-        // Fetch status word A2h occupies T1, so D7/D5/D1 are visible even when
-        // the fetched opcode itself is 00h.
-        assert!(frame.data[7] > 0.20);
-        assert!(frame.data[5] > 0.20);
-        assert!(frame.data[1] > 0.20);
+    fn front_panel_reset_does_not_invent_a_cpu_cycle() {
+        let mut bus = S100BusState::default();
+        bus.drive_front_panel_reset(0, 0xa5, false, false);
+        let s = bus.signals();
+        assert_eq!(s.owner, BusOwner::FrontPanel);
+        assert!(s.wait);
+        assert!(!s.memr);
+        assert!(!s.m1);
+        assert!(!s.wo);
     }
 }

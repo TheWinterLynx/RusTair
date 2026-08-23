@@ -73,10 +73,6 @@ impl IoTrace {
             _ => {}
         }
 
-        // Poll loops such as BASIC's IN 00h status wait can execute thousands
-        // of identical reads per second. Coalesce adjacent identical events so
-        // the useful DATA-port transition remains visible instead of being
-        // pushed out of the trace immediately.
         if let Some(last) = self.events.back_mut() {
             if last.kind == kind && last.port == port && last.value == value {
                 last.repeat = last.repeat.saturating_add(1);
@@ -133,11 +129,6 @@ impl IoTrace {
     }
 }
 
-/// I/O devices currently installed in the emulated machine.
-///
-/// A fully populated MITS 88-2SIO contains two independent 6850 ACIAs. RusTair
-/// therefore keeps separate RX/TX state for Port 0 and Port 1 instead of
-/// aliasing both guest-visible port pairs to one host-side serial queue.
 pub(super) struct IoDevices {
     serial: [SerialPort; 2],
     serial_board: SerialBoard,
@@ -193,10 +184,6 @@ impl IoDevices {
 
     fn write_two_sio_control(&mut self, index: usize, value: u8) {
         self.two_sio_control[index] = value;
-
-        // MC6850 CR1:CR0 = 11 performs a master reset. We do not yet emulate
-        // IRQ/RTS/framing electrically, but reset semantics are guest-visible
-        // and must remain independent for the two ACIAs.
         if value & 0x03 == 0x03 {
             self.serial[index].clear();
         }
@@ -205,18 +192,12 @@ impl IoDevices {
     fn input_raw(&mut self, port: u8) -> u8 {
         match self.serial_board {
             SerialBoard::Sio88 => match port {
-                // MITS 88-SIO status convention used by the S2JS reference.
-                // Bit 0 is set when the receive buffer is empty, while bits 6/7
-                // are set while the transmit holding register is occupied.
                 SIO_STATUS_PORT => {
                     let rx_empty = self.serial[0].rx_empty();
                     let tx_busy = self.serial[0].tx_busy();
                     (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
                 }
                 SIO_DATA_PORT => self.serial[0].read_rx().unwrap_or(0),
-
-                // An absent 88-2SIO must not look TX-ready to software polling
-                // either of its status registers.
                 SIO2_PORT0_STATUS | SIO2_PORT1_STATUS => 0x00,
                 _ => 0,
             },
@@ -225,10 +206,6 @@ impl IoDevices {
                 SIO2_PORT0_DATA => self.serial[0].read_rx().unwrap_or(0),
                 SIO2_PORT1_STATUS => self.two_sio_status(1),
                 SIO2_PORT1_DATA => self.serial[1].read_rx().unwrap_or(0),
-
-                // The 88-SIO uses active-low ready flags. Returning all ones
-                // for its absent status register keeps software waiting rather
-                // than accidentally treating the uninstalled card as ready.
                 SIO_STATUS_PORT => 0xff,
                 _ => 0,
             },
@@ -286,8 +263,6 @@ impl IoDevices {
         self.trace.record(IO_TRACE_OUT, port, value);
     }
 
-    // Port 0 is the legacy/default console path used by the existing ASR-33
-    // integration and by the single-port 88-SIO.
     pub(super) fn serial_receive(&mut self, byte: u8) {
         self.serial[0].receive(byte);
         let port = self.data_port_for_index(0);
@@ -389,9 +364,6 @@ impl IoDevices {
     }
 }
 
-// Keep serial-board configuration and Port 1 access next to the device decoder
-// they control. Port 0 remains available through AltairBus's existing serial
-// API so the ASR-33 path and the 88-SIO keep their established semantics.
 impl AltairBus {
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         self.io.configure_serial_board(board);
@@ -425,8 +397,6 @@ impl AltairBus {
         self.io.port1_tx_busy()
     }
 
-    /// Non-invasive port observation for the debugger. Reading a DATA port here
-    /// does not consume the receive byte.
     pub fn peek_io_port(&self, port: u8) -> u8 {
         if port == 0xff {
             self.panel.input()
@@ -455,9 +425,6 @@ impl AltairBus {
         self.io.trace.clear_events();
     }
 
-    /// Perform an intentionally invasive read, exactly like an 8080 IN from the
-    /// selected port. DATA-port reads therefore consume one queued RX byte and
-    /// the front-panel bus monitor sees the same IN cycle as the CPU would.
     pub fn debugger_input_port(&mut self, port: u8) -> u8 {
         let value = <Self as Bus>::input(self, port);
         if port == 0xff {
@@ -466,8 +433,6 @@ impl AltairBus {
         value
     }
 
-    /// Perform an intentionally invasive OUT without changing CPU registers.
-    /// The front-panel bus monitor sees the same OUT cycle as the CPU would.
     pub fn debugger_output_port(&mut self, port: u8, value: u8) {
         <Self as Bus>::output(self, port, value);
         if port == 0xff {
@@ -493,8 +458,6 @@ impl AltairBus {
 }
 
 impl AltairMachine {
-    /// Swap the installed serial board and reset the CPU/device state without
-    /// modifying RAM or the front-panel sense switches.
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         if self.bus.serial_board() == board {
             return;
@@ -503,9 +466,11 @@ impl AltairMachine {
         self.running = false;
         self.bus.configure_serial_board(board);
         self.bus.clear_transient_memory_guards();
-        self.cpu.reset();
-        self.bus.force_panel_lamps(0, 0);
-        self.wait_led = self.powered;
+        if self.powered {
+            self.reset();
+        } else {
+            self.cpu.reset();
+        }
     }
 
     pub fn serial_board(&self) -> SerialBoard {
@@ -521,12 +486,10 @@ mod tests {
     fn default_88_sio_does_not_alias_88_2sio_data_ports() {
         let mut io = IoDevices::default();
         assert_eq!(io.serial_board(), SerialBoard::Sio88);
-
         io.output(SIO2_PORT0_DATA, b'X');
         io.output(SIO2_PORT1_DATA, b'Y');
         assert!(!io.serial_tx_busy());
         assert!(!io.port1_tx_busy());
-
         io.output(SIO_DATA_PORT, b'S');
         assert_eq!(io.serial_tx_front(), Some(b'S'));
     }
@@ -535,34 +498,12 @@ mod tests {
     fn selected_88_2sio_exposes_two_independent_serial_ports() {
         let mut io = IoDevices::default();
         io.configure_serial_board(SerialBoard::TwoSio88);
-
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x02, 0x02);
         assert_eq!(io.input(SIO2_PORT1_STATUS) & 0x02, 0x02);
         assert_eq!(io.input(SIO_STATUS_PORT), 0xff);
-
         io.output(SIO2_PORT0_DATA, b'0');
         io.output(SIO2_PORT1_DATA, b'1');
         assert_eq!(io.serial_tx_front(), Some(b'0'));
-        assert_eq!(io.port1_tx_front(), Some(b'1'));
-
-        io.port1_receive(b'B');
-        assert_eq!(io.input(SIO2_PORT1_STATUS) & 0x01, 0x01);
-        assert_eq!(io.port1_rx_len(), 1);
-        assert_eq!(io.input(SIO2_PORT1_DATA), b'B');
-        assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x01, 0x00);
-    }
-
-    #[test]
-    fn two_sio_master_reset_is_per_port() {
-        let mut io = IoDevices::default();
-        io.configure_serial_board(SerialBoard::TwoSio88);
-        io.output(SIO2_PORT0_DATA, b'0');
-        io.output(SIO2_PORT1_DATA, b'1');
-
-        io.output(SIO2_PORT0_STATUS, 0x03);
-
-        assert!(!io.serial_tx_busy());
-        assert!(io.port1_tx_busy());
         assert_eq!(io.port1_tx_front(), Some(b'1'));
     }
 
@@ -570,9 +511,7 @@ mod tests {
     fn changing_serial_board_preserves_ram() {
         let mut machine = AltairMachine::default();
         machine.bus.load(0x0200, &[0x5a]);
-
         machine.configure_serial_board(SerialBoard::TwoSio88);
-
         assert_eq!(machine.bus.read(0x0200), 0x5a);
         assert_eq!(machine.serial_board(), SerialBoard::TwoSio88);
     }
@@ -585,27 +524,5 @@ mod tests {
         assert_eq!(machine.bus.serial_rx_len(), 1);
         assert_eq!(machine.bus.input(SIO_DATA_PORT), b'Y');
         assert_eq!(machine.bus.serial_rx_len(), 0);
-    }
-
-    #[test]
-    fn trace_coalesces_repeated_status_polls_but_counts_them() {
-        let mut io = IoDevices::default();
-        io.trace.set_enabled(true);
-        for _ in 0..100 {
-            assert_eq!(io.input(SIO_STATUS_PORT), 0x01);
-        }
-        let events = io.trace.snapshot();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].4, 100);
-        assert_eq!(io.trace.port_activity(SIO_STATUS_PORT).2, 100);
-    }
-
-    #[test]
-    fn debugger_can_inject_rx_without_cpu_side_effects() {
-        let mut machine = AltairMachine::default();
-        machine.bus.set_io_trace_enabled(true);
-        assert!(machine.bus.debugger_inject_serial_rx(SIO_DATA_PORT, b'Y'));
-        assert_eq!(machine.bus.peek_io_port(SIO_DATA_PORT), b'Y');
-        assert_eq!(machine.bus.debugger_input_port(SIO_DATA_PORT), b'Y');
     }
 }

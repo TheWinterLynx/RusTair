@@ -17,10 +17,8 @@ pub trait Bus {
     fn write(&mut self, address: u16, value: u8);
     fn input(&mut self, _port: u8) -> u8 { 0xff }
     fn output(&mut self, _port: u8, _value: u8) {}
+    fn set_inte(&mut self, _enabled: bool) {}
 
-    // Semantic wrappers let hardware such as the Altair front panel distinguish
-    // the 8080 status word for otherwise identical memory accesses. Cores that
-    // do not care about bus-cycle semantics keep the original read/write model.
     fn opcode_fetch(&mut self, address: u16) -> u8 { self.read(address) }
     fn stack_read(&mut self, address: u16) -> u8 { self.read(address) }
     fn stack_write(&mut self, address: u16, value: u8) { self.write(address, value); }
@@ -137,9 +135,6 @@ impl Cpu8080 {
 
     #[inline]
     fn push<B: Bus>(&mut self, bus: &mut B, value: u16) {
-        // The 8080 decrements SP and writes the high byte first, then
-        // decrements again and writes the low byte. The final memory image is
-        // identical to a 16-bit store, but the order matters to a real panel.
         self.sp = self.sp.wrapping_sub(1);
         bus.stack_write(self.sp, (value >> 8) as u8);
         self.sp = self.sp.wrapping_sub(1);
@@ -290,7 +285,10 @@ impl Cpu8080 {
         let opcode = bus.opcode_fetch(opcode_address);
         self.pc = self.pc.wrapping_add(1);
         let t = self.execute(bus, opcode);
-        if enable_after { self.inte = true; }
+        if enable_after {
+            self.inte = true;
+            bus.set_inte(true);
+        }
         self.f = (self.f & 0xd5) | FLAG_1;
         self.cycles += t as u64;
         t
@@ -307,6 +305,7 @@ impl Cpu8080 {
         let while_halted = self.halted;
         bus.interrupt_ack(self.pc, opcode, while_halted);
         self.inte = false;
+        bus.set_inte(false);
         self.halted = false;
         let t = self.execute(bus, opcode);
         self.cycles += t as u64;
@@ -473,7 +472,7 @@ impl Cpu8080 {
                 0xe9 => { self.pc = self.hl(); 5 }
                 0xeb => { core::mem::swap(&mut self.d, &mut self.h); core::mem::swap(&mut self.e, &mut self.l); 5 }
                 0xee => { let v = self.next_byte(bus); self.xra(v); 7 }
-                0xf3 => { self.inte = false; self.ei_pending = false; 4 }
+                0xf3 => { self.inte = false; self.ei_pending = false; bus.set_inte(false); 4 }
                 0xf6 => { let v = self.next_byte(bus); self.ora(v); 7 }
                 0xf9 => { self.sp = self.hl(); 5 }
                 0xfb => { self.ei_pending = true; 4 }
