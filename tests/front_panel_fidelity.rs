@@ -4,6 +4,7 @@ use rustair::machine::AltairMachine;
 fn ldax_d_exposes_de_on_front_panel_address_bus() {
     let mut machine = AltairMachine::default();
     machine.power(true);
+    machine.reset();
 
     // LDAX D reads the byte addressed by DE. KillBit deliberately repeats this
     // operation so the value in D dominates the high address lamps.
@@ -22,6 +23,7 @@ fn ldax_d_exposes_de_on_front_panel_address_bus() {
 fn in_ff_exposes_ffff_on_address_bus_and_reads_sense_switches() {
     let mut machine = AltairMachine::default();
     machine.power(true);
+    machine.reset();
     machine.toggle_sense_switch(15);
 
     // MVI A is unnecessary here: IN FFh leaves its result in A.
