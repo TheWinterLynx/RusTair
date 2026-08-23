@@ -4,28 +4,56 @@ use std::time::Duration;
 /// Character handling at the host-side serial endpoint.
 ///
 /// Altair BASIC 3.2 emits terminal text with bit 7 used/set on some output
-/// bytes. Period terminals effectively treated that as 7-bit ASCII. Keep that
-/// historically useful terminal behavior as the default, while retaining an
-/// explicit byte-transparent mode for binary/protocol work.
+/// bytes. Period terminals treated the link as 7-bit ASCII, and the ASR-33 was
+/// an uppercase-only terminal. Keep that historically useful behavior as the
+/// default, while retaining case-preserving 7-bit and byte-transparent modes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExternalSerialCharacterMode {
+    Asr33Uppercase,
     SevenBitAscii,
     Raw8Bit,
 }
 
 impl ExternalSerialCharacterMode {
-    pub const ALL: [Self; 2] = [Self::SevenBitAscii, Self::Raw8Bit];
+    pub const ALL: [Self; 3] = [
+        Self::Asr33Uppercase,
+        Self::SevenBitAscii,
+        Self::Raw8Bit,
+    ];
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::SevenBitAscii => "7-bit terminal ASCII (mask bit 7)",
+            Self::Asr33Uppercase => "ASR-33 style (7-bit + uppercase input)",
+            Self::SevenBitAscii => "7-bit ASCII (preserve case)",
             Self::Raw8Bit => "Raw 8-bit bytes",
         }
     }
 
-    pub const fn transform(self, byte: u8) -> u8 {
+    /// Transform a byte travelling from the host terminal into the emulated
+    /// UART. ASR-33 mode models the uppercase-only keyboard rather than merely
+    /// masking bit 7.
+    pub const fn rx_transform(self, byte: u8) -> u8 {
         match self {
+            Self::Asr33Uppercase => {
+                let byte = byte & 0x7f;
+                if byte >= b'a' && byte <= b'z' {
+                    byte - 0x20
+                } else {
+                    byte
+                }
+            }
             Self::SevenBitAscii => byte & 0x7f,
+            Self::Raw8Bit => byte,
+        }
+    }
+
+    /// Transform a byte travelling from the Altair to the host terminal. Both
+    /// historical terminal modes strip bit 7, but do not rewrite printable
+    /// output case: uppercase normalization represents the ASR-33 keyboard on
+    /// input, not a general-purpose mutation of guest output.
+    pub const fn tx_transform(self, byte: u8) -> u8 {
+        match self {
+            Self::Asr33Uppercase | Self::SevenBitAscii => byte & 0x7f,
             Self::Raw8Bit => byte,
         }
     }
@@ -33,7 +61,7 @@ impl ExternalSerialCharacterMode {
 
 impl Default for ExternalSerialCharacterMode {
     fn default() -> Self {
-        Self::SevenBitAscii
+        Self::Asr33Uppercase
     }
 }
 
@@ -149,7 +177,7 @@ impl Default for ExternalSerialConfig {
             listen_scope: TcpListenScope::Loopback,
             tcp_port: 8800,
             speed: ExternalSerialSpeed::Baud9600,
-            character_mode: ExternalSerialCharacterMode::SevenBitAscii,
+            character_mode: ExternalSerialCharacterMode::Asr33Uppercase,
             allow_multiple_clients: false,
         }
     }
@@ -160,25 +188,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn external_tcp_is_safe_and_terminal_friendly_by_default() {
+    fn external_tcp_is_safe_and_asr33_friendly_by_default() {
         let config = ExternalSerialConfig::default();
         assert!(!config.enabled);
         assert_eq!(config.listen_scope, TcpListenScope::Loopback);
         assert_eq!(config.tcp_port, 8800);
         assert_eq!(
             config.character_mode,
-            ExternalSerialCharacterMode::SevenBitAscii
+            ExternalSerialCharacterMode::Asr33Uppercase
         );
         assert!(!config.allow_multiple_clients);
     }
 
     #[test]
-    fn seven_bit_terminal_mode_strips_high_bit_but_raw_mode_does_not() {
+    fn asr33_mode_strips_bit_seven_and_uppercases_host_input() {
         assert_eq!(
-            ExternalSerialCharacterMode::SevenBitAscii.transform(0xc5),
+            ExternalSerialCharacterMode::Asr33Uppercase.rx_transform(b'y'),
+            b'Y'
+        );
+        assert_eq!(
+            ExternalSerialCharacterMode::Asr33Uppercase.rx_transform(0xe5),
             b'E'
         );
-        assert_eq!(ExternalSerialCharacterMode::Raw8Bit.transform(0xc5), 0xc5);
+        assert_eq!(
+            ExternalSerialCharacterMode::Asr33Uppercase.tx_transform(0xc5),
+            b'E'
+        );
+        assert_eq!(
+            ExternalSerialCharacterMode::Asr33Uppercase.tx_transform(b'y'),
+            b'y'
+        );
+    }
+
+    #[test]
+    fn seven_bit_mode_preserves_case_and_raw_mode_preserves_all_bits() {
+        assert_eq!(
+            ExternalSerialCharacterMode::SevenBitAscii.rx_transform(b'y'),
+            b'y'
+        );
+        assert_eq!(
+            ExternalSerialCharacterMode::SevenBitAscii.tx_transform(0xc5),
+            b'E'
+        );
+        assert_eq!(
+            ExternalSerialCharacterMode::Raw8Bit.rx_transform(0xe5),
+            0xe5
+        );
+        assert_eq!(
+            ExternalSerialCharacterMode::Raw8Bit.tx_transform(0xe5),
+            0xe5
+        );
     }
 
     #[test]
