@@ -79,11 +79,15 @@ pub(super) struct S100Signals {
     pub int_ack: bool,
     pub inte: bool,
     pub prot: bool,
+    /// Q output of the Display/Control RUN/STOP R-S latch (S-100 pin 71).
+    pub run: bool,
     pub ready: bool,
     pub wait: bool,
     pub hold: bool,
     pub hlda: bool,
     pub reset: bool,
+    /// EXT CLR, S-100 pin 54. `true` means the front-panel line is asserted.
+    pub ext_clear: bool,
     pub owner: BusOwner,
 }
 
@@ -102,11 +106,13 @@ impl Default for S100Signals {
             int_ack: false,
             inte: false,
             prot: false,
+            run: false,
             ready: false,
             wait: false,
             hold: false,
             hlda: false,
             reset: false,
+            ext_clear: false,
             owner: BusOwner::None,
         }
     }
@@ -361,6 +367,10 @@ impl S100BusState {
         self.signals.inte = enabled;
     }
 
+    pub(super) fn set_run(&mut self, run: bool) {
+        self.signals.run = run;
+    }
+
     pub(super) fn set_ready(&mut self, ready: bool) {
         self.signals.ready = ready;
         self.signals.wait = !ready && !self.signals.reset;
@@ -375,6 +385,10 @@ impl S100BusState {
 
     pub(super) fn set_hlda(&mut self, acknowledged: bool) {
         self.signals.hlda = acknowledged;
+    }
+
+    pub(super) fn set_ext_clear(&mut self, asserted: bool) {
+        self.signals.ext_clear = asserted;
     }
 
     pub(super) fn drive_cpu_cycle(
@@ -416,48 +430,53 @@ impl S100BusState {
         self.lamps.freeze(&self.signals);
     }
 
-    /// State reached after RESET is released with the processor held by READY
-    /// at the start of the instruction fetch at location zero. MITS documents
-    /// MEMR, M1, W/O and WAIT lit in this state.
+    /// State reached after RESET is released at location zero. If RUN is set,
+    /// READY is released and execution can continue; if STOP is set, the fetch
+    /// remains held in WAIT. RESET itself never changes the RUN/STOP latch.
     pub(super) fn release_front_panel_reset(
         &mut self,
         address: u16,
         data: u8,
         protected: bool,
         inte: bool,
+        run: bool,
     ) {
         self.signals.reset = false;
-        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.owner = if run { BusOwner::Cpu } else { BusOwner::FrontPanel };
         self.signals.address = address;
         self.signals.data = data;
         self.signals.prot = protected;
         self.signals.inte = inte;
+        self.signals.run = run;
         self.signals.clear_status();
         self.signals.memr = true;
         self.signals.m1 = true;
         self.signals.wo = true;
-        self.signals.ready = false;
-        self.signals.wait = true;
+        self.signals.ready = run;
+        self.signals.wait = !run;
         self.signals.hlda = false;
         self.lamps.freeze(&self.signals);
     }
 
-    /// Generic stopped front-panel ownership used for undefined power-on state.
-    pub(super) fn drive_front_panel_idle(
+    /// Generic power-on bus state. The optional historical power-on mode may
+    /// leave RUN asserted; otherwise the front panel starts safely stopped.
+    pub(super) fn drive_power_on_state(
         &mut self,
         address: u16,
         data: u8,
         protected: bool,
         inte: bool,
+        run: bool,
     ) {
         self.signals.reset = false;
-        self.signals.owner = BusOwner::FrontPanel;
+        self.signals.owner = if run { BusOwner::Cpu } else { BusOwner::FrontPanel };
         self.signals.address = address;
         self.signals.data = data;
         self.signals.prot = protected;
         self.signals.inte = inte;
+        self.signals.run = run;
         self.signals.clear_status();
-        self.set_ready(false);
+        self.set_ready(run);
         self.lamps.freeze(&self.signals);
     }
 
@@ -554,22 +573,29 @@ mod tests {
     }
 
     #[test]
-    fn reset_assert_and_release_match_mits_checkout_pattern() {
+    fn reset_preserves_run_latch_and_changes_ready_on_release() {
         let mut bus = S100BusState::default();
+        bus.set_run(true);
         bus.assert_front_panel_reset();
-        let held = bus.signals();
-        assert!(held.reset);
-        assert_eq!(held.address, 0xffff);
-        assert_eq!(held.data, 0xff);
-        assert!(!held.inte && !held.prot && !held.memr && !held.m1 && !held.wo && !held.wait);
+        assert!(bus.signals().run);
+        bus.release_front_panel_reset(0, 0xa5, false, false, true);
+        let running = bus.signals();
+        assert!(running.run && running.ready && !running.wait);
 
-        bus.release_front_panel_reset(0, 0xa5, false, false);
-        let released = bus.signals();
-        assert!(!released.reset);
-        assert_eq!(released.address, 0);
-        assert_eq!(released.data, 0xa5);
-        assert!(released.memr && released.m1 && released.wo && released.wait);
-        assert!(!released.inte);
+        bus.set_run(false);
+        bus.assert_front_panel_reset();
+        bus.release_front_panel_reset(0, 0xa5, false, false, false);
+        let stopped = bus.signals();
+        assert!(!stopped.run && !stopped.ready && stopped.wait);
+    }
+
+    #[test]
+    fn ext_clear_is_a_real_s100_signal() {
+        let mut bus = S100BusState::default();
+        bus.set_ext_clear(true);
+        assert!(bus.signals().ext_clear);
+        bus.set_ext_clear(false);
+        assert!(!bus.signals().ext_clear);
     }
 
     #[test]
