@@ -5,6 +5,7 @@ pub(crate) enum SerialDevice {
     InternalAsr33,
     TextTerminal,
     ExternalTcp,
+    ExternalCom,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,16 +22,13 @@ impl SerialConnection {
 }
 
 /// Models the external serial cables between the installed MITS interface and
-/// RusTair's host-side endpoints.
-///
-/// Each emulated physical serial port has at most one attached endpoint. The
-/// External TCP endpoint may itself fan out to multiple network clients when
-/// that host-side option is explicitly enabled; electrically it still occupies
-/// one emulated serial port/cable.
+/// RusTair's host-side endpoints. Each emulated physical serial port has at
+/// most one attached endpoint/cable.
 pub(crate) struct SerialRouter {
     asr33: SerialConnection,
     text_terminal: SerialConnection,
     external_tcp: SerialConnection,
+    external_com: SerialConnection,
 }
 
 impl Default for SerialRouter {
@@ -39,6 +37,7 @@ impl Default for SerialRouter {
             asr33: SerialConnection::Port0,
             text_terminal: SerialConnection::Disconnected,
             external_tcp: SerialConnection::Disconnected,
+            external_com: SerialConnection::Disconnected,
         }
     }
 }
@@ -49,6 +48,7 @@ impl SerialRouter {
             SerialDevice::InternalAsr33 => self.asr33,
             SerialDevice::TextTerminal => self.text_terminal,
             SerialDevice::ExternalTcp => self.external_tcp,
+            SerialDevice::ExternalCom => self.external_com,
         }
     }
 
@@ -62,6 +62,8 @@ impl SerialRouter {
             Some(SerialDevice::TextTerminal)
         } else if self.external_tcp == connection {
             Some(SerialDevice::ExternalTcp)
+        } else if self.external_com == connection {
+            Some(SerialDevice::ExternalCom)
         } else {
             None
         }
@@ -88,6 +90,7 @@ impl SerialRouter {
                     self.text_terminal = SerialConnection::Disconnected
                 }
                 SerialDevice::ExternalTcp => self.external_tcp = SerialConnection::Disconnected,
+                SerialDevice::ExternalCom => self.external_com = SerialConnection::Disconnected,
             }
         }
 
@@ -95,17 +98,18 @@ impl SerialRouter {
             SerialDevice::InternalAsr33 => self.asr33 = connection,
             SerialDevice::TextTerminal => self.text_terminal = connection,
             SerialDevice::ExternalTcp => self.external_tcp = connection,
+            SerialDevice::ExternalCom => self.external_com = connection,
         }
 
         displaced
     }
 
-    /// A board swap represents physically replacing the serial interface, so
-    /// start from a deterministic, useful cable layout for that board. The host
-    /// TCP endpoint remains listening if enabled, but starts electrically
-    /// disconnected until the user chooses a port again.
+    /// Replacing the installed serial board also replaces its external cabling.
+    /// Host transports may remain enabled, but TCP and COM start electrically
+    /// disconnected until the user explicitly attaches them again.
     pub(crate) fn reset_for_board(&mut self, board: SerialBoard) {
         self.external_tcp = SerialConnection::Disconnected;
+        self.external_com = SerialConnection::Disconnected;
         match board {
             SerialBoard::Sio88 => {
                 self.asr33 = SerialConnection::Port0;
@@ -124,7 +128,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_wiring_connects_asr33_to_single_sio_port() {
+    fn default_wiring_connects_only_internal_asr33() {
         let router = SerialRouter::default();
         assert_eq!(
             router.connection(SerialDevice::InternalAsr33),
@@ -138,10 +142,14 @@ mod tests {
             router.connection(SerialDevice::ExternalTcp),
             SerialConnection::Disconnected
         );
+        assert_eq!(
+            router.connection(SerialDevice::ExternalCom),
+            SerialConnection::Disconnected
+        );
     }
 
     #[test]
-    fn two_sio_default_wiring_uses_both_ports_and_leaves_tcp_unplugged() {
+    fn two_sio_default_wiring_uses_both_ports_and_leaves_host_endpoints_unplugged() {
         let mut router = SerialRouter::default();
         router.reset_for_board(SerialBoard::TwoSio88);
         assert_eq!(
@@ -156,34 +164,47 @@ mod tests {
             router.connection(SerialDevice::ExternalTcp),
             SerialConnection::Disconnected
         );
+        assert_eq!(
+            router.connection(SerialDevice::ExternalCom),
+            SerialConnection::Disconnected
+        );
     }
 
     #[test]
     fn moving_a_cable_displaces_the_previous_endpoint() {
         let mut router = SerialRouter::default();
-        let displaced = router.connect(SerialDevice::TextTerminal, SerialConnection::Port0);
+        let displaced = router.connect(SerialDevice::ExternalCom, SerialConnection::Port0);
         assert_eq!(displaced, Some(SerialDevice::InternalAsr33));
+        assert_eq!(
+            router.connection(SerialDevice::ExternalCom),
+            SerialConnection::Port0
+        );
+        assert_eq!(
+            router.connection(SerialDevice::InternalAsr33),
+            SerialConnection::Disconnected
+        );
+    }
+
+    #[test]
+    fn tcp_and_com_can_use_different_two_sio_ports() {
+        let mut router = SerialRouter::default();
+        router.reset_for_board(SerialBoard::TwoSio88);
+        router.connect(SerialDevice::ExternalTcp, SerialConnection::Port0);
+        router.connect(SerialDevice::ExternalCom, SerialConnection::Port1);
+        assert_eq!(
+            router.connection(SerialDevice::ExternalTcp),
+            SerialConnection::Port0
+        );
+        assert_eq!(
+            router.connection(SerialDevice::ExternalCom),
+            SerialConnection::Port1
+        );
         assert_eq!(
             router.connection(SerialDevice::InternalAsr33),
             SerialConnection::Disconnected
         );
         assert_eq!(
             router.connection(SerialDevice::TextTerminal),
-            SerialConnection::Port0
-        );
-    }
-
-    #[test]
-    fn external_tcp_is_still_one_router_endpoint() {
-        let mut router = SerialRouter::default();
-        let displaced = router.connect(SerialDevice::ExternalTcp, SerialConnection::Port0);
-        assert_eq!(displaced, Some(SerialDevice::InternalAsr33));
-        assert_eq!(
-            router.connection(SerialDevice::ExternalTcp),
-            SerialConnection::Port0
-        );
-        assert_eq!(
-            router.connection(SerialDevice::InternalAsr33),
             SerialConnection::Disconnected
         );
     }

@@ -1,7 +1,11 @@
+mod external_com;
 mod external_serial;
 mod machine;
 mod terminal;
 
+pub use external_com::{
+    ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig,
+};
 pub use external_serial::{
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
 };

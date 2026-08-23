@@ -1,6 +1,7 @@
 mod asr33_controller;
 mod asr33_state;
 mod commands;
+mod external_com;
 mod external_serial;
 mod runtime;
 mod terminal_controller;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
+use self::external_com::ExternalComState;
 use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
@@ -80,6 +82,7 @@ struct RusTairApp {
     machine: AltairMachine,
     serial_router: SerialRouter,
     external_serial: ExternalSerialState,
+    external_com: ExternalComState,
     tex: Tex,
     tty: Teletype,
     asr33: Asr33State,
@@ -103,6 +106,7 @@ impl RusTairApp {
             machine: AltairMachine::default(),
             serial_router: SerialRouter::default(),
             external_serial: ExternalSerialState::default(),
+            external_com: ExternalComState::default(),
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
@@ -160,6 +164,7 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
+        self.external_com.reset_line_timing();
         self.reset_flash_until = None;
         self.status = format!(
             "Memory configured: {} — {}; machine reset",
@@ -180,6 +185,7 @@ impl RusTairApp {
         self.asr33.answerback.clear();
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
+        self.external_com.reset_line_timing();
         self.reset_flash_until = None;
 
         self.status = match serial_board {
@@ -199,6 +205,7 @@ impl RusTairApp {
             SerialDevice::InternalAsr33 => "ASR-33",
             SerialDevice::TextTerminal => "Text Terminal",
             SerialDevice::ExternalTcp => "External TCP",
+            SerialDevice::ExternalCom => "External COM",
         }
     }
 
@@ -233,6 +240,7 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
+        self.external_com.reset_line_timing();
         if displaced == Some(SerialDevice::InternalAsr33)
             || (device == SerialDevice::InternalAsr33
                 && connection == SerialConnection::Disconnected)

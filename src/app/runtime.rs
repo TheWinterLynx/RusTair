@@ -4,10 +4,9 @@ impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
-        // I/O tracing is intentionally opt-in because BASIC can poll a status
-        // port many thousands of times per second. The inspector must be open
-        // and its Capture control enabled; otherwise the hot I/O path carries
-        // no trace-recording overhead.
+        // I/O tracing is opt-in because BASIC can poll serial status ports many
+        // thousands of times per second. Host transport traces follow the same
+        // capture switch as the emulated bus trace.
         let io_inspector_open = ctx.data_mut(|data| {
             *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
         });
@@ -25,6 +24,9 @@ impl eframe::App for RusTairApp {
             self.external_serial
                 .server
                 .set_network_trace_enabled(io_capture_active);
+        }
+        if self.external_com.port.trace_enabled() != io_capture_active {
+            self.external_com.port.set_trace_enabled(io_capture_active);
         }
 
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
@@ -56,8 +58,8 @@ impl eframe::App for RusTairApp {
             }
         }
 
-        // Peripheral clocks are intentionally wall-clock based and independent
-        // of CPU emulation speed.
+        // Peripheral clocks are wall-clock based and independent of CPU
+        // acceleration. Every endpoint feeds the same emulated MITS UARTs.
         if self.asr_connection().is_connected() {
             self.process_tty_serial(ctx);
             self.process_tty_answerback(ctx);
@@ -66,6 +68,7 @@ impl eframe::App for RusTairApp {
             self.process_terminal_serial(ctx);
         }
         self.process_external_serial(ctx);
+        self.process_external_com(ctx);
         self.service_disconnected_serial_ports();
         self.update_teletype_mechanics(ctx);
 
@@ -165,6 +168,10 @@ impl eframe::App for RusTairApp {
                             "External TCP → {}",
                             Self::serial_connection_label(current, self.external_tcp_connection())
                         ));
+                        ui.small(format!(
+                            "External COM → {}",
+                            Self::serial_connection_label(current, self.external_com_connection())
+                        ));
                         ui.separator();
 
                         for serial_board in SerialBoard::ALL {
@@ -176,7 +183,7 @@ impl eframe::App for RusTairApp {
                         }
 
                         ui.separator();
-                        ui.small("Each emulated serial port has one attached endpoint/cable. External TCP can optionally fan that one endpoint out to multiple network clients.");
+                        ui.small("Each emulated serial port has one attached endpoint/cable. TCP fan-out, when enabled, happens behind the single External TCP endpoint; External COM remains its own independent cable.");
                         ui.small("Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.");
                     });
 
@@ -217,6 +224,10 @@ impl eframe::App for RusTairApp {
                         self.draw_external_serial_config_menu(ui);
                     });
 
+                    ui.menu_button("External COM", |ui| {
+                        self.draw_external_com_config_menu(ui);
+                    });
+
                     ui.menu_button("Preferences", |ui| {
                         ui.menu_button("Emulation speed", |ui| {
                             for speed in EmulationSpeed::ALL {
@@ -249,7 +260,7 @@ impl eframe::App for RusTairApp {
                                     .into()
                             };
                         }
-                        ui.small("When bundled BASIC is loaded, reveal the device connected to Port 0. This never changes the serial wiring.");
+                        ui.small("When bundled BASIC is loaded, reveal the endpoint connected to Port 0. This never changes the serial wiring.");
                     });
 
                     ui.menu_button("Compatibility", |ui| {
@@ -289,8 +300,14 @@ impl eframe::App for RusTairApp {
                 if ui.button("TEXT TERMINAL").clicked() {
                     self.terminal.window_open = true;
                 }
-                if ui.button("EXTERNAL SERIAL").clicked() {
+                if ui.button("EXTERNAL TCP").clicked() {
                     self.external_serial.window_open = true;
+                }
+                if ui.button("EXTERNAL COM").clicked() {
+                    self.external_com.window_open = true;
+                    if self.external_com.available_ports.is_empty() {
+                        self.refresh_external_com_ports();
+                    }
                 }
                 if ui.button("RAM VIEWER").clicked() {
                     self.open_memory_viewer(ctx);
@@ -334,6 +351,7 @@ impl eframe::App for RusTairApp {
         self.show_tty_viewport(ctx);
         self.show_terminal_viewport(ctx);
         self.show_external_serial_viewport(ctx);
+        self.show_external_com_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
     }

@@ -25,8 +25,8 @@ impl RusTairApp {
         }
     }
 
-    /// Reset the machine into the same state as the existing bundled BASIC
-    /// command, then load and run Microsoft 4K BASIC from address zero.
+    /// Reset the machine, load the bundled Microsoft 4K BASIC image at address
+    /// zero and start execution.
     pub(in crate::app) fn load_bundled_basic(&mut self) {
         match std::fs::read("assets/4kbas32.bin") {
             Ok(bytes) => {
@@ -46,15 +46,15 @@ impl RusTairApp {
                 self.asr33.tx_started = None;
                 self.terminal.tx_started = None;
                 self.external_serial.reset_line_timing();
+                self.external_com.reset_line_timing();
                 self.machine.bus.clear_protection();
                 self.machine.bus.load(0, &bytes);
                 self.machine.cpu.pc = 0;
 
                 // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
                 // on a completely writable 64 KiB machine and overwrites itself.
-                // Faithful emulation leaves that bug intact by default. Users may
-                // explicitly opt into a one-shot FFFFh probe workaround from the
-                // Compatibility menu when they prefer convenience over fidelity.
+                // Faithful emulation leaves that bug intact by default; the
+                // compatibility option is an explicit convenience workaround.
                 let full_memory_probe_guard = if self
                     .config
                     .compatibility
@@ -65,13 +65,14 @@ impl RusTairApp {
                     false
                 };
 
-                // Auto-open is only a UI convenience. It never moves cables or
-                // changes which physical device BASIC is actually talking to.
+                // Auto-open only reveals the endpoint already wired to Port 0.
+                // It never changes the serial cabling.
                 if self.config.preferences.auto_open_basic_console {
                     match self.serial_router.device_on(SerialConnection::Port0) {
                         Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
                         Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
                         Some(SerialDevice::ExternalTcp) => self.external_serial.window_open = true,
+                        Some(SerialDevice::ExternalCom) => self.external_com.window_open = true,
                         None => {}
                     }
                 }
