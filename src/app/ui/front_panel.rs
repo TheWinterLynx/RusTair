@@ -4,6 +4,16 @@ use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
 
+#[derive(Default)]
+struct MomentarySwitchInteraction {
+    /// Legacy one-shot action used by RUN/STOP, STEP, EXAMINE, DEPOSIT, etc.
+    action: Option<bool>,
+    /// Physical transition into an asserted up/down position.
+    pressed: Option<bool>,
+    /// Physical transition back to center, including release of a latched switch.
+    released: Option<bool>,
+}
+
 impl RusTairApp {
     fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, intensity: f32) {
         if !self.machine.powered { return; }
@@ -53,7 +63,14 @@ impl RusTairApp {
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
-    fn momentary_switch(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, switch: SwitchConfig, label: &str) -> Option<bool> {
+    fn momentary_switch(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        switch: SwitchConfig,
+        label: &str,
+    ) -> MomentarySwitchInteraction {
         debug_assert_eq!(switch.kind, SwitchKind::ThreePosition);
         debug_assert!(switch.center.is_some());
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
@@ -74,17 +91,23 @@ impl RusTairApp {
         };
         let state_id = egui::Id::new(("rustair-momentary-switch", switch.name));
 
-        let (position, action, just_latched, released_latch, tracking_press) = ui.ctx().data_mut(|data| {
+        let (position, action, pressed, released, just_latched, released_latch, tracking_press) = ui.ctx().data_mut(|data| {
             let state = data.get_temp_mut_or(state_id, MomentarySwitchUiState::default());
             let mut action = None;
+            let mut pressed = None;
+            let mut released = None;
             let mut just_latched = false;
             let mut released_latch = false;
 
             if primary_pressed && pointer_inside && state.press_started.is_none() {
+                let already_latched = state.latched.is_some();
                 state.press_started = Some(now);
                 state.press_direction = Some(pointer_position);
-                state.press_began_on_latched = state.latched.is_some();
+                state.press_began_on_latched = already_latched;
                 state.long_latched_this_press = false;
+                if !already_latched {
+                    pressed = Some(pointer_position == SwitchPosition::Down);
+                }
             }
 
             if state.press_started.is_some() && primary_down
@@ -102,17 +125,28 @@ impl RusTairApp {
 
             if state.press_started.is_some() && primary_released {
                 if state.press_began_on_latched {
+                    let direction = state.latched.unwrap_or(pointer_position);
                     state.latched = None;
+                    released = Some(direction == SwitchPosition::Down);
                     released_latch = true;
                 } else if !state.long_latched_this_press {
                     let direction = state.press_direction.unwrap_or(pointer_position);
-                    action = Some(direction == SwitchPosition::Down);
+                    let down = direction == SwitchPosition::Down;
+                    action = Some(down);
+                    released = Some(down);
                 }
                 state.press_started = None;
                 state.press_direction = None;
                 state.press_began_on_latched = false;
                 state.long_latched_this_press = false;
             } else if state.press_started.is_some() && !primary_down && !primary_released {
+                // Pointer capture was lost. A non-latched physical assertion
+                // must be released so hardware such as RESET cannot remain stuck.
+                if !state.press_began_on_latched && !state.long_latched_this_press {
+                    if let Some(direction) = state.press_direction {
+                        released = Some(direction == SwitchPosition::Down);
+                    }
+                }
                 state.press_started = None;
                 state.press_direction = None;
                 state.press_began_on_latched = false;
@@ -129,7 +163,7 @@ impl RusTairApp {
             } else {
                 state.latched.unwrap_or(SwitchPosition::Center)
             };
-            (position, action, just_latched, released_latch, tracking_press)
+            (position, action, pressed, released, just_latched, released_latch, tracking_press)
         });
 
         self.draw_switch_sprite(ui, origin, scale, switch, position);
@@ -140,14 +174,12 @@ impl RusTairApp {
             if just_latched {
                 self.status = format!("{label} held {} — click the switch to release it", if down { "DOWN" } else { "UP" });
             }
-            Some(down)
-        } else {
-            if released_latch {
-                self.audio.play_once("assets/click.mp3");
-                self.status = format!("{label} released to center");
-            }
-            None
+        } else if released_latch {
+            self.audio.play_once("assets/click.mp3");
+            self.status = format!("{label} released to center");
         }
+
+        MomentarySwitchInteraction { action, pressed, released }
     }
 
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
@@ -187,7 +219,7 @@ impl RusTairApp {
         for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit]); }
         for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit]); }
 
-        // Every lamp below is a passive consumer of the emulated S-100 state.
+        // Every lamp is a passive consumer of the emulated S-100 state.
         self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte);
         self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot);
         self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr);
@@ -202,12 +234,23 @@ impl RusTairApp {
         self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, lamps.hlda);
 
         self.draw_power(ui, origin, scale);
-        if let Some(run) = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN") { self.machine.set_running(run); }
-        if self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP").is_some() { self.machine.step(); }
-        if let Some(next) = self.momentary_switch(ui, origin, scale, SWITCH_EXAMINE, "EXAMINE / EXAMINE NEXT") { self.machine.examine(next); }
-        if let Some(next) = self.momentary_switch(ui, origin, scale, SWITCH_DEPOSIT, "DEPOSIT / DEPOSIT NEXT") { self.machine.deposit(next); }
-        if let Some(clear) = self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR") {
+
+        let run_stop = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN");
+        if let Some(run) = run_stop.action { self.machine.set_running(run); }
+
+        let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
+        if single_step.action.is_some() { self.machine.step(); }
+
+        let examine = self.momentary_switch(ui, origin, scale, SWITCH_EXAMINE, "EXAMINE / EXAMINE NEXT");
+        if let Some(next) = examine.action { self.machine.examine(next); }
+
+        let deposit = self.momentary_switch(ui, origin, scale, SWITCH_DEPOSIT, "DEPOSIT / DEPOSIT NEXT");
+        if let Some(next) = deposit.action { self.machine.deposit(next); }
+
+        let reset = self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR");
+        if let Some(clear) = reset.pressed {
             if clear {
+                // CLR is effective as soon as the physical switch is asserted.
                 self.machine.clear_io();
                 self.asr33.tx_started = None;
                 self.terminal.tx_started = None;
@@ -215,13 +258,22 @@ impl RusTairApp {
                 self.external_com.reset_line_timing();
                 self.status = "CLR asserted: external/emulated I/O cleared; CPU state preserved".into();
             } else {
-                self.machine.front_panel_reset();
-                self.status = "RESET asserted: PC returned to 0000h and machine stopped".into();
+                // RESET is level-sensitive: the held state is visible for as
+                // long as the user physically holds or latches the switch UP.
+                self.machine.assert_front_panel_reset();
+                self.status = "RESET held: ADDRESS/DATA on, status lamps off".into();
             }
         }
-        if let Some(unprotect) = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT") {
-            self.machine.protect_current_board(!unprotect);
+        if let Some(clear) = reset.released {
+            if !clear {
+                self.machine.release_front_panel_reset();
+                self.status = "RESET released: 0000h fetch held in WAIT".into();
+            }
         }
+
+        let protect = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT");
+        if let Some(unprotect) = protect.action { self.machine.protect_current_board(!unprotect); }
+
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX1, "AUX 1 (unassigned)");
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX2, "AUX 2 (unassigned)");
     }
