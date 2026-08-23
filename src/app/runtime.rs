@@ -5,19 +5,26 @@ impl eframe::App for RusTairApp {
         let now = Instant::now();
 
         // I/O tracing is intentionally opt-in because BASIC can poll a status
-        // port many thousands of times per second. The inspector's viewport
-        // flag is the single source of truth: open = capture, closed = zero
-        // tracing overhead in the hot I/O path.
+        // port many thousands of times per second. The inspector must be open
+        // and its Capture control enabled; otherwise the hot I/O path carries
+        // no trace-recording overhead.
         let io_inspector_open = ctx.data_mut(|data| {
             *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
         });
-        if self.machine.bus.io_trace_enabled() != io_inspector_open {
-            self.machine.bus.set_io_trace_enabled(io_inspector_open);
+        let io_capture_requested = ctx.data_mut(|data| {
+            *data.get_temp_mut_or(
+                egui::Id::new("rustair-io-inspector-capture-enabled"),
+                true,
+            )
+        });
+        let io_capture_active = io_inspector_open && io_capture_requested;
+        if self.machine.bus.io_trace_enabled() != io_capture_active {
+            self.machine.bus.set_io_trace_enabled(io_capture_active);
         }
-        if self.external_serial.server.network_trace_enabled() != io_inspector_open {
+        if self.external_serial.server.network_trace_enabled() != io_capture_active {
             self.external_serial
                 .server
-                .set_network_trace_enabled(io_inspector_open);
+                .set_network_trace_enabled(io_capture_active);
         }
 
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
