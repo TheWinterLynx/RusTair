@@ -1,6 +1,7 @@
 use super::*;
 use crate::config::{
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
+    TerminalDuplex,
 };
 use crate::io::tcp_serial::TcpSerialServer;
 
@@ -42,9 +43,8 @@ impl RusTairApp {
     /// Poll host TCP sockets and bridge the stream to whichever emulated serial
     /// port the External TCP cable is attached to. Socket I/O is always
     /// non-blocking; serial pacing remains wall-clock based and independent of
-    /// CPU emulation speed. Character normalization is an endpoint option and
-    /// is directional: an ASR-33-style host keyboard uppercases input, while
-    /// terminal output only needs the historical 7-bit mask.
+    /// CPU emulation speed. Character normalization and duplex are properties
+    /// of the terminal endpoint behind the raw TCP transport.
     pub(in crate::app) fn process_external_serial(&mut self, ctx: &egui::Context) {
         let config = self.external_serial.config;
         self.external_serial.server.poll(config);
@@ -69,7 +69,8 @@ impl RusTairApp {
 
         // Host -> Altair. TCP may deliver a whole paste immediately, but the
         // emulated UART sees at most one character register at the configured
-        // line rate.
+        // line rate. In half duplex the terminal itself also makes a local copy
+        // and returns it only to the client that originated the keystroke.
         if self.external_serial.server.rx_pending() == 0 {
             self.external_serial.rx_next_at = None;
         } else {
@@ -85,8 +86,12 @@ impl RusTairApp {
                     .unwrap_or(Duration::ZERO);
 
                 if due_in.is_zero() {
-                    if let Some(byte) = self.external_serial.server.pop_rx() {
-                        let byte = config.character_mode.rx_transform(byte);
+                    if let Some((raw_byte, peer)) = self.external_serial.server.pop_rx() {
+                        let byte = config.character_mode.rx_transform(raw_byte);
+                        if config.duplex.local_echo() {
+                            self.external_serial.server.echo_byte_to_peer(peer, byte);
+                            self.external_serial.server.flush_clients();
+                        }
                         self.serial_receive_at(connection, byte);
                         if self.external_serial.server.rx_pending() == 0 {
                             self.external_serial.rx_next_at = None;
@@ -155,22 +160,24 @@ impl RusTairApp {
             || previous.tcp_port != next.tcp_port;
         let speed_changed = previous.speed != next.speed;
         let character_mode_changed = previous.character_mode != next.character_mode;
+        let duplex_changed = previous.duplex != next.duplex;
 
         self.external_serial.config = next;
         if listener_changed {
             self.external_serial.server.restart_on_next_poll();
         }
-        if speed_changed || character_mode_changed {
+        if speed_changed || character_mode_changed || duplex_changed {
             self.external_serial.reset_line_timing();
         }
 
         self.status = if next.enabled {
             format!(
-                "External TCP enabled: {}:{} — {} — {} — {} client mode",
+                "External TCP enabled: {}:{} — {} — {} — {} — {} client mode",
                 next.listen_scope.bind_ipv4(),
                 next.tcp_port,
                 next.speed.label(),
                 next.character_mode.label(),
+                next.duplex.label(),
                 if next.allow_multiple_clients {
                     "multiple"
                 } else {
@@ -229,17 +236,31 @@ impl RusTairApp {
                 });
         });
 
+        ui.horizontal(|ui| {
+            ui.label("Duplex / echo:");
+            egui::ComboBox::from_id_salt("external-tcp-duplex")
+                .selected_text(config.duplex.label())
+                .show_ui(ui, |ui| {
+                    for duplex in TerminalDuplex::ALL {
+                        ui.selectable_value(&mut config.duplex, duplex, duplex.label());
+                    }
+                });
+        });
+
         ui.checkbox(
             &mut config.allow_multiple_clients,
             "Allow multiple TCP clients on this serial endpoint",
         );
 
         if explanatory {
+            ui.small("Full duplex / remote echo is the default for Altair BASIC: typed bytes are sent to the guest and appear only when the guest echoes them back.");
+            ui.small("Half duplex / local echo makes the terminal itself return each typed byte to its originating TCP client while also sending it to the Altair. An echoing guest such as BASIC will then produce a second copy.");
+            ui.small("For PuTTY Raw, keep Local echo = Force off in both modes; RusTair models terminal-side echo itself when half duplex is selected.");
             ui.small("Single-client mode is the default. Extra connection attempts are rejected while one client is attached.");
-            ui.small("Multiple-client mode broadcasts Altair TX to every client and merges every client's incoming bytes into the same UART RX stream.");
+            ui.small("Multiple-client mode broadcasts Altair TX to every client and merges every client's incoming bytes into the same UART RX stream. Half-duplex local echo still returns only to the originating client.");
             ui.small("ASR-33 style is the default for early Altair software: it strips bit 7 and converts host keyboard a-z to A-Z before the byte reaches the UART.");
             ui.small("7-bit ASCII still strips bit 7 but preserves case. Raw 8-bit preserves every byte unchanged.");
-            ui.small("Raw TCP means no Telnet negotiation is inserted or interpreted; character mode is a separate serial-terminal transformation.");
+            ui.small("Raw TCP means no Telnet negotiation is inserted or interpreted; character mode and duplex are separate terminal properties.");
             if config.listen_scope == TcpListenScope::AllInterfaces {
                 ui.small("LAN mode exposes the listener beyond this PC. Windows Firewall/network policy may control who can reach it.");
             }
@@ -308,9 +329,10 @@ impl RusTairApp {
                     format!("{}:{}", config.listen_scope.bind_ipv4(), config.tcp_port)
                 });
             return format!(
-                "TCP server: listening on {bind} — {clients} client{} — {}",
+                "TCP server: listening on {bind} — {clients} client{} — {} — {}",
                 if clients == 1 { "" } else { "s" },
                 config.character_mode.label(),
+                config.duplex.label(),
             );
         }
         "TCP server: starting…".into()
@@ -329,7 +351,7 @@ impl RusTairApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("External serial — raw TCP");
-            ui.label("Connect PuTTY or another application to the emulated MITS serial interface through a TCP transport. Character mode models what kind of terminal is connected behind that transport.");
+            ui.label("Connect PuTTY or another application to the emulated MITS serial interface through a TCP transport. Character mode and duplex model the terminal behind that transport.");
             ui.separator();
 
             let config = self.external_serial.config;
@@ -344,6 +366,15 @@ impl RusTairApp {
                     config.tcp_port
                 ));
             }
+            ui.monospace("PuTTY: Terminal -> Local echo = Force off   Local line editing = Force off");
+            match config.duplex {
+                TerminalDuplex::FullDuplexRemoteEcho => {
+                    ui.small("Full duplex: PuTTY does not draw your keystroke locally. You see it when the Altair software echoes it back; this is the recommended mode for Microsoft BASIC.");
+                }
+                TerminalDuplex::HalfDuplexLocalEcho => {
+                    ui.small("Half duplex: RusTair returns a terminal-local copy of each typed byte. If the Altair program also echoes input, you will see a duplicate; BASIC 3.2 does echo.");
+                }
+            }
             ui.small("Do not select Telnet: Telnet negotiation bytes would become guest serial data.");
 
             ui.separator();
@@ -353,6 +384,9 @@ impl RusTairApp {
                 .show(ui, |ui| {
                     ui.label("Character mode");
                     ui.monospace(config.character_mode.label());
+                    ui.end_row();
+                    ui.label("Duplex / echo");
+                    ui.monospace(config.duplex.label());
                     ui.end_row();
                     ui.label("Clients");
                     ui.monospace(self.external_serial.server.client_count().to_string());
@@ -403,12 +437,14 @@ impl RusTairApp {
             ui.separator();
             ui.collapsing("How the serial bridge behaves", |ui| {
                 ui.label("• The TCP server is only the host transport; the guest still sees the selected 88-SIO/88-2SIO UART and its normal I/O addresses.");
+                ui.label("• Full duplex transmits keyboard bytes without local display; the terminal prints the returned guest echo. This verifies the complete send/receive path.");
+                ui.label("• Half duplex sends the same keyboard byte to the Altair and to the originating terminal display locally. Host echo should normally be disabled in such a setup.");
                 ui.label("• ASR-33 style masks bit 7 in both directions and uppercases host keyboard a-z on input, matching the uppercase-only keyboard expected by early software such as BASIC 3.2.");
                 ui.label("• 7-bit ASCII masks bit 7 but preserves input case for later/case-aware terminal software.");
                 ui.label("• Raw 8-bit performs no byte transformation and is intended for binary/protocol experiments.");
                 ui.label("• TCP may receive pasted text instantly, but bytes enter the UART at the configured line speed and only when its receive register is free.");
                 ui.label("• Guest transmit-ready timing is also paced, even when no TCP client is connected.");
-                ui.label("• With multiple clients enabled, guest output is broadcast to all clients; all client input shares one merged RX stream.");
+                ui.label("• With multiple clients enabled, guest output is broadcast to all clients; all client input shares one merged RX stream. A half-duplex local echo goes only back to the client that typed it.");
                 ui.label("• Each emulated serial port still has one virtual cable/endpoint. Multi-client fan-out happens behind the External TCP endpoint, not on the Altair bus.");
             });
         });
