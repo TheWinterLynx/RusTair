@@ -212,7 +212,6 @@ pub struct AltairMachine {
     /// Mirrors the physical RUN/STOP R-S latch, not merely "CPU is executing".
     pub running: bool,
     stop_switch_asserted: bool,
-    run_switch_asserted: bool,
 }
 
 impl Default for AltairMachine {
@@ -223,7 +222,6 @@ impl Default for AltairMachine {
             powered: false,
             running: false,
             stop_switch_asserted: false,
-            run_switch_asserted: false,
         }
     }
 }
@@ -260,7 +258,6 @@ impl AltairMachine {
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) {
         self.powered = on;
         self.stop_switch_asserted = false;
-        self.run_switch_asserted = false;
         if on {
             self.bus.clear_protection();
             self.bus.clear_transient_memory_guards();
@@ -305,22 +302,20 @@ impl AltairMachine {
     /// original case where STOP alone cannot leave HLT.
     pub fn assert_run_stop(&mut self, run: bool) {
         if !self.powered { return; }
-        self.run_switch_asserted = run;
         self.stop_switch_asserted = !run;
 
-        if run {
-            if !self.bus.reset_asserted() {
-                self.set_running(true);
-            }
-        } else if self.bus.reset_asserted() || !self.cpu.halted {
+        if self.bus.reset_asserted() {
+            self.running = run;
+            self.bus.set_run(run);
+        } else if run {
+            self.set_running(true);
+        } else if !self.cpu.halted {
             self.set_running(false);
         }
     }
 
     pub fn release_run_stop(&mut self, run: bool) {
-        if run {
-            self.run_switch_asserted = false;
-        } else {
+        if !run {
             self.stop_switch_asserted = false;
         }
     }
