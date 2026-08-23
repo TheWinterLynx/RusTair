@@ -82,6 +82,7 @@ impl AltairBus {
     fn hold_requested(&self) -> bool { self.s100.signals().hold }
     fn set_hlda(&mut self, hlda: bool) { self.s100.set_hlda(hlda); }
     fn hlda(&self) -> bool { self.s100.signals().hlda }
+    fn reset_asserted(&self) -> bool { self.s100.signals().reset }
     fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
@@ -95,10 +96,21 @@ impl AltairBus {
         self.s100.drive_cpu_cycle(address, data, cycle, protected, self.cpu_inte);
     }
 
-    fn front_panel_stopped(&mut self, address: u16) {
+    fn front_panel_idle(&mut self, address: u16) {
         let data = self.memory.peek(address).unwrap_or(0);
         let protected = self.memory.is_protected(address);
-        self.s100.drive_front_panel_reset(address, data, protected, self.cpu_inte);
+        self.s100.drive_front_panel_idle(address, data, protected, self.cpu_inte);
+    }
+
+    fn assert_front_panel_reset_bus(&mut self) {
+        self.s100.assert_front_panel_reset();
+    }
+
+    fn release_front_panel_reset_bus(&mut self, address: u16) {
+        let data = self.memory.peek(address).unwrap_or(0);
+        let protected = self.memory.is_protected(address);
+        self.s100
+            .release_front_panel_reset(address, data, protected, self.cpu_inte);
     }
 
     fn front_panel_examine(&mut self, address: u16) -> u8 {
@@ -166,10 +178,16 @@ impl Bus for AltairBus {
         self.memory.write(address, value);
     }
 
-    fn halt_ack(&mut self, address: u16, opcode: u8) { self.drive_cpu_cycle(address, opcode, S100Cycle::HaltAcknowledge); }
+    fn halt_ack(&mut self, address: u16, opcode: u8) {
+        self.drive_cpu_cycle(address, opcode, S100Cycle::HaltAcknowledge);
+    }
 
     fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
-        let cycle = if while_halted { S100Cycle::InterruptAcknowledgeWhileHalted } else { S100Cycle::InterruptAcknowledge };
+        let cycle = if while_halted {
+            S100Cycle::InterruptAcknowledgeWhileHalted
+        } else {
+            S100Cycle::InterruptAcknowledge
+        };
         self.drive_cpu_cycle(address, opcode, cycle);
     }
 }
@@ -196,8 +214,7 @@ impl AltairMachine {
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         if self.powered {
-            self.bus.set_ready(false);
-            self.bus.front_panel_stopped(0);
+            self.front_panel_reset();
         } else {
             self.bus.power_off_s100();
         }
@@ -218,7 +235,7 @@ impl AltairMachine {
             self.bus.set_ready(false);
             self.bus.set_hlda(false);
             self.bus.panel.set_address_latch(self.cpu.pc);
-            self.bus.front_panel_stopped(self.cpu.pc);
+            self.bus.front_panel_idle(self.cpu.pc);
         } else {
             self.bus.clear_serial();
             self.bus.initialize_memory();
@@ -244,16 +261,38 @@ impl AltairMachine {
         self.cpu.cycles = 0;
     }
 
-    pub fn front_panel_reset(&mut self) {
+    /// Assert the physical RESET switch and keep it asserted. The CPU reset
+    /// input is active immediately; the S-100/front-panel state remains in the
+    /// documented RESET-held pattern until `release_front_panel_reset`.
+    pub fn assert_front_panel_reset(&mut self) {
         if !self.powered { return; }
         self.bus.clear_transient_memory_guards();
+        self.cpu.reset();
+        self.running = false;
+        self.bus.panel.reset_address();
+        self.bus.sync_cpu_inte(self.cpu.inte);
+        self.bus.set_hlda(false);
+        self.bus.assert_front_panel_reset_bus();
+    }
+
+    /// Release RESET while READY still holds the processor stopped at the start
+    /// of the instruction fetch at 0000h.
+    pub fn release_front_panel_reset(&mut self) {
+        if !self.powered { return; }
         self.cpu.reset();
         self.running = false;
         let address = self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_hlda(false);
         self.bus.set_ready(false);
-        self.bus.front_panel_stopped(address);
+        self.bus.release_front_panel_reset_bus(address);
+    }
+
+    /// Programmatic momentary RESET pulse used by loaders and tests.
+    pub fn front_panel_reset(&mut self) {
+        if !self.powered { return; }
+        self.assert_front_panel_reset();
+        self.release_front_panel_reset();
     }
 
     pub fn reset(&mut self) {
@@ -265,7 +304,7 @@ impl AltairMachine {
     pub fn clear_io(&mut self) { if self.powered { self.bus.clear_serial(); } }
 
     pub fn set_running(&mut self, run: bool) {
-        if !self.powered { return; }
+        if !self.powered || self.bus.reset_asserted() { return; }
         self.running = run;
         if run {
             self.bus.set_ready(true);
@@ -279,7 +318,7 @@ impl AltairMachine {
     }
 
     pub fn step(&mut self) {
-        if !self.powered || self.running { return; }
+        if !self.powered || self.running || self.bus.reset_asserted() { return; }
         if self.bus.hold_requested() {
             self.bus.set_hlda(true);
             self.bus.freeze_panel_bus();
@@ -297,7 +336,7 @@ impl AltairMachine {
     }
 
     pub fn run_cycles(&mut self, cycles: u32) {
-        if !self.powered || !self.running { return; }
+        if !self.powered || !self.running || self.bus.reset_asserted() { return; }
         self.bus.set_ready(true);
         if self.bus.hold_requested() {
             self.bus.set_hlda(true);
@@ -315,13 +354,21 @@ impl AltairMachine {
     }
 
     pub fn commit_panel_activity(&mut self, dt: Duration) {
-        let dynamic = self.powered && self.running && !self.cpu.halted && !self.bus.hlda();
+        let dynamic = self.powered
+            && self.running
+            && !self.cpu.halted
+            && !self.bus.hlda()
+            && !self.bus.reset_asserted();
         self.bus.commit_panel_activity(dt, dynamic);
     }
 
     pub fn examine(&mut self, next: bool) {
-        if !self.powered || self.running { return; }
-        let address = if next { self.bus.panel.examine_next_address() } else { self.bus.panel.examine_address() };
+        if !self.powered || self.running || self.bus.reset_asserted() { return; }
+        let address = if next {
+            self.bus.panel.examine_next_address()
+        } else {
+            self.bus.panel.examine_address()
+        };
         self.cpu.pc = address;
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_ready(false);
@@ -329,8 +376,12 @@ impl AltairMachine {
     }
 
     pub fn deposit(&mut self, next: bool) {
-        if !self.powered || self.running { return; }
-        let address = if next { self.bus.panel.deposit_next_address() } else { self.bus.panel.deposit_address() };
+        if !self.powered || self.running || self.bus.reset_asserted() { return; }
+        let address = if next {
+            self.bus.panel.deposit_next_address()
+        } else {
+            self.bus.panel.deposit_address()
+        };
         if next { self.cpu.pc = address; }
         let value = self.bus.panel_switches() as u8;
         self.bus.sync_cpu_inte(self.cpu.inte);
@@ -339,7 +390,7 @@ impl AltairMachine {
     }
 
     pub fn protect_current_board(&mut self, protected: bool) {
-        if !self.powered || self.running { return; }
+        if !self.powered || self.running || self.bus.reset_asserted() { return; }
         let address = self.bus.panel.address_latch();
         self.bus.set_protected(address, protected);
         self.bus.refresh_protect_line();
@@ -370,18 +421,31 @@ mod tests {
     }
 
     #[test]
-    fn reset_drives_front_panel_bus_without_inventing_m1() {
+    fn reset_held_and_released_match_mits_checkout_sequence() {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.bus.load(0, &[0xa5]);
-        machine.front_panel_reset();
+
+        machine.assert_front_panel_reset();
+        assert_eq!(machine.address_leds(), 0xffff);
+        assert_eq!(machine.data_leds(), 0xff);
+        let held = machine.panel_lamps();
+        assert_eq!(held.inte, 0.0);
+        assert_eq!(held.memr, 0.0);
+        assert_eq!(held.m1, 0.0);
+        assert_eq!(held.wo, 0.0);
+        assert_eq!(held.wait, 0.0);
+
+        machine.release_front_panel_reset();
         assert_eq!(machine.cpu.pc, 0);
         assert_eq!(machine.address_leds(), 0);
         assert_eq!(machine.data_leds(), 0xa5);
-        let lamps = machine.panel_lamps();
-        assert_eq!(lamps.wait, 1.0);
-        assert_eq!(lamps.memr, 0.0);
-        assert_eq!(lamps.m1, 0.0);
+        let released = machine.panel_lamps();
+        assert_eq!(released.inte, 0.0);
+        assert_eq!(released.memr, 1.0);
+        assert_eq!(released.m1, 1.0);
+        assert_eq!(released.wo, 1.0);
+        assert_eq!(released.wait, 1.0);
     }
 
     #[test]
@@ -421,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn examine_and_deposit_drive_front_panel_bus() {
+    fn examine_and_deposit_drive_front_panel_bus_with_physical_wo_polarity() {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
@@ -430,9 +494,11 @@ mod tests {
         assert_eq!(machine.address_leds(), 0);
         assert_eq!(machine.data_leds(), 0x12);
         assert_eq!(machine.panel_lamps().memr, 1.0);
+        assert_eq!(machine.panel_lamps().wo, 1.0);
+
         for bit in [1, 2, 4, 6] { machine.toggle_sense_switch(bit); }
         machine.deposit(false);
         assert_eq!(machine.bus.peek_memory(0), Some(0x56));
-        assert_eq!(machine.panel_lamps().wo, 1.0);
+        assert_eq!(machine.panel_lamps().wo, 0.0);
     }
 }
