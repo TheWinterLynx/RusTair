@@ -7,11 +7,20 @@ use crate::config::{ExternalSerialConfig, TcpListenScope};
 const SOCKET_CHUNK: usize = 4096;
 const RX_QUEUE_LIMIT: usize = 64 * 1024;
 const CLIENT_TX_QUEUE_LIMIT: usize = 64 * 1024;
+const NETWORK_TRACE_LIMIT: usize = 4096;
 
 struct TcpClient {
     stream: TcpStream,
     peer: SocketAddr,
     tx_queue: VecDeque<u8>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NetworkTraceEvent {
+    sequence: u64,
+    inbound: bool,
+    byte: u8,
+    peer: Option<SocketAddr>,
 }
 
 /// Non-blocking raw TCP transport for one logical external serial endpoint.
@@ -31,6 +40,8 @@ pub(crate) struct TcpSerialServer {
     rejected_clients: u64,
     dropped_tx_bytes: u64,
     last_error: Option<String>,
+    network_trace: VecDeque<NetworkTraceEvent>,
+    next_trace_sequence: u64,
 }
 
 impl Default for TcpSerialServer {
@@ -45,11 +56,26 @@ impl Default for TcpSerialServer {
             rejected_clients: 0,
             dropped_tx_bytes: 0,
             last_error: None,
+            network_trace: VecDeque::new(),
+            next_trace_sequence: 1,
         }
     }
 }
 
 impl TcpSerialServer {
+    fn record_network_byte(&mut self, inbound: bool, byte: u8, peer: Option<SocketAddr>) {
+        self.network_trace.push_back(NetworkTraceEvent {
+            sequence: self.next_trace_sequence,
+            inbound,
+            byte,
+            peer,
+        });
+        self.next_trace_sequence = self.next_trace_sequence.saturating_add(1);
+        while self.network_trace.len() > NETWORK_TRACE_LIMIT {
+            self.network_trace.pop_front();
+        }
+    }
+
     pub(crate) fn poll(&mut self, config: ExternalSerialConfig) {
         self.sync_config(config);
         if !config.enabled || self.listener.is_none() {
@@ -154,6 +180,7 @@ impl TcpSerialServer {
                 break;
             }
 
+            let peer = self.clients[index].peer;
             let mut buffer = [0_u8; SOCKET_CHUNK];
             let max_read = room.min(buffer.len());
             let result = self.clients[index].stream.read(&mut buffer[..max_read]);
@@ -163,6 +190,9 @@ impl TcpSerialServer {
                     self.clients.remove(index);
                 }
                 Ok(count) => {
+                    for &byte in &buffer[..count] {
+                        self.record_network_byte(true, byte, Some(peer));
+                    }
                     self.rx_queue.extend(&buffer[..count]);
                     self.rx_bytes = self.rx_bytes.saturating_add(count as u64);
                     index += 1;
@@ -225,6 +255,7 @@ impl TcpSerialServer {
     /// clients, so the counter remains meaningful when fan-out is enabled.
     pub(crate) fn broadcast_byte(&mut self, byte: u8) {
         self.tx_bytes = self.tx_bytes.saturating_add(1);
+        self.record_network_byte(false, byte, None);
         for client in &mut self.clients {
             if client.tx_queue.len() < CLIENT_TX_QUEUE_LIMIT {
                 client.tx_queue.push_back(byte);
@@ -281,6 +312,17 @@ impl TcpSerialServer {
 
     pub(crate) fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    pub(crate) fn network_trace_snapshot(&self) -> Vec<(u64, bool, u8, Option<SocketAddr>)> {
+        self.network_trace
+            .iter()
+            .map(|event| (event.sequence, event.inbound, event.byte, event.peer))
+            .collect()
+    }
+
+    pub(crate) fn clear_network_trace(&mut self) {
+        self.network_trace.clear();
     }
 
     pub(crate) fn disconnect_all(&mut self) {
