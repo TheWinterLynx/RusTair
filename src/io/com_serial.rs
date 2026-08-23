@@ -1,6 +1,8 @@
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -75,7 +77,6 @@ impl HardwareConfig {
 enum WorkerCommand {
     Write(u8),
     ClearRx,
-    Close,
 }
 
 enum WorkerEvent {
@@ -111,6 +112,7 @@ pub(crate) struct ComSerialTransport {
     command_tx: Option<SyncSender<WorkerCommand>>,
     event_rx: Option<Receiver<WorkerEvent>>,
     worker: Option<JoinHandle<()>>,
+    stop_flag: Option<Arc<AtomicBool>>,
     active_config: Option<HardwareConfig>,
     restart_requested: bool,
     state: ComTransportState,
@@ -131,6 +133,7 @@ impl Default for ComSerialTransport {
             command_tx: None,
             event_rx: None,
             worker: None,
+            stop_flag: None,
             active_config: None,
             restart_requested: false,
             state: ComTransportState::Disabled,
@@ -194,22 +197,26 @@ impl ComSerialTransport {
 
         let (command_tx, command_rx) = mpsc::sync_channel(WORKER_TX_QUEUE);
         let (event_tx, event_rx) = mpsc::channel();
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop_flag);
         let worker_config = config.clone();
         let worker = thread::Builder::new()
             .name("rustair-com-serial".into())
-            .spawn(move || run_worker(worker_config, command_rx, event_tx));
+            .spawn(move || run_worker(worker_config, command_rx, event_tx, worker_stop));
 
         match worker {
             Ok(worker) => {
                 self.command_tx = Some(command_tx);
                 self.event_rx = Some(event_rx);
                 self.worker = Some(worker);
+                self.stop_flag = Some(stop_flag);
                 self.active_config = Some(config);
             }
             Err(error) => {
                 self.command_tx = None;
                 self.event_rx = None;
                 self.worker = None;
+                self.stop_flag = None;
                 self.active_config = Some(config);
                 self.state = ComTransportState::Error;
                 self.last_error = Some(format!("Could not start COM worker: {error}"));
@@ -375,9 +382,10 @@ impl ComSerialTransport {
     }
 
     fn stop_worker(&mut self) {
-        if let Some(sender) = self.command_tx.take() {
-            let _ = sender.try_send(WorkerCommand::Close);
+        if let Some(stop_flag) = self.stop_flag.take() {
+            stop_flag.store(true, Ordering::Release);
         }
+        self.command_tx = None;
         self.event_rx = None;
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -397,6 +405,7 @@ fn run_worker(
     config: HardwareConfig,
     command_rx: Receiver<WorkerCommand>,
     event_tx: mpsc::Sender<WorkerEvent>,
+    stop_flag: Arc<AtomicBool>,
 ) {
     let mut port = match serialport::new(&config.port_name, config.baud_rate)
         .data_bits(config.serial_data_bits())
@@ -420,7 +429,14 @@ fn run_worker(
     let mut buffer = [0_u8; 256];
 
     'worker: loop {
+        if stop_flag.load(Ordering::Acquire) {
+            break;
+        }
+
         loop {
+            if stop_flag.load(Ordering::Acquire) {
+                break 'worker;
+            }
             match command_rx.try_recv() {
                 Ok(WorkerCommand::Write(byte)) => {
                     if let Err(error) = port.write_all(&[byte]) {
@@ -440,10 +456,13 @@ fn run_worker(
                         break 'worker;
                     }
                 }
-                Ok(WorkerCommand::Close) => break 'worker,
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break 'worker,
             }
+        }
+
+        if stop_flag.load(Ordering::Acquire) {
+            break;
         }
 
         match port.read(&mut buffer) {
