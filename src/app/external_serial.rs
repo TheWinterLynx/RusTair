@@ -42,8 +42,9 @@ impl RusTairApp {
     /// Poll host TCP sockets and bridge the stream to whichever emulated serial
     /// port the External TCP cable is attached to. Socket I/O is always
     /// non-blocking; serial pacing remains wall-clock based and independent of
-    /// CPU emulation speed. Character normalization is an endpoint option:
-    /// historical terminal mode strips bit 7, while Raw 8-bit preserves bytes.
+    /// CPU emulation speed. Character normalization is an endpoint option and
+    /// is directional: an ASR-33-style host keyboard uppercases input, while
+    /// terminal output only needs the historical 7-bit mask.
     pub(in crate::app) fn process_external_serial(&mut self, ctx: &egui::Context) {
         let config = self.external_serial.config;
         self.external_serial.server.poll(config);
@@ -85,7 +86,7 @@ impl RusTairApp {
 
                 if due_in.is_zero() {
                     if let Some(byte) = self.external_serial.server.pop_rx() {
-                        let byte = config.character_mode.transform(byte);
+                        let byte = config.character_mode.rx_transform(byte);
                         self.serial_receive_at(connection, byte);
                         if self.external_serial.server.rx_pending() == 0 {
                             self.external_serial.rx_next_at = None;
@@ -127,7 +128,7 @@ impl RusTairApp {
                 && self.serial_tx_busy_at(connection)
                 && let Some(byte) = self.serial_tx_front_at(connection)
             {
-                let host_byte = config.character_mode.transform(byte);
+                let host_byte = config.character_mode.tx_transform(byte);
                 self.external_serial.server.broadcast_byte(host_byte);
                 self.external_serial.server.flush_clients();
                 self.external_serial.tx_started = Some(now);
@@ -236,7 +237,8 @@ impl RusTairApp {
         if explanatory {
             ui.small("Single-client mode is the default. Extra connection attempts are rejected while one client is attached.");
             ui.small("Multiple-client mode broadcasts Altair TX to every client and merges every client's incoming bytes into the same UART RX stream.");
-            ui.small("7-bit terminal ASCII is the default for vintage software such as Altair BASIC 3.2, which can set bit 7 on printable output. Raw 8-bit preserves every byte unchanged.");
+            ui.small("ASR-33 style is the default for early Altair software: it strips bit 7 and converts host keyboard a-z to A-Z before the byte reaches the UART.");
+            ui.small("7-bit ASCII still strips bit 7 but preserves case. Raw 8-bit preserves every byte unchanged.");
             ui.small("Raw TCP means no Telnet negotiation is inserted or interpreted; character mode is a separate serial-terminal transformation.");
             if config.listen_scope == TcpListenScope::AllInterfaces {
                 ui.small("LAN mode exposes the listener beyond this PC. Windows Firewall/network policy may control who can reach it.");
@@ -327,7 +329,7 @@ impl RusTairApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("External serial — raw TCP");
-            ui.label("Connect PuTTY or another application to the emulated MITS serial interface through a TCP transport. Terminal mode can normalize the historical 8th bit, or Raw 8-bit can preserve every byte.");
+            ui.label("Connect PuTTY or another application to the emulated MITS serial interface through a TCP transport. Character mode models what kind of terminal is connected behind that transport.");
             ui.separator();
 
             let config = self.external_serial.config;
@@ -400,9 +402,10 @@ impl RusTairApp {
 
             ui.separator();
             ui.collapsing("How the serial bridge behaves", |ui| {
-                ui.label("• The TCP server is a host transport; the guest still sees the selected 88-SIO/88-2SIO UART and its normal I/O addresses.");
-                ui.label("• In 7-bit terminal mode, bit 7 is masked in both directions. This matches the behavior expected by vintage ASCII-terminal software such as BASIC 3.2.");
-                ui.label("• Raw 8-bit mode performs no byte transformation and is intended for binary/protocol experiments.");
+                ui.label("• The TCP server is only the host transport; the guest still sees the selected 88-SIO/88-2SIO UART and its normal I/O addresses.");
+                ui.label("• ASR-33 style masks bit 7 in both directions and uppercases host keyboard a-z on input, matching the uppercase-only keyboard expected by early software such as BASIC 3.2.");
+                ui.label("• 7-bit ASCII masks bit 7 but preserves input case for later/case-aware terminal software.");
+                ui.label("• Raw 8-bit performs no byte transformation and is intended for binary/protocol experiments.");
                 ui.label("• TCP may receive pasted text instantly, but bytes enter the UART at the configured line speed and only when its receive register is free.");
                 ui.label("• Guest transmit-ready timing is also paced, even when no TCP client is connected.");
                 ui.label("• With multiple clients enabled, guest output is broadcast to all clients; all client input shares one merged RX stream.");
