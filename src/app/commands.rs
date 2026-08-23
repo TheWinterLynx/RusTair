@@ -39,10 +39,12 @@ impl RusTairApp {
                 }
                 if !self.machine.powered {
                     self.set_altair_power(true);
-                } else {
-                    self.machine.set_running(false);
-                    self.machine.reset();
                 }
+                // The physical 8800 intentionally powers up without resetting
+                // the 8080. This menu command is a convenience loader, so it
+                // explicitly performs the reset that a human operator would do.
+                self.machine.set_running(false);
+                self.machine.reset();
                 self.asr33.tx_started = None;
                 self.terminal.tx_started = None;
                 self.external_serial.reset_line_timing();
