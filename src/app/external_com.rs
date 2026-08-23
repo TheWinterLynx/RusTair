@@ -109,7 +109,7 @@ impl RusTairApp {
         }
     }
 
-    fn refresh_external_com_ports(&mut self) {
+    pub(in crate::app) fn refresh_external_com_ports(&mut self) {
         match ComSerialTransport::available_port_names() {
             Ok(ports) => {
                 self.external_com.available_ports = ports;
