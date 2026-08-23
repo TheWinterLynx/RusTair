@@ -40,6 +40,7 @@ pub(crate) struct TcpSerialServer {
     rejected_clients: u64,
     dropped_tx_bytes: u64,
     last_error: Option<String>,
+    network_trace_enabled: bool,
     network_trace: VecDeque<NetworkTraceEvent>,
     next_trace_sequence: u64,
 }
@@ -56,6 +57,7 @@ impl Default for TcpSerialServer {
             rejected_clients: 0,
             dropped_tx_bytes: 0,
             last_error: None,
+            network_trace_enabled: false,
             network_trace: VecDeque::new(),
             next_trace_sequence: 1,
         }
@@ -64,6 +66,10 @@ impl Default for TcpSerialServer {
 
 impl TcpSerialServer {
     fn record_network_byte(&mut self, inbound: bool, byte: u8, peer: Option<SocketAddr>) {
+        if !self.network_trace_enabled {
+            return;
+        }
+
         self.network_trace.push_back(NetworkTraceEvent {
             sequence: self.next_trace_sequence,
             inbound,
@@ -190,8 +196,10 @@ impl TcpSerialServer {
                     self.clients.remove(index);
                 }
                 Ok(count) => {
-                    for &byte in &buffer[..count] {
-                        self.record_network_byte(true, byte, Some(peer));
+                    if self.network_trace_enabled {
+                        for &byte in &buffer[..count] {
+                            self.record_network_byte(true, byte, Some(peer));
+                        }
                     }
                     self.rx_queue.extend(&buffer[..count]);
                     self.rx_bytes = self.rx_bytes.saturating_add(count as u64);
@@ -314,6 +322,14 @@ impl TcpSerialServer {
         self.last_error.as_deref()
     }
 
+    pub(crate) fn network_trace_enabled(&self) -> bool {
+        self.network_trace_enabled
+    }
+
+    pub(crate) fn set_network_trace_enabled(&mut self, enabled: bool) {
+        self.network_trace_enabled = enabled;
+    }
+
     pub(crate) fn network_trace_snapshot(&self) -> Vec<(u64, bool, u8, Option<SocketAddr>)> {
         self.network_trace
             .iter()
@@ -352,5 +368,24 @@ impl TcpSerialServer {
         for client in self.clients.drain(..) {
             let _ = client.stream.shutdown(Shutdown::Both);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_trace_is_opt_in() {
+        let mut server = TcpSerialServer::default();
+        server.broadcast_byte(b'A');
+        assert!(server.network_trace_snapshot().is_empty());
+
+        server.set_network_trace_enabled(true);
+        server.broadcast_byte(b'B');
+        let trace = server.network_trace_snapshot();
+        assert_eq!(trace.len(), 1);
+        assert!(!trace[0].1);
+        assert_eq!(trace[0].2, b'B');
     }
 }
