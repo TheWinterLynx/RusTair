@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 const CPM_COM_LOAD_ADDRESS: u16 = 0x0100;
@@ -6,6 +7,7 @@ const CPM_PAGE_ZERO_SIZE: usize = 0x0100;
 const BOOT_ADDRESS: usize = 0x0080;
 const CPM_BDOS_PAGE_BYTES: usize = 0x0100;
 const CPM_STACK_GUARD_BYTES: usize = 0x0100;
+const DIAGNOSTIC_RESULT_DIALOG_ID: &str = "rustair-cpu-diagnostic-result-dialog";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::app) enum DiagnosticSerialPort {
@@ -41,6 +43,77 @@ struct CpmDiagnosticEnvironment {
     page_zero: [u8; CPM_PAGE_ZERO_SIZE],
     bdos_base: u16,
     bdos: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DiagnosticReference {
+    instructions: u64,
+    t_states: u64,
+}
+
+fn diagnostic_reference(path: &Path) -> Option<DiagnosticReference> {
+    let name = path.file_name()?.to_string_lossy().to_ascii_uppercase();
+    match name.as_str() {
+        "TST8080.COM" => Some(DiagnosticReference {
+            instructions: 651,
+            t_states: 4_924,
+        }),
+        "8080PRE.COM" => Some(DiagnosticReference {
+            instructions: 1_061,
+            t_states: 7_817,
+        }),
+        "CPUTEST.COM" => Some(DiagnosticReference {
+            instructions: 33_971_311,
+            t_states: 255_653_383,
+        }),
+        "8080EXM.COM" => Some(DiagnosticReference {
+            instructions: 2_919_050_698,
+            t_states: 23_803_381_171,
+        }),
+        _ => None,
+    }
+}
+
+fn diagnostic_display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn format_count(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, ch) in digits.chars().enumerate() {
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn format_diff(actual: u64, expected: u64) -> String {
+    let diff = actual as i128 - expected as i128;
+    if diff > 0 {
+        format!("+{diff}")
+    } else {
+        diff.to_string()
+    }
+}
+
+fn format_2mhz_duration(t_states: u64) -> String {
+    let total_millis = t_states.saturating_mul(1_000) / u64::from(CLOCK_HZ);
+    let hours = total_millis / 3_600_000;
+    let minutes = (total_millis / 60_000) % 60;
+    let seconds = (total_millis / 1_000) % 60;
+    let millis = total_millis % 1_000;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m {seconds:02}.{millis:03}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}.{millis:03}s")
+    } else {
+        format!("{seconds}.{millis:03}s")
+    }
 }
 
 fn append_abs(code: &mut Vec<u8>, opcode: u8, address: u16) {
@@ -195,8 +268,10 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn poll_cpu_diagnostic_dialog(&mut self, ctx: &egui::Context) {
-        // This poller runs every frame, making it a convenient common place to
-        // render loader failures raised by any binary-loading command.
+        // These dialogs are polled every frame. Completion is intentionally
+        // checked before the picker result; a diagnostic that entered our HLT
+        // on the previous frame therefore reports immediately.
+        self.poll_cpu_diagnostic_result(ctx);
         self.draw_load_error_dialog(ctx);
 
         let result = match self.diagnostic_file_dialog.as_ref() {
@@ -239,6 +314,133 @@ impl RusTairApp {
                     path.display()
                 )),
             },
+        }
+    }
+
+    fn poll_cpu_diagnostic_result(&mut self, ctx: &egui::Context) {
+        let id = egui::Id::new(DIAGNOSTIC_RESULT_DIALOG_ID);
+
+        if let Some(result) = self.machine.take_cpu_diagnostic_result() {
+            let instruction_match = result
+                .expected_instructions
+                .map(|expected| expected == result.instructions);
+            let timing_match = result
+                .expected_t_states
+                .map(|expected| expected == result.t_states);
+            let reference_match = match (instruction_match, timing_match) {
+                (Some(a), Some(b)) => Some(a && b),
+                _ => None,
+            };
+
+            let summary = match reference_match {
+                Some(true) => format!(
+                    "CPU diagnostic complete: {} — REFERENCE MATCH — {} instructions — {} T-states",
+                    result.name,
+                    format_count(result.instructions),
+                    format_count(result.t_states)
+                ),
+                Some(false) => format!(
+                    "CPU diagnostic complete: {} — REFERENCE MISMATCH — {} instructions — {} T-states",
+                    result.name,
+                    format_count(result.instructions),
+                    format_count(result.t_states)
+                ),
+                None => format!(
+                    "CPU diagnostic complete: {} — {} instructions — {} T-states (no registered reference)",
+                    result.name,
+                    format_count(result.instructions),
+                    format_count(result.t_states)
+                ),
+            };
+            self.status = summary;
+            ctx.data_mut(|data| data.insert_temp(id, result));
+        }
+
+        let Some(result) = ctx.data(|data| data.get_temp::<crate::machine::CpuDiagnosticResult>(id)) else {
+            return;
+        };
+
+        let reference_match = match (result.expected_instructions, result.expected_t_states) {
+            (Some(expected_i), Some(expected_t)) => {
+                Some(result.instructions == expected_i && result.t_states == expected_t)
+            }
+            _ => None,
+        };
+
+        let mut dismissed = false;
+        egui::Window::new("CPU diagnostic complete")
+            .id(egui::Id::new("rustair-cpu-diagnostic-result-window"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.heading(&result.name);
+                ui.add_space(6.0);
+
+                match reference_match {
+                    Some(true) => {
+                        ui.strong("REFERENCE MATCH — instruction count and T-state total are exact.");
+                    }
+                    Some(false) => {
+                        ui.strong("REFERENCE MISMATCH — inspect the differences below.");
+                    }
+                    None => {
+                        ui.strong("Measurement complete — no reference totals are registered for this file.");
+                    }
+                }
+
+                ui.add_space(8.0);
+                egui::Grid::new("cpu-diagnostic-result-grid")
+                    .num_columns(4)
+                    .spacing([18.0, 5.0])
+                    .show(ui, |ui| {
+                        ui.strong("Metric");
+                        ui.strong("Actual");
+                        ui.strong("Expected");
+                        ui.strong("Diff");
+                        ui.end_row();
+
+                        ui.label("Instructions");
+                        ui.monospace(format_count(result.instructions));
+                        if let Some(expected) = result.expected_instructions {
+                            ui.monospace(format_count(expected));
+                            ui.monospace(format_diff(result.instructions, expected));
+                        } else {
+                            ui.label("—");
+                            ui.label("—");
+                        }
+                        ui.end_row();
+
+                        ui.label("T-states");
+                        ui.monospace(format_count(result.t_states));
+                        if let Some(expected) = result.expected_t_states {
+                            ui.monospace(format_count(expected));
+                            ui.monospace(format_diff(result.t_states, expected));
+                        } else {
+                            ui.label("—");
+                            ui.label("—");
+                        }
+                        ui.end_row();
+                    });
+
+                ui.add_space(8.0);
+                ui.label(format!(
+                    "Equivalent 8080 time at 2 MHz: {}",
+                    format_2mhz_duration(result.t_states)
+                ));
+                ui.small(
+                    "For comparison with the classic test harness, accounting starts at 0100h, normalizes each CP/M CALL 0005h to the reference OUT+RET stub, and normalizes the final warm boot at 0000h to OUT 0. RusTair still executes the real high-memory mini-BDOS, UART polling and serial hardware; only the reported comparison counters are normalized.",
+                );
+
+                ui.add_space(10.0);
+                if ui.button("OK").clicked() {
+                    dismissed = true;
+                }
+            });
+
+        if dismissed {
+            ctx.data_mut(|data| data.remove::<crate::machine::CpuDiagnosticResult>(id));
         }
     }
 
@@ -335,6 +537,15 @@ impl RusTairApp {
             .load(environment.bdos_base, &environment.bdos);
         self.machine.cpu.pc = 0x0000;
 
+        let reference = diagnostic_reference(path);
+        self.machine.begin_cpu_diagnostic_meter(
+            diagnostic_display_name(path),
+            environment.bdos_base,
+            environment.bdos.len(),
+            reference.map(|reference| reference.instructions),
+            reference.map(|reference| reference.t_states),
+        );
+
         // Reveal, but never rewire, whichever endpoint is already connected to
         // the selected physical serial port.
         match self.serial_router.device_on(connection) {
@@ -351,10 +562,16 @@ impl RusTairApp {
             .device_on(connection)
             .map(Self::serial_device_name)
             .unwrap_or("no endpoint connected");
+        let reference_label = if reference.is_some() {
+            "reference totals armed"
+        } else {
+            "measurement only"
+        };
         self.status = format!(
-            "CPU diagnostic running: {} at 0100h — clean reset/RAM — mini-BDOS {:04X}h functions 2/9 — output via {} → {}",
+            "CPU diagnostic running: {} at 0100h — clean reset/RAM — mini-BDOS {:04X}h functions 2/9 — {} — output via {} → {}",
             path.display(),
             environment.bdos_base,
+            reference_label,
             port.label(board),
             endpoint
         );
@@ -364,6 +581,33 @@ impl RusTairApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classic_reference_totals_are_registered() {
+        assert_eq!(
+            diagnostic_reference(Path::new("TST8080.COM")),
+            Some(DiagnosticReference { instructions: 651, t_states: 4_924 })
+        );
+        assert_eq!(
+            diagnostic_reference(Path::new("8080PRE.com")),
+            Some(DiagnosticReference { instructions: 1_061, t_states: 7_817 })
+        );
+        assert_eq!(
+            diagnostic_reference(Path::new("CPUTEST.COM")),
+            Some(DiagnosticReference {
+                instructions: 33_971_311,
+                t_states: 255_653_383,
+            })
+        );
+        assert_eq!(
+            diagnostic_reference(Path::new("8080EXM.COM")),
+            Some(DiagnosticReference {
+                instructions: 2_919_050_698,
+                t_states: 23_803_381_171,
+            })
+        );
+        assert_eq!(diagnostic_reference(Path::new("custom.com")), None);
+    }
 
     #[test]
     fn cpm_vector_exposes_high_bdos_address_for_8080exm() {
