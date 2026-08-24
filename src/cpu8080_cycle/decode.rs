@@ -55,6 +55,7 @@ pub(super) enum Instruction {
     MovRegister { dst: Register8, src: Register8 },
     MovFromMemory { dst: Register8 },
     MovToMemory { src: Register8 },
+    Hlt,
     Lxi(RegisterPair),
     Inx(RegisterPair),
     Dcx(RegisterPair),
@@ -86,7 +87,9 @@ pub(super) enum Instruction {
     Xthl,
     Pchl,
     Xchg,
+    Di,
     Sphl,
+    Ei,
     Unsupported(u8),
 }
 
@@ -109,6 +112,7 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0x37 => return Instruction::AluRegister { op: AluOp::Stc, src: Register8::A },
         0x3a => return Instruction::LdaDirect,
         0x3f => return Instruction::AluRegister { op: AluOp::Cmc, src: Register8::A },
+        0x76 => return Instruction::Hlt,
         0xc3 => return Instruction::Jump,
         0xc6 => return Instruction::AluImmediate { op: AluOp::Add },
         0xc9 => return Instruction::Ret,
@@ -123,8 +127,10 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0xe9 => return Instruction::Pchl,
         0xeb => return Instruction::Xchg,
         0xee => return Instruction::AluImmediate { op: AluOp::Xra },
+        0xf3 => return Instruction::Di,
         0xf6 => return Instruction::AluImmediate { op: AluOp::Ora },
         0xf9 => return Instruction::Sphl,
+        0xfb => return Instruction::Ei,
         0xfe => return Instruction::AluImmediate { op: AluOp::Cmp },
         _ => {}
     }
@@ -162,9 +168,6 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
     }
 
     if opcode >= 0x40 && opcode <= 0x7f {
-        if opcode == 0x76 {
-            return Instruction::Unsupported(opcode);
-        }
         let dst = Register8::from_code((opcode >> 3) & 0x07);
         let src = Register8::from_code(opcode & 0x07);
         return match (dst, src) {
@@ -268,22 +271,24 @@ mod tests {
     }
 
     #[test]
-    fn decodes_io_and_special_transfer_families() {
+    fn decodes_io_special_transfer_and_control_instructions() {
+        assert_eq!(decode(0x76), Instruction::Hlt);
         assert_eq!(decode(0xd3), Instruction::Out);
         assert_eq!(decode(0xdb), Instruction::In);
         assert_eq!(decode(0xe3), Instruction::Xthl);
         assert_eq!(decode(0xe9), Instruction::Pchl);
         assert_eq!(decode(0xeb), Instruction::Xchg);
+        assert_eq!(decode(0xf3), Instruction::Di);
         assert_eq!(decode(0xf9), Instruction::Sphl);
+        assert_eq!(decode(0xfb), Instruction::Ei);
     }
 
     #[test]
-    fn transfer_paths_and_hlt_behavior_are_preserved() {
+    fn transfer_paths_are_preserved() {
         assert_eq!(decode(0x02), Instruction::Stax(RegisterPair::BC));
         assert_eq!(decode(0x22), Instruction::ShldDirect);
         assert_eq!(decode(0x36), Instruction::MviMemory);
         assert_eq!(decode(0x46), Instruction::MovFromMemory { dst: Register8::B });
         assert_eq!(decode(0x70), Instruction::MovToMemory { src: Register8::B });
-        assert_eq!(decode(0x76), Instruction::Unsupported(0x76));
     }
 }
