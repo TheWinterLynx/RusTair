@@ -17,6 +17,14 @@ pub(super) enum AluOp {
     Xra,
     Ora,
     Cmp,
+    Rlc,
+    Rrc,
+    Ral,
+    Rar,
+    Daa,
+    Cma,
+    Stc,
+    Cmc,
 }
 
 impl AluOp {
@@ -54,6 +62,12 @@ fn set_szp(registers: &mut Registers, value: u8) {
     registers.f |= FLAG_1;
 }
 
+/// Execute an 8080 ALU/internal accumulator operation.
+///
+/// `rhs` is used by binary ALU operations and ignored by the eight accumulator-
+/// only operations. Keeping them in the same dispatch path is deliberate: all
+/// eight complete during M1/T4 just like register ALU operations, with no extra
+/// external machine cycle.
 pub(super) fn execute(registers: &mut Registers, op: AluOp, rhs: u8) {
     match op {
         AluOp::Add => add(registers, rhs, false),
@@ -64,6 +78,14 @@ pub(super) fn execute(registers: &mut Registers, op: AluOp, rhs: u8) {
         AluOp::Xra => xra(registers, rhs),
         AluOp::Ora => ora(registers, rhs),
         AluOp::Cmp => sub(registers, rhs, false, false),
+        AluOp::Rlc => rlc(registers),
+        AluOp::Rrc => rrc(registers),
+        AluOp::Ral => ral(registers),
+        AluOp::Rar => rar(registers),
+        AluOp::Daa => daa(registers),
+        AluOp::Cma => registers.a = !registers.a,
+        AluOp::Stc => registers.f |= FLAG_C,
+        AluOp::Cmc => registers.f ^= FLAG_C,
     }
 }
 
@@ -155,6 +177,60 @@ fn ora(registers: &mut Registers, rhs: u8) {
     set_szp(registers, result);
 }
 
+fn rlc(registers: &mut Registers) {
+    let carry = registers.a >> 7;
+    registers.a = registers.a.rotate_left(1);
+    registers.f = (registers.f & !FLAG_C) | carry;
+}
+
+fn rrc(registers: &mut Registers) {
+    let carry = registers.a & 1;
+    registers.a = registers.a.rotate_right(1);
+    registers.f = (registers.f & !FLAG_C) | carry;
+}
+
+fn ral(registers: &mut Registers) {
+    let old_carry = if registers.f & FLAG_C != 0 { 1 } else { 0 };
+    let new_carry = registers.a >> 7;
+    registers.a = (registers.a << 1) | old_carry;
+    registers.f = (registers.f & !FLAG_C) | new_carry;
+}
+
+fn rar(registers: &mut Registers) {
+    let old_carry = if registers.f & FLAG_C != 0 { 0x80 } else { 0 };
+    let new_carry = registers.a & 1;
+    registers.a = (registers.a >> 1) | old_carry;
+    registers.f = (registers.f & !FLAG_C) | new_carry;
+}
+
+fn daa(registers: &mut Registers) {
+    // Keep this algorithm identical to the already validated production core.
+    let old_a = registers.a;
+    let old_carry = registers.f & FLAG_C != 0;
+    let old_aux = registers.f & FLAG_AC != 0;
+    let mut correction = 0u8;
+    let mut carry = old_carry;
+
+    if (old_a & 0x0f) > 9 || old_aux {
+        correction |= 0x06;
+    }
+    if old_a > 0x99 || old_carry {
+        correction |= 0x60;
+        carry = true;
+    }
+
+    let result = old_a.wrapping_add(correction);
+    registers.f &= !(FLAG_C | FLAG_AC);
+    if carry {
+        registers.f |= FLAG_C;
+    }
+    if ((old_a & 0x0f) + (correction & 0x0f)) > 0x0f {
+        registers.f |= FLAG_AC;
+    }
+    registers.a = result;
+    set_szp(registers, result);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +284,79 @@ mod tests {
         assert_eq!(r.a, 0x00);
         assert_ne!(r.f & FLAG_AC, 0);
         assert_eq!(r.f & FLAG_C, 0);
+    }
+
+    #[test]
+    fn rotate_family_only_changes_accumulator_and_carry() {
+        let preserved = FLAG_S | FLAG_Z | FLAG_P | FLAG_AC | FLAG_1;
+
+        let mut r = Registers::default();
+        r.a = 0x81;
+        r.f = preserved;
+        execute(&mut r, AluOp::Rlc, 0);
+        assert_eq!(r.a, 0x03);
+        assert_eq!(r.f, preserved | FLAG_C);
+
+        r.a = 0x81;
+        r.f = preserved;
+        execute(&mut r, AluOp::Rrc, 0);
+        assert_eq!(r.a, 0xc0);
+        assert_eq!(r.f, preserved | FLAG_C);
+
+        r.a = 0x80;
+        r.f = preserved | FLAG_C;
+        execute(&mut r, AluOp::Ral, 0);
+        assert_eq!(r.a, 0x01);
+        assert_eq!(r.f, preserved | FLAG_C);
+
+        r.a = 0x01;
+        r.f = preserved | FLAG_C;
+        execute(&mut r, AluOp::Rar, 0);
+        assert_eq!(r.a, 0x80);
+        assert_eq!(r.f, preserved | FLAG_C);
+    }
+
+    #[test]
+    fn cma_stc_and_cmc_leave_unrelated_flags_alone() {
+        let preserved = FLAG_S | FLAG_Z | FLAG_P | FLAG_AC | FLAG_1;
+        let mut r = Registers::default();
+        r.a = 0x55;
+        r.f = preserved;
+
+        execute(&mut r, AluOp::Cma, 0);
+        assert_eq!(r.a, 0xaa);
+        assert_eq!(r.f, preserved);
+
+        execute(&mut r, AluOp::Stc, 0);
+        assert_eq!(r.f, preserved | FLAG_C);
+
+        execute(&mut r, AluOp::Cmc, 0);
+        assert_eq!(r.f, preserved);
+    }
+
+    #[test]
+    fn daa_matches_validated_8080_bcd_adjust_cases() {
+        let mut r = Registers::default();
+
+        // 09h + 09h = 12h with AC, then DAA -> 18h.
+        r.a = 0x12;
+        r.f = FLAG_1 | FLAG_AC;
+        execute(&mut r, AluOp::Daa, 0);
+        assert_eq!(r.a, 0x18);
+        assert_eq!(r.f & FLAG_C, 0);
+
+        // 99h + 99h = 32h with carry and AC, DAA -> 98h with carry.
+        r.a = 0x32;
+        r.f = FLAG_1 | FLAG_C | FLAG_AC;
+        execute(&mut r, AluOp::Daa, 0);
+        assert_eq!(r.a, 0x98);
+        assert_ne!(r.f & FLAG_C, 0);
+
+        // Pure low-nibble correction.
+        r.a = 0x0a;
+        r.f = FLAG_1;
+        execute(&mut r, AluOp::Daa, 0);
+        assert_eq!(r.a, 0x10);
+        assert_ne!(r.f & FLAG_AC, 0);
     }
 }

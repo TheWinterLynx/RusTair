@@ -78,13 +78,21 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
     match opcode {
         0x00 => return Instruction::Nop,
         0x02 => return Instruction::Stax(RegisterPair::BC),
+        0x07 => return Instruction::AluRegister { op: AluOp::Rlc, src: Register8::A },
         0x0a => return Instruction::Ldax(RegisterPair::BC),
+        0x0f => return Instruction::AluRegister { op: AluOp::Rrc, src: Register8::A },
         0x12 => return Instruction::Stax(RegisterPair::DE),
+        0x17 => return Instruction::AluRegister { op: AluOp::Ral, src: Register8::A },
         0x1a => return Instruction::Ldax(RegisterPair::DE),
+        0x1f => return Instruction::AluRegister { op: AluOp::Rar, src: Register8::A },
         0x22 => return Instruction::ShldDirect,
+        0x27 => return Instruction::AluRegister { op: AluOp::Daa, src: Register8::A },
         0x2a => return Instruction::LhldDirect,
+        0x2f => return Instruction::AluRegister { op: AluOp::Cma, src: Register8::A },
         0x32 => return Instruction::StaDirect,
+        0x37 => return Instruction::AluRegister { op: AluOp::Stc, src: Register8::A },
         0x3a => return Instruction::LdaDirect,
+        0x3f => return Instruction::AluRegister { op: AluOp::Cmc, src: Register8::A },
         0xc6 => return Instruction::AluImmediate { op: AluOp::Add },
         0xce => return Instruction::AluImmediate { op: AluOp::Adc },
         0xd6 => return Instruction::AluImmediate { op: AluOp::Sub },
@@ -166,6 +174,22 @@ mod tests {
             assert_eq!(decode(base | 0x03), Instruction::Inx(pair));
             assert_eq!(decode(base | 0x0b), Instruction::Dcx(pair));
             assert_eq!(decode(base | 0x09), Instruction::Dad(pair));
+        }
+    }
+
+    #[test]
+    fn decodes_accumulator_only_operations_on_the_four_t_state_alu_path() {
+        for (opcode, op) in [
+            (0x07, AluOp::Rlc),
+            (0x0f, AluOp::Rrc),
+            (0x17, AluOp::Ral),
+            (0x1f, AluOp::Rar),
+            (0x27, AluOp::Daa),
+            (0x2f, AluOp::Cma),
+            (0x37, AluOp::Stc),
+            (0x3f, AluOp::Cmc),
+        ] {
+            assert_eq!(decode(opcode), Instruction::AluRegister { op, src: Register8::A });
         }
     }
 

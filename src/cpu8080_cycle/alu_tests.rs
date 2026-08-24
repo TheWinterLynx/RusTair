@@ -46,6 +46,29 @@ fn register_alu_executes_in_m1_and_is_exactly_four_t_states() {
 }
 
 #[test]
+fn accumulator_only_operations_are_exactly_four_t_states_with_no_extra_cycle() {
+    for opcode in [0x07, 0x0f, 0x17, 0x1f, 0x27, 0x2f, 0x37, 0x3f] {
+        let mut cpu = Cpu8080Cycle::new();
+        let mut r = Registers::default();
+        r.a = 0x81;
+        r.f = 0x12;
+        cpu.set_registers(r);
+
+        let trace = fetch(&mut cpu, opcode);
+        assert_eq!(trace[0].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert_eq!(trace[1].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert_eq!(trace[2].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert_eq!(trace[3].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert!(trace[3].instruction_complete, "opcode {opcode:02x}");
+        assert_eq!(trace[3].instruction_t_states, 4, "opcode {opcode:02x}");
+        assert_eq!(cpu.last_instruction_t_states(), Some(4), "opcode {opcode:02x}");
+        assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert_eq!(cpu.t_state(), TState::T1, "opcode {opcode:02x}");
+        assert_eq!(cpu.registers().pc, 1, "opcode {opcode:02x}");
+    }
+}
+
+#[test]
 fn memory_alu_is_seven_t_states_and_reads_hl() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
