@@ -5,6 +5,13 @@ edition = "2024"
 description = "Native Rust MITS Altair 8800 emulator"
 license = "BSD-2-Clause"
 
+[features]
+default = []
+# Enables the Rust side of the Open SIMH FrontPanel ABI. The matching C
+# frontpanel objects are intentionally linked in a later step so the default
+# build remains independent of a locally installed SIMH tree.
+simh-ffi = []
+
 [dependencies]
 eframe = { version = "0.32", default-features = true, features = ["wgpu"] }
 egui_extras = { version = "0.32", features = ["image"] }
