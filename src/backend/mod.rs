@@ -16,6 +16,7 @@ mod native;
 use std::fmt;
 use std::time::Duration;
 
+use crate::config::SerialBoard;
 use crate::machine::PanelLampSnapshot;
 
 pub use native::NativeMachineBackend;
@@ -75,6 +76,19 @@ impl EmulationEngine {
 
 impl Default for EmulationEngine {
     fn default() -> Self { Self::RustFast8080 }
+}
+
+/// Logical serial channel exposed by the installed MITS serial board. Port 1 is
+/// meaningful for 88-2SIO and intentionally remains addressable in the backend
+/// contract so external endpoints do not need to know implementation details.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendSerialPort {
+    Port0,
+    Port1,
+}
+
+impl BackendSerialPort {
+    pub const ALL: [Self; 2] = [Self::Port0, Self::Port1];
 }
 
 /// Feature set exposed by one engine. The UI must query capabilities instead of
@@ -195,6 +209,19 @@ pub trait MachineBackend {
 
     fn switch_register(&self) -> u16;
     fn set_switch_register(&mut self, value: u16);
+
+    /// Serial-board operations used by the internal terminals and external TCP/
+    /// COM endpoints. Keeping these at machine level is essential for SIMH: the
+    /// app routes endpoints, while each backend owns its UART implementation.
+    fn configure_serial_board(&mut self, board: SerialBoard);
+    fn serial_board(&self) -> SerialBoard;
+    fn serial_receive(&mut self, port: BackendSerialPort, byte: u8);
+    fn serial_rx_empty(&self, port: BackendSerialPort) -> bool;
+    fn serial_rx_len(&self, port: BackendSerialPort) -> usize;
+    fn serial_tx_busy(&self, port: BackendSerialPort) -> bool;
+    fn serial_tx_front(&self, port: BackendSerialPort) -> Option<u8>;
+    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8>;
+    fn clear_serial(&mut self);
 
     /// Non-invasive debugger-style memory access. These methods are separate
     /// from EXAMINE/DEPOSIT because the latter have visible front-panel/bus
