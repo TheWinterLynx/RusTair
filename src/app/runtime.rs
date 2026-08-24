@@ -268,7 +268,16 @@ impl eframe::App for RusTairApp {
                 ui.separator();
                 ui.label(self.config.preferences.emulation_speed.label());
                 ui.separator();
-                ui.label(if self.machine.running { "RUNNING" } else if self.machine.powered { "STOPPED" } else { "POWER OFF" });
+                let execution_state = if !self.machine.powered {
+                    "POWER OFF"
+                } else if self.machine.cpu.halted {
+                    if self.machine.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+                } else if self.machine.running {
+                    "RUNNING"
+                } else {
+                    "STOPPED"
+                };
+                ui.label(execution_state);
             });
         });
 
