@@ -1,6 +1,7 @@
 mod asr33_controller;
 mod asr33_state;
 mod commands;
+mod cpu_diagnostics;
 mod external_com;
 mod external_serial;
 mod runtime;
@@ -14,6 +15,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
+use self::cpu_diagnostics::DiagnosticFileDialog;
 use self::external_com::ExternalComState;
 use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
@@ -81,6 +83,7 @@ struct RusTairApp {
     serial_router: SerialRouter,
     external_serial: ExternalSerialState,
     external_com: ExternalComState,
+    diagnostic_file_dialog: Option<DiagnosticFileDialog>,
     tex: Tex,
     tty: Teletype,
     asr33: Asr33State,
@@ -104,6 +107,7 @@ impl RusTairApp {
             serial_router: SerialRouter::default(),
             external_serial: ExternalSerialState::default(),
             external_com: ExternalComState::default(),
+            diagnostic_file_dialog: None,
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),

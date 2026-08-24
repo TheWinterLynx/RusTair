@@ -4,6 +4,8 @@ impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
+        self.poll_cpu_diagnostic_dialog(ctx);
+
         let io_inspector_open = ctx.data_mut(|data| {
             *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
         });
@@ -67,6 +69,41 @@ impl eframe::App for RusTairApp {
                         self.load_bundled_basic();
                         ui.close();
                     }
+                    ui.menu_button("CPU diagnostics", |ui| {
+                        ui.small("Loads a CP/M 8080 .COM at 0100h and installs a real page-zero mini-BDOS (functions 2 and 9). The guest executes on the normal Altair CPU and serial hardware; no CPU interception is used.");
+                        ui.separator();
+                        let picker_open = self.diagnostic_file_dialog.is_some();
+                        if ui
+                            .add_enabled(!picker_open, egui::Button::new("Load .COM via Port 0…"))
+                            .clicked()
+                        {
+                            self.start_cpu_diagnostic_dialog(
+                                cpu_diagnostics::DiagnosticSerialPort::Port0,
+                            );
+                            ui.close();
+                        }
+                        let port1_available = self.config.machine.serial_board == SerialBoard::TwoSio88;
+                        if ui
+                            .add_enabled(
+                                port1_available && !picker_open,
+                                egui::Button::new("Load .COM via Port 1…"),
+                            )
+                            .clicked()
+                        {
+                            self.start_cpu_diagnostic_dialog(
+                                cpu_diagnostics::DiagnosticSerialPort::Port1,
+                            );
+                            ui.close();
+                        }
+                        if !port1_available {
+                            ui.small("Port 1 is available only with the MITS 88-2SIO board.");
+                        }
+                        if picker_open {
+                            ui.small("A diagnostic file picker is already open; the guest is paused until it closes.");
+                        }
+                        ui.separator();
+                        ui.small("Recommended order: 8080PRE.COM → TST8080.COM → CPUTEST.COM → 8080EXM.COM. Use enough installed RAM for the selected image.");
+                    });
                 });
 
                 ui.menu_button("Configuration", |ui| {
@@ -231,7 +268,16 @@ impl eframe::App for RusTairApp {
                 ui.separator();
                 ui.label(self.config.preferences.emulation_speed.label());
                 ui.separator();
-                ui.label(if self.machine.running { "RUNNING" } else if self.machine.powered { "STOPPED" } else { "POWER OFF" });
+                let execution_state = if !self.machine.powered {
+                    "POWER OFF"
+                } else if self.machine.cpu.halted {
+                    if self.machine.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+                } else if self.machine.running {
+                    "RUNNING"
+                } else {
+                    "STOPPED"
+                };
+                ui.label(execution_state);
             });
         });
 

@@ -17,6 +17,12 @@ const LAMP_COUNT: usize = 12;
 // Presentation persistence only. The emulated hardware state remains binary;
 // this low-pass maps MHz bus transitions onto a ~60 Hz host display.
 const VISUAL_PERSISTENCE_SECS: f32 = 0.045;
+// One 16 ms visual frame at the authentic 2 MHz clock is about 32,000 T-states.
+// Accelerated/Unlimited execution may advance far more guest time per host
+// frame, but averaging all of it makes the lamps unnaturally static. Limit the
+// presentation integrator to one authentic visual window; CPU/bus execution is
+// completely unaffected.
+const VISUAL_SAMPLE_TSTATES: u64 = 32_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BusOwner {
@@ -243,7 +249,8 @@ struct PanelLampIntegrator {
 
 impl PanelLampIntegrator {
     fn sample(&mut self, signals: &S100Signals, weight: u32) {
-        let weight = u64::from(weight);
+        let remaining = VISUAL_SAMPLE_TSTATES.saturating_sub(self.total_weight);
+        let weight = u64::from(weight).min(remaining);
         if weight == 0 {
             return;
         }
@@ -630,5 +637,15 @@ mod tests {
         bus.set_hold(false);
         bus.freeze();
         assert_eq!(bus.snapshot().hlda, 0.0);
+    }
+
+    #[test]
+    fn accelerated_activity_is_limited_to_one_authentic_visual_window() {
+        let mut integrator = PanelLampIntegrator::default();
+        let signals = S100Signals { address: 0xffff, data: 0xff, memr: true, ..Default::default() };
+        integrator.sample(&signals, VISUAL_SAMPLE_TSTATES as u32);
+        assert_eq!(integrator.total_weight, VISUAL_SAMPLE_TSTATES);
+        integrator.sample(&signals, 1000);
+        assert_eq!(integrator.total_weight, VISUAL_SAMPLE_TSTATES);
     }
 }
