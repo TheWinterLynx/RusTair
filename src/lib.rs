@@ -5,6 +5,7 @@ pub mod cpu8080;
 pub mod io;
 pub mod machine;
 pub mod peripherals;
+pub(crate) mod embedded_assets;
 
 // Keep the original public module path working while the implementation now
 // lives under peripherals/asr33.

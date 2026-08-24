@@ -85,77 +85,75 @@ impl RusTairApp {
     }
 
     /// Reset the machine, load the bundled Microsoft 4K BASIC image at address
-    /// zero and start execution.
+    /// zero and start execution. The BASIC image is compiled into the executable.
     pub(in crate::app) fn load_bundled_basic(&mut self) {
-        match std::fs::read("assets/4kbas32.bin") {
-            Ok(bytes) => {
-                if bytes.len() > self.machine.installed_ram_bytes() {
-                    self.report_load_error(format!(
-                        "Microsoft 4K BASIC is {} bytes and requires at least 4 KiB RAM. The current machine has {}.",
-                        bytes.len(),
-                        self.config.machine.ram_size.label()
-                    ));
-                    return;
-                }
-                if !self.machine.powered {
-                    self.set_altair_power(true);
-                }
-                // The physical 8800 intentionally powers up without resetting
-                // the 8080. This menu command is a convenience loader, so it
-                // explicitly performs the reset that a human operator would do.
-                self.machine.set_running(false);
-                self.machine.reset();
-                self.asr33.tx_started = None;
-                self.terminal.tx_started = None;
-                self.external_serial.reset_line_timing();
-                self.external_com.reset_line_timing();
-                self.machine.bus.clear_protection();
-                self.machine.bus.load(0, &bytes);
-                self.machine.cpu.pc = 0;
+        let Some(bytes) = crate::embedded_assets::get("assets/4kbas32.bin") else {
+            self.report_load_error("Bundled Microsoft 4K BASIC is missing from the executable.");
+            return;
+        };
 
-                // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
-                // on a completely writable 64 KiB machine and overwrites itself.
-                // Faithful emulation leaves that bug intact by default; the
-                // compatibility option is an explicit convenience workaround.
-                let full_memory_probe_guard = if self
-                    .config
-                    .compatibility
-                    .basic32_64k_probe_workaround
-                {
-                    self.machine.arm_basic32_full_memory_probe_guard()
-                } else {
-                    false
-                };
-
-                // Auto-open only reveals the endpoint already wired to Port 0.
-                // It never changes the serial cabling.
-                if self.config.preferences.auto_open_basic_console {
-                    match self.serial_router.device_on(SerialConnection::Port0) {
-                        Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
-                        Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
-                        Some(SerialDevice::ExternalTcp) => self.external_serial.window_open = true,
-                        Some(SerialDevice::ExternalCom) => self.external_com.window_open = true,
-                        None => {}
-                    }
-                }
-
-                self.machine.set_running(true);
-                self.status = if full_memory_probe_guard {
-                    "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active"
-                        .into()
-                } else if self.machine.installed_ram_bytes() == 64 * 1024 {
-                    "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled"
-                        .into()
-                } else if self.config.preferences.auto_open_basic_console {
-                    "Microsoft 4K BASIC loaded and running — console auto-open enabled".into()
-                } else {
-                    "Microsoft 4K BASIC loaded and running — console auto-open disabled".into()
-                };
-            }
-            Err(e) => self.report_load_error(format!(
-                "Bundled Microsoft 4K BASIC could not be read from assets/4kbas32.bin: {e}"
-            )),
+        if bytes.len() > self.machine.installed_ram_bytes() {
+            self.report_load_error(format!(
+                "Microsoft 4K BASIC is {} bytes and requires at least 4 KiB RAM. The current machine has {}.",
+                bytes.len(),
+                self.config.machine.ram_size.label()
+            ));
+            return;
         }
+        if !self.machine.powered {
+            self.set_altair_power(true);
+        }
+        // The physical 8800 intentionally powers up without resetting
+        // the 8080. This menu command is a convenience loader, so it
+        // explicitly performs the reset that a human operator would do.
+        self.machine.set_running(false);
+        self.machine.reset();
+        self.asr33.tx_started = None;
+        self.terminal.tx_started = None;
+        self.external_serial.reset_line_timing();
+        self.external_com.reset_line_timing();
+        self.machine.bus.clear_protection();
+        self.machine.bus.load(0, bytes);
+        self.machine.cpu.pc = 0;
+
+        // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
+        // on a completely writable 64 KiB machine and overwrites itself.
+        // Faithful emulation leaves that bug intact by default; the
+        // compatibility option is an explicit convenience workaround.
+        let full_memory_probe_guard = if self
+            .config
+            .compatibility
+            .basic32_64k_probe_workaround
+        {
+            self.machine.arm_basic32_full_memory_probe_guard()
+        } else {
+            false
+        };
+
+        // Auto-open only reveals the endpoint already wired to Port 0.
+        // It never changes the serial cabling.
+        if self.config.preferences.auto_open_basic_console {
+            match self.serial_router.device_on(SerialConnection::Port0) {
+                Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
+                Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
+                Some(SerialDevice::ExternalTcp) => self.external_serial.window_open = true,
+                Some(SerialDevice::ExternalCom) => self.external_com.window_open = true,
+                None => {}
+            }
+        }
+
+        self.machine.set_running(true);
+        self.status = if full_memory_probe_guard {
+            "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active"
+                .into()
+        } else if self.machine.installed_ram_bytes() == 64 * 1024 {
+            "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled"
+                .into()
+        } else if self.config.preferences.auto_open_basic_console {
+            "Microsoft 4K BASIC loaded and running — console auto-open enabled".into()
+        } else {
+            "Microsoft 4K BASIC loaded and running — console auto-open disabled".into()
+        };
     }
 
     pub(in crate::app) fn load_paper_tape(&mut self) {
