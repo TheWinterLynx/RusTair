@@ -290,7 +290,10 @@ impl Cpu8080 {
         let opcode = bus.opcode_fetch(opcode_address);
         self.pc = self.pc.wrapping_add(1);
         let t = self.execute(bus, opcode);
-        if enable_after {
+        // EI enables interrupts only after the following instruction. If that
+        // following instruction is DI, DI's immediate disable must win over the
+        // pending enable rather than being undone at the end of the same step.
+        if enable_after && opcode != 0xf3 {
             self.inte = true;
             bus.set_inte(true);
         }
@@ -539,6 +542,20 @@ mod tests {
         assert_eq!(cpu.cycles, 4);
         assert_eq!(cpu.de(), 0xabcd);
         assert_eq!(cpu.hl(), 0x1234);
+    }
+
+    #[test]
+    fn ei_is_delayed_one_instruction_but_di_wins_when_it_is_that_instruction() {
+        let mut bus = TestBus::default();
+        bus.mem[0] = 0xfb; // EI
+        bus.mem[1] = 0xf3; // DI
+        let mut cpu = Cpu8080::new();
+
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert!(!cpu.inte, "EI must not enable interrupts immediately");
+        assert_eq!(cpu.step(&mut bus), 4);
+        assert!(!cpu.inte, "DI immediately after EI must leave interrupts disabled");
+        assert!(!cpu.interrupt(&mut bus, 0xcf));
     }
 
     #[test]

@@ -4,6 +4,9 @@ impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
+        // Embedded-suite completion must consume its meter result before the
+        // generic external-.COM result dialog gets a chance to take it.
+        self.poll_embedded_cpu_diagnostics(ctx);
         self.poll_cpu_diagnostic_dialog(ctx);
 
         let io_inspector_open = ctx.data_mut(|data| {
@@ -37,7 +40,7 @@ impl eframe::App for RusTairApp {
         if self.machine.running {
             let authentic_cycles = (CLOCK_HZ as f64 * dt.as_secs_f64()) as u32;
             let authentic_cycles = authentic_cycles.clamp(1, 40_000);
-            let speed = self.config.preferences.emulation_speed;
+            let speed = self.effective_emulation_speed();
             self.machine.run_cycles(speed.cycle_budget(authentic_cycles));
             if speed == EmulationSpeed::Unlimited {
                 ctx.request_repaint();
@@ -70,39 +73,7 @@ impl eframe::App for RusTairApp {
                         ui.close();
                     }
                     ui.menu_button("CPU diagnostics", |ui| {
-                        ui.small("Loads a CP/M 8080 .COM at 0100h and installs a real page-zero mini-BDOS (functions 2 and 9). The guest executes on the normal Altair CPU and serial hardware; no CPU interception is used.");
-                        ui.separator();
-                        let picker_open = self.diagnostic_file_dialog.is_some();
-                        if ui
-                            .add_enabled(!picker_open, egui::Button::new("Load .COM via Port 0…"))
-                            .clicked()
-                        {
-                            self.start_cpu_diagnostic_dialog(
-                                cpu_diagnostics::DiagnosticSerialPort::Port0,
-                            );
-                            ui.close();
-                        }
-                        let port1_available = self.config.machine.serial_board == SerialBoard::TwoSio88;
-                        if ui
-                            .add_enabled(
-                                port1_available && !picker_open,
-                                egui::Button::new("Load .COM via Port 1…"),
-                            )
-                            .clicked()
-                        {
-                            self.start_cpu_diagnostic_dialog(
-                                cpu_diagnostics::DiagnosticSerialPort::Port1,
-                            );
-                            ui.close();
-                        }
-                        if !port1_available {
-                            ui.small("Port 1 is available only with the MITS 88-2SIO board.");
-                        }
-                        if picker_open {
-                            ui.small("A diagnostic file picker is already open; the guest is paused until it closes.");
-                        }
-                        ui.separator();
-                        ui.small("Recommended order: 8080PRE.COM → TST8080.COM → CPUTEST.COM → 8080EXM.COM. Use enough installed RAM for the selected image.");
+                        self.draw_cpu_diagnostics_menu(ui);
                     });
                 });
 
@@ -266,7 +237,7 @@ impl eframe::App for RusTairApp {
                 ui.separator();
                 ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", self.machine.cpu.pc, self.machine.cpu.sp, self.machine.cpu.a, self.machine.cpu.f));
                 ui.separator();
-                ui.label(self.config.preferences.emulation_speed.label());
+                ui.label(self.effective_emulation_speed().label());
                 ui.separator();
                 let execution_state = if !self.machine.powered {
                     "POWER OFF"
