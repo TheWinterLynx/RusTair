@@ -7,7 +7,13 @@
 #   cmake --build <open-simh-build> --config Release --target simh_frontpanel
 #
 # The deferred callback runs at the end of SIMH's top-level directory, after
-# os_features, thread_lib and simh_network have been defined.
+# os_features and thread_lib have been defined.
+#
+# Important: do NOT link against simh_network here. simh_network is the full
+# simulator networking feature interface and may pull optional dependencies
+# such as SLiRP/pcap/VDE. FrontPanel only needs sim_sock.c plus the normal OS
+# socket support already exported by os_features (ws2_32/wsock32/winmm on
+# Windows).
 
 if(CMAKE_VERSION VERSION_LESS 3.19)
     message(FATAL_ERROR
@@ -37,15 +43,13 @@ function(rustair_add_simh_frontpanel)
         ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/rustair-frontpanel/$<CONFIG>")
 
     target_include_directories(simh_frontpanel PUBLIC "${CMAKE_SOURCE_DIR}")
-    target_link_libraries(simh_frontpanel PRIVATE os_features thread_lib)
 
-    if(WIN32)
-        if(NOT TARGET simh_network)
-            message(FATAL_ERROR
-                "RusTair FrontPanel target requires Open-SIMH simh_network on Windows")
-        endif()
-        target_link_libraries(simh_frontpanel PRIVATE simh_network)
-    endif()
+    # thread_lib provides the pthread implementation used by sim_frontpanel.c.
+    # os_features provides platform feature definitions and the native socket
+    # libraries required by sim_sock.c. Linking simh_network here would also
+    # inherit optional simulator networking stacks (notably SLiRP) that the
+    # FrontPanel client does not use.
+    target_link_libraries(simh_frontpanel PRIVATE os_features thread_lib)
 
     if(MSVC)
         target_compile_definitions(simh_frontpanel PRIVATE
@@ -55,7 +59,7 @@ function(rustair_add_simh_frontpanel)
     endif()
 
     message(STATUS
-        "RusTair: added simh_frontpanel shared library from Open-SIMH source ${CMAKE_SOURCE_DIR}")
+        "RusTair: added minimal simh_frontpanel shared library from Open-SIMH source ${CMAKE_SOURCE_DIR}")
 endfunction()
 
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL rustair_add_simh_frontpanel)
