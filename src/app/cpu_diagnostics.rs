@@ -123,7 +123,9 @@ impl RusTairApp {
         if self.config.machine.serial_board == SerialBoard::Sio88
             && port == DiagnosticSerialPort::Port1
         {
-            self.status = "CPU diagnostic load failed: 88-SIO has no Port 1".into();
+            self.report_load_error(
+                "CPU diagnostic cannot use Port 1 because the installed MITS 88-SIO only provides Port 0. Select Port 0 or install the MITS 88-2SIO.",
+            );
             return;
         }
 
@@ -155,6 +157,10 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn poll_cpu_diagnostic_dialog(&mut self, ctx: &egui::Context) {
+        // This poller runs every frame, making it a convenient common place to
+        // render loader failures raised by any binary-loading command.
+        self.draw_load_error_dialog(ctx);
+
         let result = match self.diagnostic_file_dialog.as_ref() {
             Some(dialog) => match dialog.receiver.try_recv() {
                 Ok(path) => Some(Ok((path, dialog.port, dialog.resume_on_cancel))),
@@ -174,7 +180,9 @@ impl RusTairApp {
 
         match result {
             Err(()) => {
-                self.status = "CPU diagnostic picker failed".into();
+                self.report_load_error(
+                    "The Windows CPU diagnostic file picker terminated unexpectedly before returning a file.",
+                );
             }
             Ok((None, _, resume_on_cancel)) => {
                 if resume_on_cancel {
@@ -188,7 +196,10 @@ impl RusTairApp {
             }
             Ok((Some(path), port, _)) => match std::fs::read(&path) {
                 Ok(bytes) => self.load_cpu_diagnostic(&path, &bytes, port),
-                Err(e) => self.status = format!("CPU diagnostic load failed: {e}"),
+                Err(e) => self.report_load_error(format!(
+                    "Could not read CPU diagnostic {}: {e}",
+                    path.display()
+                )),
             },
         }
     }
@@ -200,33 +211,45 @@ impl RusTairApp {
         port: DiagnosticSerialPort,
     ) {
         if bytes.is_empty() {
-            self.status = "CPU diagnostic load failed: selected .COM file is empty".into();
+            self.report_load_error(format!(
+                "CPU diagnostic {} is empty (0 bytes). Nothing was loaded.",
+                path.display()
+            ));
             return;
         }
 
         let board = self.config.machine.serial_board;
         let connection = port.connection();
         if board == SerialBoard::Sio88 && port == DiagnosticSerialPort::Port1 {
-            self.status = "CPU diagnostic load failed: 88-SIO has no Port 1".into();
+            self.report_load_error(
+                "CPU diagnostic cannot use Port 1 because the installed MITS 88-SIO only provides Port 0.",
+            );
             return;
         }
 
         let installed = self.machine.installed_ram_bytes();
         let image_end = CPM_COM_LOAD_ADDRESS as usize + bytes.len();
         if image_end > installed {
-            self.status = format!(
-                "CPU diagnostic load failed: {} needs at least {} KiB RAM; {} is installed",
+            self.report_load_error(format!(
+                "CPU diagnostic {} is {} bytes and must be loaded at 0100h, so it needs at least {} KiB of installed RAM. The current machine has {} ({} bytes).",
                 path.display(),
+                bytes.len(),
                 image_end.div_ceil(1024),
-                installed / 1024
-            );
+                self.config.machine.ram_size.label(),
+                installed
+            ));
             return;
         }
 
         // Leave 256 bytes at the top of installed RAM for a CP/M-like stack.
         let stack_top = installed.saturating_sub(0x100) as u16;
         let Some(shim) = build_cpm_diagnostic_shim(board, port, stack_top) else {
-            self.status = "CPU diagnostic load failed: selected serial port is unavailable".into();
+            self.report_load_error(format!(
+                "CPU diagnostic {} cannot start because {} is not available on the installed {}.",
+                path.display(),
+                port.label(board),
+                board.label()
+            ));
             return;
         };
 
