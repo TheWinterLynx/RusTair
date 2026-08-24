@@ -1,3 +1,5 @@
+use super::alu::AluOp;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Register8 {
     B,
@@ -18,7 +20,7 @@ impl Register8 {
             3 => Some(Self::E),
             4 => Some(Self::H),
             5 => Some(Self::L),
-            6 => None, // M: memory addressed through HL.
+            6 => None,
             7 => Some(Self::A),
             _ => unreachable!(),
         }
@@ -62,6 +64,13 @@ pub(super) enum Instruction {
     StaDirect,
     LhldDirect,
     ShldDirect,
+    InrRegister(Register8),
+    InrMemory,
+    DcrRegister(Register8),
+    DcrMemory,
+    AluRegister { op: AluOp, src: Register8 },
+    AluMemory { op: AluOp },
+    AluImmediate { op: AluOp },
     Unsupported(u8),
 }
 
@@ -76,15 +85,20 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0x2a => return Instruction::LhldDirect,
         0x32 => return Instruction::StaDirect,
         0x3a => return Instruction::LdaDirect,
+        0xc6 => return Instruction::AluImmediate { op: AluOp::Add },
+        0xce => return Instruction::AluImmediate { op: AluOp::Adc },
+        0xd6 => return Instruction::AluImmediate { op: AluOp::Sub },
+        0xde => return Instruction::AluImmediate { op: AluOp::Sbb },
+        0xe6 => return Instruction::AluImmediate { op: AluOp::Ana },
+        0xee => return Instruction::AluImmediate { op: AluOp::Xra },
+        0xf6 => return Instruction::AluImmediate { op: AluOp::Ora },
+        0xfe => return Instruction::AluImmediate { op: AluOp::Cmp },
         _ => {}
     }
 
-    // LXI rp,d16: 00RP0001.
     if opcode & 0xcf == 0x01 {
         return Instruction::Lxi(RegisterPair::from_code((opcode >> 4) & 0x03));
     }
-
-    // INX rp / DCX rp / DAD rp.
     if opcode & 0xcf == 0x03 {
         return Instruction::Inx(RegisterPair::from_code((opcode >> 4) & 0x03));
     }
@@ -95,7 +109,18 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         return Instruction::Dad(RegisterPair::from_code((opcode >> 4) & 0x03));
     }
 
-    // MVI r,d8 / MVI M,d8: 00DDD110.
+    if opcode & 0xc7 == 0x04 {
+        return match Register8::from_code((opcode >> 3) & 0x07) {
+            Some(dst) => Instruction::InrRegister(dst),
+            None => Instruction::InrMemory,
+        };
+    }
+    if opcode & 0xc7 == 0x05 {
+        return match Register8::from_code((opcode >> 3) & 0x07) {
+            Some(dst) => Instruction::DcrRegister(dst),
+            None => Instruction::DcrMemory,
+        };
+    }
     if opcode & 0xc7 == 0x06 {
         return match Register8::from_code((opcode >> 3) & 0x07) {
             Some(dst) => Instruction::MviImmediate(dst),
@@ -103,7 +128,6 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         };
     }
 
-    // MOV d,s: 01DDDSSS. 76h is HLT, not MOV M,M.
     if opcode >= 0x40 && opcode <= 0x7f {
         if opcode == 0x76 {
             return Instruction::Unsupported(opcode);
@@ -115,6 +139,14 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
             (Some(dst), None) => Instruction::MovFromMemory { dst },
             (None, Some(src)) => Instruction::MovToMemory { src },
             (None, None) => Instruction::Unsupported(opcode),
+        };
+    }
+
+    if opcode >= 0x80 && opcode <= 0xbf {
+        let op = AluOp::from_code((opcode >> 3) & 0x07);
+        return match Register8::from_code(opcode & 0x07) {
+            Some(src) => Instruction::AluRegister { op, src },
+            None => Instruction::AluMemory { op },
         };
     }
 
@@ -138,27 +170,39 @@ mod tests {
     }
 
     #[test]
-    fn decodes_indirect_and_direct_transfer_family() {
-        assert_eq!(decode(0x02), Instruction::Stax(RegisterPair::BC));
-        assert_eq!(decode(0x12), Instruction::Stax(RegisterPair::DE));
-        assert_eq!(decode(0x0a), Instruction::Ldax(RegisterPair::BC));
-        assert_eq!(decode(0x1a), Instruction::Ldax(RegisterPair::DE));
-        assert_eq!(decode(0x22), Instruction::ShldDirect);
-        assert_eq!(decode(0x2a), Instruction::LhldDirect);
-        assert_eq!(decode(0x32), Instruction::StaDirect);
-        assert_eq!(decode(0x3a), Instruction::LdaDirect);
+    fn decodes_inr_and_dcr_register_and_memory_forms() {
+        assert_eq!(decode(0x04), Instruction::InrRegister(Register8::B));
+        assert_eq!(decode(0x34), Instruction::InrMemory);
+        assert_eq!(decode(0x3d), Instruction::DcrRegister(Register8::A));
+        assert_eq!(decode(0x35), Instruction::DcrMemory);
     }
 
     #[test]
-    fn mov_and_mvi_memory_forms_remain_supported_but_hlt_does_not() {
+    fn decodes_all_alu_source_and_immediate_families() {
+        for alu_code in 0u8..8 {
+            let op = AluOp::from_code(alu_code);
+            let base = 0x80 | (alu_code << 3);
+            assert_eq!(decode(base), Instruction::AluRegister { op, src: Register8::B });
+            assert_eq!(decode(base | 6), Instruction::AluMemory { op });
+        }
+
+        for (opcode, op) in [
+            (0xc6, AluOp::Add), (0xce, AluOp::Adc), (0xd6, AluOp::Sub),
+            (0xde, AluOp::Sbb), (0xe6, AluOp::Ana), (0xee, AluOp::Xra),
+            (0xf6, AluOp::Ora), (0xfe, AluOp::Cmp),
+        ] {
+            assert_eq!(decode(opcode), Instruction::AluImmediate { op });
+        }
+    }
+
+    #[test]
+    fn transfer_paths_and_hlt_behavior_are_preserved() {
+        assert_eq!(decode(0x02), Instruction::Stax(RegisterPair::BC));
+        assert_eq!(decode(0x22), Instruction::ShldDirect);
         assert_eq!(decode(0x36), Instruction::MviMemory);
         assert_eq!(decode(0x46), Instruction::MovFromMemory { dst: Register8::B });
         assert_eq!(decode(0x70), Instruction::MovToMemory { src: Register8::B });
         assert_eq!(decode(0x76), Instruction::Unsupported(0x76));
-    }
-
-    #[test]
-    fn unrelated_opcode_remains_explicitly_unsupported() {
         assert_eq!(decode(0xff), Instruction::Unsupported(0xff));
     }
 }

@@ -7,18 +7,20 @@
 //! Rust from Intel documentation and informed by Jim Drygiannakis' MIT-licensed
 //! `jdryg/8080Emu` edge-level model. See `licenses/8080Emu-MIT.txt`.
 
+mod alu;
 mod decode;
 mod pins;
 mod state;
 mod timing;
+
+#[cfg(test)]
+mod alu_tests;
 
 pub use pins::{Cpu8080Inputs, Cpu8080Pins};
 pub use state::Registers;
 pub use timing::{MachineCycle, TState};
 
 use decode::{decode, Instruction, Register8, RegisterPair};
-
-const FLAG_C: u8 = 0x01;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cpu8080CycleFault {
@@ -113,9 +115,6 @@ impl Cpu8080Cycle {
     pub const fn fault(&self) -> Option<Cpu8080CycleFault> { self.fault }
 
     /// Advance exactly one Intel 8080 T-state.
-    ///
-    /// This milestone adds 16-bit register-pair transfers and addressing while
-    /// preserving the previously validated fetch/MOV/MVI/STA memory engine.
     pub fn tick(&mut self, inputs: Cpu8080Inputs) -> TickTrace {
         if inputs.reset {
             self.apply_reset();
@@ -205,19 +204,33 @@ impl Cpu8080Cycle {
                     instruction_complete = true;
                     self.complete_instruction();
                 }
+                Instruction::AluRegister { op, src } => {
+                    let rhs = self.read_register(src);
+                    alu::execute(&mut self.registers, op, rhs);
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
                 Instruction::MviImmediate(_)
                 | Instruction::MviMemory
                 | Instruction::Lxi(_)
                 | Instruction::LdaDirect
                 | Instruction::StaDirect
                 | Instruction::LhldDirect
-                | Instruction::ShldDirect => {
+                | Instruction::ShldDirect
+                | Instruction::AluImmediate { .. } => {
                     self.begin_memory_read(self.registers.pc, 2);
                 }
-                Instruction::MovRegister { .. } | Instruction::Inx(_) | Instruction::Dcx(_) => {
+                Instruction::MovRegister { .. }
+                | Instruction::Inx(_)
+                | Instruction::Dcx(_)
+                | Instruction::InrRegister(_)
+                | Instruction::DcrRegister(_) => {
                     self.t_state = TState::T5;
                 }
-                Instruction::MovFromMemory { .. } => {
+                Instruction::MovFromMemory { .. }
+                | Instruction::InrMemory
+                | Instruction::DcrMemory
+                | Instruction::AluMemory { .. } => {
                     self.begin_memory_read(self.hl(), 2);
                 }
                 Instruction::MovToMemory { src } => {
@@ -230,8 +243,6 @@ impl Cpu8080Cycle {
                     self.begin_memory_write(self.read_pair(pair), self.registers.a, 2);
                 }
                 Instruction::Dad(_) => {
-                    // jdryg's edge-level model likewise uses two 3T Internal
-                    // machine cycles after M1 for DAD: 4 + 3 + 3 = 10T.
                     self.begin_internal_cycle(2);
                 }
                 Instruction::Unsupported(opcode) => {
@@ -256,6 +267,20 @@ impl Cpu8080Cycle {
                 Instruction::Dcx(pair) => {
                     let value = self.read_pair(pair).wrapping_sub(1);
                     self.write_pair(pair, value);
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::InrRegister(dst) => {
+                    let value = self.read_register(dst);
+                    let result = alu::inr(&mut self.registers, value);
+                    self.write_register(dst, result);
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::DcrRegister(dst) => {
+                    let value = self.read_register(dst);
+                    let result = alu::dcr(&mut self.registers, value);
+                    self.write_register(dst, result);
                     instruction_complete = true;
                     self.complete_instruction();
                 }
@@ -295,7 +320,30 @@ impl Cpu8080Cycle {
                 self.complete_instruction();
                 true
             }
-            (Instruction::Lxi(pair), 2) => {
+            (Instruction::InrMemory, 2) => {
+                let address = self.cycle_address;
+                let result = alu::inr(&mut self.registers, data);
+                self.begin_memory_write(address, result, 3);
+                false
+            }
+            (Instruction::DcrMemory, 2) => {
+                let address = self.cycle_address;
+                let result = alu::dcr(&mut self.registers, data);
+                self.begin_memory_write(address, result, 3);
+                false
+            }
+            (Instruction::AluMemory { op }, 2) => {
+                alu::execute(&mut self.registers, op, data);
+                self.complete_instruction();
+                true
+            }
+            (Instruction::AluImmediate { op }, 2) => {
+                self.registers.pc = self.registers.pc.wrapping_add(1);
+                alu::execute(&mut self.registers, op, data);
+                self.complete_instruction();
+                true
+            }
+            (Instruction::Lxi(_pair), 2) => {
                 self.operand_low = data;
                 self.registers.pc = self.registers.pc.wrapping_add(1);
                 self.begin_memory_read(self.registers.pc, 3);
@@ -368,7 +416,9 @@ impl Cpu8080Cycle {
             (Instruction::MviMemory, 3)
             | (Instruction::MovToMemory { .. }, 2)
             | (Instruction::Stax(_), 2)
-            | (Instruction::StaDirect, 4) => {
+            | (Instruction::StaDirect, 4)
+            | (Instruction::InrMemory, 3)
+            | (Instruction::DcrMemory, 3) => {
                 self.complete_instruction();
                 true
             }
@@ -402,8 +452,8 @@ impl Cpu8080Cycle {
                 let rhs = self.read_pair(pair) as u32;
                 let sum = lhs + rhs;
                 self.write_pair(RegisterPair::HL, sum as u16);
-                self.registers.f = (self.registers.f & !FLAG_C)
-                    | if sum > 0xffff { FLAG_C } else { 0 };
+                self.registers.f = (self.registers.f & !alu::FLAG_C)
+                    | if sum > 0xffff { alu::FLAG_C } else { 0 };
                 self.complete_instruction();
                 true
             }
@@ -502,6 +552,9 @@ impl Cpu8080Cycle {
     }
 
     fn complete_instruction(&mut self) {
+        // Match the production core's architecturally visible flag cleanup:
+        // unused bits 3/5 are zero and bit 1 is held high at boundaries.
+        self.registers.f = (self.registers.f & 0xd5) | alu::FLAG_1;
         self.completed_instructions = self.completed_instructions.saturating_add(1);
         self.last_instruction_t_states = Some(self.current_instruction_t_states);
         self.current_instruction_t_states = 0;
@@ -530,9 +583,6 @@ impl Cpu8080Cycle {
     fn drive_pins_for_t_state(&mut self, t_state: TState) {
         self.pins.inte = self.inte;
         self.pins.hlda = false;
-        // Internal DAD cycles have no externally valid bus transaction. Their
-        // exact sub-T-state address behaviour will be pinned down during the
-        // later Phi1/Phi2 trace-validation phase.
         self.pins.address = if self.machine_cycle == MachineCycle::Internal {
             None
         } else {
@@ -688,9 +738,9 @@ mod tests {
         r.l = 0xff;
         r.b = 0x00;
         r.c = 0x01;
-        r.f = 0xd6; // all representative non-carry bits set, carry clear.
+        r.f = 0xd6;
         cpu.set_registers(r);
-        fetch(&mut cpu, 0x09); // DAD B
+        fetch(&mut cpu, 0x09);
 
         let m2 = [
             cpu.tick(input(0, false)),
@@ -701,7 +751,7 @@ mod tests {
         assert_eq!(m2[0].machine_cycle_index, 2);
         assert!(!m2[0].pins.sync);
         assert!(!m2[1].pins.dbin);
-        assert!(!m2[1].pins.wait); // READY cannot stretch an internal DAD cycle.
+        assert!(!m2[1].pins.wait);
 
         let m3 = [
             cpu.tick(input(0, false)),
@@ -711,7 +761,7 @@ mod tests {
         assert!(m3[2].instruction_complete);
         assert_eq!(m3[2].instruction_t_states, 10);
         assert_eq!(cpu.hl(), 0x0000);
-        assert_eq!(cpu.registers().f, 0xd7); // only carry changed.
+        assert_eq!(cpu.registers().f, 0xd7);
     }
 
     #[test]
@@ -721,14 +771,14 @@ mod tests {
         r.b = 0x12; r.c = 0x34; r.d = 0x56; r.e = 0x78; r.a = 0xa5; r.f = 0x46;
         cpu.set_registers(r);
 
-        fetch(&mut cpu, 0x0a); // LDAX B
+        fetch(&mut cpu, 0x0a);
         let read = read_cycle(&mut cpu, 0x5a);
         assert_eq!(read[0].pins.address, Some(0x1234));
         assert!(read[2].instruction_complete);
         assert_eq!(read[2].instruction_t_states, 7);
         assert_eq!(cpu.registers().a, 0x5a);
 
-        fetch(&mut cpu, 0x12); // STAX D
+        fetch(&mut cpu, 0x12);
         let write = write_cycle(&mut cpu);
         assert_eq!(write[0].pins.address, Some(0x5678));
         assert_eq!(write[1].pins.data_out, Some(0x5a));
@@ -805,13 +855,13 @@ mod tests {
         r.h = 0x20; r.l = 0x10; r.b = 0x77; r.f = 0x46;
         cpu.set_registers(r);
 
-        fetch(&mut cpu, 0x70); // MOV M,B
+        fetch(&mut cpu, 0x70);
         let write = write_cycle(&mut cpu);
         assert_eq!(write[0].pins.address, Some(0x2010));
         assert_eq!(write[1].pins.data_out, Some(0x77));
         assert_eq!(write[2].instruction_t_states, 7);
 
-        fetch(&mut cpu, 0x36); // MVI M,d8
+        fetch(&mut cpu, 0x36);
         read_cycle(&mut cpu, 0xa5);
         let write = write_cycle(&mut cpu);
         assert_eq!(write[0].pins.address, Some(0x2010));
@@ -826,7 +876,7 @@ mod tests {
         r.h = 0x12; r.l = 0x34; r.b = 0xa5;
         cpu.set_registers(r);
         fetch(&mut cpu, 0x70);
-        cpu.tick(input(0, true)); // M2 T1
+        cpu.tick(input(0, true));
         let t2 = cpu.tick(input(0, false));
         assert_eq!(t2.pins.address, Some(0x1234));
         assert_eq!(t2.pins.data_out, Some(0xa5));
