@@ -74,55 +74,81 @@ impl RusTairApp {
             });
     }
 
+    fn draw_tty_power_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label("POWER:");
+        if ui
+            .selectable_label(self.tty.mode == TtyMode::Off, "OFF")
+            .clicked()
+        {
+            self.set_tty_mode(TtyMode::Off);
+        }
+        if ui
+            .selectable_label(self.tty.mode == TtyMode::Line, "LINE")
+            .clicked()
+        {
+            self.set_tty_mode(TtyMode::Line);
+        }
+        if ui
+            .selectable_label(self.tty.mode == TtyMode::Local, "LOCAL")
+            .clicked()
+        {
+            self.set_tty_mode(TtyMode::Local);
+        }
+    }
+
+    fn draw_tty_media_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label(format!("{} columns", self.tty.paper_width));
+        ui.separator();
+        if ui.button("Clear paper").clicked() {
+            self.tty.clear_paper();
+        }
+        if ui.button("Read tape…").clicked() {
+            self.load_paper_tape();
+        }
+        let punching = self.tty.tape_capture_enabled();
+        let punch_label = if punching { "Finish punch" } else { "Punch tape" };
+        if ui.button(punch_label).clicked() {
+            if punching {
+                self.tty.finish_tape_punch();
+                self.save_punched_tape();
+            } else {
+                self.tty.start_tape_punch();
+            }
+        }
+    }
+
     fn draw_tty_menu(&mut self, ctx: &egui::Context) {
         self.process_tty_keyboard(ctx);
         egui::TopBottomPanel::top("tty-menu").show(ctx, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                ui.label("POWER:");
-                if ui
-                    .selectable_label(self.tty.mode == TtyMode::Off, "OFF")
-                    .clicked()
-                {
-                    self.set_tty_mode(TtyMode::Off);
-                }
-                if ui
-                    .selectable_label(self.tty.mode == TtyMode::Line, "LINE")
-                    .clicked()
-                {
-                    self.set_tty_mode(TtyMode::Line);
-                }
-                if ui
-                    .selectable_label(self.tty.mode == TtyMode::Local, "LOCAL")
-                    .clicked()
-                {
-                    self.set_tty_mode(TtyMode::Local);
-                }
-                ui.separator();
-                self.draw_tty_connection_selector(ui);
-                ui.separator();
-                self.draw_tty_speed_selector(ui);
-                ui.separator();
-                self.draw_tty_duplex_selector(ui);
-                ui.separator();
-                ui.label(format!("{} columns", self.tty.paper_width));
-                ui.separator();
-                if ui.button("Clear paper").clicked() {
-                    self.tty.clear_paper();
-                }
-                if ui.button("Read tape…").clicked() {
-                    self.load_paper_tape();
-                }
-                let punching = self.tty.tape_capture_enabled();
-                let punch_label = if punching { "Finish punch" } else { "Punch tape" };
-                if ui.button(punch_label).clicked() {
-                    if punching {
-                        self.tty.finish_tape_punch();
-                        self.save_punched_tape();
-                    } else {
-                        self.tty.start_tape_punch();
-                    }
-                }
-            });
+            let narrow = ui.available_width() < 900.0;
+
+            if narrow {
+                ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| self.draw_tty_power_controls(ui));
+                    ui.separator();
+                    ui.horizontal(|ui| self.draw_tty_connection_selector(ui));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| self.draw_tty_speed_selector(ui));
+                    ui.separator();
+                    ui.horizontal(|ui| self.draw_tty_duplex_selector(ui));
+                });
+                ui.horizontal_wrapped(|ui| {
+                    self.draw_tty_media_controls(ui);
+                });
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.horizontal(|ui| self.draw_tty_power_controls(ui));
+                    ui.separator();
+                    ui.horizontal(|ui| self.draw_tty_connection_selector(ui));
+                    ui.separator();
+                    ui.horizontal(|ui| self.draw_tty_speed_selector(ui));
+                    ui.separator();
+                    ui.horizontal(|ui| self.draw_tty_duplex_selector(ui));
+                    ui.separator();
+                    ui.horizontal(|ui| self.draw_tty_media_controls(ui));
+                });
+            }
         });
     }
 
