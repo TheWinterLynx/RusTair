@@ -121,6 +121,7 @@ impl RusTairApp {
             return;
         }
         self.tty.set_mode(mode);
+        self.asr33.keyboard.reset_distributor(Instant::now());
         self.audio.play_once("assets/powerbtn.mp3");
         self.asr33.power_flash_until = None;
         if mode == TtyMode::Off {
@@ -137,16 +138,33 @@ impl RusTairApp {
         ctx.request_repaint_after(PANEL_FRAME);
     }
 
-    fn send_tty_byte(&mut self, byte: u8) {
+    /// Trip the Model 33 keyboard distributor for one character.
+    ///
+    /// The real keyboard cannot launch a second character until the current
+    /// distributor/reset cycle has completed. Applying the same lockout here is
+    /// important in full-duplex mode: otherwise a modern PC keyboard can inject
+    /// a large RX burst instantly while BASIC can only echo it back at 110 baud,
+    /// producing an artificial, ever-growing delayed echo.
+    fn send_tty_byte(&mut self, byte: u8) -> bool {
         if self.tty.mode == TtyMode::Off {
-            return;
+            return false;
+        }
+
+        let now = Instant::now();
+        let char_time = self.asr_char_time();
+        if !self
+            .asr33
+            .keyboard
+            .try_begin_transmission(now, char_time)
+        {
+            return false;
         }
 
         let byte = byte & 0x7f;
         self.tty.last_key_byte = Some(byte);
 
         match self.tty.mode {
-            TtyMode::Off => {}
+            TtyMode::Off => return false,
             // LOCAL is a true offline keyboard/printer loop: the character is
             // printed mechanically but is not injected into the Altair UART.
             TtyMode::Local => {
@@ -163,6 +181,16 @@ impl RusTairApp {
                     self.play_print_events(&events);
                 }
             }
+        }
+        true
+    }
+
+    fn report_tty_keyboard_busy(&mut self) {
+        if !self.asr_char_time().is_zero() {
+            self.status = format!(
+                "ASR-33 keyboard distributor busy — keystroke blocked at {}",
+                self.config.peripherals.asr33_speed.label()
+            );
         }
     }
 
@@ -327,8 +355,10 @@ impl RusTairApp {
                         ..
                     } => {
                         any_key = true;
+                        // A Model 33 RETURN key transmits CR only. LINE FEED is
+                        // a separate physical key (Ctrl-J remains usable from a
+                        // host keyboard), and BASIC supplies its own CR/LF echo.
                         keystrokes.push((b'\r', Some(b'\r')));
-                        keystrokes.push((b'\n', None));
                     }
                     egui::Event::Key {
                         key: egui::Key::Backspace,
@@ -389,10 +419,13 @@ impl RusTairApp {
         }
 
         for (byte, visual_byte) in keystrokes {
-            if let Some(visual_byte) = visual_byte {
-                self.animate_keyboard_byte(visual_byte, ctx);
+            if self.send_tty_byte(byte) {
+                if let Some(visual_byte) = visual_byte {
+                    self.animate_keyboard_byte(visual_byte, ctx);
+                }
+            } else {
+                self.report_tty_keyboard_busy();
             }
-            self.send_tty_byte(byte);
         }
     }
 
@@ -431,6 +464,23 @@ impl RusTairApp {
             return;
         }
 
+        let key = teletype::KEYS[index];
+        let accepted = match key.kind {
+            KeyKind::Shift | KeyKind::Control | KeyKind::HereIs | KeyKind::Repeat => true,
+            kind => {
+                let modifiers = ctx.input(|input| input.modifiers);
+                let shifted = self.tty.shift_down || modifiers.shift;
+                let controlled = self.tty.control_down || modifiers.ctrl;
+                teletype::key_to_byte(kind, shifted, controlled)
+                    .is_none_or(|byte| self.send_tty_byte(byte))
+            }
+        };
+
+        if !accepted {
+            self.report_tty_keyboard_busy();
+            return;
+        }
+
         {
             let keyboard = &mut self.asr33.keyboard;
             keyboard.pressed_key = Some(index);
@@ -440,14 +490,15 @@ impl RusTairApp {
             keyboard.anim_tick = Instant::now();
         }
 
-        let key = teletype::KEYS[index];
         match key.kind {
             KeyKind::Shift => self.tty.shift_down = true,
             KeyKind::Control => self.tty.control_down = true,
             KeyKind::HereIs => self.start_tty_answerback(ctx),
             KeyKind::Repeat => {
                 if let Some(byte) = self.tty.last_key_byte {
-                    self.send_tty_byte(byte);
+                    if !self.send_tty_byte(byte) {
+                        self.report_tty_keyboard_busy();
+                    }
                     let timer_id = egui::Id::new("asr33-repeat-next-at");
                     let char_time = self.asr_char_time();
                     ctx.data_mut(|data| {
@@ -456,14 +507,7 @@ impl RusTairApp {
                     ctx.request_repaint_after(Duration::from_millis(5));
                 }
             }
-            kind => {
-                let modifiers = ctx.input(|input| input.modifiers);
-                let shifted = self.tty.shift_down || modifiers.shift;
-                let controlled = self.tty.control_down || modifiers.ctrl;
-                if let Some(byte) = teletype::key_to_byte(kind, shifted, controlled) {
-                    self.send_tty_byte(byte);
-                }
-            }
+            _ => {}
         }
         ctx.request_repaint_after(Duration::from_millis(8));
     }
