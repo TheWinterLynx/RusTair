@@ -431,8 +431,8 @@ impl S100BusState {
     }
 
     /// State reached after RESET is released at location zero. If RUN is set,
-    /// READY is released and execution can continue; if STOP is set, the fetch
-    /// remains held in WAIT. RESET itself never changes the RUN/STOP latch.
+    /// READY is released and execution can continue; if STOP is set, the CPU is
+    /// held in the fetch cycle at zero. RESET itself never changes RUN/STOP.
     pub(super) fn release_front_panel_reset(
         &mut self,
         address: u16,
@@ -442,24 +442,25 @@ impl S100BusState {
         run: bool,
     ) {
         self.signals.reset = false;
-        self.signals.owner = if run { BusOwner::Cpu } else { BusOwner::FrontPanel };
+        self.signals.owner = BusOwner::Cpu;
         self.signals.address = address;
         self.signals.data = data;
         self.signals.prot = protected;
         self.signals.inte = inte;
         self.signals.run = run;
         self.signals.clear_status();
-        self.signals.memr = true;
-        self.signals.m1 = true;
-        self.signals.wo = true;
+        self.signals.apply_status_word(S100Cycle::InstructionFetch.status_word());
         self.signals.ready = run;
         self.signals.wait = !run;
         self.signals.hlda = false;
         self.lamps.freeze(&self.signals);
     }
 
-    /// Generic power-on bus state. The optional historical power-on mode may
-    /// leave RUN asserted; otherwise the front panel starts safely stopped.
+    /// Power-on bus state. With the safe default RUN/STOP latch forced to STOP,
+    /// the real machine is still a CPU-owned bus stalled in an instruction
+    /// fetch at its undefined power-on PC: MEMR, M1, W/O and WAIT are therefore
+    /// visible while ADDRESS/DATA remain dependent on the undefined CPU/RAM
+    /// state. Historical mode may instead power up with RUN set.
     pub(super) fn drive_power_on_state(
         &mut self,
         address: u16,
@@ -469,14 +470,20 @@ impl S100BusState {
         run: bool,
     ) {
         self.signals.reset = false;
-        self.signals.owner = if run { BusOwner::Cpu } else { BusOwner::FrontPanel };
+        self.signals.owner = BusOwner::Cpu;
         self.signals.address = address;
         self.signals.data = data;
         self.signals.prot = protected;
         self.signals.inte = inte;
         self.signals.run = run;
         self.signals.clear_status();
-        self.set_ready(run);
+        if run {
+            self.set_ready(true);
+        } else {
+            self.signals.apply_status_word(S100Cycle::InstructionFetch.status_word());
+            self.signals.ready = false;
+            self.signals.wait = true;
+        }
         self.lamps.freeze(&self.signals);
     }
 
@@ -573,6 +580,18 @@ mod tests {
     }
 
     #[test]
+    fn stopped_power_on_is_a_cpu_fetch_wait_not_front_panel_idle() {
+        let mut bus = S100BusState::default();
+        bus.drive_power_on_state(0x4321, 0xa5, false, false, false);
+        let s = bus.signals();
+        assert_eq!(s.owner, BusOwner::Cpu);
+        assert_eq!(s.address, 0x4321);
+        assert_eq!(s.data, 0xa5);
+        assert!(s.memr && s.m1 && s.wo && s.wait);
+        assert!(!s.ready);
+    }
+
+    #[test]
     fn reset_preserves_run_latch_and_changes_ready_on_release() {
         let mut bus = S100BusState::default();
         bus.set_run(true);
@@ -581,12 +600,15 @@ mod tests {
         bus.release_front_panel_reset(0, 0xa5, false, false, true);
         let running = bus.signals();
         assert!(running.run && running.ready && !running.wait);
+        assert_eq!(running.owner, BusOwner::Cpu);
 
         bus.set_run(false);
         bus.assert_front_panel_reset();
         bus.release_front_panel_reset(0, 0xa5, false, false, false);
         let stopped = bus.signals();
         assert!(!stopped.run && !stopped.ready && stopped.wait);
+        assert!(stopped.memr && stopped.m1 && stopped.wo);
+        assert_eq!(stopped.owner, BusOwner::Cpu);
     }
 
     #[test]
