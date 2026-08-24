@@ -1,4 +1,5 @@
 use super::super::{egui, RusTairApp};
+use crate::cpu8080::{FLAG_AC, FLAG_C, FLAG_P, FLAG_S, FLAG_Z};
 use crate::machine::{MAX_MEM_SIZE, MEMORY_BOARD_SIZE};
 
 const BYTES_PER_ROW: usize = 16;
@@ -119,6 +120,267 @@ impl RusTairApp {
         }
     }
 
+    fn grouped_binary8(value: u8) -> String {
+        format!("{:04b} {:04b}", value >> 4, value & 0x0f)
+    }
+
+    fn grouped_binary16(value: u16) -> String {
+        format!(
+            "{:04b} {:04b} {:04b} {:04b}",
+            (value >> 12) & 0x0f,
+            (value >> 8) & 0x0f,
+            (value >> 4) & 0x0f,
+            value & 0x0f
+        )
+    }
+
+    fn draw_register8_cells(ui: &mut egui::Ui, name: &str, value: u8) -> egui::Response {
+        ui.strong(name);
+        ui.label(egui::RichText::new(Self::grouped_binary8(value)).monospace());
+        ui.label(
+            egui::RichText::new(format!("${value:02X}"))
+                .monospace()
+                .strong(),
+        )
+    }
+
+    fn instruction_word(lo: u8, hi: u8) -> u16 {
+        lo as u16 | ((hi as u16) << 8)
+    }
+
+    fn disassemble_8080(op: u8, b1: u8, b2: u8) -> (String, usize) {
+        const REG: [&str; 8] = ["B", "C", "D", "E", "H", "L", "M", "A"];
+        const RP: [&str; 4] = ["B", "D", "H", "SP"];
+        const RP_PUSH: [&str; 4] = ["B", "D", "H", "PSW"];
+        const COND: [&str; 8] = ["NZ", "Z", "NC", "C", "PO", "PE", "P", "M"];
+        const ALU: [&str; 8] = ["ADD", "ADC", "SUB", "SBB", "ANA", "XRA", "ORA", "CMP"];
+
+        if (0x40..=0x7f).contains(&op) {
+            if op == 0x76 {
+                return ("HLT".into(), 1);
+            }
+            let dst = REG[((op >> 3) & 7) as usize];
+            let src = REG[(op & 7) as usize];
+            return (format!("MOV {dst},{src}"), 1);
+        }
+
+        if (0x80..=0xbf).contains(&op) {
+            let alu = ALU[((op >> 3) & 7) as usize];
+            let src = REG[(op & 7) as usize];
+            return (format!("{alu} {src}"), 1);
+        }
+
+        if op & 0xc7 == 0x04 {
+            return (format!("INR {}", REG[((op >> 3) & 7) as usize]), 1);
+        }
+        if op & 0xc7 == 0x05 {
+            return (format!("DCR {}", REG[((op >> 3) & 7) as usize]), 1);
+        }
+        if op & 0xc7 == 0x06 {
+            return (
+                format!("MVI {},${b1:02X}", REG[((op >> 3) & 7) as usize]),
+                2,
+            );
+        }
+        if op & 0xcf == 0x01 {
+            let value = Self::instruction_word(b1, b2);
+            return (
+                format!("LXI {},${value:04X}", RP[((op >> 4) & 3) as usize]),
+                3,
+            );
+        }
+        if op & 0xcf == 0x03 {
+            return (format!("INX {}", RP[((op >> 4) & 3) as usize]), 1);
+        }
+        if op & 0xcf == 0x0b {
+            return (format!("DCX {}", RP[((op >> 4) & 3) as usize]), 1);
+        }
+        if op & 0xcf == 0x09 {
+            return (format!("DAD {}", RP[((op >> 4) & 3) as usize]), 1);
+        }
+        if op & 0xc7 == 0xc0 {
+            return (format!("R{}", COND[((op >> 3) & 7) as usize]), 1);
+        }
+        if op & 0xc7 == 0xc2 {
+            let value = Self::instruction_word(b1, b2);
+            return (
+                format!("J{} ${value:04X}", COND[((op >> 3) & 7) as usize]),
+                3,
+            );
+        }
+        if op & 0xc7 == 0xc4 {
+            let value = Self::instruction_word(b1, b2);
+            return (
+                format!("C{} ${value:04X}", COND[((op >> 3) & 7) as usize]),
+                3,
+            );
+        }
+        if op & 0xcf == 0xc1 {
+            return (
+                format!("POP {}", RP_PUSH[((op >> 4) & 3) as usize]),
+                1,
+            );
+        }
+        if op & 0xcf == 0xc5 {
+            return (
+                format!("PUSH {}", RP_PUSH[((op >> 4) & 3) as usize]),
+                1,
+            );
+        }
+        if op & 0xc7 == 0xc7 {
+            return (format!("RST {}", (op >> 3) & 7), 1);
+        }
+
+        let word = Self::instruction_word(b1, b2);
+        match op {
+            0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 => ("NOP".into(), 1),
+            0x02 => ("STAX B".into(), 1),
+            0x07 => ("RLC".into(), 1),
+            0x0a => ("LDAX B".into(), 1),
+            0x0f => ("RRC".into(), 1),
+            0x12 => ("STAX D".into(), 1),
+            0x17 => ("RAL".into(), 1),
+            0x1a => ("LDAX D".into(), 1),
+            0x1f => ("RAR".into(), 1),
+            0x22 => (format!("SHLD ${word:04X}"), 3),
+            0x27 => ("DAA".into(), 1),
+            0x2a => (format!("LHLD ${word:04X}"), 3),
+            0x2f => ("CMA".into(), 1),
+            0x32 => (format!("STA ${word:04X}"), 3),
+            0x37 => ("STC".into(), 1),
+            0x3a => (format!("LDA ${word:04X}"), 3),
+            0x3f => ("CMC".into(), 1),
+            0xc3 | 0xcb => (format!("JMP ${word:04X}"), 3),
+            0xc6 => (format!("ADI ${b1:02X}"), 2),
+            0xc9 | 0xd9 => ("RET".into(), 1),
+            0xcd | 0xdd | 0xed | 0xfd => (format!("CALL ${word:04X}"), 3),
+            0xce => (format!("ACI ${b1:02X}"), 2),
+            0xd3 => (format!("OUT ${b1:02X}"), 2),
+            0xd6 => (format!("SUI ${b1:02X}"), 2),
+            0xdb => (format!("IN ${b1:02X}"), 2),
+            0xde => (format!("SBI ${b1:02X}"), 2),
+            0xe3 => ("XTHL".into(), 1),
+            0xe6 => (format!("ANI ${b1:02X}"), 2),
+            0xe9 => ("PCHL".into(), 1),
+            0xeb => ("XCHG".into(), 1),
+            0xee => (format!("XRI ${b1:02X}"), 2),
+            0xf3 => ("DI".into(), 1),
+            0xf6 => (format!("ORI ${b1:02X}"), 2),
+            0xf9 => ("SPHL".into(), 1),
+            0xfb => ("EI".into(), 1),
+            0xfe => (format!("CPI ${b1:02X}"), 2),
+            _ => (format!("DB ${op:02X}"), 1),
+        }
+    }
+
+    fn current_instruction(&self) -> (String, String) {
+        let pc = self.machine.cpu.pc;
+        let Some(op) = self.machine.bus.peek_memory(pc) else {
+            return ("UNMAPPED".into(), "--".into());
+        };
+        let b1 = self
+            .machine
+            .bus
+            .peek_memory(pc.wrapping_add(1))
+            .unwrap_or(0);
+        let b2 = self
+            .machine
+            .bus
+            .peek_memory(pc.wrapping_add(2))
+            .unwrap_or(0);
+        let (text, len) = Self::disassemble_8080(op, b1, b2);
+        let bytes = match len {
+            1 => format!("{op:02X}"),
+            2 => format!("{op:02X} {b1:02X}"),
+            _ => format!("{op:02X} {b1:02X} {b2:02X}"),
+        };
+        (text, bytes)
+    }
+
+    fn draw_cpu_registers(&self, ui: &mut egui::Ui) {
+        let cpu = &self.machine.cpu;
+        let (instruction, instruction_bytes) = self.current_instruction();
+
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("CPU REGISTERS");
+                ui.separator();
+                ui.small(if self.machine.running { "RUNNING" } else { "STOPPED" });
+                if cpu.halted {
+                    ui.separator();
+                    ui.small("HLT");
+                }
+                ui.separator();
+                ui.small(format!("cycles {}", cpu.cycles));
+            });
+            ui.add_space(2.0);
+
+            egui::Grid::new("ram-cpu-registers")
+                .num_columns(7)
+                .spacing([8.0, 3.0])
+                .show(ui, |ui| {
+                    Self::draw_register8_cells(ui, "A", cpu.a);
+                    ui.separator();
+                    let f = Self::draw_register8_cells(ui, "F", cpu.f);
+                    f.on_hover_text(format!(
+                        "Flags: S={} Z={} AC={} P={} C={}",
+                        u8::from(cpu.f & FLAG_S != 0),
+                        u8::from(cpu.f & FLAG_Z != 0),
+                        u8::from(cpu.f & FLAG_AC != 0),
+                        u8::from(cpu.f & FLAG_P != 0),
+                        u8::from(cpu.f & FLAG_C != 0)
+                    ));
+                    ui.end_row();
+
+                    Self::draw_register8_cells(ui, "B", cpu.b);
+                    ui.separator();
+                    Self::draw_register8_cells(ui, "C", cpu.c);
+                    ui.end_row();
+
+                    Self::draw_register8_cells(ui, "D", cpu.d);
+                    ui.separator();
+                    Self::draw_register8_cells(ui, "E", cpu.e);
+                    ui.end_row();
+
+                    Self::draw_register8_cells(ui, "H", cpu.h);
+                    ui.separator();
+                    Self::draw_register8_cells(ui, "L", cpu.l);
+                    ui.end_row();
+                });
+
+            ui.add_space(2.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("SP");
+                ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
+                ui.label(
+                    egui::RichText::new(format!("${:04X}", cpu.sp))
+                        .monospace()
+                        .strong(),
+                );
+                ui.add_space(12.0);
+                ui.strong("PC");
+                ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
+                ui.label(
+                    egui::RichText::new(format!("${:04X}", cpu.pc))
+                        .monospace()
+                        .strong(),
+                );
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("NEXT");
+                ui.label(
+                    egui::RichText::new(format!("${:04X}", cpu.pc))
+                        .monospace()
+                        .strong(),
+                );
+                ui.label(egui::RichText::new(instruction).monospace().strong());
+                ui.separator();
+                ui.small(egui::RichText::new(instruction_bytes).monospace().weak());
+            });
+        });
+    }
+
     fn draw_memory_block_map(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let installed = self.machine.installed_ram_bytes();
         let selected_block = state.selected_address as usize / MEMORY_BOARD_SIZE;
@@ -177,6 +439,8 @@ impl RusTairApp {
 
     fn draw_memory_help(&self, ui: &mut egui::Ui) {
         ui.collapsing("How to read this inspector", |ui| {
+            ui.small("• CPU REGISTERS shows A, F, B, C, D, E, H and L in binary and hexadecimal; PC and SP are shown as 16-bit values.");
+            ui.small("• NEXT disassembles the instruction currently addressed by PC. It is a live view of RAM and does not alter execution.");
             ui.small("• The Intel 8080 has a 16-bit address bus, so its address space is 0000h–FFFFh (65,536 addresses). An address existing does not mean physical RAM is installed there.");
             ui.small("• ADDR is the first address in each row. Columns 00–0F are the low hexadecimal offset, giving 16 bytes per row.");
             ui.small("• Each two-digit value is one byte in hexadecimal (00h–FFh). ASCII shows the same bytes interpreted as printable characters; non-printable bytes appear as '.'.");
@@ -193,6 +457,8 @@ impl RusTairApp {
         let pc = self.machine.cpu.pc;
         let sp = self.machine.cpu.sp;
 
+        self.draw_cpu_registers(ui);
+        ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.strong("RAM INSPECTOR / EDITOR");
             ui.separator();
@@ -550,9 +816,15 @@ impl RusTairApp {
         ctx: &egui::Context,
         state: &mut MemoryViewerUiState,
     ) {
-        egui::TopBottomPanel::top("memory-viewer-toolbar").show(ctx, |ui| {
-            self.draw_memory_toolbar(ui, state);
-        });
+        egui::TopBottomPanel::top("memory-viewer-toolbar")
+            .resizable(true)
+            .default_height(245.0)
+            .min_height(170.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.draw_memory_toolbar(ui, state));
+            });
 
         egui::TopBottomPanel::bottom("memory-viewer-editor")
             .resizable(true)
@@ -580,9 +852,9 @@ impl RusTairApp {
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-memory-viewer"),
             egui::ViewportBuilder::default()
-                .with_title("RusTair — RAM Inspector / Editor")
-                .with_inner_size([950.0, 820.0])
-                .with_min_inner_size([760.0, 560.0])
+                .with_title("RusTair — RAM Inspector / CPU Registers")
+                .with_inner_size([980.0, 900.0])
+                .with_min_inner_size([780.0, 620.0])
                 .with_resizable(true),
             |memory_ctx, _class| {
                 self.draw_memory_viewer_window(memory_ctx, &mut state);
