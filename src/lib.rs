@@ -2,6 +2,7 @@ pub mod app;
 pub mod audio;
 pub mod config;
 pub mod cpu8080;
+pub mod cpu8080_cycle;
 pub mod io;
 pub mod machine;
 pub mod peripherals;
