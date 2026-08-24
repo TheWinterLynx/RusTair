@@ -74,6 +74,11 @@ pub(super) enum Instruction {
     AluImmediate { op: AluOp },
     Jump,
     JumpConditional(Condition),
+    Call,
+    CallConditional(Condition),
+    Ret,
+    RetConditional(Condition),
+    Rst(u8),
     Push(StackPair),
     Pop(StackPair),
     Unsupported(u8),
@@ -100,6 +105,8 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0x3f => return Instruction::AluRegister { op: AluOp::Cmc, src: Register8::A },
         0xc3 => return Instruction::Jump,
         0xc6 => return Instruction::AluImmediate { op: AluOp::Add },
+        0xc9 => return Instruction::Ret,
+        0xcd => return Instruction::Call,
         0xce => return Instruction::AluImmediate { op: AluOp::Adc },
         0xd6 => return Instruction::AluImmediate { op: AluOp::Sub },
         0xde => return Instruction::AluImmediate { op: AluOp::Sbb },
@@ -164,8 +171,17 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         };
     }
 
+    if opcode & 0xc7 == 0xc0 {
+        return Instruction::RetConditional(Condition::from_code((opcode >> 3) & 7));
+    }
     if opcode & 0xc7 == 0xc2 {
         return Instruction::JumpConditional(Condition::from_code((opcode >> 3) & 7));
+    }
+    if opcode & 0xc7 == 0xc4 {
+        return Instruction::CallConditional(Condition::from_code((opcode >> 3) & 7));
+    }
+    if opcode & 0xc7 == 0xc7 {
+        return Instruction::Rst((opcode >> 3) & 7);
     }
     if opcode & 0xcf == 0xc1 {
         return Instruction::Pop(StackPair::from_code((opcode >> 4) & 3));
@@ -220,11 +236,17 @@ mod tests {
     }
 
     #[test]
-    fn decodes_jumps_and_all_stack_pairs() {
+    fn decodes_jumps_calls_returns_restarts_and_stack_pairs() {
         assert_eq!(decode(0xc3), Instruction::Jump);
+        assert_eq!(decode(0xcd), Instruction::Call);
+        assert_eq!(decode(0xc9), Instruction::Ret);
+
         for code in 0u8..8 {
-            let opcode = 0xc2 | (code << 3);
-            assert_eq!(decode(opcode), Instruction::JumpConditional(Condition::from_code(code)));
+            let condition = Condition::from_code(code);
+            assert_eq!(decode(0xc2 | (code << 3)), Instruction::JumpConditional(condition));
+            assert_eq!(decode(0xc4 | (code << 3)), Instruction::CallConditional(condition));
+            assert_eq!(decode(0xc0 | (code << 3)), Instruction::RetConditional(condition));
+            assert_eq!(decode(0xc7 | (code << 3)), Instruction::Rst(code));
         }
         for code in 0u8..4 {
             let pair = StackPair::from_code(code);
@@ -241,6 +263,5 @@ mod tests {
         assert_eq!(decode(0x46), Instruction::MovFromMemory { dst: Register8::B });
         assert_eq!(decode(0x70), Instruction::MovToMemory { src: Register8::B });
         assert_eq!(decode(0x76), Instruction::Unsupported(0x76));
-        assert_eq!(decode(0xff), Instruction::Unsupported(0xff));
     }
 }
