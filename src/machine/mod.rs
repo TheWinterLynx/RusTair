@@ -20,12 +20,66 @@ pub use panel_bus::PanelLampSnapshot;
 
 pub const CLOCK_HZ: u32 = 2_000_000;
 
+#[derive(Clone, Debug)]
+pub struct CpuDiagnosticResult {
+    pub name: String,
+    pub instructions: u64,
+    pub t_states: u64,
+    pub expected_instructions: Option<u64>,
+    pub expected_t_states: Option<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct CpuDiagnosticMeter {
+    name: String,
+    bdos_start: u16,
+    bdos_end: u16,
+    expected_instructions: Option<u64>,
+    expected_t_states: Option<u64>,
+    started: bool,
+    instructions: u64,
+    t_states: u64,
+}
+
+impl CpuDiagnosticMeter {
+    fn new(
+        name: String,
+        bdos_start: u16,
+        bdos_len: usize,
+        expected_instructions: Option<u64>,
+        expected_t_states: Option<u64>,
+    ) -> Self {
+        Self {
+            name,
+            bdos_start,
+            bdos_end: bdos_start.saturating_add(bdos_len as u16),
+            expected_instructions,
+            expected_t_states,
+            started: false,
+            instructions: 0,
+            t_states: 0,
+        }
+    }
+
+    fn complete(&self) -> CpuDiagnosticResult {
+        CpuDiagnosticResult {
+            name: self.name.clone(),
+            instructions: self.instructions,
+            t_states: self.t_states,
+            expected_instructions: self.expected_instructions,
+            expected_t_states: self.expected_t_states,
+        }
+    }
+}
+
 pub struct AltairBus {
     memory: Memory,
     io: IoDevices,
     panel: FrontPanelController,
     s100: S100BusState,
     cpu_inte: bool,
+    diagnostic_meter: Option<CpuDiagnosticMeter>,
+    diagnostic_result: Option<CpuDiagnosticResult>,
 }
 
 impl Default for AltairBus {
@@ -36,6 +90,8 @@ impl Default for AltairBus {
             panel: FrontPanelController::default(),
             s100: S100BusState::default(),
             cpu_inte: false,
+            diagnostic_meter: None,
+            diagnostic_result: None,
         };
         s.initialize_memory();
         s
@@ -44,6 +100,7 @@ impl Default for AltairBus {
 
 impl AltairBus {
     pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
+        self.cancel_cpu_diagnostic_meter();
         self.memory.configure(size, init_mode);
         self.refresh_protect_line();
     }
@@ -65,6 +122,86 @@ impl AltairBus {
     pub fn serial_tx_complete(&mut self) -> Option<u8> { self.io.serial_tx_complete() }
     pub fn tx_busy(&self) -> bool { self.io.serial_tx_busy() }
     pub fn clear_serial(&mut self) { self.io.clear_serial(); }
+
+    pub fn begin_cpu_diagnostic_meter(
+        &mut self,
+        name: String,
+        bdos_start: u16,
+        bdos_len: usize,
+        expected_instructions: Option<u64>,
+        expected_t_states: Option<u64>,
+    ) {
+        self.diagnostic_result = None;
+        self.diagnostic_meter = Some(CpuDiagnosticMeter::new(
+            name,
+            bdos_start,
+            bdos_len,
+            expected_instructions,
+            expected_t_states,
+        ));
+    }
+
+    pub fn cancel_cpu_diagnostic_meter(&mut self) {
+        self.diagnostic_meter = None;
+        self.diagnostic_result = None;
+    }
+
+    pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> {
+        self.diagnostic_result.take()
+    }
+
+    fn record_cpu_diagnostic_instruction(&mut self, address: u16, t_states: u32) {
+        let mut completed = None;
+
+        if let Some(meter) = self.diagnostic_meter.as_mut() {
+            // The convenience loader executes a bootstrap in page zero before
+            // entering the CP/M transient program. The historical reference
+            // harness starts counting directly at 0100h, so ignore bootstrap
+            // work until that first guest instruction fetch.
+            if !meter.started {
+                if address == 0x0100 {
+                    meter.started = true;
+                    meter.instructions = 1;
+                    meter.t_states = u64::from(t_states);
+                }
+                return;
+            }
+
+            // Reference harnesses replace CALL 0005h with two real 8080
+            // instructions: OUT 1 (10 T) and RET (10 T). RusTair deliberately
+            // runs a richer high-memory mini-BDOS through the selected physical
+            // serial card, whose polling cost depends on UART pacing. Normalize
+            // only the accounting to the reference stub while leaving execution
+            // and serial side effects completely untouched.
+            if address == 0x0005 {
+                meter.instructions = meter.instructions.saturating_add(2);
+                meter.t_states = meter.t_states.saturating_add(20);
+                return;
+            }
+
+            // The reference stop stub at 0000h is OUT 0 (10 T). RusTair uses a
+            // real HLT there so the front panel finishes in an authentic HALT
+            // indication. Normalize that final instruction for apples-to-apples
+            // diagnostic totals and then freeze the result.
+            if address == 0x0000 {
+                meter.instructions = meter.instructions.saturating_add(1);
+                meter.t_states = meter.t_states.saturating_add(10);
+                completed = Some(meter.complete());
+            } else if address >= meter.bdos_start && address < meter.bdos_end {
+                // All actual mini-BDOS instructions are intentionally excluded;
+                // their canonical OUT+RET cost was already added at 0005h.
+                return;
+            } else {
+                meter.instructions = meter.instructions.saturating_add(1);
+                meter.t_states = meter.t_states.saturating_add(u64::from(t_states));
+            }
+        }
+
+        if let Some(result) = completed {
+            self.diagnostic_meter = None;
+            self.diagnostic_result = Some(result);
+        }
+    }
 
     fn panel_switches(&self) -> u16 { self.panel.switches() }
     fn toggle_panel_switch(&mut self, bit: usize) { self.panel.toggle_switch(bit); }
@@ -203,6 +340,10 @@ impl Bus for AltairBus {
         };
         self.drive_cpu_cycle(address, opcode, cycle);
     }
+
+    fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        self.record_cpu_diagnostic_instruction(address, t_states);
+    }
 }
 
 pub struct AltairMachine {
@@ -247,6 +388,27 @@ impl AltairMachine {
     pub fn installed_ram_bytes(&self) -> usize { self.bus.installed_ram_bytes() }
     pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { self.bus.arm_basic32_full_memory_probe_guard() }
 
+    pub fn begin_cpu_diagnostic_meter(
+        &mut self,
+        name: String,
+        bdos_start: u16,
+        bdos_len: usize,
+        expected_instructions: Option<u64>,
+        expected_t_states: Option<u64>,
+    ) {
+        self.bus.begin_cpu_diagnostic_meter(
+            name,
+            bdos_start,
+            bdos_len,
+            expected_instructions,
+            expected_t_states,
+        );
+    }
+
+    pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> {
+        self.bus.take_cpu_diagnostic_result()
+    }
+
     /// Safe default power operation. The CPU power-on state remains undefined,
     /// but the RUN/STOP latch is forced to STOP unless historical mode is
     /// explicitly selected by the caller.
@@ -258,6 +420,7 @@ impl AltairMachine {
     /// RUN/STOP flip-flop power-on state. Historical mode is intentionally
     /// opt-in because a random RUN state can start executing immediately.
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) {
+        self.bus.cancel_cpu_diagnostic_meter();
         self.powered = on;
         self.stop_switch_asserted = false;
         self.run_switch_asserted = false;
@@ -331,6 +494,7 @@ impl AltairMachine {
     /// captured, reproducing the documented STOP+RESET recovery from HLT.
     pub fn assert_front_panel_reset(&mut self) {
         if !self.powered { return; }
+        self.bus.cancel_cpu_diagnostic_meter();
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
         if self.stop_switch_asserted {
@@ -508,6 +672,40 @@ mod tests {
         assert!(bus.is_protected(0x0400));
         assert!(bus.is_protected(0x07ff));
         assert!(!bus.is_protected(0x0800));
+    }
+
+    #[test]
+    fn diagnostic_meter_normalizes_real_bdos_to_reference_stub() {
+        let mut bus = AltairBus::default();
+        bus.begin_cpu_diagnostic_meter(
+            "TEST.COM".into(),
+            0xff00,
+            0x37,
+            Some(6),
+            Some(61),
+        );
+
+        // Bootstrap is ignored until the CP/M transient entry at 0100h.
+        bus.instruction_complete(0x0000, 0xc3, 10);
+        bus.instruction_complete(0x0080, 0x31, 10);
+        bus.instruction_complete(0x0100, 0x00, 4);
+        bus.instruction_complete(0x0101, 0xcd, 17);
+
+        // The real 0005h JMP plus high-BDOS work are replaced in accounting by
+        // the canonical reference OUT+RET pair (2 instructions / 20 T-states).
+        bus.instruction_complete(0x0005, 0xc3, 10);
+        bus.instruction_complete(0xff00, 0xf5, 11);
+        bus.instruction_complete(0xff01, 0xc5, 11);
+
+        bus.instruction_complete(0x0104, 0x00, 4);
+        bus.instruction_complete(0x0105, 0xc3, 10);
+
+        // RusTair's final HLT is normalized to the reference OUT 0 stop stub.
+        bus.instruction_complete(0x0000, 0x76, 7);
+
+        let result = bus.take_cpu_diagnostic_result().unwrap();
+        assert_eq!(result.instructions, 6);
+        assert_eq!(result.t_states, 65);
     }
 
     #[test]
