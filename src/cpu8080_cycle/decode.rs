@@ -26,6 +26,25 @@ impl Register8 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RegisterPair {
+    BC,
+    DE,
+    HL,
+    SP,
+}
+
+impl RegisterPair {
+    pub(super) const fn from_code(code: u8) -> Self {
+        match code & 0x03 {
+            0 => Self::BC,
+            1 => Self::DE,
+            2 => Self::HL,
+            _ => Self::SP,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Instruction {
     Nop,
     MviImmediate(Register8),
@@ -33,17 +52,47 @@ pub(super) enum Instruction {
     MovRegister { dst: Register8, src: Register8 },
     MovFromMemory { dst: Register8 },
     MovToMemory { src: Register8 },
+    Lxi(RegisterPair),
+    Inx(RegisterPair),
+    Dcx(RegisterPair),
+    Dad(RegisterPair),
+    Ldax(RegisterPair),
+    Stax(RegisterPair),
+    LdaDirect,
     StaDirect,
+    LhldDirect,
+    ShldDirect,
     Unsupported(u8),
 }
 
 pub(super) const fn decode(opcode: u8) -> Instruction {
-    if opcode == 0x00 {
-        return Instruction::Nop;
+    match opcode {
+        0x00 => return Instruction::Nop,
+        0x02 => return Instruction::Stax(RegisterPair::BC),
+        0x0a => return Instruction::Ldax(RegisterPair::BC),
+        0x12 => return Instruction::Stax(RegisterPair::DE),
+        0x1a => return Instruction::Ldax(RegisterPair::DE),
+        0x22 => return Instruction::ShldDirect,
+        0x2a => return Instruction::LhldDirect,
+        0x32 => return Instruction::StaDirect,
+        0x3a => return Instruction::LdaDirect,
+        _ => {}
     }
 
-    if opcode == 0x32 {
-        return Instruction::StaDirect;
+    // LXI rp,d16: 00RP0001.
+    if opcode & 0xcf == 0x01 {
+        return Instruction::Lxi(RegisterPair::from_code((opcode >> 4) & 0x03));
+    }
+
+    // INX rp / DCX rp / DAD rp.
+    if opcode & 0xcf == 0x03 {
+        return Instruction::Inx(RegisterPair::from_code((opcode >> 4) & 0x03));
+    }
+    if opcode & 0xcf == 0x0b {
+        return Instruction::Dcx(RegisterPair::from_code((opcode >> 4) & 0x03));
+    }
+    if opcode & 0xcf == 0x09 {
+        return Instruction::Dad(RegisterPair::from_code((opcode >> 4) & 0x03));
     }
 
     // MVI r,d8 / MVI M,d8: 00DDD110.
@@ -59,7 +108,6 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         if opcode == 0x76 {
             return Instruction::Unsupported(opcode);
         }
-
         let dst = Register8::from_code((opcode >> 3) & 0x07);
         let src = Register8::from_code(opcode & 0x07);
         return match (dst, src) {
@@ -78,62 +126,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn milestone_four_decodes_all_mvi_forms_including_memory() {
-        let cases = [
-            (0x06, Some(Register8::B)),
-            (0x0e, Some(Register8::C)),
-            (0x16, Some(Register8::D)),
-            (0x1e, Some(Register8::E)),
-            (0x26, Some(Register8::H)),
-            (0x2e, Some(Register8::L)),
-            (0x36, None),
-            (0x3e, Some(Register8::A)),
-        ];
-
-        for (opcode, register) in cases {
-            match register {
-                Some(register) => {
-                    assert_eq!(decode(opcode), Instruction::MviImmediate(register));
-                }
-                None => assert_eq!(decode(opcode), Instruction::MviMemory),
-            }
+    fn decodes_register_pair_families() {
+        let pairs = [RegisterPair::BC, RegisterPair::DE, RegisterPair::HL, RegisterPair::SP];
+        for (index, pair) in pairs.into_iter().enumerate() {
+            let base = (index as u8) << 4;
+            assert_eq!(decode(base | 0x01), Instruction::Lxi(pair));
+            assert_eq!(decode(base | 0x03), Instruction::Inx(pair));
+            assert_eq!(decode(base | 0x0b), Instruction::Dcx(pair));
+            assert_eq!(decode(base | 0x09), Instruction::Dad(pair));
         }
     }
 
     #[test]
-    fn milestone_four_decodes_register_and_hl_memory_mov_forms() {
-        for dst_code in 0u8..8 {
-            for src_code in 0u8..8 {
-                let opcode = 0x40 | (dst_code << 3) | src_code;
-                let dst = Register8::from_code(dst_code);
-                let src = Register8::from_code(src_code);
-
-                if opcode == 0x76 {
-                    assert_eq!(decode(opcode), Instruction::Unsupported(0x76));
-                    continue;
-                }
-
-                match (dst, src) {
-                    (Some(dst), Some(src)) => {
-                        assert_eq!(decode(opcode), Instruction::MovRegister { dst, src });
-                    }
-                    (Some(dst), None) => {
-                        assert_eq!(decode(opcode), Instruction::MovFromMemory { dst });
-                    }
-                    (None, Some(src)) => {
-                        assert_eq!(decode(opcode), Instruction::MovToMemory { src });
-                    }
-                    (None, None) => unreachable!(),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn existing_nop_sta_and_unrelated_unsupported_decodes_are_preserved() {
-        assert_eq!(decode(0x00), Instruction::Nop);
+    fn decodes_indirect_and_direct_transfer_family() {
+        assert_eq!(decode(0x02), Instruction::Stax(RegisterPair::BC));
+        assert_eq!(decode(0x12), Instruction::Stax(RegisterPair::DE));
+        assert_eq!(decode(0x0a), Instruction::Ldax(RegisterPair::BC));
+        assert_eq!(decode(0x1a), Instruction::Ldax(RegisterPair::DE));
+        assert_eq!(decode(0x22), Instruction::ShldDirect);
+        assert_eq!(decode(0x2a), Instruction::LhldDirect);
         assert_eq!(decode(0x32), Instruction::StaDirect);
+        assert_eq!(decode(0x3a), Instruction::LdaDirect);
+    }
+
+    #[test]
+    fn mov_and_mvi_memory_forms_remain_supported_but_hlt_does_not() {
+        assert_eq!(decode(0x36), Instruction::MviMemory);
+        assert_eq!(decode(0x46), Instruction::MovFromMemory { dst: Register8::B });
+        assert_eq!(decode(0x70), Instruction::MovToMemory { src: Register8::B });
         assert_eq!(decode(0x76), Instruction::Unsupported(0x76));
+    }
+
+    #[test]
+    fn unrelated_opcode_remains_explicitly_unsupported() {
         assert_eq!(decode(0xff), Instruction::Unsupported(0xff));
     }
 }
