@@ -81,6 +81,8 @@ pub(super) enum Instruction {
     Rst(u8),
     Push(StackPair),
     Pop(StackPair),
+    In,
+    Out,
     Xthl,
     Pchl,
     Xchg,
@@ -112,7 +114,9 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0xc9 => return Instruction::Ret,
         0xcd => return Instruction::Call,
         0xce => return Instruction::AluImmediate { op: AluOp::Adc },
+        0xd3 => return Instruction::Out,
         0xd6 => return Instruction::AluImmediate { op: AluOp::Sub },
+        0xdb => return Instruction::In,
         0xde => return Instruction::AluImmediate { op: AluOp::Sbb },
         0xe3 => return Instruction::Xthl,
         0xe6 => return Instruction::AluImmediate { op: AluOp::Ana },
@@ -264,7 +268,9 @@ mod tests {
     }
 
     #[test]
-    fn decodes_special_transfer_family() {
+    fn decodes_io_and_special_transfer_families() {
+        assert_eq!(decode(0xd3), Instruction::Out);
+        assert_eq!(decode(0xdb), Instruction::In);
         assert_eq!(decode(0xe3), Instruction::Xthl);
         assert_eq!(decode(0xe9), Instruction::Pchl);
         assert_eq!(decode(0xeb), Instruction::Xchg);
