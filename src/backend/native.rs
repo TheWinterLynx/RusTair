@@ -3,9 +3,11 @@ use std::time::Duration;
 
 use crate::machine::AltairMachine;
 
-use super::{BackendKind, CpuState, FrontPanelState, MachineBackend};
+use super::{
+    BackendCapabilities, CpuState, EmulationEngine, FrontPanelState, MachineBackend,
+};
 
-/// Adapter exposing the existing RusTair machine through [`MachineBackend`].
+/// Adapter exposing the existing fast RusTair machine through [`MachineBackend`].
 ///
 /// `machine()`/`machine_mut()` and the temporary `Deref` implementation are a
 /// migration escape hatch. Existing serial, diagnostics and loader code can
@@ -47,7 +49,7 @@ impl NativeMachineBackend {
             sp: cpu.sp,
             inte: cpu.inte,
             halted: cpu.halted,
-            cycles: cpu.cycles,
+            total_t_states: cpu.cycles,
         }
     }
 
@@ -79,9 +81,25 @@ impl DerefMut for NativeMachineBackend {
 }
 
 impl MachineBackend for NativeMachineBackend {
-    fn kind(&self) -> BackendKind { BackendKind::Native }
+    fn engine(&self) -> EmulationEngine { EmulationEngine::RustFast8080 }
 
-    fn name(&self) -> &'static str { "RusTair native 8080" }
+    fn name(&self) -> &'static str { "RusTair fast 8080" }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            front_panel: true,
+            // The current core reports instruction-level S-100 activity and
+            // synthesizes presentation persistence, rather than exposing each
+            // physical Intel 8080 T-state/pin transition.
+            exact_bus_activity: false,
+            exact_t_state_timing: false,
+            memory_protection: true,
+            hold_hlda: true,
+            direct_memory_access: true,
+            serial_routing: true,
+            disk_mount: false,
+        }
+    }
 
     fn cpu_state(&self) -> CpuState { self.snapshot_cpu() }
 
@@ -99,7 +117,7 @@ impl MachineBackend for NativeMachineBackend {
 
     fn step(&mut self) { self.machine.step(); }
 
-    fn run_cycles(&mut self, cycles: u32) { self.machine.run_cycles(cycles); }
+    fn run_t_states(&mut self, budget: u32) { self.machine.run_cycles(budget); }
 
     fn commit_panel_activity(&mut self, dt: Duration) {
         self.machine.commit_panel_activity(dt);
@@ -165,12 +183,23 @@ mod tests {
         backend.machine_mut().cpu.c = 0x56;
         backend.machine_mut().cpu.pc = 0x789a;
         backend.machine_mut().cpu.sp = 0xbcde;
+        backend.machine_mut().cpu.cycles = 1234;
 
         let state = backend.cpu_state();
         assert_eq!(state.a, 0x12);
         assert_eq!(state.bc(), 0x3456);
         assert_eq!(state.pc, 0x789a);
         assert_eq!(state.sp, 0xbcde);
+        assert_eq!(state.total_t_states, 1234);
+    }
+
+    #[test]
+    fn fast_backend_identifies_itself_and_its_timing_limits() {
+        let backend = NativeMachineBackend::default();
+        assert_eq!(backend.engine(), EmulationEngine::RustFast8080);
+        assert!(!backend.capabilities().exact_bus_activity);
+        assert!(!backend.capabilities().exact_t_state_timing);
+        assert!(backend.capabilities().front_panel);
     }
 
     #[test]
