@@ -23,6 +23,8 @@ mod control_flow_tests;
 #[cfg(test)]
 mod core_tests;
 #[cfg(test)]
+mod io_tests;
+#[cfg(test)]
 mod special_transfer_tests;
 
 pub use pins::{Cpu8080Inputs, Cpu8080Pins};
@@ -236,6 +238,12 @@ impl Cpu8080Cycle {
                 MachineCycle::StackWrite => {
                     instruction_complete = self.finish_stack_write();
                 }
+                MachineCycle::InputRead => {
+                    instruction_complete = self.finish_input_read(inputs.data_in);
+                }
+                MachineCycle::OutputWrite => {
+                    instruction_complete = self.finish_output_write();
+                }
                 MachineCycle::Internal => {
                     instruction_complete = self.finish_internal_cycle();
                 }
@@ -281,7 +289,9 @@ impl Cpu8080Cycle {
                 | Instruction::ShldDirect
                 | Instruction::AluImmediate { .. }
                 | Instruction::Jump
-                | Instruction::JumpConditional(_) => {
+                | Instruction::JumpConditional(_)
+                | Instruction::In
+                | Instruction::Out => {
                     self.begin_memory_read(self.registers.pc, 2);
                 }
                 Instruction::Call
@@ -477,6 +487,18 @@ impl Cpu8080Cycle {
                 self.complete_instruction();
                 true
             }
+            (Instruction::In, 2) => {
+                self.registers.pc = self.registers.pc.wrapping_add(1);
+                let port_address = (u16::from(data) << 8) | u16::from(data);
+                self.begin_input_read(port_address, 3);
+                false
+            }
+            (Instruction::Out, 2) => {
+                self.registers.pc = self.registers.pc.wrapping_add(1);
+                let port_address = (u16::from(data) << 8) | u16::from(data);
+                self.begin_output_write(port_address, self.registers.a, 3);
+                false
+            }
             (Instruction::StaDirect, 2)
             | (Instruction::LdaDirect, 2)
             | (Instruction::LhldDirect, 2)
@@ -588,6 +610,33 @@ impl Cpu8080Cycle {
             }
             _ => unreachable!(
                 "invalid memory-write cycle M{} for {:?}",
+                self.machine_cycle_index, self.instruction
+            ),
+        }
+    }
+
+    fn finish_input_read(&mut self, data: u8) -> bool {
+        match (self.instruction, self.machine_cycle_index) {
+            (Instruction::In, 3) => {
+                self.registers.a = data;
+                self.complete_instruction();
+                true
+            }
+            _ => unreachable!(
+                "invalid input-read cycle M{} for {:?}",
+                self.machine_cycle_index, self.instruction
+            ),
+        }
+    }
+
+    fn finish_output_write(&mut self) -> bool {
+        match (self.instruction, self.machine_cycle_index) {
+            (Instruction::Out, 3) => {
+                self.complete_instruction();
+                true
+            }
+            _ => unreachable!(
+                "invalid output-write cycle M{} for {:?}",
                 self.machine_cycle_index, self.instruction
             ),
         }
@@ -793,6 +842,22 @@ impl Cpu8080Cycle {
 
     fn begin_memory_write(&mut self, address: u16, data: u8, machine_cycle_index: u8) {
         self.machine_cycle = MachineCycle::MemoryWrite;
+        self.machine_cycle_index = machine_cycle_index;
+        self.t_state = TState::T1;
+        self.cycle_address = address;
+        self.cycle_data_out = Some(data);
+    }
+
+    fn begin_input_read(&mut self, address: u16, machine_cycle_index: u8) {
+        self.machine_cycle = MachineCycle::InputRead;
+        self.machine_cycle_index = machine_cycle_index;
+        self.t_state = TState::T1;
+        self.cycle_address = address;
+        self.cycle_data_out = None;
+    }
+
+    fn begin_output_write(&mut self, address: u16, data: u8, machine_cycle_index: u8) {
+        self.machine_cycle = MachineCycle::OutputWrite;
         self.machine_cycle_index = machine_cycle_index;
         self.t_state = TState::T1;
         self.cycle_address = address;
