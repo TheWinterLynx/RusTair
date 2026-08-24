@@ -1,7 +1,7 @@
 //! Emulator-engine abstraction used by the application/front panel.
 //!
 //! The first implementation is [`NativeMachineBackend`], which wraps the
-//! existing Rust Altair implementation without changing its behaviour.  A SIMH
+//! existing Rust Altair implementation without changing its behaviour. A SIMH
 //! implementation can satisfy the same contract later without making the UI
 //! depend on SIMH-specific FFI types.
 
@@ -84,7 +84,7 @@ impl Default for FrontPanelState {
 /// engines such as Open SIMH.
 ///
 /// It deliberately models front-panel operations rather than exposing concrete
-/// CPU/bus structs.  Transitional implementations may still offer an escape
+/// CPU/bus structs. Transitional implementations may still offer an escape
 /// hatch to their concrete machine type while the rest of the application is
 /// migrated incrementally.
 pub trait MachineBackend {
@@ -127,4 +127,45 @@ pub trait MachineBackend {
     /// Load a host buffer directly into guest RAM. Used by existing convenience
     /// loaders; a SIMH backend can implement this through its front-panel API.
     fn load_bytes(&mut self, address: u16, bytes: &[u8]);
+}
+
+/// Runtime-owned indirection point. The UI can eventually keep one of these
+/// instead of a concrete machine and switch engines without changing panel
+/// rendering/control code.
+pub struct BackendHost {
+    backend: Box<dyn MachineBackend>,
+}
+
+impl Default for BackendHost {
+    fn default() -> Self { Self::native() }
+}
+
+impl BackendHost {
+    pub fn new(backend: Box<dyn MachineBackend>) -> Self { Self { backend } }
+
+    pub fn native() -> Self {
+        Self::new(Box::new(NativeMachineBackend::default()))
+    }
+
+    pub fn backend(&self) -> &dyn MachineBackend { self.backend.as_ref() }
+
+    pub fn backend_mut(&mut self) -> &mut dyn MachineBackend { self.backend.as_mut() }
+
+    pub fn replace(&mut self, backend: Box<dyn MachineBackend>) {
+        self.backend = backend;
+    }
+
+    pub fn kind(&self) -> BackendKind { self.backend.kind() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backend_host_defaults_to_native_engine() {
+        let host = BackendHost::default();
+        assert_eq!(host.kind(), BackendKind::Native);
+        assert_eq!(host.backend().name(), "RusTair native 8080");
+    }
 }
