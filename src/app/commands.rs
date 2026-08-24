@@ -1,14 +1,6 @@
-include!("cpu_diagnostics.rs");
+use super::*;
 
 impl RusTairApp {
-    pub(in crate::app) fn load_cpu_diagnostic_port0_dialog(&mut self) {
-        self.load_cpu_diagnostic_dialog(DiagnosticSerialPort::Port0);
-    }
-
-    pub(in crate::app) fn load_cpu_diagnostic_port1_dialog(&mut self) {
-        self.load_cpu_diagnostic_dialog(DiagnosticSerialPort::Port1);
-    }
-
     /// Select and load a raw binary image at address zero.
     pub(in crate::app) fn load_binary_dialog(&mut self) {
         let Some(path) = rfd::FileDialog::new().pick_file() else {
