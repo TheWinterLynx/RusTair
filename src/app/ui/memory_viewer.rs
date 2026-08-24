@@ -5,6 +5,10 @@ use crate::machine::{MAX_MEM_SIZE, MEMORY_BOARD_SIZE};
 const BYTES_PER_ROW: usize = 16;
 const ROW_COUNT: usize = MAX_MEM_SIZE / BYTES_PER_ROW;
 const ROW_HEIGHT: f32 = 22.0;
+const SIDEBAR_DEFAULT_WIDTH: f32 = 390.0;
+const SIDEBAR_MIN_WIDTH: f32 = 370.0;
+const SIDEBAR_MAX_WIDTH: f32 = 540.0;
+const CURRENT_INSTRUCTION_LINE_HEIGHT: f32 = 18.0;
 
 #[derive(Clone)]
 struct MemoryViewerUiState {
@@ -408,15 +412,18 @@ impl RusTairApp {
         let installed_end = installed.saturating_sub(1);
         let pc = self.machine.cpu.pc;
         let sp = self.machine.cpu.sp;
+        let execution_state = if self.machine.cpu.halted {
+            if self.machine.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+        } else if self.machine.running {
+            "RUNNING"
+        } else {
+            "STOPPED"
+        };
 
         ui.horizontal_wrapped(|ui| {
             ui.strong("RAM INSPECTOR / CPU REGISTERS");
             ui.separator();
-            ui.label(if self.machine.running { "RUNNING" } else { "STOPPED" });
-            if self.machine.cpu.halted {
-                ui.separator();
-                ui.label("HLT");
-            }
+            ui.label(execution_state);
             ui.separator();
             ui.small(format!("cycles {}", self.machine.cpu.cycles));
             ui.separator();
@@ -717,12 +724,23 @@ impl RusTairApp {
             "Block {block}: {block_start:04X}h–{block_end:04X}h — {}",
             if protected { "WRITE PROTECTED" } else { "writable" }
         ));
-        if address == self.machine.cpu.pc {
-            ui.strong("PC points here");
-        }
-        if address == self.machine.cpu.sp {
-            ui.strong("SP points here");
-        }
+
+        // Keep pointer markers in one permanently allocated row. Previously
+        // inserting/removing "PC points here" while the CPU was running changed
+        // the sidebar height every instruction and made the entire editor jump.
+        let pc_here = address == self.machine.cpu.pc;
+        let sp_here = address == self.machine.cpu.sp;
+        ui.horizontal(|ui| {
+            ui.small("Pointers:");
+            ui.add_sized(
+                [28.0, CURRENT_INSTRUCTION_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(if pc_here { "PC" } else { "  " }).strong()),
+            );
+            ui.add_sized(
+                [28.0, CURRENT_INSTRUCTION_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(if sp_here { "SP" } else { "  " }).strong()),
+            );
+        });
 
         ui.separator();
         ui.horizontal_wrapped(|ui| {
@@ -803,11 +821,20 @@ impl RusTairApp {
     fn draw_current_instruction_side(&self, ui: &mut egui::Ui) {
         let pc = self.machine.cpu.pc;
         let (instruction, bytes) = self.current_instruction();
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(format!("${pc:04X}")).monospace().strong());
-            ui.label(egui::RichText::new(instruction).monospace().strong());
-        });
-        ui.small(egui::RichText::new(bytes).monospace().weak());
+        // Two fixed-height, non-wrapping rows prevent instruction length or a
+        // rapidly changing PC from pushing the rest of the sidebar up/down.
+        ui.add_sized(
+            [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
+            egui::Label::new(
+                egui::RichText::new(format!("${pc:04X}  {instruction}"))
+                    .monospace()
+                    .strong(),
+            ),
+        );
+        ui.add_sized(
+            [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
+            egui::Label::new(egui::RichText::new(bytes).monospace().weak()),
+        );
     }
 
     fn draw_memory_sidebar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
@@ -851,8 +878,8 @@ impl RusTairApp {
 
         egui::SidePanel::right("memory-viewer-sidebar")
             .resizable(true)
-            .default_width(350.0)
-            .width_range(290.0..=500.0)
+            .default_width(SIDEBAR_DEFAULT_WIDTH)
+            .width_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
             .show(ctx, |ui| self.draw_memory_sidebar(ui, state));
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -871,7 +898,7 @@ impl RusTairApp {
             egui::ViewportBuilder::default()
                 .with_title("RusTair — RAM Inspector / CPU Registers")
                 .with_inner_size([1360.0, 780.0])
-                .with_min_inner_size([1120.0, 600.0])
+                .with_min_inner_size([1190.0, 600.0])
                 .with_resizable(true),
             |memory_ctx, _class| {
                 self.draw_memory_viewer_window(memory_ctx, &mut state);
