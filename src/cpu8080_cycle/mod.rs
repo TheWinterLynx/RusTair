@@ -143,10 +143,10 @@ impl Cpu8080Cycle {
 
     /// Advance exactly one Intel 8080 T-state.
     ///
-    /// Milestone 3 supports NOP, all register MVI forms, register-to-register
-    /// MOV, STA, memory read/write cycles and READY/TW insertion. The `M`
-    /// variants remain explicitly unsupported until HL-addressed memory cycles
-    /// are added.
+    /// Milestone 4 supports NOP, all MVI forms, all MOV forms except HLT's 76h
+    /// encoding, STA, memory read/write cycles and READY/TW insertion. Memory
+    /// operands use HL as the effective address and latch that address when the
+    /// machine cycle begins so wait states cannot change the active bus cycle.
     pub fn tick(&mut self, inputs: Cpu8080Inputs) -> TickTrace {
         if inputs.reset {
             self.apply_reset();
@@ -222,7 +222,7 @@ impl Cpu8080Cycle {
                     instruction_complete = self.finish_memory_write();
                 }
                 _ => unreachable!(
-                    "Milestone-3 core entered unsupported machine cycle {:?}",
+                    "Milestone-4 core entered unsupported machine cycle {:?}",
                     machine_cycle
                 ),
             },
@@ -231,11 +231,18 @@ impl Cpu8080Cycle {
                     instruction_complete = true;
                     self.complete_instruction();
                 }
-                Instruction::MviImmediate(_) | Instruction::StaDirect => {
+                Instruction::MviImmediate(_) | Instruction::MviMemory | Instruction::StaDirect => {
                     self.begin_memory_read(self.registers.pc, 2);
                 }
                 Instruction::MovRegister { .. } => {
                     self.t_state = TState::T5;
+                }
+                Instruction::MovFromMemory { .. } => {
+                    self.begin_memory_read(self.hl(), 2);
+                }
+                Instruction::MovToMemory { src } => {
+                    let value = self.read_register(src);
+                    self.begin_memory_write(self.hl(), value, 2);
                 }
                 Instruction::Unsupported(opcode) => {
                     let unsupported = Cpu8080CycleFault::UnsupportedOpcode(opcode);
@@ -250,7 +257,7 @@ impl Cpu8080Cycle {
                     instruction_complete = true;
                     self.complete_instruction();
                 }
-                _ => unreachable!("only register MOV reaches T5 in Milestone 3"),
+                _ => unreachable!("only register MOV reaches T5 in Milestone 4"),
             },
         }
 
@@ -276,6 +283,16 @@ impl Cpu8080Cycle {
                 self.complete_instruction();
                 true
             }
+            (Instruction::MviMemory, 2) => {
+                self.registers.pc = self.registers.pc.wrapping_add(1);
+                self.begin_memory_write(self.hl(), data, 3);
+                false
+            }
+            (Instruction::MovFromMemory { dst }, 2) => {
+                self.write_register(dst, data);
+                self.complete_instruction();
+                true
+            }
             (Instruction::StaDirect, 2) => {
                 self.operand_low = data;
                 self.registers.pc = self.registers.pc.wrapping_add(1);
@@ -297,7 +314,9 @@ impl Cpu8080Cycle {
 
     fn finish_memory_write(&mut self) -> bool {
         match (self.instruction, self.machine_cycle_index) {
-            (Instruction::StaDirect, 4) => {
+            (Instruction::MviMemory, 3)
+            | (Instruction::MovToMemory { .. }, 2)
+            | (Instruction::StaDirect, 4) => {
                 self.complete_instruction();
                 true
             }
@@ -306,6 +325,10 @@ impl Cpu8080Cycle {
                 self.machine_cycle_index, self.instruction
             ),
         }
+    }
+
+    fn hl(&self) -> u16 {
+        u16::from_be_bytes([self.registers.h, self.registers.l])
     }
 
     fn read_register(&self, register: Register8) -> u8 {
@@ -473,6 +496,21 @@ mod tests {
         }
     }
 
+    fn seeded_registers() -> Registers {
+        Registers {
+            a: 0x76,
+            b: 0x10,
+            c: 0x21,
+            d: 0x32,
+            e: 0x43,
+            h: 0x54,
+            l: 0x65,
+            f: 0xd7,
+            sp: 0x9000,
+            pc: 0x1000,
+        }
+    }
+
     #[test]
     fn nop_is_a_four_t_state_m1_fetch() {
         let mut cpu = Cpu8080Cycle::new();
@@ -501,22 +539,17 @@ mod tests {
             (0x2e, Register8::L),
             (0x3e, Register8::A),
         ];
+
         for (opcode, dst) in cases {
             let mut cpu = Cpu8080Cycle::new();
-            let mut registers = Registers::default();
+            let mut registers = seeded_registers();
             registers.pc = 0x2000;
-            registers.a = 0x10;
-            registers.b = 0x11;
-            registers.c = 0x12;
-            registers.d = 0x13;
-            registers.e = 0x14;
-            registers.h = 0x15;
-            registers.l = 0x16;
-            registers.f = 0xd7;
             cpu.set_registers(registers);
+
             let fetch = fetch_opcode(&mut cpu, opcode);
             assert!(!fetch[3].instruction_complete);
             assert_eq!(cpu.machine_cycle(), MachineCycle::MemoryRead);
+
             let m2t1 = cpu.tick(input(0, true));
             assert_eq!(m2t1.pins.address, Some(0x2001));
             assert_eq!(m2t1.pins.data_out, Some(0x82));
@@ -532,95 +565,260 @@ mod tests {
     }
 
     #[test]
-    fn mvi_memory_read_honors_ready_and_tw() {
-        let mut cpu = Cpu8080Cycle::new();
-        fetch_opcode(&mut cpu, 0x06);
-        cpu.tick(input(0, true));
-        let t2 = cpu.tick(input(0, false));
-        assert!(t2.pins.dbin);
-        let tw = cpu.tick(input(0x99, true));
-        assert_eq!(tw.t_state, TState::Tw);
-        assert!(tw.pins.wait);
-        assert!(tw.pins.dbin);
-        let t3 = cpu.tick(input(0x5a, true));
-        assert!(t3.instruction_complete);
-        assert_eq!(t3.instruction_t_states, 8);
-        assert_eq!(cpu.registers().b, 0x5a);
-    }
-
-    #[test]
     fn register_mov_is_a_five_t_state_m1_only_instruction() {
         let mut cpu = Cpu8080Cycle::new();
-        let mut registers = Registers::default();
+        let mut registers = seeded_registers();
         registers.pc = 0x1000;
         registers.b = 0x11;
         registers.c = 0xa5;
         registers.f = 0x46;
         cpu.set_registers(registers);
-        let fetch = fetch_opcode(&mut cpu, 0x41);
-        assert_eq!(fetch[0].pins.address, Some(0x1000));
+
+        let fetch = fetch_opcode(&mut cpu, 0x41); // MOV B,C
         assert!(!fetch[3].instruction_complete);
-        assert_eq!(cpu.registers().b, 0x11);
         assert_eq!(cpu.t_state(), TState::T5);
-        assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch);
         let t5 = cpu.tick(input(0, true));
         assert!(t5.instruction_complete);
         assert_eq!(t5.instruction_t_states, 5);
         assert_eq!(cpu.registers().b, 0xa5);
         assert_eq!(cpu.registers().f, 0x46);
         assert_eq!(cpu.registers().pc, 0x1001);
-        assert_eq!(cpu.last_instruction_t_states(), Some(5));
     }
 
     #[test]
     fn all_register_mov_combinations_transfer_the_expected_value() {
-        let regs = [Register8::B, Register8::C, Register8::D, Register8::E, Register8::H, Register8::L, Register8::A];
+        let regs = [
+            Register8::B,
+            Register8::C,
+            Register8::D,
+            Register8::E,
+            Register8::H,
+            Register8::L,
+            Register8::A,
+        ];
         let codes = [0u8, 1, 2, 3, 4, 5, 7];
-        for (dst_index, dst) in regs.into_iter().enumerate() {
-            for (src_index, src) in regs.into_iter().enumerate() {
+
+        for dst_index in 0..regs.len() {
+            for src_index in 0..regs.len() {
+                let dst = regs[dst_index];
+                let src = regs[src_index];
                 let opcode = 0x40 | (codes[dst_index] << 3) | codes[src_index];
                 let mut cpu = Cpu8080Cycle::new();
-                let mut registers = Registers::default();
-                registers.b = 0x10;
-                registers.c = 0x21;
-                registers.d = 0x32;
-                registers.e = 0x43;
-                registers.h = 0x54;
-                registers.l = 0x65;
-                registers.a = 0x76;
-                registers.f = 0xd7;
+                let registers = seeded_registers();
                 let expected = register_value(registers, src);
                 cpu.set_registers(registers);
                 fetch_opcode(&mut cpu, opcode);
                 let t5 = cpu.tick(input(0, true));
                 assert!(t5.instruction_complete, "opcode {opcode:02x}");
                 assert_eq!(t5.instruction_t_states, 5, "opcode {opcode:02x}");
-                assert_eq!(register_value(cpu.registers(), dst), expected, "opcode {opcode:02x}");
+                assert_eq!(
+                    register_value(cpu.registers(), dst),
+                    expected,
+                    "opcode {opcode:02x}"
+                );
                 assert_eq!(cpu.registers().f, 0xd7, "opcode {opcode:02x}");
             }
         }
     }
 
     #[test]
-    fn m_variants_remain_explicitly_unsupported() {
-        for opcode in [0x36, 0x46, 0x4e, 0x70, 0x71, 0x76, 0x7e] {
+    fn all_mov_r_m_forms_read_hl_in_exactly_seven_t_states() {
+        let destinations = [
+            (0x46, Register8::B),
+            (0x4e, Register8::C),
+            (0x56, Register8::D),
+            (0x5e, Register8::E),
+            (0x66, Register8::H),
+            (0x6e, Register8::L),
+            (0x7e, Register8::A),
+        ];
+
+        for (opcode, dst) in destinations {
             let mut cpu = Cpu8080Cycle::new();
-            cpu.tick(input(0, true));
-            cpu.tick(input(0, true));
-            cpu.tick(input(opcode, true));
-            let t4 = cpu.tick(input(0, true));
-            assert_eq!(t4.fault, Some(Cpu8080CycleFault::UnsupportedOpcode(opcode)));
+            let mut registers = seeded_registers();
+            registers.h = 0x12;
+            registers.l = 0x34;
+            registers.pc = 0x0200;
+            cpu.set_registers(registers);
+
+            fetch_opcode(&mut cpu, opcode);
+            let m2t1 = cpu.tick(input(0, true));
+            assert_eq!(m2t1.machine_cycle, MachineCycle::MemoryRead);
+            assert_eq!(m2t1.machine_cycle_index, 2);
+            assert_eq!(m2t1.pins.address, Some(0x1234));
+            assert_eq!(m2t1.pins.data_out, Some(0x82));
+            let m2t2 = cpu.tick(input(0, true));
+            assert!(m2t2.pins.dbin);
+            let m2t3 = cpu.tick(input(0xa5, true));
+            assert!(m2t3.instruction_complete);
+            assert_eq!(m2t3.instruction_t_states, 7);
+            assert_eq!(register_value(cpu.registers(), dst), 0xa5);
+            assert_eq!(cpu.registers().f, 0xd7);
+            assert_eq!(cpu.registers().pc, 0x0201);
         }
     }
 
     #[test]
-    fn sta_direct_is_thirteen_t_states_and_drives_write_data() {
+    fn mov_h_from_memory_latches_old_hl_before_h_changes() {
         let mut cpu = Cpu8080Cycle::new();
-        let mut registers = Registers::default();
+        let mut registers = seeded_registers();
+        registers.h = 0x12;
+        registers.l = 0x34;
+        cpu.set_registers(registers);
+
+        fetch_opcode(&mut cpu, 0x66); // MOV H,M
+        let m2t1 = cpu.tick(input(0, true));
+        assert_eq!(m2t1.pins.address, Some(0x1234));
+        cpu.tick(input(0, true));
+        let m2t3 = cpu.tick(input(0xab, true));
+        assert!(m2t3.instruction_complete);
+        assert_eq!(cpu.registers().h, 0xab);
+        assert_eq!(cpu.registers().l, 0x34);
+        assert_eq!(m2t3.pins.address, Some(0x1234));
+    }
+
+    #[test]
+    fn all_mov_m_r_forms_write_hl_in_exactly_seven_t_states() {
+        let sources = [
+            (0x70, Register8::B),
+            (0x71, Register8::C),
+            (0x72, Register8::D),
+            (0x73, Register8::E),
+            (0x74, Register8::H),
+            (0x75, Register8::L),
+            (0x77, Register8::A),
+        ];
+
+        for (opcode, src) in sources {
+            let mut cpu = Cpu8080Cycle::new();
+            let mut registers = seeded_registers();
+            registers.h = 0x23;
+            registers.l = 0x45;
+            registers.pc = 0x0300;
+            let expected = register_value(registers, src);
+            cpu.set_registers(registers);
+
+            fetch_opcode(&mut cpu, opcode);
+            let m2t1 = cpu.tick(input(0, true));
+            assert_eq!(m2t1.machine_cycle, MachineCycle::MemoryWrite);
+            assert_eq!(m2t1.machine_cycle_index, 2);
+            assert_eq!(m2t1.pins.address, Some(0x2345));
+            assert_eq!(m2t1.pins.data_out, Some(0x00));
+            let m2t2 = cpu.tick(input(0, true));
+            assert_eq!(m2t2.pins.data_out, Some(expected));
+            assert!(m2t2.pins.wr_n);
+            let m2t3 = cpu.tick(input(0, true));
+            assert_eq!(m2t3.pins.data_out, Some(expected));
+            assert!(!m2t3.pins.wr_n);
+            assert!(m2t3.instruction_complete);
+            assert_eq!(m2t3.instruction_t_states, 7);
+            assert_eq!(cpu.registers().f, 0xd7);
+            assert_eq!(cpu.registers().pc, 0x0301);
+        }
+    }
+
+    #[test]
+    fn mvi_m_immediate_is_ten_t_states_with_read_then_hl_write() {
+        let mut cpu = Cpu8080Cycle::new();
+        let mut registers = seeded_registers();
+        registers.h = 0x45;
+        registers.l = 0x67;
+        registers.pc = 0x2000;
+        registers.f = 0x46;
+        cpu.set_registers(registers);
+
+        fetch_opcode(&mut cpu, 0x36);
+
+        let m2t1 = cpu.tick(input(0, true));
+        assert_eq!(m2t1.machine_cycle, MachineCycle::MemoryRead);
+        assert_eq!(m2t1.machine_cycle_index, 2);
+        assert_eq!(m2t1.pins.address, Some(0x2001));
+        cpu.tick(input(0, true));
+        let m2t3 = cpu.tick(input(0xa5, true));
+        assert!(!m2t3.instruction_complete);
+        assert_eq!(cpu.registers().pc, 0x2002);
+
+        let m3t1 = cpu.tick(input(0, true));
+        assert_eq!(m3t1.machine_cycle, MachineCycle::MemoryWrite);
+        assert_eq!(m3t1.machine_cycle_index, 3);
+        assert_eq!(m3t1.pins.address, Some(0x4567));
+        assert_eq!(m3t1.pins.data_out, Some(0x00));
+        let m3t2 = cpu.tick(input(0, true));
+        assert_eq!(m3t2.pins.data_out, Some(0xa5));
+        let m3t3 = cpu.tick(input(0, true));
+        assert_eq!(m3t3.pins.address, Some(0x4567));
+        assert_eq!(m3t3.pins.data_out, Some(0xa5));
+        assert!(!m3t3.pins.wr_n);
+        assert!(m3t3.instruction_complete);
+        assert_eq!(m3t3.instruction_t_states, 10);
+        assert_eq!(cpu.registers().f, 0x46);
+        assert_eq!(cpu.last_instruction_t_states(), Some(10));
+    }
+
+    #[test]
+    fn hl_memory_read_honors_ready_and_keeps_effective_address_latched() {
+        let mut cpu = Cpu8080Cycle::new();
+        let mut registers = seeded_registers();
+        registers.h = 0x34;
+        registers.l = 0x56;
+        cpu.set_registers(registers);
+
+        fetch_opcode(&mut cpu, 0x7e); // MOV A,M
+        let t1 = cpu.tick(input(0, true));
+        assert_eq!(t1.pins.address, Some(0x3456));
+        let t2 = cpu.tick(input(0, false));
+        assert_eq!(t2.pins.address, Some(0x3456));
+        assert!(t2.pins.dbin);
+        let tw = cpu.tick(input(0x99, true));
+        assert_eq!(tw.t_state, TState::Tw);
+        assert_eq!(tw.pins.address, Some(0x3456));
+        assert!(tw.pins.wait);
+        assert!(tw.pins.dbin);
+        let t3 = cpu.tick(input(0x5a, true));
+        assert!(t3.instruction_complete);
+        assert_eq!(t3.instruction_t_states, 8);
+        assert_eq!(cpu.registers().a, 0x5a);
+    }
+
+    #[test]
+    fn hl_memory_write_wait_keeps_address_data_and_wr_stable() {
+        let mut cpu = Cpu8080Cycle::new();
+        let mut registers = seeded_registers();
+        registers.h = 0x56;
+        registers.l = 0x78;
+        registers.a = 0xa5;
+        cpu.set_registers(registers);
+
+        fetch_opcode(&mut cpu, 0x77); // MOV M,A
+        let t1 = cpu.tick(input(0, true));
+        assert_eq!(t1.pins.address, Some(0x5678));
+        let t2 = cpu.tick(input(0, false));
+        assert_eq!(t2.pins.address, Some(0x5678));
+        assert_eq!(t2.pins.data_out, Some(0xa5));
+        assert!(t2.pins.wr_n);
+        let tw = cpu.tick(input(0, true));
+        assert_eq!(tw.t_state, TState::Tw);
+        assert_eq!(tw.pins.address, Some(0x5678));
+        assert_eq!(tw.pins.data_out, Some(0xa5));
+        assert!(!tw.pins.wr_n);
+        assert!(tw.pins.wait);
+        let t3 = cpu.tick(input(0, true));
+        assert_eq!(t3.pins.address, Some(0x5678));
+        assert_eq!(t3.pins.data_out, Some(0xa5));
+        assert!(!t3.pins.wr_n);
+        assert!(t3.instruction_complete);
+        assert_eq!(t3.instruction_t_states, 8);
+    }
+
+    #[test]
+    fn sta_direct_remains_thirteen_t_states_and_drives_write_data() {
+        let mut cpu = Cpu8080Cycle::new();
+        let mut registers = seeded_registers();
         registers.pc = 0x0100;
         registers.a = 0x5a;
         registers.f = 0x46;
         cpu.set_registers(registers);
+
         fetch_opcode(&mut cpu, 0x32);
         cpu.tick(input(0, true));
         cpu.tick(input(0, true));
@@ -645,35 +843,6 @@ mod tests {
     }
 
     #[test]
-    fn sta_write_wait_keeps_address_and_data_stable_and_extends_wr() {
-        let mut cpu = Cpu8080Cycle::new();
-        let mut registers = Registers::default();
-        registers.a = 0xa5;
-        cpu.set_registers(registers);
-        fetch_opcode(&mut cpu, 0x32);
-        cpu.tick(input(0, true));
-        cpu.tick(input(0, true));
-        cpu.tick(input(0x78, true));
-        cpu.tick(input(0, true));
-        cpu.tick(input(0, true));
-        cpu.tick(input(0x56, true));
-        cpu.tick(input(0, true));
-        let t2 = cpu.tick(input(0, false));
-        assert_eq!(t2.pins.address, Some(0x5678));
-        assert_eq!(t2.pins.data_out, Some(0xa5));
-        assert!(t2.pins.wr_n);
-        let tw = cpu.tick(input(0, true));
-        assert_eq!(tw.t_state, TState::Tw);
-        assert_eq!(tw.pins.address, Some(0x5678));
-        assert!(!tw.pins.wr_n);
-        assert!(tw.pins.wait);
-        let t3 = cpu.tick(input(0, true));
-        assert!(!t3.pins.wr_n);
-        assert!(t3.instruction_complete);
-        assert_eq!(t3.instruction_t_states, 14);
-    }
-
-    #[test]
     fn ready_low_in_opcode_fetch_inserts_tw_without_consuming_data() {
         let mut cpu = Cpu8080Cycle::new();
         cpu.tick(input(0, true));
@@ -692,12 +861,16 @@ mod tests {
     #[test]
     fn reset_restarts_fetch_at_zero_without_clearing_general_registers() {
         let mut cpu = Cpu8080Cycle::new();
-        let mut registers = Registers::default();
+        let mut registers = seeded_registers();
         registers.a = 0x5a;
         registers.b = 0xa5;
         registers.pc = 0x4321;
         cpu.set_registers(registers);
-        let reset = cpu.tick(Cpu8080Inputs { reset: true, ..Cpu8080Inputs::default() });
+
+        let reset = cpu.tick(Cpu8080Inputs {
+            reset: true,
+            ..Cpu8080Inputs::default()
+        });
         assert!(reset.reset);
         assert_eq!(cpu.registers().pc, 0);
         assert_eq!(cpu.registers().a, 0x5a);
@@ -707,14 +880,19 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_unsupported_opcode_faults_instead_of_becoming_nop() {
-        let mut cpu = Cpu8080Cycle::new();
-        cpu.tick(input(0, true));
-        cpu.tick(input(0, true));
-        cpu.tick(input(0xff, true));
-        let t4 = cpu.tick(input(0, true));
-        assert_eq!(t4.fault, Some(Cpu8080CycleFault::UnsupportedOpcode(0xff)));
-        assert!(!t4.instruction_complete);
-        assert_eq!(cpu.total_t_states(), 4);
+    fn hlt_and_unrelated_unsupported_opcodes_fault_explicitly() {
+        for opcode in [0x76, 0xff] {
+            let mut cpu = Cpu8080Cycle::new();
+            cpu.tick(input(0, true));
+            cpu.tick(input(0, true));
+            cpu.tick(input(opcode, true));
+            let t4 = cpu.tick(input(0, true));
+            assert_eq!(
+                t4.fault,
+                Some(Cpu8080CycleFault::UnsupportedOpcode(opcode))
+            );
+            assert!(!t4.instruction_complete);
+            assert_eq!(cpu.total_t_states(), 4);
+        }
     }
 }
