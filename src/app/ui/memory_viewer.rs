@@ -134,17 +134,14 @@ impl RusTairApp {
         )
     }
 
-    fn draw_register8_inline(ui: &mut egui::Ui, name: &str, value: u8) -> egui::Response {
-        ui.horizontal(|ui| {
-            ui.strong(name);
-            ui.label(egui::RichText::new(Self::grouped_binary8(value)).monospace());
-            ui.label(
-                egui::RichText::new(format!("${value:02X}"))
-                    .monospace()
-                    .strong(),
-            );
-        })
-        .response
+    fn draw_register8_cells(ui: &mut egui::Ui, name: &str, value: u8) -> egui::Response {
+        ui.strong(name);
+        ui.label(egui::RichText::new(Self::grouped_binary8(value)).monospace());
+        ui.label(
+            egui::RichText::new(format!("${value:02X}"))
+                .monospace()
+                .strong(),
+        )
     }
 
     fn instruction_word(lo: u8, hi: u8) -> u16 {
@@ -300,51 +297,67 @@ impl RusTairApp {
         (text, bytes)
     }
 
-    fn draw_cpu_registers_compact(&self, ui: &mut egui::Ui) {
+    fn draw_cpu_registers_sidebar(&self, ui: &mut egui::Ui) {
         let cpu = &self.machine.cpu;
-        ui.horizontal_wrapped(|ui| {
-            let values = [
-                ("A", cpu.a),
-                ("F", cpu.f),
-                ("B", cpu.b),
-                ("C", cpu.c),
-                ("D", cpu.d),
-                ("E", cpu.e),
-                ("H", cpu.h),
-                ("L", cpu.l),
-            ];
-            for (index, (name, value)) in values.into_iter().enumerate() {
-                let response = Self::draw_register8_inline(ui, name, value);
-                if name == "F" {
-                    response.on_hover_text(format!(
-                        "Flags: S={} Z={} AC={} P={} C={}",
-                        u8::from(cpu.f & FLAG_S != 0),
-                        u8::from(cpu.f & FLAG_Z != 0),
-                        u8::from(cpu.f & FLAG_AC != 0),
-                        u8::from(cpu.f & FLAG_P != 0),
-                        u8::from(cpu.f & FLAG_C != 0)
-                    ));
-                }
-                if index != values.len() - 1 {
-                    ui.separator();
-                }
-            }
-        });
+        ui.strong("CPU REGISTERS");
+        ui.add_space(3.0);
 
-        let (instruction, bytes) = self.current_instruction();
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("SP");
-            ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
-            ui.label(egui::RichText::new(format!("${:04X}", cpu.sp)).monospace().strong());
-            ui.separator();
-            ui.strong("PC");
-            ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
-            ui.label(egui::RichText::new(format!("${:04X}", cpu.pc)).monospace().strong());
-            ui.separator();
-            ui.strong("NEXT");
-            ui.label(egui::RichText::new(instruction).monospace().strong());
-            ui.small(egui::RichText::new(bytes).monospace().weak());
-        });
+        egui::Grid::new("ram-cpu-registers-sidebar")
+            .num_columns(7)
+            .spacing([6.0, 3.0])
+            .show(ui, |ui| {
+                Self::draw_register8_cells(ui, "A", cpu.a);
+                ui.separator();
+                let f = Self::draw_register8_cells(ui, "F", cpu.f);
+                f.on_hover_text(format!(
+                    "Flags: S={} Z={} AC={} P={} C={}",
+                    u8::from(cpu.f & FLAG_S != 0),
+                    u8::from(cpu.f & FLAG_Z != 0),
+                    u8::from(cpu.f & FLAG_AC != 0),
+                    u8::from(cpu.f & FLAG_P != 0),
+                    u8::from(cpu.f & FLAG_C != 0)
+                ));
+                ui.end_row();
+
+                Self::draw_register8_cells(ui, "B", cpu.b);
+                ui.separator();
+                Self::draw_register8_cells(ui, "C", cpu.c);
+                ui.end_row();
+
+                Self::draw_register8_cells(ui, "D", cpu.d);
+                ui.separator();
+                Self::draw_register8_cells(ui, "E", cpu.e);
+                ui.end_row();
+
+                Self::draw_register8_cells(ui, "H", cpu.h);
+                ui.separator();
+                Self::draw_register8_cells(ui, "L", cpu.l);
+                ui.end_row();
+            });
+
+        ui.add_space(3.0);
+        egui::Grid::new("ram-cpu-registers-16-sidebar")
+            .num_columns(3)
+            .spacing([6.0, 3.0])
+            .show(ui, |ui| {
+                ui.strong("SP");
+                ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
+                ui.label(
+                    egui::RichText::new(format!("${:04X}", cpu.sp))
+                        .monospace()
+                        .strong(),
+                );
+                ui.end_row();
+
+                ui.strong("PC");
+                ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
+                ui.label(
+                    egui::RichText::new(format!("${:04X}", cpu.pc))
+                        .monospace()
+                        .strong(),
+                );
+                ui.end_row();
+            });
     }
 
     fn draw_memory_toolbar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
@@ -404,8 +417,6 @@ impl RusTairApp {
                 self.select_memory_address(state, pc, true);
             }
         });
-        ui.separator();
-        self.draw_cpu_registers_compact(ui);
     }
 
     fn draw_memory_help(&self, ui: &mut egui::Ui) {
@@ -770,6 +781,11 @@ impl RusTairApp {
                 egui::CollapsingHeader::new("1 KiB protection map")
                     .default_open(false)
                     .show(ui, |ui| self.draw_memory_block_map(ui, state));
+                ui.separator();
+
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    self.draw_cpu_registers_sidebar(ui);
+                });
                 ui.separator();
 
                 egui::CollapsingHeader::new("How to read this inspector")
