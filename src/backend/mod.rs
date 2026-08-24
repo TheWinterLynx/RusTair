@@ -13,11 +13,16 @@
 
 mod native;
 
+use std::fmt;
 use std::time::Duration;
 
 use crate::machine::PanelLampSnapshot;
 
 pub use native::NativeMachineBackend;
+/// Product-facing name for the existing instruction-level native backend.
+/// `NativeMachineBackend` remains exported during the migration so existing
+/// branch work does not need a noisy rename-only conflict.
+pub type FastMachineBackend = NativeMachineBackend;
 
 /// Broad implementation family. Useful for diagnostics and configuration, but
 /// deliberately not used as the product-level engine selector.
@@ -37,6 +42,13 @@ pub enum EmulationEngine {
 }
 
 impl EmulationEngine {
+    pub const ALL: [Self; 4] = [
+        Self::RustFast8080,
+        Self::RustCycleAccurate8080,
+        Self::SimhAltair,
+        Self::SimhAltairZ80,
+    ];
+
     pub const fn family(self) -> BackendFamily {
         match self {
             Self::RustFast8080 | Self::RustCycleAccurate8080 => BackendFamily::Rustair,
@@ -52,6 +64,17 @@ impl EmulationEngine {
             Self::SimhAltairZ80 => "Open SIMH — AltairZ80",
         }
     }
+
+    /// Whether this branch currently has a concrete backend constructor for the
+    /// engine. Keeping availability explicit lets the UI expose the final
+    /// product shape without pretending unfinished engines are selectable.
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::RustFast8080)
+    }
+}
+
+impl Default for EmulationEngine {
+    fn default() -> Self { Self::RustFast8080 }
 }
 
 /// Feature set exposed by one engine. The UI must query capabilities instead of
@@ -184,6 +207,36 @@ pub trait MachineBackend {
     fn load_bytes(&mut self, address: u16, bytes: &[u8]);
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendCreateError {
+    Unavailable(EmulationEngine),
+}
+
+impl fmt::Display for BackendCreateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unavailable(engine) => {
+                write!(f, "{} backend is not available in this build", engine.label())
+            }
+        }
+    }
+}
+
+impl std::error::Error for BackendCreateError {}
+
+/// Single construction point for product engines. Future merge work should wire
+/// new backends here instead of teaching the UI how to instantiate them.
+pub fn create_backend(
+    engine: EmulationEngine,
+) -> Result<Box<dyn MachineBackend>, BackendCreateError> {
+    match engine {
+        EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
+        EmulationEngine::RustCycleAccurate8080
+        | EmulationEngine::SimhAltair
+        | EmulationEngine::SimhAltairZ80 => Err(BackendCreateError::Unavailable(engine)),
+    }
+}
+
 /// Runtime-owned indirection point. Engine replacement intentionally creates a
 /// new machine; live-state migration is a separate concern and is not required
 /// for the first four-engine selector.
@@ -198,8 +251,13 @@ impl Default for BackendHost {
 impl BackendHost {
     pub fn new(backend: Box<dyn MachineBackend>) -> Self { Self { backend } }
 
+    pub fn from_engine(engine: EmulationEngine) -> Result<Self, BackendCreateError> {
+        create_backend(engine).map(Self::new)
+    }
+
     pub fn rust_fast() -> Self {
-        Self::new(Box::new(NativeMachineBackend::default()))
+        Self::from_engine(EmulationEngine::RustFast8080)
+            .expect("the built-in fast backend must always be available")
     }
 
     /// Transitional alias retained while existing code still calls the native
@@ -212,6 +270,16 @@ impl BackendHost {
 
     pub fn replace(&mut self, backend: Box<dyn MachineBackend>) {
         self.backend = backend;
+    }
+
+    /// Replace the current machine with a freshly-created selected engine. This
+    /// deliberately does not attempt live state transfer between engines.
+    pub fn replace_engine(
+        &mut self,
+        engine: EmulationEngine,
+    ) -> Result<(), BackendCreateError> {
+        self.backend = create_backend(engine)?;
+        Ok(())
     }
 
     pub fn engine(&self) -> EmulationEngine { self.backend.engine() }
@@ -234,6 +302,28 @@ mod tests {
         );
         assert_eq!(EmulationEngine::SimhAltair.family(), BackendFamily::Simh);
         assert_eq!(EmulationEngine::SimhAltairZ80.family(), BackendFamily::Simh);
+    }
+
+    #[test]
+    fn engine_catalog_contains_the_four_product_choices() {
+        assert_eq!(EmulationEngine::ALL.len(), 4);
+        assert!(EmulationEngine::RustFast8080.is_available());
+        assert!(!EmulationEngine::RustCycleAccurate8080.is_available());
+        assert!(!EmulationEngine::SimhAltair.is_available());
+        assert!(!EmulationEngine::SimhAltairZ80.is_available());
+    }
+
+    #[test]
+    fn unavailable_engines_fail_without_replacing_the_active_backend() {
+        let mut host = BackendHost::default();
+        let error = host
+            .replace_engine(EmulationEngine::RustCycleAccurate8080)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            BackendCreateError::Unavailable(EmulationEngine::RustCycleAccurate8080)
+        );
+        assert_eq!(host.engine(), EmulationEngine::RustFast8080);
     }
 
     #[test]
