@@ -4,6 +4,7 @@ use std::sync::Arc;
 use eframe::egui::{self, FontFamily};
 
 use super::front_panel_assets::load_switch_textures;
+use crate::embedded_assets;
 
 /// GPU/UI resources used by the application renderers.
 ///
@@ -67,13 +68,13 @@ impl Tex {
     }
 
     pub(in crate::app) fn install_teletype_font(ctx: &egui::Context) {
-        let Ok(bytes) = std::fs::read("assets/teletype.ttf") else {
+        let Some(bytes) = embedded_assets::get("assets/teletype.ttf") else {
             return;
         };
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "teletype".to_owned(),
-            Arc::new(egui::FontData::from_owned(bytes)),
+            Arc::new(egui::FontData::from_owned(bytes.to_vec())),
         );
         fonts.families.insert(
             FontFamily::Name("teletype".into()),
@@ -87,8 +88,8 @@ impl Tex {
         name: &str,
         path: &str,
     ) -> Option<egui::TextureHandle> {
-        let bytes = std::fs::read(path).ok()?;
-        let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let bytes = embedded_assets::get(path)?;
+        let image = image::load_from_memory(bytes).ok()?.to_rgba8();
         let size = [image.width() as usize, image.height() as usize];
         Some(ctx.load_texture(
             name,
@@ -105,8 +106,8 @@ impl Tex {
         name: &str,
         path: &str,
     ) -> Option<egui::TextureHandle> {
-        let bytes = std::fs::read(path).ok()?;
-        let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+        let bytes = embedded_assets::get(path)?;
+        let image = image::load_from_memory(bytes).ok()?.to_rgba8();
         let (width, height) = image.dimensions();
 
         let mut min_y = height;
