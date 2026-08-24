@@ -1,6 +1,51 @@
 use super::*;
 
+const LOAD_ERROR_PREFIX: &str = "LOAD ERROR: ";
+
 impl RusTairApp {
+    /// Record a loader failure in the status bar and make it impossible to miss
+    /// by presenting the same reason in a centered acknowledgement dialog.
+    pub(in crate::app) fn report_load_error(&mut self, reason: impl Into<String>) {
+        self.status = format!("{LOAD_ERROR_PREFIX}{}", reason.into());
+    }
+
+    /// Draw the shared loader-error dialog. The diagnostic poller calls this on
+    /// every frame, so failures from the raw binary, BASIC and CP/M diagnostic
+    /// loaders all use the same visible reporting path.
+    pub(in crate::app) fn draw_load_error_dialog(&mut self, ctx: &egui::Context) {
+        let Some(reason) = self
+            .status
+            .strip_prefix(LOAD_ERROR_PREFIX)
+            .map(str::to_owned)
+        else {
+            return;
+        };
+
+        let mut dismissed = false;
+        egui::Window::new("Load failed")
+            .id(egui::Id::new("rustair-load-error-dialog"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .default_width(500.0)
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label(&reason);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        dismissed = true;
+                    }
+                });
+            });
+
+        if dismissed {
+            // Keep the detailed reason in the status bar after acknowledgement,
+            // but remove the prefix so the dialog does not reopen next frame.
+            self.status = format!("Load failed: {reason}");
+        }
+    }
+
     /// Select and load a raw binary image at address zero.
     pub(in crate::app) fn load_binary_dialog(&mut self) {
         let Some(path) = rfd::FileDialog::new().pick_file() else {
@@ -9,19 +54,33 @@ impl RusTairApp {
 
         match std::fs::read(&path) {
             Ok(bytes) => {
+                if bytes.is_empty() {
+                    self.report_load_error(format!(
+                        "Binary {} is empty (0 bytes). Nothing was loaded.",
+                        path.display()
+                    ));
+                    return;
+                }
+
                 let installed = self.machine.installed_ram_bytes();
                 if bytes.len() > installed {
-                    self.status = format!(
-                        "Load failed: {} bytes require more than the installed {} KiB RAM",
+                    self.report_load_error(format!(
+                        "Binary {} is {} bytes and loads at 0000h, so it requires at least {} KiB of installed RAM. The current machine has {} ({} bytes).",
+                        path.display(),
                         bytes.len(),
-                        installed / 1024
-                    );
+                        bytes.len().div_ceil(1024),
+                        self.config.machine.ram_size.label(),
+                        installed
+                    ));
                     return;
                 }
                 self.machine.bus.load(0, &bytes);
                 self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
             }
-            Err(e) => self.status = format!("Load failed: {e}"),
+            Err(e) => self.report_load_error(format!(
+                "Could not read binary {}: {e}",
+                path.display()
+            )),
         }
     }
 
@@ -31,10 +90,11 @@ impl RusTairApp {
         match std::fs::read("assets/4kbas32.bin") {
             Ok(bytes) => {
                 if bytes.len() > self.machine.installed_ram_bytes() {
-                    self.status = format!(
-                        "Microsoft 4K BASIC requires at least 4 KiB RAM; {} is installed",
+                    self.report_load_error(format!(
+                        "Microsoft 4K BASIC is {} bytes and requires at least 4 KiB RAM. The current machine has {}.",
+                        bytes.len(),
                         self.config.machine.ram_size.label()
-                    );
+                    ));
                     return;
                 }
                 if !self.machine.powered {
@@ -92,7 +152,9 @@ impl RusTairApp {
                     "Microsoft 4K BASIC loaded and running — console auto-open disabled".into()
                 };
             }
-            Err(e) => self.status = format!("4K BASIC asset missing: {e}"),
+            Err(e) => self.report_load_error(format!(
+                "Bundled Microsoft 4K BASIC could not be read from assets/4kbas32.bin: {e}"
+            )),
         }
     }
 
