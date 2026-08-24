@@ -1,5 +1,6 @@
 pub mod app;
 pub mod audio;
+pub mod backend;
 pub mod config;
 pub mod cpu8080;
 pub mod io;
