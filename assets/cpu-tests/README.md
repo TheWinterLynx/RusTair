@@ -1,50 +1,43 @@
 # Intel 8080 CPU diagnostics
 
-RusTair can run the classic CP/M `.COM` Intel 8080 diagnostics without booting CP/M.
+RusTair can run classic CP/M `.COM` CPU diagnostics without booting CP/M and without intercepting the CPU core.
 
-## Test files
+Use **File → CPU diagnostics → Load .COM via Port 0…** (or Port 1 with the MITS 88-2SIO). The loader pauses any currently running guest while the native picker is open. Cancelling resumes the previous RUN state. Selecting a file performs a deterministic diagnostic boot: power on if required, STOP, RESET CPU/I/O, clear installed RAM, install a small 8080 page-zero shim, load the `.COM` at `0100h`, set `PC=0000h`, then RUN.
 
-Download the original test binaries from the Altair Clone CPU-test archive:
+The shim provides only the CP/M services used by the traditional diagnostics:
 
-- `8080PRE.COM` — preliminary/basic instruction test
-- `TST8080.COM` — Microcosm 8080/8085 CPU diagnostic
-- `CPUTEST.COM` — Diagnostics II CPU test
-- `8080EXM.COM` — 8080 instruction exerciser with expected CRC values and PASS/FAIL output
+- `CALL 0005h`, `C=2`: console output of the character in `E`.
+- `CALL 0005h`, `C=9`: console output of the `$`-terminated string at `DE`.
 
-Archive: <https://altairclone.com/downloads/cpu_tests/>
+Those services are themselves ordinary Intel 8080 instructions. Output polls and writes the configured emulated MITS serial board, so the test travels through the same serial hardware and Serial Router as other Altair software. No `PC=0005h` host interception is used.
 
-The historical source page is preserved at:
-<https://web.archive.org/web/20151006085348/http://www.idb.me.uk/sunhillow/8080.html>
+The page-zero bootstrap also changes address `0000h` to `HLT` before entering the `.COM`. Diagnostics that finish through the CP/M warm-boot vector therefore halt cleanly.
 
-The binaries are intentionally not vendored into RusTair. This directory documents the canonical external test set while the emulator provides a generic loader for any compatible CP/M 8080 diagnostic `.COM` file.
+## Serial ports
 
-## Running a diagnostic
+- MITS 88-SIO Port 0: status `00h`, data `01h`; the shim waits while TX busy bits `C0h` are set.
+- MITS 88-2SIO Port 0: status/control `10h`, data `11h`; the shim waits for TX-ready bit `02h`.
+- MITS 88-2SIO Port 1: status/control `12h`, data `13h`; the shim waits for TX-ready bit `02h`.
 
-1. Configure enough RAM for the selected `.COM` file. 64 KiB is recommended for a common baseline.
-2. Configure either `MITS 88-SIO` or `MITS 88-2SIO`.
-3. Connect a visible endpoint (Text Terminal or ASR-33) to the serial port you intend to use.
-4. Select `File -> CPU diagnostics -> Load .COM via Port 0...` (or Port 1 on the 88-2SIO).
-5. Select the downloaded `.COM` file.
+The loader never changes the user's serial cabling. It reveals whichever ASR-33, Text Terminal, External TCP or External COM endpoint is already attached to the selected port.
 
-RusTair then:
+## Recommended diagnostics
 
-- resets the machine;
-- installs a real 8080 page-zero shim;
-- installs a CP/M-compatible `CALL 0005h` vector;
-- implements BDOS function 2 (character output) and function 9 (`$`-terminated string output) in 8080 machine code;
-- polls the selected emulated serial card's TX-ready status and writes through its real data port;
-- loads the selected `.COM` at `0100h`;
-- sets a high stack inside installed RAM;
-- starts execution at `0000h`;
-- replaces the warm-boot entry at `0000h` with `HLT` before entering the test, so a normal CP/M warm boot at test completion stops the CPU cleanly.
+The classic test collection is mirrored by several emulator projects and archival sites. A convenient source is the `cpu_tests` directory in `superzazu/8080`, which contains:
 
-No CPU opcode, program-counter, BDOS or console call is intercepted on the host side. The diagnostics execute on the normal RusTair Intel 8080 core and reach the terminal through the normal emulated 88-SIO/88-2SIO path.
+1. `8080PRE.COM` — preliminary instruction tests.
+2. `TST8080.COM` — Microcosm Associates 8080/8085 CPU diagnostic.
+3. `CPUTEST.COM` — Supersoft Associates CPU diagnostic.
+4. `8080EXM.COM` — 8080 instruction exerciser with expected CRCs embedded.
 
-## Recommended baseline order
+Run them in that order when establishing a baseline. `8080EXM.COM` is intentionally very long at an authentic 2 MHz; use RusTair's Unlimited host execution mode when a wall-clock faithful run is not required.
 
-1. `8080PRE.COM`
-2. `TST8080.COM`
-3. `CPUTEST.COM`
-4. `8080EXM.COM`
+## RAM
 
-Run these against the current instruction-level core before replacing it with the cycle-accurate implementation. Record output and, where useful, total emulated cycles. The same suite can then be used as a regression baseline for the new core.
+The `.COM` is loaded at `0100h`. RusTair checks that the image fits in installed RAM and reserves the upper 256 bytes for the diagnostic stack. Use 64 KiB when running the complete set so memory size is not an artificial limitation.
+
+Each selected diagnostic starts with clean zero-filled installed RAM, so loading a smaller `.COM` after a larger one cannot observe stale bytes from the previous test.
+
+## Why this exists
+
+These diagnostics provide a repeatable semantic baseline for the current instruction-granular Intel 8080 core. The same `.COM` images and expected output can later be run unchanged against a T-state/cycle-accurate core, allowing the CPU implementation to evolve without silently regressing instruction behavior.
