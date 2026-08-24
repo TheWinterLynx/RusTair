@@ -12,6 +12,7 @@
 //! behind this contract without leaking FFI types into the UI.
 
 mod native;
+pub mod simh;
 
 use std::fmt;
 use std::time::Duration;
