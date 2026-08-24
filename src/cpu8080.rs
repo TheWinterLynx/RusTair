@@ -24,6 +24,7 @@ pub trait Bus {
     fn stack_write(&mut self, address: u16, value: u8) { self.write(address, value); }
     fn halt_ack(&mut self, _address: u16, _opcode: u8) {}
     fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {}
+    fn instruction_complete(&mut self, _address: u16, _opcode: u8, _t_states: u32) {}
 }
 
 #[derive(Clone, Debug)]
@@ -295,6 +296,7 @@ impl Cpu8080 {
         }
         self.f = (self.f & 0xd5) | FLAG_1;
         self.cycles += t as u64;
+        bus.instruction_complete(opcode_address, opcode, t);
         t
     }
 
