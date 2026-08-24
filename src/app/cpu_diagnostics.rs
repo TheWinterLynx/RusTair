@@ -4,6 +4,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 const CPM_COM_LOAD_ADDRESS: u16 = 0x0100;
 const CPM_PAGE_ZERO_SIZE: usize = 0x0100;
 const BOOT_ADDRESS: usize = 0x0080;
+const CPM_BDOS_PAGE_BYTES: usize = 0x0100;
+const CPM_STACK_GUARD_BYTES: usize = 0x0100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::app) enum DiagnosticSerialPort {
@@ -35,11 +37,22 @@ pub(in crate::app) struct DiagnosticFileDialog {
     resume_on_cancel: bool,
 }
 
-fn build_cpm_diagnostic_shim(
+struct CpmDiagnosticEnvironment {
+    page_zero: [u8; CPM_PAGE_ZERO_SIZE],
+    bdos_base: u16,
+    bdos: Vec<u8>,
+}
+
+fn append_abs(code: &mut Vec<u8>, opcode: u8, address: u16) {
+    let [lo, hi] = address.to_le_bytes();
+    code.extend_from_slice(&[opcode, lo, hi]);
+}
+
+fn build_cpm_diagnostic_environment(
     board: SerialBoard,
     port: DiagnosticSerialPort,
-    stack_top: u16,
-) -> Option<[u8; CPM_PAGE_ZERO_SIZE]> {
+    bdos_base: u16,
+) -> Option<CpmDiagnosticEnvironment> {
     let (status_port, data_port, ready_mask, wait_branch) = match (board, port) {
         // 88-SIO reports TX busy in bits 6/7. Wait while either is set.
         (SerialBoard::Sio88, DiagnosticSerialPort::Port0) => (0x00, 0x01, 0xc0, 0xc2),
@@ -49,68 +62,93 @@ fn build_cpm_diagnostic_shim(
         (SerialBoard::TwoSio88, DiagnosticSerialPort::Port1) => (0x12, 0x13, 0x02, 0xca),
     };
 
-    let mut shim = [0u8; CPM_PAGE_ZERO_SIZE];
+    let mut page_zero = [0u8; CPM_PAGE_ZERO_SIZE];
 
     // CP/M warm-boot vector. The bootstrap replaces byte 0000h with HLT before
     // entering the .COM image, so diagnostics that finish with JMP/CALL 0000h
     // stop the emulated processor cleanly instead of restarting the test.
-    shim[0x0000..0x0003].copy_from_slice(&[0xc3, 0x80, 0x00]); // JMP 0080h
+    page_zero[0x0000..0x0003].copy_from_slice(&[0xc3, 0x80, 0x00]); // JMP 0080h
 
-    // CP/M BDOS entry vector.
-    shim[0x0005..0x0008].copy_from_slice(&[0xc3, 0x10, 0x00]); // JMP 0010h
+    // CP/M puts a JMP BDOS at 0005h. Some diagnostics (notably 8080EXM) read
+    // bytes 0006h/0007h directly with LHLD 6 and use that high-memory address as
+    // their initial stack limit. Therefore this vector must point to a realistic
+    // high-memory BDOS entry, not to helper code in page zero.
+    let [bdos_lo, bdos_hi] = bdos_base.to_le_bytes();
+    page_zero[0x0005..0x0008].copy_from_slice(&[0xc3, bdos_lo, bdos_hi]);
 
-    // Mini-BDOS. Only functions used by the classic 8080 diagnostics are
-    // implemented:
+    // Bootstrap at 0080h: establish the same high-water stack used by the BDOS
+    // vector, turn the warm-boot vector into HLT, then enter the .COM at 0100h.
+    let boot = [
+        0x31, bdos_lo, bdos_hi, // LXI SP,bdos_base
+        0x3e, 0x76,             // MVI A,HLT
+        0x32, 0x00, 0x00,       // STA 0000h
+        0xc3, 0x00, 0x01,       // JMP 0100h
+    ];
+    page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
+
+    // Relocatable mini-BDOS in high memory. Only the functions used by the
+    // classic 8080 diagnostics are implemented:
     //   C=2: output character in E
     //   C=9: output '$'-terminated string at DE
     // All guest registers/flags are restored before RET.
-    let bdos: [u8; 43] = [
-        0xf5, 0xc5, 0xd5, 0xe5, // PUSH PSW/B/D/H
-        0x79,                   // MOV A,C
-        0xfe, 0x02,             // CPI 2
-        0xca, 0x22, 0x00,       // JZ char
-        0xfe, 0x09,             // CPI 9
-        0xca, 0x29, 0x00,       // JZ string
-        0xc3, 0x36, 0x00,       // JMP done
-        0x7b,                   // char: MOV A,E
-        0xcd, 0x3b, 0x00,       // CALL putc
-        0xc3, 0x36, 0x00,       // JMP done
-        0x1a,                   // string: LDAX D
-        0xfe, 0x24,             // CPI '$'
-        0xca, 0x36, 0x00,       // JZ done
-        0xcd, 0x3b, 0x00,       // CALL putc
-        0x13,                   // INX D
-        0xc3, 0x29, 0x00,       // JMP string
-        0xe1, 0xd1, 0xc1, 0xf1, 0xc9, // done: POP H/D/B/PSW; RET
-    ];
-    shim[0x0010..0x0010 + bdos.len()].copy_from_slice(&bdos);
+    const CHAR_OFFSET: u16 = 0x0012;
+    const STRING_OFFSET: u16 = 0x0019;
+    const DONE_OFFSET: u16 = 0x0026;
+    const PUTC_OFFSET: u16 = 0x002b;
+    const POLL_OFFSET: u16 = 0x002c;
 
-    // PUTC at 003Bh. Save the character in B while status polling overwrites A.
-    shim[0x003b] = 0x47; // MOV B,A
-    shim[0x003c] = 0xdb; // IN status
-    shim[0x003d] = status_port;
-    shim[0x003e] = 0xe6; // ANI ready/busy mask
-    shim[0x003f] = ready_mask;
-    shim[0x0040] = wait_branch; // JNZ for 88-SIO, JZ for 88-2SIO
-    shim[0x0041] = 0x3c;
-    shim[0x0042] = 0x00;
-    shim[0x0043] = 0x78; // MOV A,B
-    shim[0x0044] = 0xd3; // OUT data
-    shim[0x0045] = data_port;
-    shim[0x0046] = 0xc9; // RET
+    let char_addr = bdos_base.wrapping_add(CHAR_OFFSET);
+    let string_addr = bdos_base.wrapping_add(STRING_OFFSET);
+    let done_addr = bdos_base.wrapping_add(DONE_OFFSET);
+    let putc_addr = bdos_base.wrapping_add(PUTC_OFFSET);
+    let poll_addr = bdos_base.wrapping_add(POLL_OFFSET);
 
-    // Bootstrap at 0080h: establish a CP/M-like high stack, turn the warm-boot
-    // vector into HLT, then enter the .COM program at 0100h.
-    let [sp_lo, sp_hi] = stack_top.to_le_bytes();
-    let boot = [
-        0x31, sp_lo, sp_hi, // LXI SP,stack_top
-        0x3e, 0x76,         // MVI A,HLT
-        0x32, 0x00, 0x00,   // STA 0000h
-        0xc3, 0x00, 0x01,   // JMP 0100h
-    ];
-    shim[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
+    let mut bdos = Vec::with_capacity(0x37);
+    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]); // PUSH PSW/B/D/H
+    bdos.push(0x79); // MOV A,C
+    bdos.extend_from_slice(&[0xfe, 0x02]); // CPI 2
+    append_abs(&mut bdos, 0xca, char_addr); // JZ char
+    bdos.extend_from_slice(&[0xfe, 0x09]); // CPI 9
+    append_abs(&mut bdos, 0xca, string_addr); // JZ string
+    append_abs(&mut bdos, 0xc3, done_addr); // JMP done
 
-    Some(shim)
+    debug_assert_eq!(bdos.len(), CHAR_OFFSET as usize);
+    bdos.push(0x7b); // char: MOV A,E
+    append_abs(&mut bdos, 0xcd, putc_addr); // CALL putc
+    append_abs(&mut bdos, 0xc3, done_addr); // JMP done
+
+    debug_assert_eq!(bdos.len(), STRING_OFFSET as usize);
+    bdos.push(0x1a); // string: LDAX D
+    bdos.extend_from_slice(&[0xfe, 0x24]); // CPI '$'
+    append_abs(&mut bdos, 0xca, done_addr); // JZ done
+    append_abs(&mut bdos, 0xcd, putc_addr); // CALL putc
+    bdos.push(0x13); // INX D
+    append_abs(&mut bdos, 0xc3, string_addr); // JMP string
+
+    debug_assert_eq!(bdos.len(), DONE_OFFSET as usize);
+    bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]); // POP H/D/B/PSW; RET
+
+    // PUTC saves the character in B while polling status in A. The wait branch
+    // loops to the IN instruction using a relocated high-memory address.
+    debug_assert_eq!(bdos.len(), PUTC_OFFSET as usize);
+    bdos.push(0x47); // MOV B,A
+    bdos.push(0xdb); // IN status
+    bdos.push(status_port);
+    bdos.push(0xe6); // ANI ready/busy mask
+    bdos.push(ready_mask);
+    append_abs(&mut bdos, wait_branch, poll_addr); // JNZ/JZ poll
+    bdos.push(0x78); // MOV A,B
+    bdos.push(0xd3); // OUT data
+    bdos.push(data_port);
+    bdos.push(0xc9); // RET
+
+    debug_assert_eq!(bdos.len(), 0x37);
+
+    Some(CpmDiagnosticEnvironment {
+        page_zero,
+        bdos_base,
+        bdos,
+    })
 }
 
 impl RusTairApp {
@@ -229,21 +267,39 @@ impl RusTairApp {
 
         let installed = self.machine.installed_ram_bytes();
         let image_end = CPM_COM_LOAD_ADDRESS as usize + bytes.len();
-        if image_end > installed {
+        let minimum_bytes = image_end
+            .saturating_add(CPM_STACK_GUARD_BYTES)
+            .saturating_add(CPM_BDOS_PAGE_BYTES);
+        let Some(bdos_base_usize) = installed.checked_sub(CPM_BDOS_PAGE_BYTES) else {
             self.report_load_error(format!(
-                "CPU diagnostic {} is {} bytes and must be loaded at 0100h, so it needs at least {} KiB of installed RAM. The current machine has {} ({} bytes).",
+                "CPU diagnostic {} cannot start because the current {} RAM configuration is too small for a CP/M page-zero and BDOS environment.",
+                path.display(),
+                self.config.machine.ram_size.label()
+            ));
+            return;
+        };
+        let Some(tpa_limit) = bdos_base_usize.checked_sub(CPM_STACK_GUARD_BYTES) else {
+            self.report_load_error(format!(
+                "CPU diagnostic {} cannot start because the current {} RAM configuration leaves no stack area below BDOS.",
+                path.display(),
+                self.config.machine.ram_size.label()
+            ));
+            return;
+        };
+        if image_end > tpa_limit {
+            self.report_load_error(format!(
+                "CPU diagnostic {} is {} bytes and loads at 0100h. Including the CP/M stack/BDOS reserve it needs at least {} KiB of installed RAM. The current machine has {} ({} bytes).",
                 path.display(),
                 bytes.len(),
-                image_end.div_ceil(1024),
+                minimum_bytes.div_ceil(1024),
                 self.config.machine.ram_size.label(),
                 installed
             ));
             return;
         }
 
-        // Leave 256 bytes at the top of installed RAM for a CP/M-like stack.
-        let stack_top = installed.saturating_sub(0x100) as u16;
-        let Some(shim) = build_cpm_diagnostic_shim(board, port, stack_top) else {
+        let bdos_base = bdos_base_usize as u16;
+        let Some(environment) = build_cpm_diagnostic_environment(board, port, bdos_base) else {
             self.report_load_error(format!(
                 "CPU diagnostic {} cannot start because {} is not available on the installed {}.",
                 path.display(),
@@ -256,9 +312,9 @@ impl RusTairApp {
         // This menu item is deliberately a convenience loader, not a physical
         // front-panel operation. Whatever the current state, establish one
         // deterministic diagnostic boot sequence: power on if needed, STOP,
-        // RESET CPU/I/O, clear old guest RAM, install page zero + .COM, PC=0000,
-        // then RUN. This also prevents a shorter second .COM from seeing bytes
-        // left behind by the previous diagnostic.
+        // RESET CPU/I/O, clear old guest RAM, install CP/M page zero + .COM + a
+        // high-memory BDOS, PC=0000, then RUN. A high BDOS address also matches
+        // software such as 8080EXM that derives its stack from bytes 0006h/0007h.
         if !self.machine.powered {
             self.set_altair_power(true);
         }
@@ -272,8 +328,11 @@ impl RusTairApp {
         self.machine.bus.clear_transient_memory_guards();
         let clean_ram = vec![0u8; installed];
         self.machine.bus.load(0x0000, &clean_ram);
-        self.machine.bus.load(0x0000, &shim);
+        self.machine.bus.load(0x0000, &environment.page_zero);
         self.machine.bus.load(CPM_COM_LOAD_ADDRESS, bytes);
+        self.machine
+            .bus
+            .load(environment.bdos_base, &environment.bdos);
         self.machine.cpu.pc = 0x0000;
 
         // Reveal, but never rewire, whichever endpoint is already connected to
@@ -293,8 +352,9 @@ impl RusTairApp {
             .map(Self::serial_device_name)
             .unwrap_or("no endpoint connected");
         self.status = format!(
-            "CPU diagnostic running: {} at 0100h — clean reset/RAM — mini-BDOS functions 2/9 — output via {} → {}",
+            "CPU diagnostic running: {} at 0100h — clean reset/RAM — mini-BDOS {:04X}h functions 2/9 — output via {} → {}",
             path.display(),
+            environment.bdos_base,
             port.label(board),
             endpoint
         );
@@ -306,52 +366,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cpm_vectors_and_bootstrap_are_installed() {
-        let shim = build_cpm_diagnostic_shim(
+    fn cpm_vector_exposes_high_bdos_address_for_8080exm() {
+        let env = build_cpm_diagnostic_environment(
             SerialBoard::TwoSio88,
             DiagnosticSerialPort::Port0,
             0xff00,
         )
         .unwrap();
-        assert_eq!(&shim[0..3], &[0xc3, 0x80, 0x00]);
-        assert_eq!(&shim[5..8], &[0xc3, 0x10, 0x00]);
-        assert_eq!(&shim[0x80..0x83], &[0x31, 0x00, 0xff]);
-        assert_eq!(&shim[0x83..0x88], &[0x3e, 0x76, 0x32, 0x00, 0x00]);
-        assert_eq!(&shim[0x88..0x8b], &[0xc3, 0x00, 0x01]);
+        assert_eq!(&env.page_zero[0..3], &[0xc3, 0x80, 0x00]);
+        assert_eq!(&env.page_zero[5..8], &[0xc3, 0x00, 0xff]);
+        assert_eq!(&env.page_zero[0x80..0x83], &[0x31, 0x00, 0xff]);
+        assert_eq!(&env.page_zero[0x83..0x88], &[0x3e, 0x76, 0x32, 0x00, 0x00]);
+        assert_eq!(&env.page_zero[0x88..0x8b], &[0xc3, 0x00, 0x01]);
+        assert_eq!(env.bdos_base, 0xff00);
+        assert_eq!(env.bdos.len(), 0x37);
+    }
+
+    #[test]
+    fn high_bdos_branches_are_relocated() {
+        let env = build_cpm_diagnostic_environment(
+            SerialBoard::TwoSio88,
+            DiagnosticSerialPort::Port0,
+            0x7f00,
+        )
+        .unwrap();
+        assert_eq!(&env.bdos[7..10], &[0xca, 0x12, 0x7f]);
+        assert_eq!(&env.bdos[12..15], &[0xca, 0x19, 0x7f]);
+        assert_eq!(&env.bdos[15..18], &[0xc3, 0x26, 0x7f]);
+        assert_eq!(&env.bdos[19..22], &[0xcd, 0x2b, 0x7f]);
     }
 
     #[test]
     fn putc_uses_88_sio_busy_semantics() {
-        let shim = build_cpm_diagnostic_shim(
+        let env = build_cpm_diagnostic_environment(
             SerialBoard::Sio88,
             DiagnosticSerialPort::Port0,
             0x1f00,
         )
         .unwrap();
-        assert_eq!(&shim[0x3c..0x47], &[0xdb, 0x00, 0xe6, 0xc0, 0xc2, 0x3c, 0x00, 0x78, 0xd3, 0x01, 0xc9]);
+        assert_eq!(
+            &env.bdos[0x2b..0x37],
+            &[0x47, 0xdb, 0x00, 0xe6, 0xc0, 0xc2, 0x2c, 0x1f, 0x78, 0xd3, 0x01, 0xc9]
+        );
     }
 
     #[test]
     fn putc_uses_2sio_ready_semantics_on_both_ports() {
-        let p0 = build_cpm_diagnostic_shim(
+        let p0 = build_cpm_diagnostic_environment(
             SerialBoard::TwoSio88,
             DiagnosticSerialPort::Port0,
             0x7f00,
         )
         .unwrap();
-        let p1 = build_cpm_diagnostic_shim(
+        let p1 = build_cpm_diagnostic_environment(
             SerialBoard::TwoSio88,
             DiagnosticSerialPort::Port1,
             0x7f00,
         )
         .unwrap();
-        assert_eq!(&p0[0x3c..0x47], &[0xdb, 0x10, 0xe6, 0x02, 0xca, 0x3c, 0x00, 0x78, 0xd3, 0x11, 0xc9]);
-        assert_eq!(&p1[0x3c..0x47], &[0xdb, 0x12, 0xe6, 0x02, 0xca, 0x3c, 0x00, 0x78, 0xd3, 0x13, 0xc9]);
+        assert_eq!(
+            &p0.bdos[0x2b..0x37],
+            &[0x47, 0xdb, 0x10, 0xe6, 0x02, 0xca, 0x2c, 0x7f, 0x78, 0xd3, 0x11, 0xc9]
+        );
+        assert_eq!(
+            &p1.bdos[0x2b..0x37],
+            &[0x47, 0xdb, 0x12, 0xe6, 0x02, 0xca, 0x2c, 0x7f, 0x78, 0xd3, 0x13, 0xc9]
+        );
     }
 
     #[test]
     fn sio_port1_is_rejected() {
-        assert!(build_cpm_diagnostic_shim(
+        assert!(build_cpm_diagnostic_environment(
             SerialBoard::Sio88,
             DiagnosticSerialPort::Port1,
             0x1f00,
