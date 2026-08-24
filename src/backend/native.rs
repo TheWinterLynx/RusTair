@@ -1,3 +1,4 @@
+use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
 use crate::machine::AltairMachine;
@@ -6,10 +7,10 @@ use super::{BackendKind, CpuState, FrontPanelState, MachineBackend};
 
 /// Adapter exposing the existing RusTair machine through [`MachineBackend`].
 ///
-/// `machine()`/`machine_mut()` are intentionally retained as a migration escape
-/// hatch. Existing serial, diagnostics and loader code can keep working while
-/// UI-facing CPU/front-panel access is moved behind the backend contract in
-/// small, reviewable steps.
+/// `machine()`/`machine_mut()` and the temporary `Deref` implementation are a
+/// migration escape hatch. Existing serial, diagnostics and loader code can
+/// keep working while UI-facing CPU/front-panel access is moved behind the
+/// backend contract in small, reviewable steps.
 pub struct NativeMachineBackend {
     machine: AltairMachine,
 }
@@ -62,6 +63,19 @@ impl NativeMachineBackend {
             ext_clear_asserted: self.machine.ext_clear_asserted(),
         }
     }
+}
+
+/// Transitional compatibility layer: `RusTairApp` can own a backend wrapper now
+/// while legacy code still using `machine.cpu` / `machine.bus` keeps compiling.
+/// This is intentionally removable once those call sites use `MachineBackend`.
+impl Deref for NativeMachineBackend {
+    type Target = AltairMachine;
+
+    fn deref(&self) -> &Self::Target { &self.machine }
+}
+
+impl DerefMut for NativeMachineBackend {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.machine }
 }
 
 impl MachineBackend for NativeMachineBackend {
