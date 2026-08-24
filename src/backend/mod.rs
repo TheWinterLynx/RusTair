@@ -1,9 +1,15 @@
 //! Emulator-engine abstraction used by the application/front panel.
 //!
-//! The first implementation is [`NativeMachineBackend`], which wraps the
-//! existing Rust Altair implementation without changing its behaviour. A SIMH
-//! implementation can satisfy the same contract later without making the UI
-//! depend on SIMH-specific FFI types.
+//! The product-level selector distinguishes four engines:
+//! - RusTair fast Intel 8080
+//! - RusTair cycle-accurate Intel 8080
+//! - Open SIMH Altair
+//! - Open SIMH AltairZ80
+//!
+//! Only the fast RusTair engine is wired on this branch. The cycle-accurate
+//! implementation is intentionally developed on its own branch and can be
+//! wrapped here after both branches are merged. SIMH engines will likewise sit
+//! behind this contract without leaking FFI types into the UI.
 
 mod native;
 
@@ -13,16 +19,56 @@ use crate::machine::PanelLampSnapshot;
 
 pub use native::NativeMachineBackend;
 
-/// Emulator engine selected behind the common backend contract.
+/// Broad implementation family. Useful for diagnostics and configuration, but
+/// deliberately not used as the product-level engine selector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BackendKind {
-    /// RusTair's built-in Intel 8080/S-100 implementation.
-    Native,
-    /// Reserved for the Open SIMH-backed implementation.
+pub enum BackendFamily {
+    Rustair,
     Simh,
 }
 
-/// Backend-neutral Intel 8080 register snapshot.
+/// Concrete emulator engine visible to the product/UI.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmulationEngine {
+    RustFast8080,
+    RustCycleAccurate8080,
+    SimhAltair,
+    SimhAltairZ80,
+}
+
+impl EmulationEngine {
+    pub const fn family(self) -> BackendFamily {
+        match self {
+            Self::RustFast8080 | Self::RustCycleAccurate8080 => BackendFamily::Rustair,
+            Self::SimhAltair | Self::SimhAltairZ80 => BackendFamily::Simh,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::RustFast8080 => "RusTair — Fast 8080",
+            Self::RustCycleAccurate8080 => "RusTair — Cycle Accurate 8080",
+            Self::SimhAltair => "Open SIMH — Altair",
+            Self::SimhAltairZ80 => "Open SIMH — AltairZ80",
+        }
+    }
+}
+
+/// Feature set exposed by one engine. The UI must query capabilities instead of
+/// assuming that every backend can reproduce every physical Altair operation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BackendCapabilities {
+    pub front_panel: bool,
+    pub exact_bus_activity: bool,
+    pub exact_t_state_timing: bool,
+    pub memory_protection: bool,
+    pub hold_hlda: bool,
+    pub direct_memory_access: bool,
+    pub serial_routing: bool,
+    pub disk_mount: bool,
+}
+
+/// Backend-neutral Intel 8080 programmer-visible state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CpuState {
     pub a: u8,
@@ -37,7 +83,10 @@ pub struct CpuState {
     pub sp: u16,
     pub inte: bool,
     pub halted: bool,
-    pub cycles: u64,
+    /// Total Intel 8080 T-states executed. The existing fast core historically
+    /// calls this counter `cycles`; the abstraction uses the precise term so it
+    /// matches the cycle-accurate core and future comparison tooling.
+    pub total_t_states: u64,
 }
 
 impl CpuState {
@@ -80,16 +129,19 @@ impl Default for FrontPanelState {
     }
 }
 
-/// Common contract between the RusTair-native machine and alternate emulator
-/// engines such as Open SIMH.
+/// Common machine-level contract between both RusTair CPU implementations and
+/// the two Open SIMH targets.
 ///
-/// It deliberately models front-panel operations rather than exposing concrete
-/// CPU/bus structs. Transitional implementations may still offer an escape
-/// hatch to their concrete machine type while the rest of the application is
-/// migrated incrementally.
+/// Fast-vs-cycle-accurate remains an implementation detail inside the native
+/// Altair machine layer: the fast core advances whole instructions, while the
+/// cycle core advances physical T-states/pins. Both must nevertheless expose
+/// the same machine/front-panel semantics here.
 pub trait MachineBackend {
-    fn kind(&self) -> BackendKind;
+    fn engine(&self) -> EmulationEngine;
     fn name(&self) -> &'static str;
+    fn capabilities(&self) -> BackendCapabilities;
+
+    fn family(&self) -> BackendFamily { self.engine().family() }
 
     fn cpu_state(&self) -> CpuState;
     fn front_panel_state(&self) -> FrontPanelState;
@@ -100,7 +152,10 @@ pub trait MachineBackend {
     fn run(&mut self);
     fn halt(&mut self);
     fn step(&mut self);
-    fn run_cycles(&mut self, cycles: u32);
+    /// Advance by an approximate T-state budget. A cycle-accurate native backend
+    /// will consume this one physical T-state at a time; the fast backend may
+    /// cross the budget at the final instruction boundary, as it does today.
+    fn run_t_states(&mut self, budget: u32);
     fn commit_panel_activity(&mut self, dt: Duration);
 
     fn assert_run_stop(&mut self, run: bool);
@@ -125,27 +180,31 @@ pub trait MachineBackend {
     fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> bool;
 
     /// Load a host buffer directly into guest RAM. Used by existing convenience
-    /// loaders; a SIMH backend can implement this through its front-panel API.
+    /// loaders; SIMH backends can implement this through the front-panel API.
     fn load_bytes(&mut self, address: u16, bytes: &[u8]);
 }
 
-/// Runtime-owned indirection point. The UI can eventually keep one of these
-/// instead of a concrete machine and switch engines without changing panel
-/// rendering/control code.
+/// Runtime-owned indirection point. Engine replacement intentionally creates a
+/// new machine; live-state migration is a separate concern and is not required
+/// for the first four-engine selector.
 pub struct BackendHost {
     backend: Box<dyn MachineBackend>,
 }
 
 impl Default for BackendHost {
-    fn default() -> Self { Self::native() }
+    fn default() -> Self { Self::rust_fast() }
 }
 
 impl BackendHost {
     pub fn new(backend: Box<dyn MachineBackend>) -> Self { Self { backend } }
 
-    pub fn native() -> Self {
+    pub fn rust_fast() -> Self {
         Self::new(Box::new(NativeMachineBackend::default()))
     }
+
+    /// Transitional alias retained while existing code still calls the native
+    /// fast engine simply `native`.
+    pub fn native() -> Self { Self::rust_fast() }
 
     pub fn backend(&self) -> &dyn MachineBackend { self.backend.as_ref() }
 
@@ -155,7 +214,11 @@ impl BackendHost {
         self.backend = backend;
     }
 
-    pub fn kind(&self) -> BackendKind { self.backend.kind() }
+    pub fn engine(&self) -> EmulationEngine { self.backend.engine() }
+
+    pub fn family(&self) -> BackendFamily { self.backend.family() }
+
+    pub fn capabilities(&self) -> BackendCapabilities { self.backend.capabilities() }
 }
 
 #[cfg(test)]
@@ -163,9 +226,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backend_host_defaults_to_native_engine() {
+    fn all_product_engines_have_the_expected_family() {
+        assert_eq!(EmulationEngine::RustFast8080.family(), BackendFamily::Rustair);
+        assert_eq!(
+            EmulationEngine::RustCycleAccurate8080.family(),
+            BackendFamily::Rustair
+        );
+        assert_eq!(EmulationEngine::SimhAltair.family(), BackendFamily::Simh);
+        assert_eq!(EmulationEngine::SimhAltairZ80.family(), BackendFamily::Simh);
+    }
+
+    #[test]
+    fn backend_host_defaults_to_fast_rust_engine() {
         let host = BackendHost::default();
-        assert_eq!(host.kind(), BackendKind::Native);
-        assert_eq!(host.backend().name(), "RusTair native 8080");
+        assert_eq!(host.engine(), EmulationEngine::RustFast8080);
+        assert_eq!(host.family(), BackendFamily::Rustair);
+        assert_eq!(host.backend().name(), "RusTair fast 8080");
+        assert!(host.capabilities().front_panel);
+        assert!(!host.capabilities().exact_t_state_timing);
     }
 }
