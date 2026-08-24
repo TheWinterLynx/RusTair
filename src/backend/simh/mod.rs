@@ -1,8 +1,7 @@
 //! Open SIMH backend support.
 //!
-//! The default RusTair build keeps this module dependency-free. Enable the
-//! `simh-ffi` Cargo feature only when the matching Open-SIMH FrontPanel C
-//! objects are linked from the same source revision as the simulator binaries.
+//! Enable `simh-ffi` only when `simh_frontpanel` has been built from the same
+//! Open-SIMH source revision as the simulator executables.
 
 use std::path::{Path, PathBuf};
 
@@ -12,12 +11,16 @@ use super::EmulationEngine;
 mod altair;
 #[cfg(feature = "simh-ffi")]
 mod ffi;
+#[cfg(feature = "simh-ffi")]
+mod machine;
 mod profile;
 #[cfg(feature = "simh-ffi")]
 mod session;
 
 #[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
+#[cfg(feature = "simh-ffi")]
+pub use machine::SimhAltairBackend;
 pub use profile::ClassicAltairProfile;
 #[cfg(feature = "simh-ffi")]
 pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
@@ -57,8 +60,8 @@ impl SimhTarget {
 pub struct SimhLaunchConfig {
     pub target: SimhTarget,
     pub executable: PathBuf,
-    /// FrontPanel startup configuration. It may configure devices and attach
-    /// media but must not issue RUN/GO/BOOT; execution is controlled via API.
+    /// Configure devices/media only. Do not put RUN/GO/BOOT in this file;
+    /// execution is owned by the FrontPanel API.
     pub simulator_config: PathBuf,
     pub device_panel_count: usize,
 }
@@ -83,12 +86,10 @@ impl SimhLaunchConfig {
     }
 
     pub fn executable(&self) -> &Path { &self.executable }
-
     pub fn simulator_config(&self) -> &Path { &self.simulator_config }
 }
 
-/// Register names exported by the classic Open SIMH `ALTAIR` CPU. These are
-/// sourced from its `cpu_reg[]` table rather than inferred from monitor output.
+/// Exact names exported by classic `ALTAIR`'s `cpu_reg[]` table.
 pub mod altair_registers {
     pub const PC: &str = "PC";
     pub const A: &str = "A";
@@ -110,12 +111,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn simh_targets_map_to_the_product_engines() {
+    fn simh_targets_map_to_product_engines() {
         assert_eq!(SimhTarget::Altair.engine(), EmulationEngine::SimhAltair);
-        assert_eq!(
-            SimhTarget::AltairZ80.engine(),
-            EmulationEngine::SimhAltairZ80
-        );
+        assert_eq!(SimhTarget::AltairZ80.engine(), EmulationEngine::SimhAltairZ80);
     }
 
     #[test]
