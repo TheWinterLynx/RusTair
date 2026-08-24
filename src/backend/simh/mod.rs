@@ -9,10 +9,14 @@ use std::path::{Path, PathBuf};
 use super::EmulationEngine;
 
 #[cfg(feature = "simh-ffi")]
+mod altair;
+#[cfg(feature = "simh-ffi")]
 mod ffi;
 #[cfg(feature = "simh-ffi")]
 mod session;
 
+#[cfg(feature = "simh-ffi")]
+pub use altair::{ClassicAltairRegisters, set_switch_register};
 #[cfg(feature = "simh-ffi")]
 pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
 
