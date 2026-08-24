@@ -137,19 +137,22 @@ fn ana(registers: &mut Registers, rhs: u8) {
     if auxiliary_carry {
         registers.f |= FLAG_AC;
     }
-    set_szp(registers, registers.a);
+    let result = registers.a;
+    set_szp(registers, result);
 }
 
 fn xra(registers: &mut Registers, rhs: u8) {
     registers.a ^= rhs;
     registers.f &= !(FLAG_C | FLAG_AC);
-    set_szp(registers, registers.a);
+    let result = registers.a;
+    set_szp(registers, result);
 }
 
 fn ora(registers: &mut Registers, rhs: u8) {
     registers.a |= rhs;
     registers.f &= !(FLAG_C | FLAG_AC);
-    set_szp(registers, registers.a);
+    let result = registers.a;
+    set_szp(registers, result);
 }
 
 #[cfg(test)]
