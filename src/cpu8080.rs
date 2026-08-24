@@ -476,7 +476,7 @@ impl Cpu8080 {
                 }
                 0xe6 => { let v = self.next_byte(bus); self.ana(v); 7 }
                 0xe9 => { self.pc = self.hl(); 5 }
-                0xeb => { core::mem::swap(&mut self.d, &mut self.h); core::mem::swap(&mut self.e, &mut self.l); 5 }
+                0xeb => { core::mem::swap(&mut self.d, &mut self.h); core::mem::swap(&mut self.e, &mut self.l); 4 }
                 0xee => { let v = self.next_byte(bus); self.xra(v); 7 }
                 0xf3 => { self.inte = false; self.ei_pending = false; bus.set_inte(false); 4 }
                 0xf6 => { let v = self.next_byte(bus); self.ora(v); 7 }
@@ -521,6 +521,24 @@ mod tests {
         while !cpu.halted { cpu.step(&mut bus); }
         assert_eq!(cpu.a, 0x42);
         assert_eq!(cpu.sp, 0x1000);
+    }
+
+    #[test]
+    fn xchg_uses_four_t_states() {
+        let mut bus = TestBus::default();
+        bus.mem[0] = 0xeb;
+        let mut cpu = Cpu8080::new();
+        cpu.d = 0x12;
+        cpu.e = 0x34;
+        cpu.h = 0xab;
+        cpu.l = 0xcd;
+
+        let t = cpu.step(&mut bus);
+
+        assert_eq!(t, 4);
+        assert_eq!(cpu.cycles, 4);
+        assert_eq!(cpu.de(), 0xabcd);
+        assert_eq!(cpu.hl(), 0x1234);
     }
 
     #[test]
