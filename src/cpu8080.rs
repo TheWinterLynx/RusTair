@@ -208,7 +208,11 @@ impl Cpu8080 {
         let result = a.wrapping_sub(rhs).wrapping_sub(b as u8);
         self.f &= !(FLAG_C | FLAG_AC);
         if (a as u16) < rhs16 { self.f |= FLAG_C; }
-        if (a & 0x0f) < ((rhs & 0x0f).wrapping_add(b as u8)) { self.f |= FLAG_AC; }
+        // Intel 8080 AC on subtraction is the carry out of bit 3 from the
+        // internal two's-complement addition, i.e. the inverse of a nibble
+        // borrow. This is deliberately not Z80-style half-borrow semantics.
+        let low_rhs = (rhs & 0x0f) as u16 + b;
+        if (a & 0x0f) as u16 >= low_rhs { self.f |= FLAG_AC; }
         self.set_szp(result);
         if store { self.a = result; }
     }
@@ -515,5 +519,53 @@ mod tests {
         while !cpu.halted { cpu.step(&mut bus); }
         assert_eq!(cpu.a, 0x42);
         assert_eq!(cpu.sp, 0x1000);
+    }
+
+    #[test]
+    fn subtraction_aux_carry_uses_8080_internal_carry_polarity() {
+        let mut bus = TestBus::default();
+        let mut cpu = Cpu8080::new();
+
+        // 03h - 00h: no nibble borrow, therefore Intel 8080 AC is set.
+        cpu.a = 0x03;
+        cpu.b = 0x00;
+        bus.mem[0] = 0x90; // SUB B
+        cpu.step(&mut bus);
+        assert_eq!(cpu.a, 0x03);
+        assert_ne!(cpu.f & FLAG_AC, 0);
+        assert_eq!(cpu.f & FLAG_C, 0);
+
+        // 03h - 04h: nibble borrow, therefore AC is clear and C is set.
+        cpu.pc = 0;
+        cpu.a = 0x03;
+        cpu.b = 0x04;
+        cpu.f = FLAG_1;
+        cpu.step(&mut bus);
+        assert_eq!(cpu.a, 0xff);
+        assert_eq!(cpu.f & FLAG_AC, 0);
+        assert_ne!(cpu.f & FLAG_C, 0);
+    }
+
+    #[test]
+    fn sbb_and_compare_share_subtraction_aux_carry_rules() {
+        let mut bus = TestBus::default();
+        let mut cpu = Cpu8080::new();
+
+        cpu.a = 0x03;
+        cpu.b = 0x00;
+        cpu.f = FLAG_1 | FLAG_C;
+        bus.mem[0] = 0x98; // SBB B: 03h - 00h - 1 = 02h
+        cpu.step(&mut bus);
+        assert_eq!(cpu.a, 0x02);
+        assert_ne!(cpu.f & FLAG_AC, 0);
+
+        cpu.pc = 0;
+        cpu.a = 0x03;
+        cpu.f = FLAG_1;
+        bus.mem[0] = 0xfe; // CPI 00h: A unchanged, same subtraction flags
+        bus.mem[1] = 0x00;
+        cpu.step(&mut bus);
+        assert_eq!(cpu.a, 0x03);
+        assert_ne!(cpu.f & FLAG_AC, 0);
     }
 }
