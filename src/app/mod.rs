@@ -28,7 +28,7 @@ use crate::config::{
     AppConfig, Asr33Speed, EmulationSpeed, RamInit, RamSize, SerialBoard, TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
-use crate::machine::CLOCK_HZ;
+use crate::machine::{AltairMachine, CLOCK_HZ};
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
