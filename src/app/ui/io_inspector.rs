@@ -4,6 +4,7 @@ const IO_INSPECTOR_OPEN: &str = "rustair-io-inspector-open";
 const IO_CAPTURE_ENABLED: &str = "rustair-io-inspector-capture-enabled";
 const TRACE_FOLLOW_NEWEST: &str = "rustair-io-inspector-follow-newest";
 const TRACE_VIEW_GENERATION: &str = "rustair-io-inspector-trace-view-generation";
+const TRACE_ACTIVE_VIEW: &str = "rustair-io-inspector-active-trace";
 const SELECTED_PORT: &str = "rustair-io-inspector-selected-port";
 const WRITE_VALUE: &str = "rustair-io-inspector-write-value";
 const INJECT_BYTES: &str = "rustair-io-inspector-inject-bytes";
@@ -16,33 +17,23 @@ impl RusTairApp {
     }
 
     fn io_inspector_is_open(ctx: &egui::Context) -> bool {
-        ctx.data_mut(|data| {
-            *data.get_temp_mut_or(egui::Id::new(IO_INSPECTOR_OPEN), false)
-        })
+        ctx.data_mut(|data| *data.get_temp_mut_or(egui::Id::new(IO_INSPECTOR_OPEN), false))
     }
 
     fn set_io_capture_requested(ctx: &egui::Context, enabled: bool) {
-        ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new(IO_CAPTURE_ENABLED), enabled)
-        });
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(IO_CAPTURE_ENABLED), enabled));
     }
 
     fn io_capture_requested(ctx: &egui::Context) -> bool {
-        ctx.data_mut(|data| {
-            *data.get_temp_mut_or(egui::Id::new(IO_CAPTURE_ENABLED), true)
-        })
+        ctx.data_mut(|data| *data.get_temp_mut_or(egui::Id::new(IO_CAPTURE_ENABLED), true))
     }
 
     fn trace_follow_newest(ctx: &egui::Context) -> bool {
-        ctx.data_mut(|data| {
-            *data.get_temp_mut_or(egui::Id::new(TRACE_FOLLOW_NEWEST), true)
-        })
+        ctx.data_mut(|data| *data.get_temp_mut_or(egui::Id::new(TRACE_FOLLOW_NEWEST), true))
     }
 
     fn set_trace_follow_newest(ctx: &egui::Context, follow: bool) {
-        ctx.data_mut(|data| {
-            data.insert_temp(egui::Id::new(TRACE_FOLLOW_NEWEST), follow)
-        });
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(TRACE_FOLLOW_NEWEST), follow));
     }
 
     fn trace_view_generation(ctx: &egui::Context) -> u64 {
@@ -58,10 +49,19 @@ impl RusTairApp {
         });
     }
 
+    fn active_trace_view(ctx: &egui::Context) -> u8 {
+        ctx.data_mut(|data| *data.get_temp_mut_or(egui::Id::new(TRACE_ACTIVE_VIEW), 0_u8))
+    }
+
+    fn set_active_trace_view(ctx: &egui::Context, view: u8) {
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(TRACE_ACTIVE_VIEW), view));
+    }
+
     pub(in crate::app) fn open_io_inspector(&mut self, ctx: &egui::Context) {
         Self::set_io_inspector_open(ctx, true);
         Self::set_io_capture_requested(ctx, true);
         Self::set_trace_follow_newest(ctx, true);
+        Self::set_active_trace_view(ctx, 0);
         self.machine.bus.clear_io_trace();
         self.external_serial.server.clear_network_trace();
         self.external_com.port.clear_trace();
@@ -156,18 +156,22 @@ impl RusTairApp {
         ui.horizontal_wrapped(|ui| {
             if capture_requested {
                 ui.strong("CAPTURE ACTIVE");
-                if ui.button("Pause capture").clicked() {
+                if ui.small_button("Pause").clicked() {
                     capture_requested = false;
                 }
             } else {
                 ui.label("CAPTURE PAUSED");
-                if ui.button("Resume capture").clicked() {
+                if ui.small_button("Resume").clicked() {
                     capture_requested = true;
                     follow_newest = true;
                 }
             }
 
-            if ui.button("Clear traces & pause").clicked() {
+            if ui
+                .small_button("Clear traces & pause")
+                .on_hover_text("Clear UART, TCP and COM trace views, reset their scroll state, and pause capture")
+                .clicked()
+            {
                 capture_requested = false;
                 self.machine.bus.clear_io_trace();
                 self.external_serial.server.clear_network_trace();
@@ -175,20 +179,31 @@ impl RusTairApp {
                 Self::bump_trace_view_generation(&ctx);
             }
 
-            ui.checkbox(&mut follow_newest, "Follow newest events");
+            ui.checkbox(&mut follow_newest, "Follow newest");
         });
 
         Self::set_io_capture_requested(&ctx, capture_requested);
         Self::set_trace_follow_newest(&ctx, follow_newest);
-        ui.small("Clear traces & pause resets the emulated UART, TCP and COM trace views and their scroll state. Resume only when you are ready to reproduce the event you want to inspect.");
+    }
+
+    fn draw_io_header(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("INTEL 8080 I/O INSPECTOR / EDITOR");
+            ui.separator();
+            ui.label(self.config.machine.serial_board.label());
+            ui.separator();
+            ui.monospace(format!("PC {:04X}h", self.machine.cpu.pc));
+            ui.separator();
+            ui.label(if self.machine.running { "RUNNING" } else { "STOPPED" });
+            ui.separator();
+            self.draw_capture_toolbar(ui);
+        });
     }
 
     fn draw_port_map(&mut self, ui: &mut egui::Ui, selected: &mut u8) {
-        ui.strong("8080 I/O address space — 00h..FFh");
-        ui.small("This is a separate 8-bit address space from RAM. Click any port to inspect it. A '*' means the CPU has accessed that port since this machine session began.");
-        ui.add_space(4.0);
-
-        let columns = ((ui.available_width() / 48.0).floor() as usize).clamp(4, 16);
+        ui.small("00h–FFh I/O address space. '*' means the CPU has accessed the port in this machine session.");
+        ui.add_space(3.0);
+        let columns = ((ui.available_width() / 44.0).floor() as usize).clamp(4, 8);
         egui::Grid::new("io-port-map")
             .num_columns(columns)
             .spacing([4.0, 3.0])
@@ -196,7 +211,6 @@ impl RusTairApp {
                 for raw in 0u16..=255 {
                     let port = raw as u8;
                     let (_, _, in_count, out_count) = self.machine.bus.io_port_activity(port);
-                    let name = self.port_name(port);
                     let label = if in_count != 0 || out_count != 0 {
                         format!("{:02X}*", port)
                     } else {
@@ -207,8 +221,9 @@ impl RusTairApp {
                         *selected = port;
                     }
                     response.on_hover_text(format!(
-                        "{:02X}h — {name}\nIN count: {in_count}\nOUT count: {out_count}",
-                        port
+                        "{:02X}h — {}\nIN count: {in_count}\nOUT count: {out_count}",
+                        port,
+                        self.port_name(port)
                     ));
                     if (raw as usize + 1) % columns == 0 {
                         ui.end_row();
@@ -220,47 +235,39 @@ impl RusTairApp {
     fn draw_status_interpretation(&self, ui: &mut egui::Ui, port: u8, value: u8) {
         match (self.config.machine.serial_board, port) {
             (SerialBoard::Sio88, 0x00) => {
-                ui.strong("88-SIO status interpretation");
+                ui.strong("88-SIO status");
                 ui.monospace(format!("{:08b}", value));
                 ui.label(format!(
                     "bit 0 = {} → RX {}",
                     value & 0x01,
-                    if value & 0x01 != 0 {
-                        "empty / wait"
-                    } else {
-                        "data available"
-                    }
+                    if value & 0x01 != 0 { "empty / wait" } else { "data available" }
                 ));
                 ui.label(format!(
                     "bits 6/7 = {:02b} → TX {}",
                     (value >> 6) & 0x03,
                     if value & 0xc0 != 0 { "busy" } else { "ready" }
                 ));
-                ui.small("BASIC 3.2 loops on IN 00h until bit 0 becomes 0, then consumes the character with IN 01h.");
+                ui.small("BASIC 3.2 waits on IN 00h until bit 0 becomes 0, then consumes the byte with IN 01h.");
             }
             (SerialBoard::TwoSio88, 0x10 | 0x12) => {
-                ui.strong("MC6850-style status interpretation");
+                ui.strong("MC6850-style status");
                 ui.monospace(format!("{:08b}", value));
                 ui.label(format!(
-                    "bit 0 (RDRF) = {} → RX {}",
+                    "bit 0 RDRF = {} → RX {}",
                     value & 0x01,
-                    if value & 0x01 != 0 {
-                        "data available"
-                    } else {
-                        "empty"
-                    }
+                    if value & 0x01 != 0 { "data available" } else { "empty" }
                 ));
                 ui.label(format!(
-                    "bit 1 (TDRE) = {} → TX {}",
+                    "bit 1 TDRE = {} → TX {}",
                     (value >> 1) & 0x01,
                     if value & 0x02 != 0 { "ready" } else { "busy" }
                 ));
-                ui.small("Writing to this same port is a control-register operation; CR1:CR0 = 11 performs the currently emulated master reset.");
+                ui.small("Writing this port targets the control register; CR1:CR0 = 11 performs the emulated master reset.");
             }
             (_, 0xff) => {
                 ui.strong("Front-panel I/O port");
                 ui.monospace(format!("{:08b}", value));
-                ui.small("IN FFh reads the high eight sense switches (A15..A8). OUT FFh drives the eight data lamps in the current RusTair panel model.");
+                ui.small("IN FFh reads A15..A8 sense switches; OUT FFh drives the eight data lamps in the current panel model.");
             }
             _ => {}
         }
@@ -271,20 +278,17 @@ impl RusTairApp {
         let (last_in, last_out, in_count, out_count) = self.machine.bus.io_port_activity(selected);
         let serial_data = self.is_serial_data_port(selected);
 
-        ui.heading(format!("Port {:02X}h", selected));
-        ui.label(self.port_name(selected));
-        ui.small("Live/peek is non-invasive. CPU-style IN below is intentionally invasive and may consume a device register.");
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(format!("Port {:02X}h", selected));
+            ui.label(self.port_name(selected));
+        });
+        ui.small("Peek is non-invasive. Controls explicitly labelled CPU-style, Inject, Clear or Complete are invasive debugger actions.");
 
         egui::Grid::new("io-selected-summary")
             .num_columns(2)
             .show(ui, |ui| {
                 ui.label("Live / peek");
-                ui.monospace(format!(
-                    "{:02X}h   {:08b}   {}",
-                    live,
-                    live,
-                    Self::byte_text(live)
-                ));
+                ui.monospace(format!("{:02X}h  {:08b}  {}", live, live, Self::byte_text(live)));
                 ui.end_row();
                 ui.label("Last IN");
                 ui.monospace(last_in.map_or_else(
@@ -298,11 +302,8 @@ impl RusTairApp {
                     |v| format!("{:02X}h  {}", v, Self::byte_text(v)),
                 ));
                 ui.end_row();
-                ui.label("IN count");
-                ui.monospace(in_count.to_string());
-                ui.end_row();
-                ui.label("OUT count");
-                ui.monospace(out_count.to_string());
+                ui.label("IN / OUT count");
+                ui.monospace(format!("{in_count} / {out_count}"));
                 ui.end_row();
             });
 
@@ -311,17 +312,15 @@ impl RusTairApp {
 
         let value_id = egui::Id::new(WRITE_VALUE).with(selected);
         let mut write_text = ui.data_mut(|data| {
-            data.get_temp_mut_or(value_id, format!("{:02X}", live))
-                .clone()
+            data.get_temp_mut_or(value_id, format!("{:02X}", live)).clone()
         });
-
         ui.horizontal_wrapped(|ui| {
-            ui.label("Debugger value (hex):");
+            ui.label("Hex:");
             ui.add(egui::TextEdit::singleline(&mut write_text).desired_width(55.0));
-            if ui.button("Load peek").clicked() {
+            if ui.small_button("Load peek").clicked() {
                 write_text = format!("{:02X}", live);
             }
-            if ui.button("CPU-style IN").clicked() {
+            if ui.small_button("CPU-style IN").clicked() {
                 let value = self.machine.bus.debugger_input_port(selected);
                 self.status = format!(
                     "Debugger IN {:02X}h -> {:02X}h ({})",
@@ -330,7 +329,7 @@ impl RusTairApp {
                     Self::byte_text(value)
                 );
             }
-            if ui.button("CPU-style OUT").clicked() {
+            if ui.small_button("CPU-style OUT").clicked() {
                 match Self::parse_hex_byte(&write_text) {
                     Ok(value) => {
                         self.machine.bus.debugger_output_port(selected, value);
@@ -354,9 +353,9 @@ impl RusTairApp {
             let mut inject_text =
                 ui.data_mut(|data| data.get_temp_mut_or(inject_id, "59 0D".to_owned()).clone());
             ui.horizontal_wrapped(|ui| {
-                ui.label("Inject RX hex bytes:");
-                ui.add(egui::TextEdit::singleline(&mut inject_text).desired_width(180.0));
-                if ui.button("Inject RX").clicked() {
+                ui.label("RX hex:");
+                ui.add(egui::TextEdit::singleline(&mut inject_text).desired_width(150.0));
+                if ui.small_button("Inject RX").clicked() {
                     match Self::parse_hex_sequence(&inject_text) {
                         Ok(bytes) => {
                             let mut injected = 0usize;
@@ -375,12 +374,12 @@ impl RusTairApp {
                 }
             });
             ui.data_mut(|data| data.insert_temp(inject_id, inject_text));
-            ui.small("Example 59 0D injects ASCII 'Y' followed by carriage return, bypassing host transports while still exercising the guest UART input path.");
+            ui.small("Example 59 0D = ASCII 'Y' + carriage return, bypassing host transports.");
             ui.horizontal_wrapped(|ui| {
-                if ui.button("Clear UART RX").clicked() {
+                if ui.small_button("Clear RX").clicked() {
                     self.machine.bus.debugger_clear_serial_rx(selected);
                 }
-                if ui.button("Complete one UART TX byte").clicked() {
+                if ui.small_button("Complete one TX").clicked() {
                     let completed = self.machine.bus.debugger_complete_serial_tx(selected);
                     self.status = match completed {
                         Some(byte) => format!(
@@ -391,7 +390,7 @@ impl RusTairApp {
                         None => "UART TX was already empty".into(),
                     };
                 }
-                if ui.button("Clear UART TX").clicked() {
+                if ui.small_button("Clear TX").clicked() {
                     self.machine.bus.debugger_clear_serial_tx(selected);
                 }
             });
@@ -399,16 +398,17 @@ impl RusTairApp {
     }
 
     fn draw_io_trace(&mut self, ui: &mut egui::Ui, selected: u8, generation: u64) {
-        ui.heading("Emulated I/O / UART trace");
-        ui.small("Adjacent identical accesses are coalesced; xN is the real repeat count. Serial STATUS polling is hidden by default so busy-wait loops do not bury DATA bytes.");
+        ui.horizontal_wrapped(|ui| {
+            ui.strong("EMULATED I/O / UART TRACE");
+            ui.separator();
+            ui.small("identical adjacent accesses are coalesced as xN");
+        });
 
         let filter_id = egui::Id::new(TRACE_SELECTED_ONLY);
         let status_poll_id = egui::Id::new(TRACE_SHOW_STATUS_POLLS);
-        let mut selected_only =
-            ui.data_mut(|data| *data.get_temp_mut_or(filter_id, false));
+        let mut selected_only = ui.data_mut(|data| *data.get_temp_mut_or(filter_id, false));
         let mut show_status_polls =
             ui.data_mut(|data| *data.get_temp_mut_or(status_poll_id, false));
-
         let events = self.machine.bus.io_trace_snapshot();
         let hidden_status_accesses: u64 = events
             .iter()
@@ -418,19 +418,19 @@ impl RusTairApp {
 
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut selected_only, "Selected port only");
-            ui.checkbox(&mut show_status_polls, "Show serial STATUS polling");
+            ui.checkbox(&mut show_status_polls, "Show STATUS polling");
             if !show_status_polls && hidden_status_accesses != 0 {
-                ui.small(format!("{hidden_status_accesses} STATUS reads hidden"));
+                ui.small(format!("{hidden_status_accesses} reads hidden"));
             }
-            ui.small("Use Clear traces & pause before reproducing a short event.");
         });
         ui.data_mut(|data| data.insert_temp(filter_id, selected_only));
         ui.data_mut(|data| data.insert_temp(status_poll_id, show_status_polls));
 
         let follow_newest = Self::trace_follow_newest(ui.ctx());
+        let height = ui.available_height().max(120.0);
         egui::ScrollArea::both()
             .id_salt(("io-trace-scroll", generation))
-            .max_height(270.0)
+            .max_height(height)
             .auto_shrink([false, false])
             .stick_to_bottom(follow_newest)
             .show(ui, |ui| {
@@ -445,7 +445,6 @@ impl RusTairApp {
                         ui.strong("ASCII");
                         ui.strong("Repeat");
                         ui.end_row();
-
                         for (sequence, kind, port, value, repeat) in events {
                             if selected_only && port != selected {
                                 continue;
@@ -458,11 +457,7 @@ impl RusTairApp {
                             ui.monospace(format!("{:02X}h", port));
                             ui.monospace(format!("{:02X}", value));
                             ui.monospace(Self::byte_text(value));
-                            ui.monospace(if repeat > 1 {
-                                format!("x{repeat}")
-                            } else {
-                                String::new()
-                            });
+                            ui.monospace(if repeat > 1 { format!("x{repeat}") } else { String::new() });
                             ui.end_row();
                         }
                     });
@@ -470,22 +465,19 @@ impl RusTairApp {
     }
 
     fn draw_network_trace(&mut self, ui: &mut egui::Ui, generation: u64) {
-        ui.heading("Raw TCP trace");
-        ui.small("Inbound RX is captured before character transformation. For TCP -> RusTair, 'UART value' shows the exact byte that the selected terminal mode presents to the emulated UART. Outbound TCP bytes are already post-transformation.");
         ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "Mode: {}",
-                self.external_serial.config.character_mode.label()
-            ));
-            ui.small("This view shares the global capture/pause controls above.");
+            ui.strong("RAW TCP TRACE");
+            ui.separator();
+            ui.label(format!("Mode: {}", self.external_serial.config.character_mode.label()));
         });
-
+        ui.small("Inbound raw bytes are shown before character transformation; UART value is what the emulated serial interface receives.");
         let follow_newest = Self::trace_follow_newest(ui.ctx());
         let mode = self.external_serial.config.character_mode;
         let events = self.external_serial.server.network_trace_snapshot();
+        let height = ui.available_height().max(120.0);
         egui::ScrollArea::both()
             .id_salt(("tcp-byte-trace-scroll", generation))
-            .max_height(230.0)
+            .max_height(height)
             .auto_shrink([false, false])
             .stick_to_bottom(follow_newest)
             .show(ui, |ui| {
@@ -501,26 +493,15 @@ impl RusTairApp {
                         ui.strong("UART ASCII");
                         ui.strong("Peer");
                         ui.end_row();
-
                         for (sequence, inbound, byte, peer) in events {
-                            let uart_value = if inbound {
-                                mode.rx_transform(byte)
-                            } else {
-                                byte
-                            };
+                            let uart_value = if inbound { mode.rx_transform(byte) } else { byte };
                             ui.monospace(sequence.to_string());
-                            ui.label(if inbound {
-                                "TCP -> RusTair"
-                            } else {
-                                "RusTair -> TCP"
-                            });
+                            ui.label(if inbound { "TCP -> RusTair" } else { "RusTair -> TCP" });
                             ui.monospace(format!("{:02X}", byte));
                             ui.monospace(Self::byte_text(byte));
                             ui.monospace(format!("{:02X}", uart_value));
                             ui.monospace(Self::byte_text(uart_value));
-                            ui.monospace(
-                                peer.map_or_else(String::new, |address| address.to_string()),
-                            );
+                            ui.monospace(peer.map_or_else(String::new, |address| address.to_string()));
                             ui.end_row();
                         }
                     });
@@ -528,20 +509,21 @@ impl RusTairApp {
     }
 
     fn draw_com_trace(&mut self, ui: &mut egui::Ui, generation: u64) {
-        ui.heading("COM / host serial trace");
-        ui.small("Inbound RX is captured as delivered by the host serial driver before character transformation. Outbound bytes are captured after the selected character mode has been applied.");
         ui.horizontal_wrapped(|ui| {
+            ui.strong("COM / HOST SERIAL TRACE");
+            ui.separator();
             ui.label(format!("Mode: {}", self.external_com.config.character_mode.label()));
-            ui.label(format!("Framing: {}", self.external_com.config.framing_label()));
-            ui.small("This view shares the global capture/pause controls above.");
+            ui.separator();
+            ui.label(self.external_com.config.framing_label());
         });
-
+        ui.small("Inbound raw bytes are captured as delivered by the host driver; outbound bytes are captured after character-mode transformation.");
         let follow_newest = Self::trace_follow_newest(ui.ctx());
         let mode = self.external_com.config.character_mode;
         let events = self.external_com.port.trace_snapshot();
+        let height = ui.available_height().max(120.0);
         egui::ScrollArea::both()
             .id_salt(("com-byte-trace-scroll", generation))
-            .max_height(230.0)
+            .max_height(height)
             .auto_shrink([false, false])
             .stick_to_bottom(follow_newest)
             .show(ui, |ui| {
@@ -557,19 +539,10 @@ impl RusTairApp {
                         ui.strong("UART ASCII");
                         ui.strong("Host port");
                         ui.end_row();
-
                         for (sequence, inbound, byte, port_name) in events {
-                            let uart_value = if inbound {
-                                mode.rx_transform(byte)
-                            } else {
-                                byte
-                            };
+                            let uart_value = if inbound { mode.rx_transform(byte) } else { byte };
                             ui.monospace(sequence.to_string());
-                            ui.label(if inbound {
-                                "COM -> RusTair"
-                            } else {
-                                "RusTair -> COM"
-                            });
+                            ui.label(if inbound { "COM -> RusTair" } else { "RusTair -> COM" });
                             ui.monospace(format!("{:02X}", byte));
                             ui.monospace(Self::byte_text(byte));
                             ui.monospace(format!("{:02X}", uart_value));
@@ -581,68 +554,71 @@ impl RusTairApp {
             });
     }
 
-    fn draw_io_inspector_contents(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Intel 8080 I/O Inspector / Editor");
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!(
-                "Installed serial interface: {}",
-                self.config.machine.serial_board.label()
-            ));
-            ui.separator();
-            ui.monospace(format!("CPU PC: {:04X}h", self.machine.cpu.pc));
-            ui.separator();
-            ui.label(if self.machine.running {
-                "RUNNING"
-            } else {
-                "STOPPED"
+    fn draw_io_help(&self, ui: &mut egui::Ui) {
+        ui.label("1. Wait until the guest is waiting for serial input.");
+        ui.label("2. Clear traces & pause.");
+        ui.label("3. Resume, reproduce one short event, then pause again.");
+        ui.label("4. TCP/COM traces show host transport bytes and transformed UART values.");
+        ui.label("5. Emulated I/O shows UART enqueue and the DATA-port value returned to the guest.");
+        ui.label("6. STATUS polling is hidden by default so busy-wait loops do not bury useful DATA events.");
+        ui.label("7. Inject RX bypasses host transports for an A/B test of UART and guest software.");
+    }
+
+    fn draw_io_sidebar(&mut self, ui: &mut egui::Ui, selected: &mut u8) {
+        egui::ScrollArea::vertical()
+            .id_salt("io-inspector-sidebar-scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                self.draw_selected_port(ui, *selected);
+                ui.separator();
+                egui::CollapsingHeader::new("I/O port map 00h–FFh")
+                    .default_open(false)
+                    .show(ui, |ui| self.draw_port_map(ui, selected));
+                ui.separator();
+                egui::CollapsingHeader::new("How to use the serial traces")
+                    .default_open(false)
+                    .show(ui, |ui| self.draw_io_help(ui));
             });
+    }
+
+    fn draw_trace_tabs(&self, ui: &mut egui::Ui, active: &mut u8) {
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(active, 0, "Emulated I/O / UART");
+            ui.selectable_value(active, 1, "Raw TCP");
+            ui.selectable_value(active, 2, "COM / host serial");
+            ui.separator();
+            ui.small("Choose one trace to use the full available height.");
         });
-        ui.small("Observation controls are non-invasive unless explicitly labelled CPU-style, Inject, Clear, or Complete. The entire inspector can be vertically scrolled.");
-        ui.separator();
-
-        self.draw_capture_toolbar(ui);
-        ui.separator();
-
-        let selected_id = egui::Id::new(SELECTED_PORT);
-        let mut selected = ui.data_mut(|data| {
-            *data.get_temp_mut_or(selected_id, self.config.machine.serial_board.data_port())
-        });
-
-        self.draw_port_map(ui, &mut selected);
-        ui.data_mut(|data| data.insert_temp(selected_id, selected));
-        ui.separator();
-
-        self.draw_selected_port(ui, selected);
-        ui.separator();
-
-        let generation = Self::trace_view_generation(ui.ctx());
-        self.draw_io_trace(ui, selected, generation);
-        ui.separator();
-        self.draw_network_trace(ui, generation);
-        ui.separator();
-        self.draw_com_trace(ui, generation);
-
-        ui.separator();
-        ui.collapsing("How to use the serial traces", |ui| {
-            ui.label("1. Wait until guest software is waiting for serial input.");
-            ui.label("2. Click Clear traces & pause. All trace tables become empty and stay empty.");
-            ui.label("3. Click Resume capture, reproduce one short input, then click Pause capture.");
-            ui.label("4. TCP or COM trace shows what the host transport actually delivered and the UART value after character-mode transformation.");
-            ui.label("5. Emulated I/O shows UART enqueue and the value eventually returned by the guest's DATA-port IN instruction.");
-            ui.label("6. STATUS busy-wait polling is hidden by default; enable Show serial STATUS polling only when investigating the handshake itself.");
-            ui.label("7. Inject RX bypasses all host transports for an A/B test of the UART and guest software.");
-        });
-        ui.add_space(12.0);
     }
 
     fn draw_io_inspector(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("io-inspector-toolbar")
+            .resizable(false)
+            .show(ctx, |ui| self.draw_io_header(ui));
+
+        let selected_id = egui::Id::new(SELECTED_PORT);
+        let mut selected = ctx.data_mut(|data| {
+            *data.get_temp_mut_or(selected_id, self.config.machine.serial_board.data_port())
+        });
+
+        egui::SidePanel::right("io-inspector-sidebar")
+            .resizable(true)
+            .default_width(365.0)
+            .width_range(300.0..=520.0)
+            .show(ctx, |ui| self.draw_io_sidebar(ui, &mut selected));
+        ctx.data_mut(|data| data.insert_temp(selected_id, selected));
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical()
-                .id_salt("io-inspector-global-scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    self.draw_io_inspector_contents(ui);
-                });
+            let mut active = Self::active_trace_view(ctx);
+            self.draw_trace_tabs(ui, &mut active);
+            Self::set_active_trace_view(ctx, active);
+            ui.separator();
+            let generation = Self::trace_view_generation(ctx);
+            match active {
+                1 => self.draw_network_trace(ui, generation),
+                2 => self.draw_com_trace(ui, generation),
+                _ => self.draw_io_trace(ui, selected, generation),
+            }
         });
     }
 
@@ -656,8 +632,8 @@ impl RusTairApp {
             egui::ViewportId::from_hash_of("rustair-io-inspector"),
             egui::ViewportBuilder::default()
                 .with_title("RusTair — Intel 8080 I/O Inspector / Editor")
-                .with_inner_size([980.0, 760.0])
-                .with_min_inner_size([560.0, 420.0])
+                .with_inner_size([1360.0, 780.0])
+                .with_min_inner_size([960.0, 560.0])
                 .with_resizable(true),
             |io_ctx, _class| {
                 self.draw_io_inspector(io_ctx);
