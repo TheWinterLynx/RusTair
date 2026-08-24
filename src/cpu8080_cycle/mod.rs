@@ -22,6 +22,8 @@ mod call_return_tests;
 mod control_flow_tests;
 #[cfg(test)]
 mod core_tests;
+#[cfg(test)]
+mod special_transfer_tests;
 
 pub use pins::{Cpu8080Inputs, Cpu8080Pins};
 pub use state::Registers;
@@ -60,6 +62,7 @@ pub struct Cpu8080Cycle {
     instruction: Instruction,
     operand_low: u8,
     effective_address: u16,
+    temporary_word: u16,
     inte: bool,
     total_t_states: u64,
     completed_instructions: u64,
@@ -89,6 +92,7 @@ impl Cpu8080Cycle {
             instruction: Instruction::Nop,
             operand_low: 0,
             effective_address: 0,
+            temporary_word: 0,
             inte: false,
             total_t_states: 0,
             completed_instructions: 0,
@@ -191,6 +195,7 @@ impl Cpu8080Cycle {
             self.instruction = Instruction::Nop;
             self.operand_low = 0;
             self.effective_address = 0;
+            self.temporary_word = 0;
             self.cycle_address = self.registers.pc;
             self.cycle_data_out = None;
         }
@@ -247,6 +252,26 @@ impl Cpu8080Cycle {
                     instruction_complete = true;
                     self.complete_instruction();
                 }
+                Instruction::Xchg => {
+                    let de = self.read_pair(RegisterPair::DE);
+                    let hl = self.hl();
+                    self.write_pair(RegisterPair::DE, hl);
+                    self.write_pair(RegisterPair::HL, de);
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::Xthl => {
+                    if machine_cycle == MachineCycle::InstructionFetch && machine_cycle_index == 1 {
+                        self.begin_stack_read(self.registers.sp, 2);
+                    } else if machine_cycle == MachineCycle::StackWrite && machine_cycle_index == 5 {
+                        self.t_state = TState::T5;
+                    } else {
+                        unreachable!(
+                            "unexpected XTHL T4 in {:?} M{}",
+                            machine_cycle, machine_cycle_index
+                        );
+                    }
+                }
                 Instruction::MviImmediate(_)
                 | Instruction::MviMemory
                 | Instruction::Lxi(_)
@@ -268,13 +293,12 @@ impl Cpu8080Cycle {
                 | Instruction::Inx(_)
                 | Instruction::Dcx(_)
                 | Instruction::InrRegister(_)
-                | Instruction::DcrRegister(_) => {
+                | Instruction::DcrRegister(_)
+                | Instruction::Pchl
+                | Instruction::Sphl => {
                     self.t_state = TState::T5;
                 }
-                Instruction::Ret => {
-                    self.begin_stack_read(self.registers.sp, 2);
-                }
-                Instruction::Pop(_) => {
+                Instruction::Ret | Instruction::Pop(_) => {
                     self.begin_stack_read(self.registers.sp, 2);
                 }
                 Instruction::MovFromMemory { .. }
@@ -361,6 +385,21 @@ impl Cpu8080Cycle {
                     let [high, _] = self.registers.pc.to_be_bytes();
                     self.registers.sp = self.registers.sp.wrapping_sub(1);
                     self.begin_stack_write(self.registers.sp, high, 2);
+                }
+                Instruction::Pchl => {
+                    self.registers.pc = self.hl();
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::Sphl => {
+                    self.registers.sp = self.hl();
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::Xthl => {
+                    self.write_pair(RegisterPair::HL, self.temporary_word);
+                    instruction_complete = true;
+                    self.complete_instruction();
                 }
                 _ => unreachable!("unexpected T5 for {:?}", self.instruction),
             },
@@ -584,6 +623,16 @@ impl Cpu8080Cycle {
                 self.complete_instruction();
                 true
             }
+            (Instruction::Xthl, 2) => {
+                self.operand_low = data;
+                self.begin_stack_read(self.registers.sp.wrapping_add(1), 3);
+                false
+            }
+            (Instruction::Xthl, 3) => {
+                self.temporary_word = u16::from_le_bytes([self.operand_low, data]);
+                self.begin_stack_write(self.registers.sp, self.registers.l, 4);
+                false
+            }
             _ => unreachable!(
                 "invalid stack-read cycle M{} for {:?}",
                 self.machine_cycle_index, self.instruction
@@ -624,6 +673,20 @@ impl Cpu8080Cycle {
                 self.registers.pc = u16::from(vector) << 3;
                 self.complete_instruction();
                 true
+            }
+            (Instruction::Xthl, 4) => {
+                self.begin_stack_write(
+                    self.registers.sp.wrapping_add(1),
+                    self.registers.h,
+                    5,
+                );
+                false
+            }
+            (Instruction::Xthl, 5) => {
+                // The real 8080 keeps the final StackWrite machine cycle alive
+                // for T4/T5; HL is replaced at the end of T5.
+                self.t_state = TState::T4;
+                false
             }
             _ => unreachable!(
                 "invalid stack-write cycle M{} for {:?}",
@@ -788,6 +851,7 @@ impl Cpu8080Cycle {
         self.instruction = Instruction::Nop;
         self.operand_low = 0;
         self.effective_address = 0;
+        self.temporary_word = 0;
         self.current_instruction_t_states = 0;
         self.last_instruction_t_states = None;
         self.reset_asserted = true;
