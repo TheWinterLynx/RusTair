@@ -4,6 +4,8 @@ impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
 
+        self.poll_cpu_diagnostic_dialog(ctx);
+
         let io_inspector_open = ctx.data_mut(|data| {
             *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
         });
@@ -67,21 +69,37 @@ impl eframe::App for RusTairApp {
                         self.load_bundled_basic();
                         ui.close();
                     }
-                    ui.separator();
                     ui.menu_button("CPU diagnostics", |ui| {
-                        ui.small("Loads a CP/M 8080 .COM at 0100h and installs a real page-zero mini-BDOS (functions 2 and 9). The test executes on the normal Altair CPU and serial hardware; no CPU interception is used.");
+                        ui.small("Loads a CP/M 8080 .COM at 0100h and installs a real page-zero mini-BDOS (functions 2 and 9). The guest executes on the normal Altair CPU and serial hardware; no CPU interception is used.");
                         ui.separator();
-                        if ui.button("Load .COM via Port 0…").clicked() {
-                            self.load_cpu_diagnostic_port0_dialog();
+                        let picker_open = self.diagnostic_file_dialog.is_some();
+                        if ui
+                            .add_enabled(!picker_open, egui::Button::new("Load .COM via Port 0…"))
+                            .clicked()
+                        {
+                            self.start_cpu_diagnostic_dialog(
+                                cpu_diagnostics::DiagnosticSerialPort::Port0,
+                            );
                             ui.close();
                         }
-                        if self.config.machine.serial_board == SerialBoard::TwoSio88 {
-                            if ui.button("Load .COM via Port 1…").clicked() {
-                                self.load_cpu_diagnostic_port1_dialog();
-                                ui.close();
-                            }
-                        } else {
-                            ui.add_enabled(false, egui::Button::new("Load .COM via Port 1…"));
+                        let port1_available = self.config.machine.serial_board == SerialBoard::TwoSio88;
+                        if ui
+                            .add_enabled(
+                                port1_available && !picker_open,
+                                egui::Button::new("Load .COM via Port 1…"),
+                            )
+                            .clicked()
+                        {
+                            self.start_cpu_diagnostic_dialog(
+                                cpu_diagnostics::DiagnosticSerialPort::Port1,
+                            );
+                            ui.close();
+                        }
+                        if !port1_available {
+                            ui.small("Port 1 is available only with the MITS 88-2SIO board.");
+                        }
+                        if picker_open {
+                            ui.small("A diagnostic file picker is already open; the guest is paused until it closes.");
                         }
                         ui.separator();
                         ui.small("Recommended order: 8080PRE.COM → TST8080.COM → CPUTEST.COM → 8080EXM.COM. Use enough installed RAM for the selected image.");
