@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use eframe::egui;
 
+use crate::embedded_assets;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) enum SwitchSpriteId {
     WhiteUp,
@@ -61,8 +63,8 @@ fn load_switch_sprite_texture(
     sprite: SwitchSpriteId,
 ) -> Option<egui::TextureHandle> {
     let asset = sprite.asset();
-    let bytes = std::fs::read(asset.path).ok()?;
-    let mut image = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let bytes = embedded_assets::get(asset.path)?;
+    let mut image = image::load_from_memory(bytes).ok()?.to_rgba8();
 
     if matches!(asset.alpha_mode, SwitchAlphaMode::RemoveBlack) {
         for pixel in image.pixels_mut() {
