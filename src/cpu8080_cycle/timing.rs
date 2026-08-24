@@ -51,6 +51,8 @@ pub enum TState {
     T3,
     T4,
     T5,
+    /// Indefinite halt dwell state entered after the HLT acknowledge cycle.
+    Thalt,
 }
 
 #[cfg(test)]
