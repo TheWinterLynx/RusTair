@@ -17,6 +17,13 @@ pub trait Bus {
     fn write(&mut self, address: u16, value: u8);
     fn input(&mut self, _port: u8) -> u8 { 0xff }
     fn output(&mut self, _port: u8, _value: u8) {}
+    fn set_inte(&mut self, _enabled: bool) {}
+
+    fn opcode_fetch(&mut self, address: u16) -> u8 { self.read(address) }
+    fn stack_read(&mut self, address: u16) -> u8 { self.read(address) }
+    fn stack_write(&mut self, address: u16, value: u8) { self.write(address, value); }
+    fn halt_ack(&mut self, _address: u16, _opcode: u8) {}
+    fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {}
 }
 
 #[derive(Clone, Debug)]
@@ -128,15 +135,18 @@ impl Cpu8080 {
 
     #[inline]
     fn push<B: Bus>(&mut self, bus: &mut B, value: u16) {
-        self.sp = self.sp.wrapping_sub(2);
-        self.write_word(bus, self.sp, value);
+        self.sp = self.sp.wrapping_sub(1);
+        bus.stack_write(self.sp, (value >> 8) as u8);
+        self.sp = self.sp.wrapping_sub(1);
+        bus.stack_write(self.sp, value as u8);
     }
 
     #[inline]
     fn pop<B: Bus>(&mut self, bus: &mut B) -> u16 {
-        let v = self.read_word(bus, self.sp);
+        let lo = bus.stack_read(self.sp) as u16;
+        let hi = bus.stack_read(self.sp.wrapping_add(1)) as u16;
         self.sp = self.sp.wrapping_add(2);
-        v
+        lo | (hi << 8)
     }
 
     #[inline]
@@ -271,9 +281,14 @@ impl Cpu8080 {
         }
         let enable_after = self.ei_pending;
         self.ei_pending = false;
-        let opcode = self.next_byte(bus);
+        let opcode_address = self.pc;
+        let opcode = bus.opcode_fetch(opcode_address);
+        self.pc = self.pc.wrapping_add(1);
         let t = self.execute(bus, opcode);
-        if enable_after { self.inte = true; }
+        if enable_after {
+            self.inte = true;
+            bus.set_inte(true);
+        }
         self.f = (self.f & 0xd5) | FLAG_1;
         self.cycles += t as u64;
         t
@@ -287,7 +302,10 @@ impl Cpu8080 {
 
     pub fn interrupt<B: Bus>(&mut self, bus: &mut B, opcode: u8) -> bool {
         if !self.inte { return false; }
+        let while_halted = self.halted;
+        bus.interrupt_ack(self.pc, opcode, while_halted);
         self.inte = false;
+        bus.set_inte(false);
         self.halted = false;
         let t = self.execute(bus, opcode);
         self.cycles += t as u64;
@@ -296,7 +314,11 @@ impl Cpu8080 {
 
     fn execute<B: Bus>(&mut self, bus: &mut B, op: u8) -> u32 {
         if (0x40..=0x7f).contains(&op) {
-            if op == 0x76 { self.halted = true; return 7; }
+            if op == 0x76 {
+                self.halted = true;
+                bus.halt_ack(self.pc, op);
+                return 7;
+            }
             let dst = (op >> 3) & 7;
             let src = op & 7;
             let v = self.read_reg(bus, src);
@@ -439,10 +461,10 @@ impl Cpu8080 {
                 0xdb => { let p = self.next_byte(bus); self.a = bus.input(p); 10 }
                 0xde => { let v = self.next_byte(bus); self.sub(v, true, true); 7 }
                 0xe3 => {
-                    let lo = bus.read(self.sp);
-                    let hi = bus.read(self.sp.wrapping_add(1));
-                    bus.write(self.sp, self.l);
-                    bus.write(self.sp.wrapping_add(1), self.h);
+                    let lo = bus.stack_read(self.sp);
+                    let hi = bus.stack_read(self.sp.wrapping_add(1));
+                    bus.stack_write(self.sp, self.l);
+                    bus.stack_write(self.sp.wrapping_add(1), self.h);
                     self.l = lo; self.h = hi;
                     18
                 }
@@ -450,7 +472,7 @@ impl Cpu8080 {
                 0xe9 => { self.pc = self.hl(); 5 }
                 0xeb => { core::mem::swap(&mut self.d, &mut self.h); core::mem::swap(&mut self.e, &mut self.l); 5 }
                 0xee => { let v = self.next_byte(bus); self.xra(v); 7 }
-                0xf3 => { self.inte = false; self.ei_pending = false; 4 }
+                0xf3 => { self.inte = false; self.ei_pending = false; bus.set_inte(false); 4 }
                 0xf6 => { let v = self.next_byte(bus); self.ora(v); 7 }
                 0xf9 => { self.sp = self.hl(); 5 }
                 0xfb => { self.ei_pending = true; 4 }

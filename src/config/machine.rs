@@ -325,6 +325,9 @@ pub struct PeripheralConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct CompatibilityConfig {
     pub basic32_64k_probe_workaround: bool,
+    /// Reproduce the original 8800 RUN/STOP R-S latch having no defined
+    /// power-on state. Disabled by default so powering on remains safely STOPped.
+    pub historical_undefined_run_latch_power_on: bool,
 }
 
 /// Application/emulator behaviour that does not alter the physical Altair
@@ -390,7 +393,9 @@ mod tests {
 
     #[test]
     fn compatibility_workarounds_are_opt_in() {
-        assert!(!AppConfig::default().compatibility.basic32_64k_probe_workaround);
+        let compatibility = AppConfig::default().compatibility;
+        assert!(!compatibility.basic32_64k_probe_workaround);
+        assert!(!compatibility.historical_undefined_run_latch_power_on);
     }
 
     #[test]

@@ -65,8 +65,6 @@ pub fn run() -> eframe::Result {
             .with_title("RusTair — MITS Altair 8800")
             .with_inner_size([1500.0, 820.0])
             .with_min_inner_size([950.0, 560.0]),
-        // WGPU avoids the Windows Glow/OpenGL multi-viewport context switching
-        // that produced intermittent full-window flicker in RusTair.
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -89,7 +87,6 @@ struct RusTairApp {
     terminal: TerminalState,
     audio: AudioEngine,
     last_tick: Instant,
-    reset_flash_until: Option<Instant>,
     status: String,
 }
 
@@ -113,7 +110,6 @@ impl RusTairApp {
             terminal,
             audio: AudioEngine::new(),
             last_tick: now,
-            reset_flash_until: None,
             status: "Ready — Intel 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
                 .into(),
         }
@@ -124,9 +120,7 @@ impl RusTairApp {
     }
 
     fn set_asr_speed(&mut self, speed: Asr33Speed) {
-        if self.config.peripherals.asr33_speed == speed {
-            return;
-        }
+        if self.config.peripherals.asr33_speed == speed { return; }
         self.config.peripherals.asr33_speed = speed;
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
@@ -134,9 +128,7 @@ impl RusTairApp {
     }
 
     fn set_terminal_speed(&mut self, speed: TerminalSpeed) {
-        if self.config.peripherals.terminal_speed == speed {
-            return;
-        }
+        if self.config.peripherals.terminal_speed == speed { return; }
         self.config.peripherals.terminal_speed = speed;
         self.terminal.speed = speed;
         self.terminal.tx_started = None;
@@ -145,19 +137,14 @@ impl RusTairApp {
     }
 
     fn set_emulation_speed(&mut self, speed: EmulationSpeed) {
-        if self.config.preferences.emulation_speed == speed {
-            return;
-        }
+        if self.config.preferences.emulation_speed == speed { return; }
         self.config.preferences.emulation_speed = speed;
         self.last_tick = Instant::now();
         self.status = format!("CPU emulation speed: {}", speed.label());
     }
 
     fn apply_memory_configuration(&mut self, ram_size: RamSize, ram_init: RamInit) {
-        if self.config.machine.ram_size == ram_size && self.config.machine.ram_init == ram_init {
-            return;
-        }
-
+        if self.config.machine.ram_size == ram_size && self.config.machine.ram_init == ram_init { return; }
         self.config.machine.ram_size = ram_size;
         self.config.machine.ram_init = ram_init;
         self.machine.configure_memory(ram_size, ram_init);
@@ -165,19 +152,11 @@ impl RusTairApp {
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
-        self.reset_flash_until = None;
-        self.status = format!(
-            "Memory configured: {} — {}; machine reset",
-            ram_size.label(),
-            ram_init.label()
-        );
+        self.status = format!("Memory configured: {} — {}; machine reset", ram_size.label(), ram_init.label());
     }
 
     fn apply_serial_board_configuration(&mut self, serial_board: SerialBoard) {
-        if self.config.machine.serial_board == serial_board {
-            return;
-        }
-
+        if self.config.machine.serial_board == serial_board { return; }
         self.config.machine.serial_board = serial_board;
         self.machine.configure_serial_board(serial_board);
         self.serial_router.reset_for_board(serial_board);
@@ -186,17 +165,9 @@ impl RusTairApp {
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
-        self.reset_flash_until = None;
-
         self.status = match serial_board {
-            SerialBoard::Sio88 => {
-                "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset"
-                    .into()
-            }
-            SerialBoard::TwoSio88 => {
-                "Serial board configured: MITS 88-2SIO — ASR-33 → Port 0 (10h/11h), Text Terminal → Port 1 (12h/13h); machine reset"
-                    .into()
-            }
+            SerialBoard::Sio88 => "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset".into(),
+            SerialBoard::TwoSio88 => "Serial board configured: MITS 88-2SIO — ASR-33 → Port 0 (10h/11h), Text Terminal → Port 1 (12h/13h); machine reset".into(),
         };
     }
 
@@ -209,10 +180,7 @@ impl RusTairApp {
         }
     }
 
-    fn serial_connection_label(
-        board: SerialBoard,
-        connection: SerialConnection,
-    ) -> &'static str {
+    fn serial_connection_label(board: SerialBoard, connection: SerialConnection) -> &'static str {
         match (board, connection) {
             (_, SerialConnection::Disconnected) => "Disconnected",
             (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [00h/01h]",
@@ -227,35 +195,22 @@ impl RusTairApp {
     }
 
     fn set_serial_connection(&mut self, device: SerialDevice, connection: SerialConnection) {
-        if self.config.machine.serial_board == SerialBoard::Sio88
-            && connection == SerialConnection::Port1
-        {
-            return;
-        }
-        if self.serial_router.connection(device) == connection {
-            return;
-        }
-
+        if self.config.machine.serial_board == SerialBoard::Sio88 && connection == SerialConnection::Port1 { return; }
+        if self.serial_router.connection(device) == connection { return; }
         let displaced = self.serial_router.connect(device, connection);
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
         if displaced == Some(SerialDevice::InternalAsr33)
-            || (device == SerialDevice::InternalAsr33
-                && connection == SerialConnection::Disconnected)
+            || (device == SerialDevice::InternalAsr33 && connection == SerialConnection::Disconnected)
         {
             self.asr33.answerback.clear();
         }
-
         let device_name = Self::serial_device_name(device);
-        let connection_name =
-            Self::serial_connection_label(self.config.machine.serial_board, connection);
+        let connection_name = Self::serial_connection_label(self.config.machine.serial_board, connection);
         self.status = if let Some(displaced) = displaced {
-            format!(
-                "{device_name} connected to {connection_name}; {} disconnected from that port",
-                Self::serial_device_name(displaced)
-            )
+            format!("{device_name} connected to {connection_name}; {} disconnected from that port", Self::serial_device_name(displaced))
         } else {
             format!("{device_name}: {connection_name}")
         };
@@ -313,77 +268,30 @@ impl RusTairApp {
         self.serial_connection(SerialDevice::InternalAsr33)
     }
 
-    fn asr_serial_rx_empty(&self) -> bool {
-        self.serial_rx_empty_at(self.asr_connection())
-    }
-
-    fn asr_serial_rx_len(&self) -> usize {
-        self.serial_rx_len_at(self.asr_connection())
-    }
-
-    fn asr_serial_receive(&mut self, byte: u8) {
-        let connection = self.asr_connection();
-        self.serial_receive_at(connection, byte);
-    }
-
-    fn asr_serial_tx_busy(&self) -> bool {
-        self.serial_tx_busy_at(self.asr_connection())
-    }
-
-    fn asr_serial_tx_front(&self) -> Option<u8> {
-        self.serial_tx_front_at(self.asr_connection())
-    }
-
-    fn asr_serial_tx_complete(&mut self) -> Option<u8> {
-        let connection = self.asr_connection();
-        self.serial_tx_complete_at(connection)
-    }
+    fn asr_serial_rx_empty(&self) -> bool { self.serial_rx_empty_at(self.asr_connection()) }
+    fn asr_serial_rx_len(&self) -> usize { self.serial_rx_len_at(self.asr_connection()) }
+    fn asr_serial_receive(&mut self, byte: u8) { let c = self.asr_connection(); self.serial_receive_at(c, byte); }
+    fn asr_serial_tx_busy(&self) -> bool { self.serial_tx_busy_at(self.asr_connection()) }
+    fn asr_serial_tx_front(&self) -> Option<u8> { self.serial_tx_front_at(self.asr_connection()) }
+    fn asr_serial_tx_complete(&mut self) -> Option<u8> { let c = self.asr_connection(); self.serial_tx_complete_at(c) }
 
     fn terminal_connection(&self) -> SerialConnection {
         self.serial_connection(SerialDevice::TextTerminal)
     }
 
-    fn terminal_serial_rx_empty(&self) -> bool {
-        self.serial_rx_empty_at(self.terminal_connection())
-    }
-
-    fn terminal_serial_rx_len(&self) -> usize {
-        self.serial_rx_len_at(self.terminal_connection())
-    }
-
-    fn terminal_serial_receive(&mut self, byte: u8) {
-        let connection = self.terminal_connection();
-        self.serial_receive_at(connection, byte);
-    }
-
-    fn terminal_serial_tx_busy(&self) -> bool {
-        self.serial_tx_busy_at(self.terminal_connection())
-    }
-
-    fn terminal_serial_tx_front(&self) -> Option<u8> {
-        self.serial_tx_front_at(self.terminal_connection())
-    }
-
-    fn terminal_serial_tx_complete(&mut self) -> Option<u8> {
-        let connection = self.terminal_connection();
-        self.serial_tx_complete_at(connection)
-    }
+    fn terminal_serial_rx_empty(&self) -> bool { self.serial_rx_empty_at(self.terminal_connection()) }
+    fn terminal_serial_rx_len(&self) -> usize { self.serial_rx_len_at(self.terminal_connection()) }
+    fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
+    fn terminal_serial_tx_busy(&self) -> bool { self.serial_tx_busy_at(self.terminal_connection()) }
+    fn terminal_serial_tx_front(&self) -> Option<u8> { self.serial_tx_front_at(self.terminal_connection()) }
+    fn terminal_serial_tx_complete(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_complete_at(c) }
 
     fn service_disconnected_serial_ports(&mut self) {
-        if self
-            .serial_router
-            .device_on(SerialConnection::Port0)
-            .is_none()
-            && self.machine.bus.tx_busy()
-        {
+        if self.serial_router.device_on(SerialConnection::Port0).is_none() && self.machine.bus.tx_busy() {
             self.machine.bus.serial_tx_complete();
         }
-
         if self.config.machine.serial_board == SerialBoard::TwoSio88
-            && self
-                .serial_router
-                .device_on(SerialConnection::Port1)
-                .is_none()
+            && self.serial_router.device_on(SerialConnection::Port1).is_none()
             && self.machine.bus.serial_port1_tx_busy()
         {
             self.machine.bus.serial_port1_tx_complete();
@@ -391,18 +299,10 @@ impl RusTairApp {
     }
 
     fn image(ui: &mut egui::Ui, texture: &egui::TextureHandle, rect: Rect) {
-        ui.painter().image(
-            texture.id(),
-            rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
+        ui.painter().image(texture.id(), rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
     }
 
     fn centered_rect(origin: Pos2, scale: f32, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect::from_center_size(
-            origin + Vec2::new(x * scale, y * scale),
-            Vec2::new(w * scale, h * scale),
-        )
+        Rect::from_center_size(origin + Vec2::new(x * scale, y * scale), Vec2::new(w * scale, h * scale))
     }
 }

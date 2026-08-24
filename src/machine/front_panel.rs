@@ -1,21 +1,18 @@
-/// Guest-visible front-panel state attached to I/O port 0xFF.
+/// Emulated Altair 8800 front-panel control hardware.
 ///
-/// The CPU sees the high byte of the sense switches on input and drives the
-/// eight data lamps on output. UI code must go through `AltairMachine` rather
-/// than mutating this state directly.
+/// The 16 sense/address switches are physical panel inputs. The controller also
+/// keeps the address selected by RESET/EXAMINE/EXAMINE NEXT/DEPOSIT NEXT; this
+/// is a hardware control latch, not a display register.
 #[derive(Default)]
-pub(super) struct FrontPanelPort {
+pub(super) struct FrontPanelController {
     switches: u16,
-    data_leds: u8,
+    address_latch: u16,
 }
 
-impl FrontPanelPort {
+impl FrontPanelController {
+    /// IN FFh reads the upper eight sense switches on the original Altair.
     pub(super) fn input(&self) -> u8 {
         (self.switches >> 8) as u8
-    }
-
-    pub(super) fn output(&mut self, value: u8) {
-        self.data_leds = value;
     }
 
     pub(super) fn switches(&self) -> u16 {
@@ -28,11 +25,35 @@ impl FrontPanelPort {
         }
     }
 
-    pub(super) fn data_leds(&self) -> u8 {
-        self.data_leds
+    pub(super) fn reset_address(&mut self) -> u16 {
+        self.address_latch = 0;
+        self.address_latch
     }
 
-    pub(super) fn set_data_leds(&mut self, value: u8) {
-        self.data_leds = value;
+    pub(super) fn examine_address(&mut self) -> u16 {
+        self.address_latch = self.switches;
+        self.address_latch
+    }
+
+    pub(super) fn examine_next_address(&mut self) -> u16 {
+        self.address_latch = self.address_latch.wrapping_add(1);
+        self.address_latch
+    }
+
+    pub(super) fn deposit_address(&self) -> u16 {
+        self.address_latch
+    }
+
+    pub(super) fn deposit_next_address(&mut self) -> u16 {
+        self.address_latch = self.address_latch.wrapping_add(1);
+        self.address_latch
+    }
+
+    pub(super) fn set_address_latch(&mut self, address: u16) {
+        self.address_latch = address;
+    }
+
+    pub(super) fn address_latch(&self) -> u16 {
+        self.address_latch
     }
 }
