@@ -23,6 +23,8 @@ mod control_flow_tests;
 #[cfg(test)]
 mod core_tests;
 #[cfg(test)]
+mod interrupt_control_tests;
+#[cfg(test)]
 mod io_tests;
 #[cfg(test)]
 mod special_transfer_tests;
@@ -66,6 +68,9 @@ pub struct Cpu8080Cycle {
     effective_address: u16,
     temporary_word: u16,
     inte: bool,
+    ei_pending: bool,
+    enable_inte_after_instruction: bool,
+    halted: bool,
     total_t_states: u64,
     completed_instructions: u64,
     current_instruction_t_states: u32,
@@ -96,6 +101,9 @@ impl Cpu8080Cycle {
             effective_address: 0,
             temporary_word: 0,
             inte: false,
+            ei_pending: false,
+            enable_inte_after_instruction: false,
+            halted: false,
             total_t_states: 0,
             completed_instructions: 0,
             current_instruction_t_states: 0,
@@ -148,6 +156,10 @@ impl Cpu8080Cycle {
         self.inte
     }
 
+    pub const fn is_halted(&self) -> bool {
+        self.halted
+    }
+
     pub const fn fault(&self) -> Option<Cpu8080CycleFault> {
         self.fault
     }
@@ -188,11 +200,17 @@ impl Cpu8080Cycle {
             };
         }
 
+        if self.halted {
+            return self.tick_halted();
+        }
+
         let machine_cycle = self.machine_cycle;
         let machine_cycle_index = self.machine_cycle_index;
         let t_state = self.t_state;
 
         if machine_cycle == MachineCycle::InstructionFetch && t_state == TState::T1 {
+            self.enable_inte_after_instruction = self.ei_pending;
+            self.ei_pending = false;
             self.opcode = None;
             self.instruction = Instruction::Nop;
             self.operand_low = 0;
@@ -244,6 +262,10 @@ impl Cpu8080Cycle {
                 MachineCycle::OutputWrite => {
                     instruction_complete = self.finish_output_write();
                 }
+                MachineCycle::HaltAck => {
+                    instruction_complete = true;
+                    self.complete_halt_instruction();
+                }
                 MachineCycle::Internal => {
                     instruction_complete = self.finish_internal_cycle();
                 }
@@ -253,6 +275,21 @@ impl Cpu8080Cycle {
                 Instruction::Nop => {
                     instruction_complete = true;
                     self.complete_instruction();
+                }
+                Instruction::Di => {
+                    self.inte = false;
+                    self.ei_pending = false;
+                    self.enable_inte_after_instruction = false;
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::Ei => {
+                    self.ei_pending = true;
+                    instruction_complete = true;
+                    self.complete_instruction();
+                }
+                Instruction::Hlt => {
+                    self.begin_halt_ack();
                 }
                 Instruction::AluRegister { op, src } => {
                     let rhs = self.read_register(src);
@@ -413,6 +450,7 @@ impl Cpu8080Cycle {
                 }
                 _ => unreachable!("unexpected T5 for {:?}", self.instruction),
             },
+            TState::Thalt => unreachable!("halt dwell is handled before normal T-state dispatch"),
         }
 
         TickTrace {
@@ -426,6 +464,36 @@ impl Cpu8080Cycle {
             fault,
             total_t_states: self.total_t_states,
             instruction_t_states,
+        }
+    }
+
+    fn tick_halted(&mut self) -> TickTrace {
+        self.machine_cycle = MachineCycle::HaltAck;
+        self.machine_cycle_index = 2;
+        self.t_state = TState::Thalt;
+        self.cycle_address = self.registers.pc;
+        self.cycle_data_out = None;
+        self.pins.address = Some(self.registers.pc);
+        self.pins.data_out = None;
+        self.pins.sync = false;
+        self.pins.dbin = false;
+        self.pins.wr_n = true;
+        self.pins.inte = self.inte;
+        self.pins.wait = false;
+        self.pins.hlda = false;
+        self.total_t_states = self.total_t_states.saturating_add(1);
+
+        TickTrace {
+            machine_cycle: MachineCycle::HaltAck,
+            machine_cycle_index: 2,
+            t_state: TState::Thalt,
+            pins: self.pins,
+            opcode: self.opcode,
+            instruction_complete: false,
+            reset: false,
+            fault: None,
+            total_t_states: self.total_t_states,
+            instruction_t_states: 0,
         }
     }
 
@@ -887,6 +955,14 @@ impl Cpu8080Cycle {
         self.cycle_data_out = None;
     }
 
+    fn begin_halt_ack(&mut self) {
+        self.machine_cycle = MachineCycle::HaltAck;
+        self.machine_cycle_index = 2;
+        self.t_state = TState::T1;
+        self.cycle_address = self.registers.pc;
+        self.cycle_data_out = None;
+    }
+
     fn begin_instruction_fetch(&mut self) {
         self.machine_cycle = MachineCycle::InstructionFetch;
         self.machine_cycle_index = 1;
@@ -895,17 +971,43 @@ impl Cpu8080Cycle {
         self.cycle_data_out = None;
     }
 
+    fn apply_delayed_interrupt_enable(&mut self) {
+        if self.enable_inte_after_instruction {
+            self.inte = true;
+        }
+        self.enable_inte_after_instruction = false;
+        self.pins.inte = self.inte;
+    }
+
     fn complete_instruction(&mut self) {
         self.registers.f = (self.registers.f & 0xd5) | alu::FLAG_1;
+        self.apply_delayed_interrupt_enable();
         self.completed_instructions = self.completed_instructions.saturating_add(1);
         self.last_instruction_t_states = Some(self.current_instruction_t_states);
         self.current_instruction_t_states = 0;
         self.begin_instruction_fetch();
     }
 
+    fn complete_halt_instruction(&mut self) {
+        self.registers.f = (self.registers.f & 0xd5) | alu::FLAG_1;
+        self.apply_delayed_interrupt_enable();
+        self.completed_instructions = self.completed_instructions.saturating_add(1);
+        self.last_instruction_t_states = Some(self.current_instruction_t_states);
+        self.current_instruction_t_states = 0;
+        self.halted = true;
+        self.machine_cycle = MachineCycle::HaltAck;
+        self.machine_cycle_index = 2;
+        self.t_state = TState::Thalt;
+        self.cycle_address = self.registers.pc;
+        self.cycle_data_out = None;
+    }
+
     fn apply_reset(&mut self) {
         self.registers.pc = 0;
         self.inte = false;
+        self.ei_pending = false;
+        self.enable_inte_after_instruction = false;
+        self.halted = false;
         self.pins = Cpu8080Pins::default();
         self.machine_cycle = MachineCycle::InstructionFetch;
         self.machine_cycle_index = 1;
@@ -976,6 +1078,14 @@ impl Cpu8080Cycle {
                 self.pins.wait = false;
             }
             TState::T4 | TState::T5 => {
+                self.pins.data_out = None;
+                self.pins.sync = false;
+                self.pins.dbin = false;
+                self.pins.wr_n = true;
+                self.pins.wait = false;
+            }
+            TState::Thalt => {
+                self.pins.address = Some(self.registers.pc);
                 self.pins.data_out = None;
                 self.pins.sync = false;
                 self.pins.dbin = false;
