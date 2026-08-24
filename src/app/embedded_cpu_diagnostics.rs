@@ -868,11 +868,15 @@ impl RusTairApp {
                 }
                 ui.add_space(8.0);
                 for check in &report.checks {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.monospace(if check.passed { "PASS" } else { "FAIL" });
-                        ui.strong(check.name);
-                        ui.label(&check.detail);
-                    });
+                    let line = format!(
+                        "{}  {} - {}",
+                        if check.passed { "PASS" } else { "FAIL" },
+                        check.name,
+                        check.detail
+                    )
+                    .replace('·', "|")
+                    .replace('→', "->");
+                    ui.label(egui::RichText::new(line).monospace());
                 }
                 ui.add_space(8.0);
                 ui.small(
