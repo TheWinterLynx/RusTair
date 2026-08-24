@@ -23,11 +23,12 @@ use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
+use crate::backend::NativeMachineBackend;
 use crate::config::{
     AppConfig, Asr33Speed, EmulationSpeed, RamInit, RamSize, SerialBoard, TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
-use crate::machine::{AltairMachine, CLOCK_HZ};
+use crate::machine::CLOCK_HZ;
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
@@ -81,7 +82,7 @@ pub fn run() -> eframe::Result {
 
 struct RusTairApp {
     config: AppConfig,
-    machine: AltairMachine,
+    machine: NativeMachineBackend,
     serial_router: SerialRouter,
     external_serial: ExternalSerialState,
     external_com: ExternalComState,
@@ -106,7 +107,7 @@ impl RusTairApp {
         terminal.speed = config.peripherals.terminal_speed;
         Self {
             config,
-            machine: AltairMachine::default(),
+            machine: NativeMachineBackend::default(),
             serial_router: SerialRouter::default(),
             external_serial: ExternalSerialState::default(),
             external_com: ExternalComState::default(),
