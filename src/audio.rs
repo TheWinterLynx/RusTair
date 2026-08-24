@@ -1,11 +1,16 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::path::Path;
+use std::io::Cursor;
 
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 
+use crate::embedded_assets;
+
 /// Native sound engine shared by the Altair and ASR-33. Failure to open an
 /// audio device is deliberately non-fatal so CI/headless builds still work.
+///
+/// Audio data is compiled into the executable; callers keep using stable asset
+/// names so the rest of the application does not need to know where the bytes
+/// come from.
 pub struct AudioEngine {
     stream: Option<OutputStream>,
     loops: HashMap<String, Sink>,
@@ -33,21 +38,21 @@ impl AudioEngine {
         if muted { self.stop_all_loops(); }
     }
 
-    pub fn play_once(&self, path: impl AsRef<Path>) {
+    pub fn play_once(&self, path: &str) {
         if self.muted { return; }
         let Some(stream) = &self.stream else { return };
-        let Ok(file) = File::open(path) else { return };
-        let Ok(source) = Decoder::try_from(file) else { return };
+        let Some(bytes) = embedded_assets::get(path) else { return };
+        let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
         let sink = Sink::connect_new(stream.mixer());
         sink.append(source);
         sink.detach();
     }
 
-    pub fn start_loop(&mut self, name: &str, path: impl AsRef<Path>) {
+    pub fn start_loop(&mut self, name: &str, path: &str) {
         if self.muted || self.loops.contains_key(name) { return; }
         let Some(stream) = &self.stream else { return };
-        let Ok(file) = File::open(path) else { return };
-        let Ok(source) = Decoder::try_from(file) else { return };
+        let Some(bytes) = embedded_assets::get(path) else { return };
+        let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
         let sink = Sink::connect_new(stream.mixer());
         sink.append(source.repeat_infinite());
         self.loops.insert(name.to_owned(), sink);
