@@ -12,11 +12,13 @@ use super::EmulationEngine;
 mod altair;
 #[cfg(feature = "simh-ffi")]
 mod ffi;
+mod profile;
 #[cfg(feature = "simh-ffi")]
 mod session;
 
 #[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
+pub use profile::ClassicAltairProfile;
 #[cfg(feature = "simh-ffi")]
 pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
 
