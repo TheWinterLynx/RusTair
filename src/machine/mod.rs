@@ -681,8 +681,8 @@ mod tests {
             "TEST.COM".into(),
             0xff00,
             0x37,
-            Some(6),
-            Some(61),
+            Some(7),
+            Some(65),
         );
 
         // Bootstrap is ignored until the CP/M transient entry at 0100h.
@@ -704,8 +704,10 @@ mod tests {
         bus.instruction_complete(0x0000, 0x76, 7);
 
         let result = bus.take_cpu_diagnostic_result().unwrap();
-        assert_eq!(result.instructions, 6);
+        assert_eq!(result.instructions, 7);
         assert_eq!(result.t_states, 65);
+        assert_eq!(result.expected_instructions, Some(7));
+        assert_eq!(result.expected_t_states, Some(65));
     }
 
     #[test]
