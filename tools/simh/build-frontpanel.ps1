@@ -107,11 +107,23 @@ if (-not (Test-Path $frontPanelDir)) {
     throw "Expected FrontPanel output directory was not created: $frontPanelDir"
 }
 
+# Make the freshly built import library/DLL immediately available to Cargo and
+# to test binaries launched from the same PowerShell process. Environment
+# variables are process-wide, so these assignments remain valid after the
+# script returns to the caller.
+$env:RUSTAIR_SIMH_FRONTPANEL_DIR = $frontPanelDir
+$pathEntries = $env:PATH -split ';'
+if ($pathEntries -notcontains $frontPanelDir) {
+    $env:PATH = "$frontPanelDir;$env:PATH"
+}
+
 Write-Host ""
 Write-Host "Open-SIMH FrontPanel library built successfully."
 Write-Host "Directory: $frontPanelDir"
 Write-Host ""
-Write-Host "For this PowerShell session run:"
-Write-Host ('  $env:RUSTAIR_SIMH_FRONTPANEL_DIR="{0}"' -f $frontPanelDir)
-Write-Host ('  $env:PATH="{0};$env:PATH"' -f $frontPanelDir)
+Write-Host "Environment configured for this PowerShell session:"
+Write-Host ('  RUSTAIR_SIMH_FRONTPANEL_DIR={0}' -f $env:RUSTAIR_SIMH_FRONTPANEL_DIR)
+Write-Host "  FrontPanel DLL directory added to PATH"
+Write-Host ""
+Write-Host "Next command:"
 Write-Host "  cargo test --features simh-ffi"
