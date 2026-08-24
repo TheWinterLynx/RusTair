@@ -2,7 +2,7 @@ use std::ffi::{CStr, CString, NulError, c_void};
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::Path;
-use std::ptr::{self, NonNull};
+use std::ptr::NonNull;
 use std::rc::Rc;
 
 use super::ffi;
