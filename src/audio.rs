@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Cursor;
+use std::path::Path;
 
 use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 
@@ -38,9 +39,10 @@ impl AudioEngine {
         if muted { self.stop_all_loops(); }
     }
 
-    pub fn play_once(&self, path: &str) {
+    pub fn play_once(&self, path: impl AsRef<Path>) {
         if self.muted { return; }
         let Some(stream) = &self.stream else { return };
+        let Some(path) = path.as_ref().to_str() else { return };
         let Some(bytes) = embedded_assets::get(path) else { return };
         let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
         let sink = Sink::connect_new(stream.mixer());
@@ -48,9 +50,10 @@ impl AudioEngine {
         sink.detach();
     }
 
-    pub fn start_loop(&mut self, name: &str, path: &str) {
+    pub fn start_loop(&mut self, name: &str, path: impl AsRef<Path>) {
         if self.muted || self.loops.contains_key(name) { return; }
         let Some(stream) = &self.stream else { return };
+        let Some(path) = path.as_ref().to_str() else { return };
         let Some(bytes) = embedded_assets::get(path) else { return };
         let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
         let sink = Sink::connect_new(stream.mixer());
