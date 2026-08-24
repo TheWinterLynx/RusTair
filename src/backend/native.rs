@@ -1,10 +1,12 @@
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
+use crate::config::SerialBoard;
 use crate::machine::AltairMachine;
 
 use super::{
-    BackendCapabilities, CpuState, EmulationEngine, FrontPanelState, MachineBackend,
+    BackendCapabilities, BackendSerialPort, CpuState, EmulationEngine, FrontPanelState,
+    MachineBackend,
 };
 
 /// Adapter exposing the existing fast RusTair machine through [`MachineBackend`].
@@ -156,6 +158,56 @@ impl MachineBackend for NativeMachineBackend {
         }
     }
 
+    fn configure_serial_board(&mut self, board: SerialBoard) {
+        self.machine.configure_serial_board(board);
+    }
+
+    fn serial_board(&self) -> SerialBoard { self.machine.serial_board() }
+
+    fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) {
+        match port {
+            BackendSerialPort::Port0 => self.machine.bus.serial_receive(byte),
+            BackendSerialPort::Port1 => self.machine.bus.serial_port1_receive(byte),
+        }
+    }
+
+    fn serial_rx_empty(&self, port: BackendSerialPort) -> bool {
+        match port {
+            BackendSerialPort::Port0 => self.machine.bus.serial_rx_empty(),
+            BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_empty(),
+        }
+    }
+
+    fn serial_rx_len(&self, port: BackendSerialPort) -> usize {
+        match port {
+            BackendSerialPort::Port0 => self.machine.bus.serial_rx_len(),
+            BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_len(),
+        }
+    }
+
+    fn serial_tx_busy(&self, port: BackendSerialPort) -> bool {
+        match port {
+            BackendSerialPort::Port0 => self.machine.bus.tx_busy(),
+            BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_busy(),
+        }
+    }
+
+    fn serial_tx_front(&self, port: BackendSerialPort) -> Option<u8> {
+        match port {
+            BackendSerialPort::Port0 => self.machine.bus.serial_tx_front(),
+            BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_front(),
+        }
+    }
+
+    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8> {
+        match port {
+            BackendSerialPort::Port0 => self.machine.bus.serial_tx_complete(),
+            BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_complete(),
+        }
+    }
+
+    fn clear_serial(&mut self) { self.machine.bus.clear_serial(); }
+
     fn peek_memory(&self, address: u16) -> Option<u8> {
         self.machine.bus.peek_memory(address)
     }
@@ -210,6 +262,18 @@ mod tests {
 
         backend.set_switch_register(0x0f0f);
         assert_eq!(backend.switch_register(), 0x0f0f);
+    }
+
+    #[test]
+    fn serial_contract_routes_both_88_2sio_channels() {
+        let mut backend = NativeMachineBackend::default();
+        backend.configure_serial_board(SerialBoard::TwoSio88);
+        backend.serial_receive(BackendSerialPort::Port0, b'A');
+        backend.serial_receive(BackendSerialPort::Port1, b'B');
+        assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0), 1);
+        assert_eq!(backend.serial_rx_len(BackendSerialPort::Port1), 1);
+        assert!(!backend.serial_rx_empty(BackendSerialPort::Port0));
+        assert!(!backend.serial_rx_empty(BackendSerialPort::Port1));
     }
 
     #[test]
