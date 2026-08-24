@@ -1,6 +1,7 @@
 mod asr33_controller;
 mod asr33_state;
 mod commands;
+mod cpu_diagnostics;
 mod external_com;
 mod external_serial;
 mod runtime;
@@ -14,6 +15,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
+use self::cpu_diagnostics::DiagnosticFileDialog;
 use self::external_com::ExternalComState;
 use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
@@ -81,6 +83,7 @@ struct RusTairApp {
     serial_router: SerialRouter,
     external_serial: ExternalSerialState,
     external_com: ExternalComState,
+    diagnostic_file_dialog: Option<DiagnosticFileDialog>,
     tex: Tex,
     tty: Teletype,
     asr33: Asr33State,
@@ -104,6 +107,7 @@ impl RusTairApp {
             serial_router: SerialRouter::default(),
             external_serial: ExternalSerialState::default(),
             external_com: ExternalComState::default(),
+            diagnostic_file_dialog: None,
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
@@ -268,41 +272,15 @@ impl RusTairApp {
         self.serial_connection(SerialDevice::InternalAsr33)
     }
 
-    fn asr_serial_rx_empty(&self) -> bool { self.serial_rx_empty_at(self.asr_connection()) }
-    fn asr_serial_rx_len(&self) -> usize { self.serial_rx_len_at(self.asr_connection()) }
-    fn asr_serial_receive(&mut self, byte: u8) { let c = self.asr_connection(); self.serial_receive_at(c, byte); }
-    fn asr_serial_tx_busy(&self) -> bool { self.serial_tx_busy_at(self.asr_connection()) }
-    fn asr_serial_tx_front(&self) -> Option<u8> { self.serial_tx_front_at(self.asr_connection()) }
-    fn asr_serial_tx_complete(&mut self) -> Option<u8> { let c = self.asr_connection(); self.serial_tx_complete_at(c) }
-
     fn terminal_connection(&self) -> SerialConnection {
         self.serial_connection(SerialDevice::TextTerminal)
     }
 
-    fn terminal_serial_rx_empty(&self) -> bool { self.serial_rx_empty_at(self.terminal_connection()) }
-    fn terminal_serial_rx_len(&self) -> usize { self.serial_rx_len_at(self.terminal_connection()) }
-    fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
-    fn terminal_serial_tx_busy(&self) -> bool { self.serial_tx_busy_at(self.terminal_connection()) }
-    fn terminal_serial_tx_front(&self) -> Option<u8> { self.serial_tx_front_at(self.terminal_connection()) }
-    fn terminal_serial_tx_complete(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_complete_at(c) }
-
-    fn service_disconnected_serial_ports(&mut self) {
-        if self.serial_router.device_on(SerialConnection::Port0).is_none() && self.machine.bus.tx_busy() {
-            self.machine.bus.serial_tx_complete();
-        }
-        if self.config.machine.serial_board == SerialBoard::TwoSio88
-            && self.serial_router.device_on(SerialConnection::Port1).is_none()
-            && self.machine.bus.serial_port1_tx_busy()
-        {
-            self.machine.bus.serial_port1_tx_complete();
-        }
+    fn external_tcp_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::ExternalTcp)
     }
 
-    fn image(ui: &mut egui::Ui, texture: &egui::TextureHandle, rect: Rect) {
-        ui.painter().image(texture.id(), rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-    }
-
-    fn centered_rect(origin: Pos2, scale: f32, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect::from_center_size(origin + Vec2::new(x * scale, y * scale), Vec2::new(w * scale, h * scale))
+    fn external_com_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::ExternalCom)
     }
 }
