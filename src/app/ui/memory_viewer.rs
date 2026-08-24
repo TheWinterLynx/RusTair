@@ -297,12 +297,31 @@ impl RusTairApp {
         (text, bytes)
     }
 
+    fn draw_register_pair_header(
+        ui: &mut egui::Ui,
+        pair: &str,
+        value: u16,
+        description: &str,
+    ) {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(pair);
+            ui.label(
+                egui::RichText::new(format!("${value:04X}"))
+                    .monospace()
+                    .strong(),
+            );
+            ui.small(description);
+        });
+    }
+
     fn draw_cpu_registers_sidebar(&self, ui: &mut egui::Ui) {
         let cpu = &self.machine.cpu;
         ui.strong("CPU REGISTERS");
-        ui.add_space(3.0);
+        ui.small("The 8080 can use BC, DE and HL as 16-bit pairs. A and F form the PSW when pushed or popped together.");
+        ui.add_space(5.0);
 
-        egui::Grid::new("ram-cpu-registers-sidebar")
+        Self::draw_register_pair_header(ui, "PSW", cpu.af(), "A = accumulator · F = flags");
+        egui::Grid::new("ram-cpu-registers-psw")
             .num_columns(7)
             .spacing([6.0, 3.0])
             .show(ui, |ui| {
@@ -318,29 +337,52 @@ impl RusTairApp {
                     u8::from(cpu.f & FLAG_C != 0)
                 ));
                 ui.end_row();
+            });
+        ui.add_space(4.0);
 
+        Self::draw_register_pair_header(ui, "BC", cpu.bc(), "general 16-bit register pair");
+        egui::Grid::new("ram-cpu-registers-bc")
+            .num_columns(7)
+            .spacing([6.0, 3.0])
+            .show(ui, |ui| {
                 Self::draw_register8_cells(ui, "B", cpu.b);
                 ui.separator();
                 Self::draw_register8_cells(ui, "C", cpu.c);
                 ui.end_row();
+            });
+        ui.add_space(4.0);
 
+        Self::draw_register_pair_header(ui, "DE", cpu.de(), "general 16-bit register pair");
+        egui::Grid::new("ram-cpu-registers-de")
+            .num_columns(7)
+            .spacing([6.0, 3.0])
+            .show(ui, |ui| {
                 Self::draw_register8_cells(ui, "D", cpu.d);
                 ui.separator();
                 Self::draw_register8_cells(ui, "E", cpu.e);
                 ui.end_row();
+            });
+        ui.add_space(4.0);
 
+        Self::draw_register_pair_header(ui, "HL", cpu.hl(), "address pair · M means memory at [HL]");
+        egui::Grid::new("ram-cpu-registers-hl")
+            .num_columns(7)
+            .spacing([6.0, 3.0])
+            .show(ui, |ui| {
                 Self::draw_register8_cells(ui, "H", cpu.h);
                 ui.separator();
                 Self::draw_register8_cells(ui, "L", cpu.l);
                 ui.end_row();
             });
 
-        ui.add_space(3.0);
+        ui.separator();
+        ui.small("16-BIT CONTROL REGISTERS");
         egui::Grid::new("ram-cpu-registers-16-sidebar")
             .num_columns(3)
             .spacing([6.0, 3.0])
             .show(ui, |ui| {
-                ui.strong("SP");
+                ui.strong("SP")
+                    .on_hover_text("Stack Pointer — address of the top of the 8080 stack");
                 ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
                 ui.label(
                     egui::RichText::new(format!("${:04X}", cpu.sp))
@@ -349,7 +391,8 @@ impl RusTairApp {
                 );
                 ui.end_row();
 
-                ui.strong("PC");
+                ui.strong("PC")
+                    .on_hover_text("Program Counter — address of the next instruction to fetch");
                 ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
                 ui.label(
                     egui::RichText::new(format!("${:04X}", cpu.pc))
@@ -420,7 +463,10 @@ impl RusTairApp {
     }
 
     fn draw_memory_help(&self, ui: &mut egui::Ui) {
-        ui.small("• Registers A/F/B/C/D/E/H/L are 8-bit; PC and SP are 16-bit. Values are shown in binary and hexadecimal.");
+        ui.small("• A is the accumulator and F contains the condition flags. PUSH/POP PSW transfers A and F together.");
+        ui.small("• B+C, D+E and H+L are the 8080's natural 16-bit register pairs: BC, DE and HL. The first register is the high byte and the second is the low byte.");
+        ui.small("• HL is especially important for memory access: register M in 8080 assembly means the byte in memory addressed by HL.");
+        ui.small("• PC is the Program Counter (next instruction address). SP is the Stack Pointer.");
         ui.small("• NEXT is the Intel 8080 instruction currently addressed by PC. Reading it here is non-invasive.");
         ui.small("• The 8080 address space is 0000h–FFFFh. '--' means that no physical RAM is installed at that address.");
         ui.small("• ADDR is the row base; 00–0F are the hexadecimal byte offsets. ASCII is the printable interpretation of the same 16 bytes.");
