@@ -12,6 +12,7 @@ Native Rust implementation of the **MITS Altair 8800** simulator, with a photogr
 - Per-switch, per-pose sprite selection, X/Y micro-adjustment and scale.
 - ASR-33 teletype with keyboard, paper tape and audio.
 - Bundled Microsoft 4K BASIC image.
+- Embedded runtime assets: release executables are self-contained and do not require an adjacent `assets/` directory.
 
 ## Build
 
@@ -26,29 +27,27 @@ The release executable is created at `target/release/rustair.exe` on Windows.
 ## Source layout
 
 - `src/main.rs` — executable entry point.
-- `src/application.rs` — application state, texture loading and shared UI helpers.
-- `src/front_panel.rs` — front-panel switch model/configuration and rendering.
-- `src/application_loop.rs` — `eframe::App` update loop and main menu.
-- `src/teletype_controller.rs` — ASR-33 input, serial and mechanical behaviour.
-- `src/teletype_renderer.rs` — ASR-33 drawing and keyboard animation.
-- `src/teletype_io.rs` — paper-tape and teletype-window I/O.
-- `src/altair_machine.rs` — Altair memory, I/O bus and machine state.
+- `src/app/` — application composition, controllers and UI.
+- `src/embedded_assets.rs` — compile-time registry for bundled runtime assets.
+- `src/audio.rs` — audio playback engine using embedded MP3 data.
+- `src/machine/` — Altair memory, I/O bus and machine state.
 - `src/cpu8080.rs` — Intel 8080 core.
-- `src/teletype.rs` — reusable ASR-33 data model.
-- `src/audio.rs` — audio playback engine.
+- `src/peripherals/asr33/` — reusable ASR-33 data model.
 
 ## Front-panel switch configuration
 
-Every physical switch uses the same `SwitchConfig` structure in `src/front_panel.rs`.
+Every physical switch uses the same `SwitchConfig` structure in the front-panel UI modules.
 
-Two-position switches use `SwitchKind::TwoPosition` and `center: None`. Spring-centred switches use `SwitchKind::ThreePosition` and `center: Some(...)`.
+Two-position switches use `SwitchKind::TwoPosition` and spring-centred controls use `SwitchKind::ThreePosition`.
 
-Each available pose has its own sprite reference, X/Y offset and scale. This means, for example, A15 UP can use a red sprite while A15 DOWN and every other switch continue using the default white artwork.
+Each available pose has its own sprite reference, X/Y offset and scale. This means, for example, A15 UP can use a different sprite while other positions continue using the default artwork.
 
 ## Runtime assets
 
 The active front-panel artwork is under `assets/panels/white-pivot/`.
 
-Shared runtime assets under `assets/` include the ASR-33 artwork/audio, `teletype.ttf`, `fan.mp3`, `click.mp3`, `powerbtn.mp3` and `4kbas32.bin`.
+Shared source assets under `assets/` include the ASR-33 artwork/audio, `teletype.ttf`, `fan.mp3`, `click.mp3`, `powerbtn.mp3`, Microsoft 4K BASIC and the embedded CPU diagnostic images.
 
-Legacy panel artwork and abandoned generated-panel experiments are intentionally not kept in the active branch.
+These files remain in the repository as build inputs, but normal release execution reads them from bytes compiled into the executable. User-selected files such as external binaries, paper tapes and terminal text files continue to be loaded from disk normally.
+
+Legacy/unused artwork is intentionally not kept in the active asset set.
