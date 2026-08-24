@@ -67,6 +67,25 @@ impl eframe::App for RusTairApp {
                         self.load_bundled_basic();
                         ui.close();
                     }
+                    ui.separator();
+                    ui.menu_button("CPU diagnostics", |ui| {
+                        ui.small("Loads a CP/M 8080 .COM at 0100h and installs a real page-zero mini-BDOS (functions 2 and 9). The test executes on the normal Altair CPU and serial hardware; no CPU interception is used.");
+                        ui.separator();
+                        if ui.button("Load .COM via Port 0…").clicked() {
+                            self.load_cpu_diagnostic_port0_dialog();
+                            ui.close();
+                        }
+                        if self.config.machine.serial_board == SerialBoard::TwoSio88 {
+                            if ui.button("Load .COM via Port 1…").clicked() {
+                                self.load_cpu_diagnostic_port1_dialog();
+                                ui.close();
+                            }
+                        } else {
+                            ui.add_enabled(false, egui::Button::new("Load .COM via Port 1…"));
+                        }
+                        ui.separator();
+                        ui.small("Recommended order: 8080PRE.COM → TST8080.COM → CPUTEST.COM → 8080EXM.COM. Use enough installed RAM for the selected image.");
+                    });
                 });
 
                 ui.menu_button("Configuration", |ui| {
