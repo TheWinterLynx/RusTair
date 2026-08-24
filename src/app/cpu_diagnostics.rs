@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 const CPM_COM_LOAD_ADDRESS: u16 = 0x0100;
 const CPM_PAGE_ZERO_SIZE: usize = 0x0100;
@@ -26,6 +27,12 @@ impl DiagnosticSerialPort {
             (SerialBoard::TwoSio88, Self::Port1) => "88-2SIO Port 1 [12h/13h]",
         }
     }
+}
+
+pub(in crate::app) struct DiagnosticFileDialog {
+    receiver: Receiver<Option<std::path::PathBuf>>,
+    port: DiagnosticSerialPort,
+    resume_on_cancel: bool,
 }
 
 fn build_cpm_diagnostic_shim(
@@ -107,17 +114,82 @@ fn build_cpm_diagnostic_shim(
 }
 
 impl RusTairApp {
-    pub(in crate::app) fn load_cpu_diagnostic_dialog(&mut self, port: DiagnosticSerialPort) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("CP/M 8080 diagnostic", &["com", "bin"])
-            .pick_file()
-        else {
+    pub(in crate::app) fn start_cpu_diagnostic_dialog(&mut self, port: DiagnosticSerialPort) {
+        if self.diagnostic_file_dialog.is_some() {
+            self.status = "A CPU diagnostic file dialog is already open".into();
             return;
+        }
+
+        if self.config.machine.serial_board == SerialBoard::Sio88
+            && port == DiagnosticSerialPort::Port1
+        {
+            self.status = "CPU diagnostic load failed: 88-SIO has no Port 1".into();
+            return;
+        }
+
+        // rfd's synchronous Windows picker can interfere with eframe/winit,
+        // especially once secondary egui viewports (terminal/ASR) exist. Run
+        // the native picker on its own thread and keep the UI/event loop alive.
+        // Freeze the guest while the user chooses the next diagnostic so an
+        // unlimited-speed test cannot continue mutating machine state behind
+        // the dialog. Cancelling restores the previous RUN state.
+        let resume_on_cancel = self.machine.running;
+        if resume_on_cancel {
+            self.machine.set_running(false);
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let selected = rfd::FileDialog::new()
+                .add_filter("CP/M 8080 diagnostic", &["com", "bin"])
+                .pick_file();
+            let _ = sender.send(selected);
+        });
+
+        self.diagnostic_file_dialog = Some(DiagnosticFileDialog {
+            receiver,
+            port,
+            resume_on_cancel,
+        });
+        self.status = "CPU diagnostic paused — choose a .COM file".into();
+    }
+
+    pub(in crate::app) fn poll_cpu_diagnostic_dialog(&mut self, ctx: &egui::Context) {
+        let result = match self.diagnostic_file_dialog.as_ref() {
+            Some(dialog) => match dialog.receiver.try_recv() {
+                Ok(path) => Some(Ok((path, dialog.port, dialog.resume_on_cancel))),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(50));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err(())),
+            },
+            None => None,
         };
 
-        match std::fs::read(&path) {
-            Ok(bytes) => self.load_cpu_diagnostic(&path, &bytes, port),
-            Err(e) => self.status = format!("CPU diagnostic load failed: {e}"),
+        let Some(result) = result else {
+            return;
+        };
+        self.diagnostic_file_dialog = None;
+
+        match result {
+            Err(()) => {
+                self.status = "CPU diagnostic picker failed".into();
+            }
+            Ok((None, _, resume_on_cancel)) => {
+                if resume_on_cancel {
+                    self.machine.set_running(true);
+                }
+                self.status = if resume_on_cancel {
+                    "CPU diagnostic selection cancelled — previous machine resumed".into()
+                } else {
+                    "CPU diagnostic selection cancelled".into()
+                };
+            }
+            Ok((Some(path), port, _)) => match std::fs::read(&path) {
+                Ok(bytes) => self.load_cpu_diagnostic(&path, &bytes, port),
+                Err(e) => self.status = format!("CPU diagnostic load failed: {e}"),
+            },
         }
     }
 
@@ -158,6 +230,12 @@ impl RusTairApp {
             return;
         };
 
+        // This menu item is deliberately a convenience loader, not a physical
+        // front-panel operation. Whatever the current state, establish one
+        // deterministic diagnostic boot sequence: power on if needed, STOP,
+        // RESET CPU/I/O, clear old guest RAM, install page zero + .COM, PC=0000,
+        // then RUN. This also prevents a shorter second .COM from seeing bytes
+        // left behind by the previous diagnostic.
         if !self.machine.powered {
             self.set_altair_power(true);
         }
@@ -169,6 +247,8 @@ impl RusTairApp {
         self.external_com.reset_line_timing();
         self.machine.bus.clear_protection();
         self.machine.bus.clear_transient_memory_guards();
+        let clean_ram = vec![0u8; installed];
+        self.machine.bus.load(0x0000, &clean_ram);
         self.machine.bus.load(0x0000, &shim);
         self.machine.bus.load(CPM_COM_LOAD_ADDRESS, bytes);
         self.machine.cpu.pc = 0x0000;
@@ -190,7 +270,7 @@ impl RusTairApp {
             .map(Self::serial_device_name)
             .unwrap_or("no endpoint connected");
         self.status = format!(
-            "CPU diagnostic running: {} at 0100h — mini-BDOS functions 2/9 — output via {} → {}",
+            "CPU diagnostic running: {} at 0100h — clean reset/RAM — mini-BDOS functions 2/9 — output via {} → {}",
             path.display(),
             port.label(board),
             endpoint
