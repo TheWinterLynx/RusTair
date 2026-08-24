@@ -79,13 +79,22 @@ impl RusTairApp {
         egui::TopBottomPanel::top("tty-menu").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.label("POWER:");
-                if ui.selectable_label(self.tty.mode == TtyMode::Off, "OFF").clicked() {
+                if ui
+                    .selectable_label(self.tty.mode == TtyMode::Off, "OFF")
+                    .clicked()
+                {
                     self.set_tty_mode(TtyMode::Off);
                 }
-                if ui.selectable_label(self.tty.mode == TtyMode::Line, "LINE").clicked() {
+                if ui
+                    .selectable_label(self.tty.mode == TtyMode::Line, "LINE")
+                    .clicked()
+                {
                     self.set_tty_mode(TtyMode::Line);
                 }
-                if ui.selectable_label(self.tty.mode == TtyMode::Local, "LOCAL").clicked() {
+                if ui
+                    .selectable_label(self.tty.mode == TtyMode::Local, "LOCAL")
+                    .clicked()
+                {
                     self.set_tty_mode(TtyMode::Local);
                 }
                 ui.separator();
@@ -137,7 +146,11 @@ impl RusTairApp {
             let connection_label =
                 Self::serial_connection_label(self.config.machine.serial_board, connection);
             let tx = if connection.is_connected() {
-                if self.asr_serial_tx_busy() { "BUSY" } else { "READY" }
+                if self.asr_serial_tx_busy() {
+                    "BUSY"
+                } else {
+                    "READY"
+                }
             } else {
                 "N/A"
             };
@@ -172,8 +185,8 @@ impl RusTairApp {
             egui::ViewportId::from_hash_of("rustair-asr33"),
             egui::ViewportBuilder::default()
                 .with_title("RusTair — ASR-33 Teletype")
-                .with_inner_size([820.0, 820.0])
-                .with_min_inner_size([520.0, 520.0])
+                .with_inner_size([1040.0, 760.0])
+                .with_min_inner_size([700.0, 520.0])
                 .with_resizable(true),
             |tty_ctx, _class| {
                 self.draw_tty_window(tty_ctx);
