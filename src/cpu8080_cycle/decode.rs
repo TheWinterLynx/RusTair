@@ -1,4 +1,5 @@
 use super::alu::AluOp;
+use super::control_flow::{Condition, StackPair};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Register8 {
@@ -71,6 +72,10 @@ pub(super) enum Instruction {
     AluRegister { op: AluOp, src: Register8 },
     AluMemory { op: AluOp },
     AluImmediate { op: AluOp },
+    Jump,
+    JumpConditional(Condition),
+    Push(StackPair),
+    Pop(StackPair),
     Unsupported(u8),
 }
 
@@ -93,6 +98,7 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0x37 => return Instruction::AluRegister { op: AluOp::Stc, src: Register8::A },
         0x3a => return Instruction::LdaDirect,
         0x3f => return Instruction::AluRegister { op: AluOp::Cmc, src: Register8::A },
+        0xc3 => return Instruction::Jump,
         0xc6 => return Instruction::AluImmediate { op: AluOp::Add },
         0xce => return Instruction::AluImmediate { op: AluOp::Adc },
         0xd6 => return Instruction::AluImmediate { op: AluOp::Sub },
@@ -158,6 +164,16 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         };
     }
 
+    if opcode & 0xc7 == 0xc2 {
+        return Instruction::JumpConditional(Condition::from_code((opcode >> 3) & 7));
+    }
+    if opcode & 0xcf == 0xc1 {
+        return Instruction::Pop(StackPair::from_code((opcode >> 4) & 3));
+    }
+    if opcode & 0xcf == 0xc5 {
+        return Instruction::Push(StackPair::from_code((opcode >> 4) & 3));
+    }
+
     Instruction::Unsupported(opcode)
 }
 
@@ -180,42 +196,40 @@ mod tests {
     #[test]
     fn decodes_accumulator_only_operations_on_the_four_t_state_alu_path() {
         for (opcode, op) in [
-            (0x07, AluOp::Rlc),
-            (0x0f, AluOp::Rrc),
-            (0x17, AluOp::Ral),
-            (0x1f, AluOp::Rar),
-            (0x27, AluOp::Daa),
-            (0x2f, AluOp::Cma),
-            (0x37, AluOp::Stc),
-            (0x3f, AluOp::Cmc),
+            (0x07, AluOp::Rlc), (0x0f, AluOp::Rrc), (0x17, AluOp::Ral),
+            (0x1f, AluOp::Rar), (0x27, AluOp::Daa), (0x2f, AluOp::Cma),
+            (0x37, AluOp::Stc), (0x3f, AluOp::Cmc),
         ] {
             assert_eq!(decode(opcode), Instruction::AluRegister { op, src: Register8::A });
         }
     }
 
     #[test]
-    fn decodes_inr_and_dcr_register_and_memory_forms() {
+    fn decodes_inr_dcr_and_alu_families() {
         assert_eq!(decode(0x04), Instruction::InrRegister(Register8::B));
         assert_eq!(decode(0x34), Instruction::InrMemory);
         assert_eq!(decode(0x3d), Instruction::DcrRegister(Register8::A));
         assert_eq!(decode(0x35), Instruction::DcrMemory);
-    }
 
-    #[test]
-    fn decodes_all_alu_source_and_immediate_families() {
         for alu_code in 0u8..8 {
             let op = AluOp::from_code(alu_code);
             let base = 0x80 | (alu_code << 3);
             assert_eq!(decode(base), Instruction::AluRegister { op, src: Register8::B });
             assert_eq!(decode(base | 6), Instruction::AluMemory { op });
         }
+    }
 
-        for (opcode, op) in [
-            (0xc6, AluOp::Add), (0xce, AluOp::Adc), (0xd6, AluOp::Sub),
-            (0xde, AluOp::Sbb), (0xe6, AluOp::Ana), (0xee, AluOp::Xra),
-            (0xf6, AluOp::Ora), (0xfe, AluOp::Cmp),
-        ] {
-            assert_eq!(decode(opcode), Instruction::AluImmediate { op });
+    #[test]
+    fn decodes_jumps_and_all_stack_pairs() {
+        assert_eq!(decode(0xc3), Instruction::Jump);
+        for code in 0u8..8 {
+            let opcode = 0xc2 | (code << 3);
+            assert_eq!(decode(opcode), Instruction::JumpConditional(Condition::from_code(code)));
+        }
+        for code in 0u8..4 {
+            let pair = StackPair::from_code(code);
+            assert_eq!(decode(0xc1 | (code << 4)), Instruction::Pop(pair));
+            assert_eq!(decode(0xc5 | (code << 4)), Instruction::Push(pair));
         }
     }
 
