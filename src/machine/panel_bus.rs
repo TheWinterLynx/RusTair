@@ -13,6 +13,7 @@ const LAMP_INT: usize = 9;
 const LAMP_WAIT: usize = 10;
 const LAMP_HLDA: usize = 11;
 const LAMP_COUNT: usize = 12;
+const STATUS_INSTRUCTION_FETCH: u8 = 0xa2;
 
 // Presentation persistence only. The emulated hardware state remains binary;
 // this low-pass maps MHz bus transitions onto a ~60 Hz host display.
@@ -29,44 +30,6 @@ pub(super) enum BusOwner {
     None,
     Cpu,
     FrontPanel,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum S100Cycle {
-    InstructionFetch,
-    MemoryRead,
-    MemoryWrite,
-    StackRead,
-    StackWrite,
-    InputRead,
-    OutputWrite,
-    InterruptAcknowledge,
-    HaltAcknowledge,
-    InterruptAcknowledgeWhileHalted,
-}
-
-impl S100Cycle {
-    fn status_word(self) -> u8 {
-        match self {
-            Self::InstructionFetch => 0xA2,
-            Self::MemoryRead => 0x82,
-            Self::MemoryWrite => 0x00,
-            Self::StackRead => 0x86,
-            Self::StackWrite => 0x04,
-            Self::InputRead => 0x42,
-            Self::OutputWrite => 0x10,
-            Self::InterruptAcknowledge => 0x23,
-            Self::HaltAcknowledge => 0x8A,
-            Self::InterruptAcknowledgeWhileHalted => 0x2B,
-        }
-    }
-
-    fn t_states(self) -> u32 {
-        match self {
-            Self::InstructionFetch | Self::HaltAcknowledge => 4,
-            _ => 3,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -398,28 +361,6 @@ impl S100BusState {
         self.signals.ext_clear = asserted;
     }
 
-    pub(super) fn drive_cpu_cycle(
-        &mut self,
-        address: u16,
-        data: u8,
-        cycle: S100Cycle,
-        protected: bool,
-        inte: bool,
-    ) {
-        self.signals.reset = false;
-        self.signals.owner = BusOwner::Cpu;
-        self.signals.address = address;
-        self.signals.prot = protected;
-        self.signals.inte = inte;
-        self.signals.apply_status_word(cycle.status_word());
-
-        self.signals.data = cycle.status_word();
-        self.lamps.sample(&self.signals, 1);
-        self.signals.data = data;
-        self.lamps
-            .sample(&self.signals, cycle.t_states().saturating_sub(1));
-    }
-
     /// Drive exactly one CPU T-state into the S-100/front-panel model.
     ///
     /// `status_word` is the status latch value associated with the current
@@ -504,7 +445,7 @@ impl S100BusState {
         self.signals.inte = inte;
         self.signals.run = run;
         self.signals.clear_status();
-        self.signals.apply_status_word(S100Cycle::InstructionFetch.status_word());
+        self.signals.apply_status_word(STATUS_INSTRUCTION_FETCH);
         self.signals.ready = run;
         self.signals.wait = !run;
         self.signals.hlda = false;
@@ -535,31 +476,10 @@ impl S100BusState {
         if run {
             self.set_ready(true);
         } else {
-            self.signals.apply_status_word(S100Cycle::InstructionFetch.status_word());
+            self.signals.apply_status_word(STATUS_INSTRUCTION_FETCH);
             self.signals.ready = false;
             self.signals.wait = true;
         }
-        self.lamps.freeze(&self.signals);
-    }
-
-    pub(super) fn drive_front_panel_examine(
-        &mut self,
-        address: u16,
-        data: u8,
-        protected: bool,
-        inte: bool,
-    ) {
-        self.signals.reset = false;
-        self.signals.owner = BusOwner::FrontPanel;
-        self.signals.address = address;
-        self.signals.data = data;
-        self.signals.prot = protected;
-        self.signals.inte = inte;
-        self.signals.clear_status();
-        self.signals.memr = true;
-        self.signals.m1 = true;
-        self.signals.wo = true;
-        self.set_ready(false);
         self.lamps.freeze(&self.signals);
     }
 
@@ -619,8 +539,12 @@ mod tests {
     #[test]
     fn intel_status_words_drive_s100_status_lines_with_physical_wo_polarity() {
         let mut bus = S100BusState::default();
-        bus.set_ready(true);
-        bus.drive_cpu_cycle(0x1234, 0x56, S100Cycle::InstructionFetch, false, false);
+        bus.drive_cpu_t_state(
+            Some(0x1234), Some(0xa2), Some(0xa2), false, false, true, false, false,
+        );
+        bus.drive_cpu_t_state(
+            Some(0x1234), Some(0x56), None, false, false, true, false, false,
+        );
         let s = bus.signals();
         assert_eq!(s.address, 0x1234);
         assert_eq!(s.data, 0x56);
@@ -628,7 +552,12 @@ mod tests {
         assert!(s.m1);
         assert!(s.wo);
 
-        bus.drive_cpu_cycle(0x1234, 0xaa, S100Cycle::MemoryWrite, false, false);
+        bus.drive_cpu_t_state(
+            Some(0x1234), Some(0x00), Some(0x00), false, false, true, false, false,
+        );
+        bus.drive_cpu_t_state(
+            Some(0x1234), Some(0xaa), None, false, false, true, false, false,
+        );
         let s = bus.signals();
         assert!(!s.memr);
         assert!(!s.wo);
