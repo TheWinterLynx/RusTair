@@ -62,8 +62,8 @@ impl MachineBackend for NativeMachineBackend {
     fn assert_clear(&mut self) -> BackendResult<()> { self.machine.assert_front_panel_clear(); Ok(()) }
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.machine.request_hold(hold); Ok(()) }
-    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.machine.examine(next); Ok(()) }
-    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.deposit(next); Ok(()) }
+    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_examine_via_cpu_board(next); Ok(()) }
+    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_deposit_via_cpu_board(next); Ok(()) }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.protect_current_board(protected); Ok(()) }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
