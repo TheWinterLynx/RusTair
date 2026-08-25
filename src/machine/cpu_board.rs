@@ -262,6 +262,26 @@ impl super::AltairMachine {
         let value = self.bus.panel_switches() as u8;
         self.bus.cpu_board_front_panel_deposit(address, value);
     }
+
+    /// PROTECT/UNPROTECT belongs to the front panel and the selected memory
+    /// board, not to a particular CPU implementation. The addressed board is
+    /// therefore derived from the address currently visible on the S-100 bus.
+    /// Changing the switch register after EXAMINE must not silently retarget the
+    /// protection operation.
+    pub(crate) fn front_panel_set_memory_protection_via_s100(&mut self, protected: bool) {
+        if !self.powered
+            || self.running
+            || self.bus.reset_asserted()
+            || self.bus.hold_requested()
+            || self.cpu.halted
+        {
+            return;
+        }
+
+        let address = self.bus.panel_address();
+        self.bus.set_protected(address, protected);
+        self.bus.freeze_panel_bus();
+    }
 }
 
 /// Adapter for the T-state Intel 8080 core.
@@ -399,5 +419,39 @@ mod tests {
         machine.fast_front_panel_deposit_via_cpu_board(true);
         assert_eq!(machine.cpu.pc, 2);
         assert_eq!(machine.bus.peek_memory(2), Some(0xa5));
+    }
+
+    #[test]
+    fn front_panel_protection_uses_live_s100_address_and_blocks_deposit() {
+        let mut machine = super::super::AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.bus.load(0x0456, &[0x11]);
+
+        // Select 0456h and let the CPU itself drive it through a jammed JMP.
+        for bit in 0..16 {
+            if 0x0456 & (1u16 << bit) != 0 {
+                machine.toggle_sense_switch(bit);
+            }
+        }
+        machine.fast_front_panel_examine_via_cpu_board(false);
+        assert_eq!(machine.address_leds(), 0x0456);
+
+        // Change the switch register to a different 1 KiB board without doing
+        // another EXAMINE. PROTECT must still target the live S-100 address.
+        machine.toggle_sense_switch(11); // 0456h -> 0C56h, low data stays 56h.
+        machine.front_panel_set_memory_protection_via_s100(true);
+        assert!(machine.bus.is_protected(0x0400));
+        assert!(machine.bus.is_protected(0x07ff));
+        assert!(!machine.bus.is_protected(0x0c00));
+        assert!(machine.current_board_protected());
+
+        machine.fast_front_panel_deposit_via_cpu_board(false);
+        assert_eq!(machine.bus.peek_memory(0x0456), Some(0x11));
+
+        machine.front_panel_set_memory_protection_via_s100(false);
+        assert!(!machine.current_board_protected());
+        machine.fast_front_panel_deposit_via_cpu_board(false);
+        assert_eq!(machine.bus.peek_memory(0x0456), Some(0x56));
     }
 }
