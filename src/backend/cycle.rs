@@ -5,7 +5,7 @@ use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
-use crate::machine::AltairMachine;
+use crate::machine::{AltairMachine, Cycle8080S100Adapter};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
@@ -16,12 +16,11 @@ use super::{
 ///
 /// RAM/I/O side effects are performed through a raw machine path that does not
 /// synthesize legacy aggregate bus cycles. Every `Cpu8080Cycle::tick()` is then
-/// sampled independently into the S-100/front-panel model, so CPU timing and
-/// visible bus activity share the same T-state source of truth.
+/// converted by the cycle CPU-board adapter into the same S-100 sample contract
+/// consumed by the fast CPU-board adapter and the front-panel bus model.
 pub struct CycleAccurateMachineBackend {
     machine: AltairMachine,
     cpu: Cpu8080Cycle,
-    hold_requested: bool,
     instruction_address: u16,
 }
 
@@ -31,7 +30,6 @@ impl Default for CycleAccurateMachineBackend {
         let mut backend = Self {
             machine,
             cpu: Cpu8080Cycle::new(),
-            hold_requested: false,
             instruction_address: 0,
         };
         backend.sync_machine_cpu();
@@ -202,32 +200,9 @@ impl CycleAccurateMachineBackend {
     }
 
     fn drive_s100_t_state(&mut self, trace: &TickTrace, sampled_data_in: u8, ready: bool) {
-        let data = self.visible_bus_data(trace, sampled_data_in);
-        // The S-100 status latch changes only when the 8080 actually asserts
-        // SYNC with a processor status byte. It otherwise retains the previous
-        // machine-cycle status. HLDA explicitly relinquishes those CPU drivers.
-        let status_word = if trace.pins.hlda {
-            None
-        } else if trace.pins.sync {
-            trace.pins.data_out
-        } else if trace.t_state == TState::Thalt {
-            // If HOLD interrupted a halted CPU, re-establish HLTA immediately
-            // when the processor owns the bus again even though no new SYNC is
-            // generated while dwelling in HALT.
-            trace.machine_cycle.status_word()
-        } else {
-            None
-        };
-
-        self.machine.bus.cycle_drive_s100_t_state(
-            trace.pins.address,
-            data,
-            status_word,
-            trace.pins.inte,
-            ready,
-            trace.pins.wait,
-            trace.pins.hlda,
-        );
+        let visible_data = self.visible_bus_data(trace, sampled_data_in);
+        let sample = Cycle8080S100Adapter::sample(trace, visible_data, ready);
+        self.machine.bus.drive_cpu_board_sample(sample);
     }
 
     fn tick_once(&mut self, ready: bool) -> TickTrace {
@@ -238,12 +213,16 @@ impl CycleAccurateMachineBackend {
         }
 
         let data_in = self.data_in_for_current_t_state();
+        let lines = self.machine.bus.cpu_control_lines();
         let trace = self.cpu.tick(Cpu8080Inputs {
             data_in,
+            // STEP deliberately overrides the stopped READY line for the one
+            // instruction it is executing. HOLD and RESET, however, always
+            // arrive through the shared S-100 control-line contract.
             ready,
             interrupt: false,
-            hold: self.hold_requested,
-            reset: false,
+            hold: lines.hold,
+            reset: lines.reset,
         });
         self.apply_trace_side_effects(&trace);
         self.drive_s100_t_state(&trace, data_in, ready);
@@ -296,7 +275,6 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.machine.power_with_historical_run_latch(on, historical);
-        self.hold_requested = false;
         if on {
             self.cpu = Cpu8080Cycle::new();
             self.cpu.set_registers(Self::cycle_registers_from_fast(&self.machine.cpu));
@@ -324,7 +302,8 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
         if self.machine.powered && self.machine.running {
             for _ in 0..t_state_budget {
-                let trace = self.tick_once(true);
+                let ready = self.machine.bus.cpu_control_lines().ready;
+                let trace = self.tick_once(ready);
                 if trace.fault.is_some() {
                     break;
                 }
@@ -363,7 +342,6 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
 
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> {
-        self.hold_requested = hold;
         self.machine.request_hold(hold);
         Ok(())
     }
@@ -525,6 +503,7 @@ mod tests {
         backend.load_bytes(0, &[0x00, 0x00]).unwrap();
         backend.run().unwrap();
         backend.request_hold(true).unwrap();
+        assert!(backend.machine().bus.cpu_control_lines().hold);
 
         // T1, T2(sample HOLD), T3, T4(boundary), THOLD.
         backend.service_execution(5).unwrap();
