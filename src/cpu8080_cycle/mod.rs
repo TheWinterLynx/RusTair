@@ -201,7 +201,18 @@ impl Cpu8080Cycle {
         }
 
         if self.halted {
-            return self.tick_halted();
+            if inputs.interrupt && self.inte {
+                self.begin_interrupt_ack(true);
+            } else {
+                return self.tick_halted();
+            }
+        } else if self.machine_cycle == MachineCycle::InstructionFetch
+            && self.t_state == TState::T1
+            && self.current_instruction_t_states == 0
+            && inputs.interrupt
+            && self.inte
+        {
+            self.begin_interrupt_ack(false);
         }
 
         let machine_cycle = self.machine_cycle;
@@ -244,6 +255,14 @@ impl Cpu8080Cycle {
                     self.registers.pc = self.registers.pc.wrapping_add(1);
                     self.t_state = TState::T4;
                 }
+                MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
+                    // INTA replaces T1-T3 of the normal opcode-fetch cycle. The
+                    // peripheral-supplied opcode therefore does not advance PC;
+                    // execution continues directly with that instruction's T4.
+                    self.opcode = Some(inputs.data_in);
+                    self.instruction = decode(inputs.data_in);
+                    self.t_state = TState::T4;
+                }
                 MachineCycle::MemoryRead => {
                     instruction_complete = self.finish_memory_read(inputs.data_in);
                 }
@@ -269,7 +288,6 @@ impl Cpu8080Cycle {
                 MachineCycle::Internal => {
                     instruction_complete = self.finish_internal_cycle();
                 }
-                _ => unreachable!("unsupported machine cycle {:?}", machine_cycle),
             },
             TState::T4 => match self.instruction {
                 Instruction::Nop => {
@@ -306,7 +324,14 @@ impl Cpu8080Cycle {
                     self.complete_instruction();
                 }
                 Instruction::Xthl => {
-                    if machine_cycle == MachineCycle::InstructionFetch && machine_cycle_index == 1 {
+                    if machine_cycle_index == 1
+                        && matches!(
+                            machine_cycle,
+                            MachineCycle::InstructionFetch
+                                | MachineCycle::InterruptAck
+                                | MachineCycle::InterruptAckWhileHalt
+                        )
+                    {
                         self.begin_stack_read(self.registers.sp, 2);
                     } else if machine_cycle == MachineCycle::StackWrite && machine_cycle_index == 5 {
                         self.t_state = TState::T5;
@@ -961,6 +986,28 @@ impl Cpu8080Cycle {
         self.t_state = TState::T1;
         self.cycle_address = self.registers.pc;
         self.cycle_data_out = None;
+    }
+
+    fn begin_interrupt_ack(&mut self, while_halted: bool) {
+        self.halted = false;
+        self.inte = false;
+        self.ei_pending = false;
+        self.enable_inte_after_instruction = false;
+        self.machine_cycle = if while_halted {
+            MachineCycle::InterruptAckWhileHalt
+        } else {
+            MachineCycle::InterruptAck
+        };
+        self.machine_cycle_index = 1;
+        self.t_state = TState::T1;
+        self.cycle_address = self.registers.pc;
+        self.cycle_data_out = None;
+        self.opcode = None;
+        self.instruction = Instruction::Nop;
+        self.operand_low = 0;
+        self.effective_address = 0;
+        self.temporary_word = 0;
+        self.current_instruction_t_states = 0;
     }
 
     fn begin_instruction_fetch(&mut self) {
