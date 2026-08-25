@@ -23,10 +23,6 @@ struct TempConfig {
 
 impl TempConfig {
     fn create(port0: u16, port1: u16) -> Result<Self, Box<dyn Error>> {
-        let console_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let console_port = console_listener.local_addr()?.port();
-        drop(console_listener);
-
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = env::temp_dir().join(format!(
             "rustair-simh-altairz80-m2sio-diagnostic-{}-{nonce}.ini",
@@ -45,7 +41,6 @@ impl TempConfig {
 set cpu 8080\n\
 set cpu 64kb\n\
 set console telnet=buffered\n\
-set console -u telnet={console_port}\n\
 set m2sio0 enabled\n\
 set m2sio1 enabled\n\
 set m2sio0 debug=STATUS;VERBOSE;ERROR\n\
@@ -70,9 +65,13 @@ reset m2sio1\n"
         })
     }
 
-    fn path(&self) -> &Path { &self.path }
+    fn path(&self) -> &Path {
+        &self.path
+    }
 
-    fn simh_debug_path(&self) -> &Path { &self.simh_debug_path }
+    fn simh_debug_path(&self) -> &Path {
+        &self.simh_debug_path
+    }
 }
 
 impl Drop for TempConfig {
@@ -96,7 +95,9 @@ impl TempDebugLog {
         Ok(Self { path })
     }
 
-    fn path(&self) -> &Path { &self.path }
+    fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Drop for TempDebugLog {
@@ -153,7 +154,7 @@ fn receiver_program() -> Vec<u8> {
 fn examine(session: &SimhSession, name: &str) -> String {
     match session.examine_u32(name) {
         Ok(value) => format!("{value:02X}"),
-        Err(error) => format!("<error: {error}>")
+        Err(error) => format!("<error: {error}>"),
     }
 }
 
@@ -182,10 +183,9 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     // global stop_cpu flag before/after dispatch.
     session.set_device_debug_mode("SCP-PROCESS", true, "EVENT")?;
 
-    // Trace the whole console transport as well. If the scheduler returns
-    // SCPE_STOP due to stop_cpu, sim_poll_kbd()/console polling is one of the
-    // code paths that can raise that flag. An empty mode string is the API's
-    // documented way to enable every debug category for a device.
+    // CON-TELNET exists as an internal device even when no Telnet listener is
+    // configured. Keep its tracing enabled so this diagnostic also proves
+    // whether console polling participates in a stop_cpu transition.
     session.set_device_debug_mode("CON-TELNET", true, "")?;
 
     // ATTACH validates each Connect= destination with one disposable TCP
