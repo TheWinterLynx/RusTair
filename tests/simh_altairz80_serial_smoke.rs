@@ -91,6 +91,25 @@ fn wait_for_running(
     }
 }
 
+fn wait_for_serial_connected(
+    backend: &mut SimhAltairZ80Backend,
+    port: BackendSerialPort,
+) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + STATE_TIMEOUT;
+    loop {
+        backend.service_execution(0)?;
+        if backend.serial_connected(port) {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(test_error(format!(
+                "timed out waiting for persistent SIMH M2SIO connection on {port:?}"
+            )));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
 fn set_program_counter(
     backend: &mut SimhAltairZ80Backend,
     address: u16,
@@ -144,9 +163,11 @@ fn exercise_host_to_guest(
     set_program_counter(backend, PROGRAM_BASE)?;
 
     backend.run()?;
-    // The receive program deliberately waits for RDRF, so seeing RUN here is
-    // meaningful and ensures the guest is ready before the host injects data.
+    // The persistent outgoing TMXR connection is established by m2sio_svc()
+    // while SIMH is executing, not while the simulator is halted at launch.
     wait_for_running(backend, true)?;
+    wait_for_serial_connected(backend, logical_port)?;
+
     backend.serial_receive(logical_port, byte)?;
     wait_for_running(backend, false)?;
 
@@ -171,8 +192,8 @@ fn exercise_guest_to_host(
     set_program_counter(backend, PROGRAM_BASE)?;
 
     backend.run()?;
-    // This program can complete before the caller observes an intermediate RUN
-    // state, so only require the architecturally relevant final HALT.
+    // Host-to-guest ran first for this port, so the persistent M2SIO link is
+    // already established. This program may halt before RUN is observed.
     wait_for_running(backend, false)?;
 
     let deadline = Instant::now() + STATE_TIMEOUT;
@@ -194,6 +215,26 @@ fn exercise_guest_to_host(
     }
 }
 
+fn exercise_power_cycle_reconnect(
+    backend: &mut SimhAltairZ80Backend,
+) -> Result<(), Box<dyn Error>> {
+    backend.power(false)?;
+    backend.power(true)?;
+    wait_for_running(backend, false)?;
+
+    // Persistent M2SIO connections do not exist yet: they are recreated by
+    // m2sio_svc() only after the restarted simulator begins executing.
+    backend.load_bytes(PROGRAM_BASE, &[0xc3, 0x00, 0x01])?; // JMP 0100h
+    set_program_counter(backend, PROGRAM_BASE)?;
+    backend.run()?;
+    wait_for_running(backend, true)?;
+    wait_for_serial_connected(backend, BackendSerialPort::Port0)?;
+    wait_for_serial_connected(backend, BackendSerialPort::Port1)?;
+    backend.halt()?;
+    wait_for_running(backend, false)?;
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires the local x64 Open-SIMH stack built by tools/simh/build-simh-x64.ps1"]
 fn altairz80_m2sio_raw_tcp_round_trip() -> Result<(), Box<dyn Error>> {
@@ -206,8 +247,6 @@ fn altairz80_m2sio_raw_tcp_round_trip() -> Result<(), Box<dyn Error>> {
     )?;
 
     assert!(backend.capabilities().serial_routing);
-    assert!(backend.serial_connected(BackendSerialPort::Port0));
-    assert!(backend.serial_connected(BackendSerialPort::Port1));
     wait_for_running(&mut backend, false)?;
 
     // M2SIO0: status 10h, data 11h.
@@ -242,13 +281,7 @@ fn altairz80_m2sio_raw_tcp_round_trip() -> Result<(), Box<dyn Error>> {
         0x52,
     )?;
 
-    // The private listeners and temporary overlay survive a simulator process
-    // power-cycle; the new altairz80.exe must reconnect both M2SIO channels.
-    backend.power(false)?;
-    backend.power(true)?;
-    assert!(backend.serial_connected(BackendSerialPort::Port0));
-    assert!(backend.serial_connected(BackendSerialPort::Port1));
-    wait_for_running(&mut backend, false)?;
+    exercise_power_cycle_reconnect(&mut backend)?;
 
     println!("RusTair -> raw TCP -> Open-SIMH M2SIO0/M2SIO1 serial smoke test passed");
     Ok(())
