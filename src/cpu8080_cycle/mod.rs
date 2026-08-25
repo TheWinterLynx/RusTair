@@ -23,6 +23,8 @@ mod control_flow_tests;
 #[cfg(test)]
 mod core_tests;
 #[cfg(test)]
+mod hold_tests;
+#[cfg(test)]
 mod interrupt_control_tests;
 #[cfg(test)]
 mod io_tests;
@@ -71,6 +73,9 @@ pub struct Cpu8080Cycle {
     ei_pending: bool,
     enable_inte_after_instruction: bool,
     halted: bool,
+    hold_pending: bool,
+    holding: bool,
+    hold_resume_t_state: TState,
     total_t_states: u64,
     completed_instructions: u64,
     current_instruction_t_states: u32,
@@ -104,6 +109,9 @@ impl Cpu8080Cycle {
             ei_pending: false,
             enable_inte_after_instruction: false,
             halted: false,
+            hold_pending: false,
+            holding: false,
+            hold_resume_t_state: TState::T1,
             total_t_states: 0,
             completed_instructions: 0,
             current_instruction_t_states: 0,
@@ -160,6 +168,10 @@ impl Cpu8080Cycle {
         self.halted
     }
 
+    pub const fn is_holding(&self) -> bool {
+        self.holding
+    }
+
     pub const fn fault(&self) -> Option<Cpu8080CycleFault> {
         self.fault
     }
@@ -200,7 +212,21 @@ impl Cpu8080Cycle {
             };
         }
 
+        if self.holding {
+            if inputs.hold {
+                return self.tick_holding();
+            }
+            self.end_hold();
+        }
+
         if self.halted {
+            // The 8080's halt-wait logic gives a bus HOLD request priority over
+            // a simultaneous interrupt. The interrupt can be acknowledged once
+            // HOLD is released, provided INT remains asserted and INTE is set.
+            if inputs.hold {
+                self.begin_hold();
+                return self.tick_holding();
+            }
             if inputs.interrupt && self.inte {
                 self.begin_interrupt_ack(true);
             } else {
@@ -241,7 +267,19 @@ impl Cpu8080Cycle {
 
         match t_state {
             TState::T1 => self.t_state = TState::T2,
-            TState::T2 | TState::Tw => {
+            TState::T2 => {
+                // Intel 8080 HOLD is sampled during T2. A request sampled here
+                // is not acknowledged until the current machine cycle ends.
+                if inputs.hold {
+                    self.hold_pending = true;
+                }
+                self.t_state = if self.cycle_uses_ready() && !inputs.ready {
+                    TState::Tw
+                } else {
+                    TState::T3
+                };
+            }
+            TState::Tw => {
                 self.t_state = if self.cycle_uses_ready() && !inputs.ready {
                     TState::Tw
                 } else {
@@ -476,6 +514,19 @@ impl Cpu8080Cycle {
                 _ => unreachable!("unexpected T5 for {:?}", self.instruction),
             },
             TState::Thalt => unreachable!("halt dwell is handled before normal T-state dispatch"),
+            TState::Thold => unreachable!("HOLD dwell is handled before normal T-state dispatch"),
+        }
+
+        if self.hold_pending
+            && self.machine_cycle_boundary_crossed(machine_cycle, machine_cycle_index, t_state)
+        {
+            if inputs.hold {
+                self.begin_hold();
+            } else {
+                // HOLD is expected to be held until HLDA. If the requester
+                // withdraws it before the boundary, no bus grant is emitted.
+                self.hold_pending = false;
+            }
         }
 
         TickTrace {
@@ -519,6 +570,24 @@ impl Cpu8080Cycle {
             fault: None,
             total_t_states: self.total_t_states,
             instruction_t_states: 0,
+        }
+    }
+
+    fn tick_holding(&mut self) -> TickTrace {
+        self.drive_pins_for_t_state(TState::Thold);
+        self.total_t_states = self.total_t_states.saturating_add(1);
+
+        TickTrace {
+            machine_cycle: self.machine_cycle,
+            machine_cycle_index: self.machine_cycle_index,
+            t_state: TState::Thold,
+            pins: self.pins,
+            opcode: self.opcode,
+            instruction_complete: false,
+            reset: false,
+            fault: None,
+            total_t_states: self.total_t_states,
+            instruction_t_states: self.current_instruction_t_states,
         }
     }
 
@@ -925,6 +994,21 @@ impl Cpu8080Cycle {
         self.machine_cycle != MachineCycle::Internal
     }
 
+    fn machine_cycle_boundary_crossed(
+        &self,
+        previous_cycle: MachineCycle,
+        previous_index: u8,
+        previous_t_state: TState,
+    ) -> bool {
+        if !matches!(previous_t_state, TState::T3 | TState::T4 | TState::T5) {
+            return false;
+        }
+
+        self.machine_cycle != previous_cycle
+            || self.machine_cycle_index != previous_index
+            || matches!(self.t_state, TState::T1 | TState::Thalt)
+    }
+
     fn begin_memory_read(&mut self, address: u16, machine_cycle_index: u8) {
         self.machine_cycle = MachineCycle::MemoryRead;
         self.machine_cycle_index = machine_cycle_index;
@@ -986,6 +1070,22 @@ impl Cpu8080Cycle {
         self.t_state = TState::T1;
         self.cycle_address = self.registers.pc;
         self.cycle_data_out = None;
+    }
+
+    fn begin_hold(&mut self) {
+        if self.holding {
+            return;
+        }
+        self.hold_pending = false;
+        self.hold_resume_t_state = self.t_state;
+        self.t_state = TState::Thold;
+        self.holding = true;
+    }
+
+    fn end_hold(&mut self) {
+        self.holding = false;
+        self.t_state = self.hold_resume_t_state;
+        self.pins.hlda = false;
     }
 
     fn begin_interrupt_ack(&mut self, while_halted: bool) {
@@ -1055,6 +1155,9 @@ impl Cpu8080Cycle {
         self.ei_pending = false;
         self.enable_inte_after_instruction = false;
         self.halted = false;
+        self.hold_pending = false;
+        self.holding = false;
+        self.hold_resume_t_state = TState::T1;
         self.pins = Cpu8080Pins::default();
         self.machine_cycle = MachineCycle::InstructionFetch;
         self.machine_cycle_index = 1;
@@ -1138,6 +1241,17 @@ impl Cpu8080Cycle {
                 self.pins.dbin = false;
                 self.pins.wr_n = true;
                 self.pins.wait = false;
+            }
+            TState::Thold => {
+                // Address and data buses are relinquished while HLDA is high.
+                // Control strobes are inactive; INTE remains a valid CPU output.
+                self.pins.address = None;
+                self.pins.data_out = None;
+                self.pins.sync = false;
+                self.pins.dbin = false;
+                self.pins.wr_n = true;
+                self.pins.wait = false;
+                self.pins.hlda = true;
             }
         }
     }
