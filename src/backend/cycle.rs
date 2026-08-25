@@ -520,7 +520,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
         Ok(())
     }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
-        self.machine.protect_current_board(protected);
+        self.machine.front_panel_set_memory_protection_via_s100(protected);
         Ok(())
     }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
@@ -789,6 +789,34 @@ mod tests {
         assert_eq!(backend.peek_memory(0x0101).unwrap(), Some(0x5a));
         assert_eq!(backend.cpu().registers().pc, 0x0101);
         assert_eq!(backend.front_panel_state().unwrap().address, 0x0101);
+    }
+
+    #[test]
+    fn cycle_backend_protect_targets_live_s100_board_and_blocks_deposit() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0x0456, &[0x11]).unwrap();
+        backend.set_switch_register(0x0456).unwrap();
+        backend.panel_examine(false).unwrap();
+        assert_eq!(backend.front_panel_state().unwrap().address, 0x0456);
+
+        // Retarget the physical switches without issuing EXAMINE. PROTECT must
+        // follow ADDRESS on S-100, not the now-different switch register.
+        backend.set_switch_register(0x0c56).unwrap();
+        backend.protect_current_board(true).unwrap();
+        assert!(backend.front_panel_state().unwrap().current_board_protected);
+        assert!(backend.machine().bus.is_protected(0x0400));
+        assert!(!backend.machine().bus.is_protected(0x0c00));
+
+        backend.panel_deposit(false).unwrap();
+        assert_eq!(backend.peek_memory(0x0456).unwrap(), Some(0x11));
+
+        backend.protect_current_board(false).unwrap();
+        assert!(!backend.front_panel_state().unwrap().current_board_protected);
+        backend.panel_deposit(false).unwrap();
+        assert_eq!(backend.peek_memory(0x0456).unwrap(), Some(0x56));
     }
 
     #[test]
