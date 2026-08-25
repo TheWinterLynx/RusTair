@@ -257,11 +257,12 @@ impl SimhSession {
     ) -> Result<(), SimhSessionError> {
         let device = CString::new(device)?;
         let mode_bits = CString::new(mode_bits)?;
+        let set_unset = if enabled { 1 } else { 0 };
         let status = unsafe {
             ffi::sim_panel_device_debug_mode(
                 self.raw(),
                 device.as_ptr(),
-                i32::from(enabled),
+                set_unset,
                 mode_bits.as_ptr(),
             )
         };
