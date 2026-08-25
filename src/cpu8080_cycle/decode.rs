@@ -95,7 +95,10 @@ pub(super) enum Instruction {
 
 pub(super) const fn decode(opcode: u8) -> Instruction {
     match opcode {
-        0x00 => return Instruction::Nop,
+        // The NMOS 8080 silicon treats these seven undocumented holes as NOP.
+        0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 => {
+            return Instruction::Nop;
+        }
         0x02 => return Instruction::Stax(RegisterPair::BC),
         0x07 => return Instruction::AluRegister { op: AluOp::Rlc, src: Register8::A },
         0x0a => return Instruction::Ldax(RegisterPair::BC),
@@ -113,10 +116,12 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
         0x3a => return Instruction::LdaDirect,
         0x3f => return Instruction::AluRegister { op: AluOp::Cmc, src: Register8::A },
         0x76 => return Instruction::Hlt,
-        0xc3 => return Instruction::Jump,
+        // Undocumented aliases present on original 8080 silicon and already
+        // reproduced by RusTair's validated fast core.
+        0xc3 | 0xcb => return Instruction::Jump,
         0xc6 => return Instruction::AluImmediate { op: AluOp::Add },
-        0xc9 => return Instruction::Ret,
-        0xcd => return Instruction::Call,
+        0xc9 | 0xd9 => return Instruction::Ret,
+        0xcd | 0xdd | 0xed | 0xfd => return Instruction::Call,
         0xce => return Instruction::AluImmediate { op: AluOp::Adc },
         0xd3 => return Instruction::Out,
         0xd6 => return Instruction::AluImmediate { op: AluOp::Sub },
@@ -281,6 +286,29 @@ mod tests {
         assert_eq!(decode(0xf3), Instruction::Di);
         assert_eq!(decode(0xf9), Instruction::Sphl);
         assert_eq!(decode(0xfb), Instruction::Ei);
+    }
+
+    #[test]
+    fn undocumented_silicon_aliases_match_the_validated_fast_core() {
+        for opcode in [0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38] {
+            assert_eq!(decode(opcode), Instruction::Nop);
+        }
+        assert_eq!(decode(0xcb), Instruction::Jump);
+        assert_eq!(decode(0xd9), Instruction::Ret);
+        for opcode in [0xdd, 0xed, 0xfd] {
+            assert_eq!(decode(opcode), Instruction::Call);
+        }
+    }
+
+    #[test]
+    fn all_256_opcode_values_have_8080_silicon_behavior() {
+        for opcode in 0u16..=0xff {
+            assert!(
+                !matches!(decode(opcode as u8), Instruction::Unsupported(_)),
+                "opcode {:02x} has no cycle-core behavior",
+                opcode
+            );
+        }
     }
 
     #[test]
