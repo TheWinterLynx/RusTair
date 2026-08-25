@@ -507,11 +507,12 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
+        let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
 
         backend.step().unwrap();
         let CpuState::Intel8080(after_fetch) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(after_fetch.pc, 1);
-        assert_eq!(after_fetch.a, 0x00, "MVI operand cycle must not have executed yet");
+        assert_eq!(after_fetch.a, before.a, "MVI operand cycle must not have executed yet");
         assert_eq!(after_fetch.total_t_states, Some(4));
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
         assert_eq!(backend.cpu().machine_cycle_index(), 2);
@@ -567,6 +568,7 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x3e, 0x5a, 0x00]).unwrap(); // MVI A,5Ah; NOP
+        let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
         backend.run().unwrap();
 
         // Stop is requested after fetch T2. The current M1 is allowed to finish,
@@ -582,7 +584,7 @@ mod tests {
         assert_eq!(backend.cpu().t_state(), TState::T2);
         let CpuState::Intel8080(stopped) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(stopped.pc, 1);
-        assert_eq!(stopped.a, 0x00);
+        assert_eq!(stopped.a, before.a, "STOP at PSYNC must not execute the MVI operand read");
         assert_eq!(stopped.total_t_states, Some(5));
 
         backend.release_run_stop(false).unwrap();
