@@ -159,6 +159,8 @@ mod tests {
     fn powered_serial_board_change_resets_real_cycle_core() {
         let mut backend = CycleHostBackend::default();
         backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x00]).unwrap();
         backend.run().unwrap();
         backend.service_execution(4).unwrap();
