@@ -1,7 +1,7 @@
 use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
-use crate::config::SerialBoard;
+use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::AltairMachine;
 
 use super::{
@@ -46,8 +46,14 @@ impl MachineBackend for NativeMachineBackend {
             serial_routing: true, disk_mount: false }
     }
     fn execution_model(&self) -> BackendExecutionModel { BackendExecutionModel::HostDriven }
+    fn rust_machine(&self) -> Option<&AltairMachine> { Some(&self.machine) }
+    fn rust_machine_mut(&mut self) -> Option<&mut AltairMachine> { Some(&mut self.machine) }
     fn cpu_state(&mut self) -> BackendResult<CpuState> { Ok(self.snapshot_cpu()) }
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
+    fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
+        self.machine.configure_memory(size, init);
+        Ok(())
+    }
     fn power(&mut self, on: bool) -> BackendResult<()> { self.machine.power(on); Ok(()) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> { self.machine.power_with_historical_run_latch(on, historical); Ok(()) }
     fn run(&mut self) -> BackendResult<()> { self.machine.set_running(true); Ok(()) }
