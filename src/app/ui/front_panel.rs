@@ -330,7 +330,7 @@ impl RusTairApp {
             self.machine.release_run_stop(run);
         }
 
-        let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE STEP", "SINGLE STEP");
+        let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
         // The selected backend defines the physical stepping granularity: the
         // cycle-accurate core advances one machine cycle; the fast core retains
         // its instruction-level approximation.
