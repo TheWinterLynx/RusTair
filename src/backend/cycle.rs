@@ -110,21 +110,26 @@ impl CycleAccurateMachineBackend {
         cpu.cycles = self.cpu.total_t_states();
     }
 
-    fn sync_cycle_pc_from_machine(&mut self) {
-        let pc = self.machine.cpu.pc;
-        let mut r = self.cpu.registers();
-        r.pc = pc;
-        self.cpu.set_registers(r);
-        self.sync_machine_cpu();
+    fn cycle_accepts_front_panel_data(&self) -> bool {
+        matches!(
+            self.cpu.machine_cycle(),
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+        )
     }
 
-    /// Supply guest-visible input only at the T3 sampling point. This is the
-    /// destructive/functional read path: serial RX is consumed exactly once and
-    /// BASIC's transient memory guard is touched only when the CPU really reads.
-    fn data_in_for_current_t_state(&mut self) -> u8 {
+    /// Supply guest-visible input only at the T3 sampling point. During an
+    /// EXAMINE/EXAMINE NEXT sequence the Display/Control board disables the RAM
+    /// source and drives its jam byte instead.
+    fn data_in_for_current_t_state(&mut self, front_panel_data: Option<u8>) -> u8 {
         if self.cpu.t_state() != TState::T3 {
             return 0;
         }
+        if self.cycle_accepts_front_panel_data() {
+            if let Some(value) = front_panel_data {
+                return value;
+            }
+        }
+
         let address = self.cpu.pins().address.unwrap_or(0);
         match self.cpu.machine_cycle() {
             MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
@@ -138,7 +143,7 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    fn apply_trace_side_effects(&mut self, trace: &TickTrace) {
+    fn apply_trace_side_effects(&mut self, trace: &TickTrace, record_instruction: bool) {
         if trace.t_state == TState::T3 {
             let address = trace.pins.address.unwrap_or(0);
             match trace.machine_cycle {
@@ -156,7 +161,7 @@ impl CycleAccurateMachineBackend {
             }
         }
 
-        if trace.instruction_complete {
+        if record_instruction && trace.instruction_complete {
             self.machine.bus.instruction_complete(
                 self.instruction_address,
                 trace.opcode.unwrap_or(0),
@@ -168,14 +173,29 @@ impl CycleAccurateMachineBackend {
     /// Data electrically visible on the S-100 data bus for this whole T-state.
     /// CPU-driven status/write data comes directly from the pins. During reads,
     /// T2/TW use a non-destructive preview and T3 uses the exact value consumed
-    /// by the core, so displaying the panel can never dequeue serial input.
-    fn visible_bus_data(&self, trace: &TickTrace, sampled_data_in: u8) -> Option<u8> {
+    /// by the core. A front-panel jam byte overrides RAM throughout the same
+    /// read window, matching the open-collector injection hardware.
+    fn visible_bus_data(
+        &self,
+        trace: &TickTrace,
+        sampled_data_in: u8,
+        front_panel_data: Option<u8>,
+    ) -> Option<u8> {
         if let Some(data) = trace.pins.data_out {
             return Some(data);
         }
 
         if !matches!(trace.t_state, TState::T2 | TState::Tw | TState::T3) {
             return None;
+        }
+
+        if matches!(
+            trace.machine_cycle,
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+        ) {
+            if let Some(value) = front_panel_data {
+                return Some(value);
+            }
         }
 
         let address = trace.pins.address?;
@@ -199,35 +219,49 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    fn drive_s100_t_state(&mut self, trace: &TickTrace, sampled_data_in: u8, ready: bool) {
-        let visible_data = self.visible_bus_data(trace, sampled_data_in);
+    fn drive_s100_t_state(
+        &mut self,
+        trace: &TickTrace,
+        sampled_data_in: u8,
+        front_panel_data: Option<u8>,
+        ready: bool,
+    ) {
+        let visible_data = self.visible_bus_data(trace, sampled_data_in, front_panel_data);
         let sample = Cycle8080S100Adapter::sample(trace, visible_data, ready);
         self.machine.bus.drive_cpu_board_sample(sample);
     }
 
-    fn tick_once(&mut self, ready: bool) -> TickTrace {
+    fn tick_once_with_front_panel_data(
+        &mut self,
+        ready: bool,
+        front_panel_data: Option<u8>,
+        record_instruction: bool,
+    ) -> TickTrace {
         if self.cpu.machine_cycle() == MachineCycle::InstructionFetch
             && self.cpu.t_state() == TState::T1
         {
             self.instruction_address = self.cpu.registers().pc;
         }
 
-        let data_in = self.data_in_for_current_t_state();
+        let data_in = self.data_in_for_current_t_state(front_panel_data);
         let lines = self.machine.bus.cpu_control_lines();
         let trace = self.cpu.tick(Cpu8080Inputs {
             data_in,
-            // SINGLE STEP may momentarily override the stopped READY line for
-            // exactly one machine cycle. HOLD and RESET always arrive through
-            // the shared S-100 control-line contract.
+            // SINGLE STEP and the EXM sequencer may momentarily override the
+            // stopped READY line. HOLD and RESET always arrive through S-100.
             ready,
             interrupt: false,
             hold: lines.hold,
             reset: lines.reset,
         });
-        self.apply_trace_side_effects(&trace);
-        self.drive_s100_t_state(&trace, data_in, ready);
+        self.apply_trace_side_effects(&trace, record_instruction);
+        self.drive_s100_t_state(&trace, data_in, front_panel_data, ready);
         self.sync_machine_cpu();
         trace
+    }
+
+    fn tick_once(&mut self, ready: bool) -> TickTrace {
+        self.tick_once_with_front_panel_data(ready, None, true)
     }
 
     fn machine_cycle_finished_since(
@@ -243,20 +277,102 @@ impl CycleAccurateMachineBackend {
             || self.cpu.is_holding()
     }
 
-    /// The original 8800 SINGLE STEP circuit releases READY for one machine
-    /// cycle and removes it again at the following PSYNC. Unlike the fast core,
-    /// this backend can reproduce that boundary directly.
-    fn run_one_machine_cycle(&mut self) {
+    fn run_one_machine_cycle_with_front_panel_data(
+        &mut self,
+        front_panel_data: Option<u8>,
+        record_instruction: bool,
+    ) {
         let start_cycle = self.cpu.machine_cycle();
         let start_index = self.cpu.machine_cycle_index();
         for _ in 0..32 {
-            let trace = self.tick_once(true);
+            let trace = self.tick_once_with_front_panel_data(
+                true,
+                front_panel_data,
+                record_instruction,
+            );
             if trace.fault.is_some()
                 || self.machine_cycle_finished_since(start_cycle, start_index, &trace)
             {
                 break;
             }
         }
+    }
+
+    /// The original 8800 SINGLE STEP circuit releases READY for one machine
+    /// cycle and removes it again at the following PSYNC. Unlike the fast core,
+    /// this backend can reproduce that boundary directly.
+    fn run_one_machine_cycle(&mut self) {
+        self.run_one_machine_cycle_with_front_panel_data(None, true);
+    }
+
+    /// Stop in the waiting portion of the next instruction fetch. The address is
+    /// still driven by the 8080; memory supplies the displayed byte. We advance
+    /// through T1/T2 only far enough for READY=0 to select TW, then host execution
+    /// stops rather than inventing an arbitrary number of repeated wait states.
+    fn park_at_waiting_fetch(&mut self) {
+        if self.cpu.machine_cycle() == MachineCycle::InstructionFetch {
+            for _ in 0..8 {
+                if self.cpu.t_state() == TState::Tw {
+                    break;
+                }
+                let trace = self.tick_once_with_front_panel_data(false, None, false);
+                if trace.fault.is_some() || self.cpu.is_halted() || self.cpu.is_holding() {
+                    break;
+                }
+            }
+        }
+        self.machine.set_running(false);
+    }
+
+    fn front_panel_controls_available(&self) -> bool {
+        let lines = self.machine.bus.cpu_control_lines();
+        self.machine.powered
+            && !self.machine.running
+            && !lines.reset
+            && !lines.hold
+            && !self.cpu.is_halted()
+            && !self.cpu.is_holding()
+    }
+
+    /// Reproduce the 8800 EXM sequencer: inject C3h, switch low byte and switch
+    /// high byte as three CPU machine cycles. EXM NXT injects one NOP. No direct
+    /// assignment to PC is performed; the real 8080 state transition does it.
+    fn execute_front_panel_examine(&mut self, next: bool) {
+        if !self.front_panel_controls_available() {
+            return;
+        }
+
+        if next {
+            self.run_one_machine_cycle_with_front_panel_data(Some(0x00), false);
+        } else {
+            let address = self.machine.panel_switches();
+            for byte in [0xc3, address as u8, (address >> 8) as u8] {
+                self.run_one_machine_cycle_with_front_panel_data(Some(byte), false);
+            }
+        }
+        self.park_at_waiting_fetch();
+        self.sync_machine_cpu();
+    }
+
+    /// DEP directly pulses the memory write line with the low eight switch bits
+    /// while the stopped CPU continues to provide the address. DEP NXT is the
+    /// documented EXM NXT operation followed by that same write pulse.
+    fn execute_front_panel_deposit(&mut self, next: bool) {
+        if !self.front_panel_controls_available() {
+            return;
+        }
+        if next {
+            self.execute_front_panel_examine(true);
+            if !self.front_panel_controls_available() {
+                return;
+            }
+        }
+        let address = self.machine.address_leds();
+        let value = self.machine.panel_switches() as u8;
+        self.machine
+            .bus
+            .cpu_board_front_panel_deposit(address, value);
+        self.sync_machine_cpu();
     }
 
     /// STOP is latched by the display/control hardware at PSYNC. If the switch
@@ -280,9 +396,12 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    fn reset_cycle_core(&mut self) {
+    fn reset_cycle_core_from_s100(&mut self) {
+        let lines = self.machine.bus.cpu_control_lines();
         let _ = self.cpu.tick(Cpu8080Inputs {
-            reset: true,
+            ready: lines.ready,
+            hold: lines.hold,
+            reset: lines.reset,
             ..Cpu8080Inputs::default()
         });
         self.sync_machine_cpu();
@@ -330,7 +449,8 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn halt(&mut self) -> BackendResult<()> { self.machine.set_running(false); Ok(()) }
 
     fn step(&mut self) -> BackendResult<()> {
-        if self.machine.powered && !self.machine.running {
+        let lines = self.machine.bus.cpu_control_lines();
+        if self.machine.powered && !self.machine.running && !lines.reset && !lines.hold {
             self.run_one_machine_cycle();
             // SINGLE STEP releases READY only for the selected machine cycle.
             // Reassert STOP afterwards without replacing the last real bus
@@ -341,7 +461,8 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
-        if self.machine.powered && self.machine.running {
+        let lines = self.machine.bus.cpu_control_lines();
+        if self.machine.powered && self.machine.running && !lines.reset {
             for _ in 0..t_state_budget {
                 let ready = self.machine.bus.cpu_control_lines().ready;
                 let trace = self.tick_once(ready);
@@ -374,7 +495,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.machine.assert_front_panel_reset();
-        self.reset_cycle_core();
+        self.reset_cycle_core_from_s100();
         Ok(())
     }
     fn release_reset(&mut self) -> BackendResult<()> {
@@ -391,15 +512,11 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
-        self.sync_machine_cpu();
-        self.machine.examine(next);
-        self.sync_cycle_pc_from_machine();
+        self.execute_front_panel_examine(next);
         Ok(())
     }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
-        self.sync_machine_cpu();
-        self.machine.deposit(next);
-        self.sync_cycle_pc_from_machine();
+        self.execute_front_panel_deposit(next);
         Ok(())
     }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
@@ -595,6 +712,83 @@ mod tests {
         assert_eq!(resumed.pc, 2);
         assert_eq!(resumed.a, 0x5a);
         assert_eq!(resumed.total_t_states, Some(7));
+    }
+
+    #[test]
+    fn cycle_backend_reset_is_driven_from_shared_s100_control_line() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.run().unwrap();
+        backend.service_execution(4).unwrap();
+        assert_ne!(backend.cpu().registers().pc, 0);
+
+        backend.assert_reset().unwrap();
+        assert!(backend.machine().bus.cpu_control_lines().reset);
+        assert_eq!(backend.cpu().registers().pc, 0);
+        assert_eq!(backend.machine().address_leds(), 0xffff);
+        assert_eq!(backend.machine().data_leds(), 0xff);
+
+        backend.release_reset().unwrap();
+        assert!(!backend.machine().bus.cpu_control_lines().reset);
+        assert_eq!(backend.cpu().registers().pc, 0);
+    }
+
+    #[test]
+    fn cycle_backend_examine_jams_real_jump_and_stops_in_target_fetch_wait() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0x0123, &[0xa5, 0x5a]).unwrap();
+        backend.set_switch_register(0x0123).unwrap();
+
+        let before = backend.cpu().total_t_states();
+        backend.panel_examine(false).unwrap();
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(state.pc, 0x0123);
+        assert_eq!(state.total_t_states, Some(before + 12));
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
+
+        let panel = backend.front_panel_state().unwrap();
+        assert_eq!(panel.address, 0x0123);
+        assert_eq!(panel.data, 0xa5);
+        assert_eq!(panel.lamps.memr, 1.0);
+        assert_eq!(panel.lamps.m1, 1.0);
+        assert_eq!(panel.lamps.wo, 1.0);
+        assert_eq!(panel.lamps.wait, 1.0);
+
+        backend.panel_examine(true).unwrap();
+        let CpuState::Intel8080(next) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(next.pc, 0x0124);
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
+        let panel = backend.front_panel_state().unwrap();
+        assert_eq!(panel.address, 0x0124);
+        assert_eq!(panel.data, 0x5a);
+    }
+
+    #[test]
+    fn cycle_backend_deposit_uses_front_panel_write_without_assigning_pc() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.set_switch_register(0x0100).unwrap();
+        backend.panel_examine(false).unwrap();
+        assert_eq!(backend.cpu().registers().pc, 0x0100);
+
+        backend.set_switch_register(0x005a).unwrap();
+        backend.panel_deposit(false).unwrap();
+        assert_eq!(backend.peek_memory(0x0100).unwrap(), Some(0x5a));
+        assert_eq!(backend.cpu().registers().pc, 0x0100);
+        assert_eq!(backend.front_panel_state().unwrap().lamps.wo, 0.0);
+
+        backend.panel_deposit(true).unwrap();
+        assert_eq!(backend.peek_memory(0x0101).unwrap(), Some(0x5a));
+        assert_eq!(backend.cpu().registers().pc, 0x0101);
+        assert_eq!(backend.front_panel_state().unwrap().address, 0x0101);
     }
 
     #[test]
