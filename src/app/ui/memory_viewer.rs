@@ -56,7 +56,7 @@ impl RusTairApp {
     pub(in crate::app) fn open_memory_viewer(&mut self, ctx: &egui::Context) {
         let mut state = Self::memory_viewer_state(ctx);
         state.window_open = true;
-        let pc = self.machine.cpu.pc;
+        let pc = self.machine.intel8080_state().pc;
         self.select_memory_address(&mut state, pc, true);
         Self::store_memory_viewer_state(ctx, state);
     }
@@ -88,14 +88,14 @@ impl RusTairApp {
     }
 
     fn select_memory_address(
-        &self,
+        &mut self,
         state: &mut MemoryViewerUiState,
         address: u16,
         jump: bool,
     ) {
         state.selected_address = address;
         state.address_input = format!("{address:04X}");
-        if let Some(byte) = self.machine.bus.peek_memory(address) {
+        if let Some(byte) = self.machine.peek_memory(address) {
             state.edit_value = byte;
             state.edit_input = format!("{byte:02X}");
         } else {
@@ -109,11 +109,7 @@ impl RusTairApp {
     }
 
     fn printable_ascii(byte: u8) -> char {
-        if byte.is_ascii_graphic() || byte == b' ' {
-            byte as char
-        } else {
-            '.'
-        }
+        if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' }
     }
 
     fn ascii_description(byte: u8) -> String {
@@ -160,138 +156,72 @@ impl RusTairApp {
         const ALU: [&str; 8] = ["ADD", "ADC", "SUB", "SBB", "ANA", "XRA", "ORA", "CMP"];
 
         if (0x40..=0x7f).contains(&op) {
-            if op == 0x76 {
-                return ("HLT".into(), 1);
-            }
+            if op == 0x76 { return ("HLT".into(), 1); }
             let dst = REG[((op >> 3) & 7) as usize];
             let src = REG[(op & 7) as usize];
             return (format!("MOV {dst},{src}"), 1);
         }
-
         if (0x80..=0xbf).contains(&op) {
             let alu = ALU[((op >> 3) & 7) as usize];
             let src = REG[(op & 7) as usize];
             return (format!("{alu} {src}"), 1);
         }
-
-        if op & 0xc7 == 0x04 {
-            return (format!("INR {}", REG[((op >> 3) & 7) as usize]), 1);
-        }
-        if op & 0xc7 == 0x05 {
-            return (format!("DCR {}", REG[((op >> 3) & 7) as usize]), 1);
-        }
-        if op & 0xc7 == 0x06 {
-            return (
-                format!("MVI {},${b1:02X}", REG[((op >> 3) & 7) as usize]),
-                2,
-            );
-        }
+        if op & 0xc7 == 0x04 { return (format!("INR {}", REG[((op >> 3) & 7) as usize]), 1); }
+        if op & 0xc7 == 0x05 { return (format!("DCR {}", REG[((op >> 3) & 7) as usize]), 1); }
+        if op & 0xc7 == 0x06 { return (format!("MVI {},${b1:02X}", REG[((op >> 3) & 7) as usize]), 2); }
         if op & 0xcf == 0x01 {
             let value = Self::instruction_word(b1, b2);
-            return (
-                format!("LXI {},${value:04X}", RP[((op >> 4) & 3) as usize]),
-                3,
-            );
+            return (format!("LXI {},${value:04X}", RP[((op >> 4) & 3) as usize]), 3);
         }
-        if op & 0xcf == 0x03 {
-            return (format!("INX {}", RP[((op >> 4) & 3) as usize]), 1);
-        }
-        if op & 0xcf == 0x0b {
-            return (format!("DCX {}", RP[((op >> 4) & 3) as usize]), 1);
-        }
-        if op & 0xcf == 0x09 {
-            return (format!("DAD {}", RP[((op >> 4) & 3) as usize]), 1);
-        }
-        if op & 0xc7 == 0xc0 {
-            return (format!("R{}", COND[((op >> 3) & 7) as usize]), 1);
-        }
+        if op & 0xcf == 0x03 { return (format!("INX {}", RP[((op >> 4) & 3) as usize]), 1); }
+        if op & 0xcf == 0x0b { return (format!("DCX {}", RP[((op >> 4) & 3) as usize]), 1); }
+        if op & 0xcf == 0x09 { return (format!("DAD {}", RP[((op >> 4) & 3) as usize]), 1); }
+        if op & 0xc7 == 0xc0 { return (format!("R{}", COND[((op >> 3) & 7) as usize]), 1); }
         if op & 0xc7 == 0xc2 {
             let value = Self::instruction_word(b1, b2);
-            return (
-                format!("J{} ${value:04X}", COND[((op >> 3) & 7) as usize]),
-                3,
-            );
+            return (format!("J{} ${value:04X}", COND[((op >> 3) & 7) as usize]), 3);
         }
         if op & 0xc7 == 0xc4 {
             let value = Self::instruction_word(b1, b2);
-            return (
-                format!("C{} ${value:04X}", COND[((op >> 3) & 7) as usize]),
-                3,
-            );
+            return (format!("C{} ${value:04X}", COND[((op >> 3) & 7) as usize]), 3);
         }
-        if op & 0xcf == 0xc1 {
-            return (
-                format!("POP {}", RP_PUSH[((op >> 4) & 3) as usize]),
-                1,
-            );
-        }
-        if op & 0xcf == 0xc5 {
-            return (
-                format!("PUSH {}", RP_PUSH[((op >> 4) & 3) as usize]),
-                1,
-            );
-        }
-        if op & 0xc7 == 0xc7 {
-            return (format!("RST {}", (op >> 3) & 7), 1);
-        }
+        if op & 0xcf == 0xc1 { return (format!("POP {}", RP_PUSH[((op >> 4) & 3) as usize]), 1); }
+        if op & 0xcf == 0xc5 { return (format!("PUSH {}", RP_PUSH[((op >> 4) & 3) as usize]), 1); }
+        if op & 0xc7 == 0xc7 { return (format!("RST {}", (op >> 3) & 7), 1); }
 
         let word = Self::instruction_word(b1, b2);
         match op {
             0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 => ("NOP".into(), 1),
-            0x02 => ("STAX B".into(), 1),
-            0x07 => ("RLC".into(), 1),
-            0x0a => ("LDAX B".into(), 1),
-            0x0f => ("RRC".into(), 1),
-            0x12 => ("STAX D".into(), 1),
-            0x17 => ("RAL".into(), 1),
-            0x1a => ("LDAX D".into(), 1),
-            0x1f => ("RAR".into(), 1),
-            0x22 => (format!("SHLD ${word:04X}"), 3),
-            0x27 => ("DAA".into(), 1),
-            0x2a => (format!("LHLD ${word:04X}"), 3),
-            0x2f => ("CMA".into(), 1),
-            0x32 => (format!("STA ${word:04X}"), 3),
-            0x37 => ("STC".into(), 1),
-            0x3a => (format!("LDA ${word:04X}"), 3),
-            0x3f => ("CMC".into(), 1),
+            0x02 => ("STAX B".into(), 1), 0x07 => ("RLC".into(), 1),
+            0x0a => ("LDAX B".into(), 1), 0x0f => ("RRC".into(), 1),
+            0x12 => ("STAX D".into(), 1), 0x17 => ("RAL".into(), 1),
+            0x1a => ("LDAX D".into(), 1), 0x1f => ("RAR".into(), 1),
+            0x22 => (format!("SHLD ${word:04X}"), 3), 0x27 => ("DAA".into(), 1),
+            0x2a => (format!("LHLD ${word:04X}"), 3), 0x2f => ("CMA".into(), 1),
+            0x32 => (format!("STA ${word:04X}"), 3), 0x37 => ("STC".into(), 1),
+            0x3a => (format!("LDA ${word:04X}"), 3), 0x3f => ("CMC".into(), 1),
             0xc3 | 0xcb => (format!("JMP ${word:04X}"), 3),
-            0xc6 => (format!("ADI ${b1:02X}"), 2),
-            0xc9 | 0xd9 => ("RET".into(), 1),
+            0xc6 => (format!("ADI ${b1:02X}"), 2), 0xc9 | 0xd9 => ("RET".into(), 1),
             0xcd | 0xdd | 0xed | 0xfd => (format!("CALL ${word:04X}"), 3),
-            0xce => (format!("ACI ${b1:02X}"), 2),
-            0xd3 => (format!("OUT ${b1:02X}"), 2),
-            0xd6 => (format!("SUI ${b1:02X}"), 2),
-            0xdb => (format!("IN ${b1:02X}"), 2),
-            0xde => (format!("SBI ${b1:02X}"), 2),
-            0xe3 => ("XTHL".into(), 1),
-            0xe6 => (format!("ANI ${b1:02X}"), 2),
-            0xe9 => ("PCHL".into(), 1),
-            0xeb => ("XCHG".into(), 1),
-            0xee => (format!("XRI ${b1:02X}"), 2),
-            0xf3 => ("DI".into(), 1),
-            0xf6 => (format!("ORI ${b1:02X}"), 2),
-            0xf9 => ("SPHL".into(), 1),
-            0xfb => ("EI".into(), 1),
+            0xce => (format!("ACI ${b1:02X}"), 2), 0xd3 => (format!("OUT ${b1:02X}"), 2),
+            0xd6 => (format!("SUI ${b1:02X}"), 2), 0xdb => (format!("IN ${b1:02X}"), 2),
+            0xde => (format!("SBI ${b1:02X}"), 2), 0xe3 => ("XTHL".into(), 1),
+            0xe6 => (format!("ANI ${b1:02X}"), 2), 0xe9 => ("PCHL".into(), 1),
+            0xeb => ("XCHG".into(), 1), 0xee => (format!("XRI ${b1:02X}"), 2),
+            0xf3 => ("DI".into(), 1), 0xf6 => (format!("ORI ${b1:02X}"), 2),
+            0xf9 => ("SPHL".into(), 1), 0xfb => ("EI".into(), 1),
             0xfe => (format!("CPI ${b1:02X}"), 2),
             _ => (format!("DB ${op:02X}"), 1),
         }
     }
 
-    fn current_instruction(&self) -> (String, String) {
-        let pc = self.machine.cpu.pc;
-        let Some(op) = self.machine.bus.peek_memory(pc) else {
+    fn current_instruction(&mut self) -> (String, String) {
+        let pc = self.machine.intel8080_state().pc;
+        let Some(op) = self.machine.peek_memory(pc) else {
             return ("UNMAPPED".into(), "--".into());
         };
-        let b1 = self
-            .machine
-            .bus
-            .peek_memory(pc.wrapping_add(1))
-            .unwrap_or(0);
-        let b2 = self
-            .machine
-            .bus
-            .peek_memory(pc.wrapping_add(2))
-            .unwrap_or(0);
+        let b1 = self.machine.peek_memory(pc.wrapping_add(1)).unwrap_or(0);
+        let b2 = self.machine.peek_memory(pc.wrapping_add(2)).unwrap_or(0);
         let (text, len) = Self::disassemble_8080(op, b1, b2);
         let bytes = match len {
             1 => format!("{op:02X}"),
@@ -301,171 +231,101 @@ impl RusTairApp {
         (text, bytes)
     }
 
-    fn draw_register_pair_header(
-        ui: &mut egui::Ui,
-        pair: &str,
-        value: u16,
-        description: &str,
-    ) {
+    fn draw_register_pair_header(ui: &mut egui::Ui, pair: &str, value: u16, description: &str) {
         ui.horizontal_wrapped(|ui| {
             ui.strong(pair);
-            ui.label(
-                egui::RichText::new(format!("${value:04X}"))
-                    .monospace()
-                    .strong(),
-            );
+            ui.label(egui::RichText::new(format!("${value:04X}")).monospace().strong());
             ui.small(description);
         });
     }
 
-    fn draw_cpu_registers_sidebar(&self, ui: &mut egui::Ui) {
-        let cpu = &self.machine.cpu;
+    fn draw_cpu_registers_sidebar(&mut self, ui: &mut egui::Ui) {
+        let cpu = self.machine.intel8080_state();
         ui.strong("CPU REGISTERS");
         ui.small("The 8080 can use BC, DE and HL as 16-bit pairs. A and F form the PSW when pushed or popped together.");
         ui.add_space(5.0);
 
         Self::draw_register_pair_header(ui, "PSW", cpu.af(), "A = accumulator · F = flags");
-        egui::Grid::new("ram-cpu-registers-psw")
-            .num_columns(7)
-            .spacing([6.0, 3.0])
-            .show(ui, |ui| {
-                Self::draw_register8_cells(ui, "A", cpu.a);
-                ui.separator();
-                let f = Self::draw_register8_cells(ui, "F", cpu.f);
-                f.on_hover_text(format!(
-                    "Flags: S={} Z={} AC={} P={} C={}",
-                    u8::from(cpu.f & FLAG_S != 0),
-                    u8::from(cpu.f & FLAG_Z != 0),
-                    u8::from(cpu.f & FLAG_AC != 0),
-                    u8::from(cpu.f & FLAG_P != 0),
-                    u8::from(cpu.f & FLAG_C != 0)
-                ));
-                ui.end_row();
-            });
+        egui::Grid::new("ram-cpu-registers-psw").num_columns(7).spacing([6.0, 3.0]).show(ui, |ui| {
+            Self::draw_register8_cells(ui, "A", cpu.a);
+            ui.separator();
+            let f = Self::draw_register8_cells(ui, "F", cpu.flags);
+            f.on_hover_text(format!(
+                "Flags: S={} Z={} AC={} P={} C={}",
+                u8::from(cpu.flags & FLAG_S != 0), u8::from(cpu.flags & FLAG_Z != 0),
+                u8::from(cpu.flags & FLAG_AC != 0), u8::from(cpu.flags & FLAG_P != 0),
+                u8::from(cpu.flags & FLAG_C != 0)
+            ));
+            ui.end_row();
+        });
         ui.add_space(4.0);
 
         Self::draw_register_pair_header(ui, "BC", cpu.bc(), "general 16-bit register pair");
-        egui::Grid::new("ram-cpu-registers-bc")
-            .num_columns(7)
-            .spacing([6.0, 3.0])
-            .show(ui, |ui| {
-                Self::draw_register8_cells(ui, "B", cpu.b);
-                ui.separator();
-                Self::draw_register8_cells(ui, "C", cpu.c);
-                ui.end_row();
-            });
+        egui::Grid::new("ram-cpu-registers-bc").num_columns(7).spacing([6.0, 3.0]).show(ui, |ui| {
+            Self::draw_register8_cells(ui, "B", cpu.b); ui.separator(); Self::draw_register8_cells(ui, "C", cpu.c); ui.end_row();
+        });
         ui.add_space(4.0);
 
         Self::draw_register_pair_header(ui, "DE", cpu.de(), "general 16-bit register pair");
-        egui::Grid::new("ram-cpu-registers-de")
-            .num_columns(7)
-            .spacing([6.0, 3.0])
-            .show(ui, |ui| {
-                Self::draw_register8_cells(ui, "D", cpu.d);
-                ui.separator();
-                Self::draw_register8_cells(ui, "E", cpu.e);
-                ui.end_row();
-            });
+        egui::Grid::new("ram-cpu-registers-de").num_columns(7).spacing([6.0, 3.0]).show(ui, |ui| {
+            Self::draw_register8_cells(ui, "D", cpu.d); ui.separator(); Self::draw_register8_cells(ui, "E", cpu.e); ui.end_row();
+        });
         ui.add_space(4.0);
 
         Self::draw_register_pair_header(ui, "HL", cpu.hl(), "address pair · M means memory at [HL]");
-        egui::Grid::new("ram-cpu-registers-hl")
-            .num_columns(7)
-            .spacing([6.0, 3.0])
-            .show(ui, |ui| {
-                Self::draw_register8_cells(ui, "H", cpu.h);
-                ui.separator();
-                Self::draw_register8_cells(ui, "L", cpu.l);
-                ui.end_row();
-            });
+        egui::Grid::new("ram-cpu-registers-hl").num_columns(7).spacing([6.0, 3.0]).show(ui, |ui| {
+            Self::draw_register8_cells(ui, "H", cpu.h); ui.separator(); Self::draw_register8_cells(ui, "L", cpu.l); ui.end_row();
+        });
 
         ui.separator();
         ui.small("16-BIT CONTROL REGISTERS");
-        egui::Grid::new("ram-cpu-registers-16-sidebar")
-            .num_columns(3)
-            .spacing([6.0, 3.0])
-            .show(ui, |ui| {
-                ui.strong("SP")
-                    .on_hover_text("Stack Pointer — address of the top of the 8080 stack");
-                ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
-                ui.label(
-                    egui::RichText::new(format!("${:04X}", cpu.sp))
-                        .monospace()
-                        .strong(),
-                );
-                ui.end_row();
-
-                ui.strong("PC")
-                    .on_hover_text("Program Counter — address of the next instruction to fetch");
-                ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
-                ui.label(
-                    egui::RichText::new(format!("${:04X}", cpu.pc))
-                        .monospace()
-                        .strong(),
-                );
-                ui.end_row();
-            });
+        egui::Grid::new("ram-cpu-registers-16-sidebar").num_columns(3).spacing([6.0, 3.0]).show(ui, |ui| {
+            ui.strong("SP").on_hover_text("Stack Pointer — address of the top of the 8080 stack");
+            ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
+            ui.label(egui::RichText::new(format!("${:04X}", cpu.sp)).monospace().strong());
+            ui.end_row();
+            ui.strong("PC").on_hover_text("Program Counter — address of the next instruction to fetch");
+            ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
+            ui.label(egui::RichText::new(format!("${:04X}", cpu.pc)).monospace().strong());
+            ui.end_row();
+        });
     }
 
     fn draw_memory_toolbar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let installed = self.machine.installed_ram_bytes();
         let installed_end = installed.saturating_sub(1);
-        let pc = self.machine.cpu.pc;
-        let sp = self.machine.cpu.sp;
-        let execution_state = if self.machine.cpu.halted {
-            if self.machine.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
-        } else if self.machine.running {
-            "RUNNING"
-        } else {
-            "STOPPED"
-        };
+        let cpu = self.machine.intel8080_state();
+        let panel = self.machine.front_panel_state();
+        let pc = cpu.pc;
+        let sp = cpu.sp;
+        let execution_state = if cpu.halted.unwrap_or(false) {
+            if panel.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+        } else if panel.running { "RUNNING" } else { "STOPPED" };
 
         ui.horizontal_wrapped(|ui| {
             ui.strong("RAM INSPECTOR / CPU REGISTERS");
-            ui.separator();
-            ui.label(execution_state);
-            ui.separator();
-            ui.small(format!("cycles {}", self.machine.cpu.cycles));
-            ui.separator();
-            ui.small(format!(
-                "RAM {} (0000h–{:04X}h)",
-                self.config.machine.ram_size.label(),
-                installed_end
-            ));
-            ui.separator();
-            ui.label("Jump:");
+            ui.separator(); ui.label(execution_state); ui.separator();
+            ui.small(format!("cycles {}", cpu.total_t_states.unwrap_or(0))); ui.separator();
+            ui.small(format!("RAM {} (0000h–{:04X}h)", self.config.machine.ram_size.label(), installed_end));
+            ui.separator(); ui.label("Jump:");
             let response = ui.add_sized(
                 [66.0, 22.0],
-                egui::TextEdit::singleline(&mut state.address_input)
-                    .font(egui::TextStyle::Monospace)
-                    .char_limit(6),
+                egui::TextEdit::singleline(&mut state.address_input).font(egui::TextStyle::Monospace).char_limit(6),
             );
             if response.changed() {
-                state.address_input = state
-                    .address_input
-                    .chars()
+                state.address_input = state.address_input.chars()
                     .filter(|c| c.is_ascii_hexdigit() || matches!(c, 'x' | 'X' | 'h' | 'H'))
-                    .collect::<String>()
-                    .to_uppercase();
+                    .collect::<String>().to_uppercase();
             }
             let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if ui.small_button("Go").clicked() || enter {
                 if let Some(address) = Self::parse_memory_address(&state.address_input) {
-                    state.follow_pc = false;
-                    self.select_memory_address(state, address, true);
+                    state.follow_pc = false; self.select_memory_address(state, address, true);
                 }
             }
-            if ui.small_button(format!("PC {pc:04X}")).clicked() {
-                state.follow_pc = false;
-                self.select_memory_address(state, pc, true);
-            }
-            if ui.small_button(format!("SP {sp:04X}")).clicked() {
-                state.follow_pc = false;
-                self.select_memory_address(state, sp, true);
-            }
-            if ui.checkbox(&mut state.follow_pc, "Follow PC").changed() && state.follow_pc {
-                self.select_memory_address(state, pc, true);
-            }
+            if ui.small_button(format!("PC {pc:04X}")).clicked() { state.follow_pc = false; self.select_memory_address(state, pc, true); }
+            if ui.small_button(format!("SP {sp:04X}")).clicked() { state.follow_pc = false; self.select_memory_address(state, sp, true); }
+            if ui.checkbox(&mut state.follow_pc, "Follow PC").changed() && state.follow_pc { self.select_memory_address(state, pc, true); }
         });
     }
 
@@ -489,113 +349,64 @@ impl RusTairApp {
 
         ui.small("Click a 1 KiB block to jump. P = write protected; dimmed blocks are not installed.");
         ui.add_space(3.0);
-        egui::Grid::new("ram-protection-block-map")
-            .num_columns(columns)
-            .spacing([6.0, 3.0])
-            .show(ui, |ui| {
-                for block in 0..(MAX_MEM_SIZE / MEMORY_BOARD_SIZE) {
-                    let start = block * MEMORY_BOARD_SIZE;
-                    let end = start + MEMORY_BOARD_SIZE - 1;
-                    let installed_block = start < installed;
-                    let protected = installed_block && self.machine.bus.is_protected(start as u16);
-                    let mut label = egui::RichText::new(if protected {
-                        format!("P {start:04X}")
-                    } else {
-                        format!("  {start:04X}")
-                    })
-                    .monospace();
-                    if !installed_block {
-                        label = label.weak();
-                    }
-                    let response = ui.selectable_label(selected_block == block, label);
-                    if response.clicked() {
-                        state.follow_pc = false;
-                        self.select_memory_address(state, start as u16, true);
-                    }
-                    response.on_hover_text(if installed_block {
-                        format!(
-                            "Installed RAM {start:04X}h–{end:04X}h — {}",
-                            if protected { "WRITE PROTECTED" } else { "writable" }
-                        )
-                    } else {
-                        format!("No RAM installed at {start:04X}h–{end:04X}h")
-                    });
-                    if (block + 1) % columns == 0 {
-                        ui.end_row();
-                    }
-                }
-            });
+        egui::Grid::new("ram-protection-block-map").num_columns(columns).spacing([6.0, 3.0]).show(ui, |ui| {
+            for block in 0..(MAX_MEM_SIZE / MEMORY_BOARD_SIZE) {
+                let start = block * MEMORY_BOARD_SIZE;
+                let end = start + MEMORY_BOARD_SIZE - 1;
+                let installed_block = start < installed;
+                let protected = installed_block && self.machine.memory_is_protected(start as u16);
+                let mut label = egui::RichText::new(if protected { format!("P {start:04X}") } else { format!("  {start:04X}") }).monospace();
+                if !installed_block { label = label.weak(); }
+                let response = ui.selectable_label(selected_block == block, label);
+                if response.clicked() { state.follow_pc = false; self.select_memory_address(state, start as u16, true); }
+                response.on_hover_text(if installed_block {
+                    format!("Installed RAM {start:04X}h–{end:04X}h — {}", if protected { "WRITE PROTECTED" } else { "writable" })
+                } else { format!("No RAM installed at {start:04X}h–{end:04X}h") });
+                if (block + 1) % columns == 0 { ui.end_row(); }
+            }
+        });
     }
 
     fn draw_memory_table(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
-        let pc = self.machine.cpu.pc;
-        let sp = self.machine.cpu.sp;
-        if state.follow_pc && state.selected_address != pc {
-            self.select_memory_address(state, pc, true);
-        }
+        let cpu = self.machine.intel8080_state();
+        let pc = cpu.pc;
+        let sp = cpu.sp;
+        if state.follow_pc && state.selected_address != pc { self.select_memory_address(state, pc, true); }
 
         ui.set_min_width(748.0);
         ui.spacing_mut().item_spacing.x = 2.0;
         ui.horizontal(|ui| {
-            ui.add_sized(
-                [54.0, ROW_HEIGHT],
-                egui::Label::new(egui::RichText::new("ADDR").monospace().strong()),
-            );
-            ui.add_sized(
-                [20.0, ROW_HEIGHT],
-                egui::Label::new(egui::RichText::new("P").monospace().strong()),
-            )
-            .on_hover_text("P = this 1 KiB block is write-protected");
+            ui.add_sized([54.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
+            ui.add_sized([20.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("P").monospace().strong()))
+                .on_hover_text("P = this 1 KiB block is write-protected");
             for column in 0..BYTES_PER_ROW {
-                ui.add_sized(
-                    [28.0, ROW_HEIGHT],
-                    egui::Label::new(
-                        egui::RichText::new(format!("{column:02X}"))
-                            .monospace()
-                            .strong(),
-                    ),
-                );
+                ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new(format!("{column:02X}")).monospace().strong()));
             }
-            ui.separator();
-            ui.label(egui::RichText::new("ASCII").monospace().strong());
+            ui.separator(); ui.label(egui::RichText::new("ASCII").monospace().strong());
         });
         ui.separator();
 
         let target = state.pending_jump.take();
-        let mut scroll = egui::ScrollArea::vertical()
-            .id_salt("ram-viewer-scroll")
-            .auto_shrink([false, false])
-            .animated(false);
+        let mut scroll = egui::ScrollArea::vertical().id_salt("ram-viewer-scroll").auto_shrink([false, false]).animated(false);
         if let Some(address) = target {
             let target_row = address as usize / BYTES_PER_ROW;
-            let context_row = target_row.saturating_sub(5);
-            scroll = scroll.vertical_scroll_offset(context_row as f32 * ROW_HEIGHT);
+            scroll = scroll.vertical_scroll_offset(target_row.saturating_sub(5) as f32 * ROW_HEIGHT);
         }
 
         scroll.show_rows(ui, ROW_HEIGHT, ROW_COUNT, |ui, rows| {
             for row in rows {
                 let start = row * BYTES_PER_ROW;
                 let row_address = start as u16;
-                let protected = self.machine.bus.is_protected(row_address);
+                let protected = self.machine.memory_is_protected(row_address);
                 let row_contains_pc = (start..start + BYTES_PER_ROW).contains(&(pc as usize));
-                let row_contains_selected =
-                    (start..start + BYTES_PER_ROW).contains(&(state.selected_address as usize));
+                let row_contains_selected = (start..start + BYTES_PER_ROW).contains(&(state.selected_address as usize));
 
                 ui.horizontal(|ui| {
                     let mut address_text = egui::RichText::new(format!("{start:04X}")).monospace();
-                    if row_contains_pc {
-                        address_text = address_text.strong();
-                    }
-                    if row_contains_selected {
-                        address_text = address_text.underline();
-                    }
+                    if row_contains_pc { address_text = address_text.strong(); }
+                    if row_contains_selected { address_text = address_text.underline(); }
                     ui.add_sized([54.0, ROW_HEIGHT], egui::Label::new(address_text));
-                    ui.add_sized(
-                        [20.0, ROW_HEIGHT],
-                        egui::Label::new(
-                            egui::RichText::new(if protected { "P" } else { " " }).monospace(),
-                        ),
-                    );
+                    ui.add_sized([20.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new(if protected { "P" } else { " " }).monospace()));
 
                     let selected_fill = ui.visuals().selection.bg_fill;
                     let pc_fill = ui.visuals().widgets.active.bg_fill;
@@ -604,110 +415,62 @@ impl RusTairApp {
 
                     for column in 0..BYTES_PER_ROW {
                         let address = (start + column) as u16;
-                        match self.machine.bus.peek_memory(address) {
+                        match self.machine.peek_memory(address) {
                             Some(byte) => {
                                 ascii.push(Self::printable_ascii(byte));
                                 let mut text = egui::RichText::new(format!("{byte:02X}")).monospace();
-                                if address == sp {
-                                    text = text.underline();
-                                }
-                                if address == pc {
-                                    text = text.strong().background_color(pc_fill);
-                                }
-                                if address == state.selected_address {
-                                    text = text.background_color(selected_fill);
-                                }
-                                let response = ui.add_sized(
-                                    [28.0, ROW_HEIGHT],
-                                    egui::Label::new(text).sense(egui::Sense::click()),
-                                );
-                                if response.clicked() {
-                                    state.follow_pc = false;
-                                    self.select_memory_address(state, address, false);
-                                }
-                                let mut hover = format!(
-                                    "{:04X}h = {:02X}h = decimal {} = {}",
-                                    address,
-                                    byte,
-                                    byte,
-                                    Self::ascii_description(byte)
-                                );
-                                if address == pc {
-                                    hover.push_str(" — PC");
-                                }
-                                if address == sp {
-                                    hover.push_str(" — SP");
-                                }
-                                if protected {
-                                    hover.push_str(" — protected 1 KiB block");
-                                }
+                                if address == sp { text = text.underline(); }
+                                if address == pc { text = text.strong().background_color(pc_fill); }
+                                if address == state.selected_address { text = text.background_color(selected_fill); }
+                                let response = ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(text).sense(egui::Sense::click()));
+                                if response.clicked() { state.follow_pc = false; self.select_memory_address(state, address, false); }
+                                let mut hover = format!("{:04X}h = {:02X}h = decimal {} = {}", address, byte, byte, Self::ascii_description(byte));
+                                if address == pc { hover.push_str(" — PC"); }
+                                if address == sp { hover.push_str(" — SP"); }
+                                if protected { hover.push_str(" — protected 1 KiB block"); }
                                 response.on_hover_text(hover);
                             }
                             None => {
                                 ascii.push(' ');
-                                ui.add_sized(
-                                    [28.0, ROW_HEIGHT],
-                                    egui::Label::new(
-                                        egui::RichText::new("--").monospace().color(weak_color),
-                                    ),
-                                )
-                                .on_hover_text(format!(
-                                    "{:04X}h — no RAM installed; guest reads return 00h",
-                                    address
-                                ));
+                                ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("--").monospace().color(weak_color)))
+                                    .on_hover_text(format!("{:04X}h — no RAM installed; guest reads return 00h", address));
                             }
                         }
                     }
-                    ui.separator();
-                    ui.label(egui::RichText::new(ascii).monospace());
+                    ui.separator(); ui.label(egui::RichText::new(ascii).monospace());
                 });
             }
         });
     }
 
     fn draw_bit_editor(&self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
-        egui::Grid::new("ram-byte-bit-editor")
-            .num_columns(8)
-            .spacing([6.0, 2.0])
-            .show(ui, |ui| {
-                for bit in (0..8).rev() {
-                    ui.label(egui::RichText::new(format!("b{bit}")).monospace().strong());
+        egui::Grid::new("ram-byte-bit-editor").num_columns(8).spacing([6.0, 2.0]).show(ui, |ui| {
+            for bit in (0..8).rev() { ui.label(egui::RichText::new(format!("b{bit}")).monospace().strong()); }
+            ui.end_row();
+            for bit in (0..8).rev() {
+                let mask = 1u8 << bit;
+                let set = state.edit_value & mask != 0;
+                if ui.selectable_label(set, if set { "1" } else { "0" }).clicked() {
+                    state.edit_value ^= mask;
+                    state.edit_input = format!("{:02X}", state.edit_value);
+                    state.last_edit_message = None;
                 }
-                ui.end_row();
-                for bit in (0..8).rev() {
-                    let mask = 1u8 << bit;
-                    let set = state.edit_value & mask != 0;
-                    if ui.selectable_label(set, if set { "1" } else { "0" }).clicked() {
-                        state.edit_value ^= mask;
-                        state.edit_input = format!("{:02X}", state.edit_value);
-                        state.last_edit_message = None;
-                    }
-                }
-                ui.end_row();
-                for bit in (0..8).rev() {
-                    ui.small(format!("{}", 1u16 << bit));
-                }
-                ui.end_row();
-            });
+            }
+            ui.end_row();
+            for bit in (0..8).rev() { ui.small(format!("{}", 1u16 << bit)); }
+            ui.end_row();
+        });
     }
 
     fn draw_memory_editor(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let address = state.selected_address;
-        let current = self.machine.bus.peek_memory(address);
+        let current = self.machine.peek_memory(address);
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("{:04X}h", address));
-            ui.separator();
+            ui.strong(format!("{:04X}h", address)); ui.separator();
             match current {
-                Some(byte) => {
-                    ui.monospace(format!("{:02X}h", byte));
-                    ui.label(format!("dec {byte}"));
-                    ui.monospace(format!("{:08b}", byte));
-                    ui.label(Self::ascii_description(byte));
-                }
-                None => {
-                    ui.label("UNINSTALLED");
-                }
+                Some(byte) => { ui.monospace(format!("{:02X}h", byte)); ui.label(format!("dec {byte}")); ui.monospace(format!("{:08b}", byte)); ui.label(Self::ascii_description(byte)); }
+                None => { ui.label("UNINSTALLED"); }
             }
         });
 
@@ -716,120 +479,62 @@ impl RusTairApp {
             return;
         };
 
-        let protected = self.machine.bus.is_protected(address);
+        let protected = self.machine.memory_is_protected(address);
         let block = address as usize / MEMORY_BOARD_SIZE;
         let block_start = block * MEMORY_BOARD_SIZE;
         let block_end = block_start + MEMORY_BOARD_SIZE - 1;
-        ui.small(format!(
-            "Block {block}: {block_start:04X}h–{block_end:04X}h — {}",
-            if protected { "WRITE PROTECTED" } else { "writable" }
-        ));
+        ui.small(format!("Block {block}: {block_start:04X}h–{block_end:04X}h — {}", if protected { "WRITE PROTECTED" } else { "writable" }));
 
-        // Keep pointer markers in one permanently allocated row. Previously
-        // inserting/removing "PC points here" while the CPU was running changed
-        // the sidebar height every instruction and made the entire editor jump.
-        let pc_here = address == self.machine.cpu.pc;
-        let sp_here = address == self.machine.cpu.sp;
+        let cpu = self.machine.intel8080_state();
+        let pc_here = address == cpu.pc;
+        let sp_here = address == cpu.sp;
         ui.horizontal(|ui| {
             ui.small("Pointers:");
-            ui.add_sized(
-                [28.0, CURRENT_INSTRUCTION_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(if pc_here { "PC" } else { "  " }).strong()),
-            );
-            ui.add_sized(
-                [28.0, CURRENT_INSTRUCTION_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(if sp_here { "SP" } else { "  " }).strong()),
-            );
+            ui.add_sized([28.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if pc_here { "PC" } else { "  " }).strong()));
+            ui.add_sized([28.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if sp_here { "SP" } else { "  " }).strong()));
         });
 
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.label("New hex:");
-            let response = ui.add_sized(
-                [58.0, 24.0],
-                egui::TextEdit::singleline(&mut state.edit_input)
-                    .font(egui::TextStyle::Monospace)
-                    .char_limit(4),
-            );
+            let response = ui.add_sized([58.0, 24.0], egui::TextEdit::singleline(&mut state.edit_input).font(egui::TextStyle::Monospace).char_limit(4));
             if response.changed() {
-                state.edit_input = state
-                    .edit_input
-                    .chars()
+                state.edit_input = state.edit_input.chars()
                     .filter(|c| c.is_ascii_hexdigit() || matches!(c, 'x' | 'X' | 'h' | 'H'))
-                    .collect::<String>()
-                    .to_uppercase();
-                if let Some(value) = Self::parse_memory_byte(&state.edit_input) {
-                    state.edit_value = value;
-                }
+                    .collect::<String>().to_uppercase();
+                if let Some(value) = Self::parse_memory_byte(&state.edit_input) { state.edit_value = value; }
                 state.last_edit_message = None;
             }
             if ui.small_button("Reload").clicked() {
-                state.edit_value = current_byte;
-                state.edit_input = format!("{current_byte:02X}");
-                state.last_edit_message = None;
+                state.edit_value = current_byte; state.edit_input = format!("{current_byte:02X}"); state.last_edit_message = None;
             }
         });
-        ui.small(format!(
-            "dec {}  |  {:08b}  |  ASCII {}",
-            state.edit_value,
-            state.edit_value,
-            Self::ascii_description(state.edit_value)
-        ));
+        ui.small(format!("dec {}  |  {:08b}  |  ASCII {}", state.edit_value, state.edit_value, Self::ascii_description(state.edit_value)));
 
         self.draw_bit_editor(ui, state);
         ui.separator();
         ui.checkbox(&mut state.respect_protection, "Respect write protection");
         let valid = Self::parse_memory_byte(&state.edit_input).is_some();
         let blocked = protected && state.respect_protection;
-        if ui
-            .add_enabled(valid && !blocked, egui::Button::new("Write byte to RAM"))
-            .clicked()
-        {
-            let written = self.machine.bus.debugger_write_memory(
-                address,
-                state.edit_value,
-                state.respect_protection,
-            );
+        if ui.add_enabled(valid && !blocked, egui::Button::new("Write byte to RAM")).clicked() {
+            let written = self.machine.write_memory(address, state.edit_value, state.respect_protection);
             state.last_edit_message = Some(if written {
-                format!(
-                    "Wrote {:02X}h to {:04X}h{}",
-                    state.edit_value,
-                    address,
-                    if protected && !state.respect_protection {
-                        " using debugger override"
-                    } else {
-                        ""
-                    }
-                )
-            } else {
-                "Write rejected by current memory configuration".into()
-            });
+                format!("Wrote {:02X}h to {:04X}h{}", state.edit_value, address,
+                    if protected && !state.respect_protection { " using debugger override" } else { "" })
+            } else { "Write rejected by current memory configuration".into() });
         }
-        if blocked {
-            ui.small("Uncheck protection only when you deliberately want a debugger override.");
-        } else if protected && !state.respect_protection {
-            ui.small("Debugger override active: protection is being bypassed.");
-        }
-        if let Some(message) = &state.last_edit_message {
-            ui.small(message);
-        }
-        if self.machine.running {
-            ui.small("Machine is RUNNING; the CPU may overwrite this byte immediately.");
-        }
+        if blocked { ui.small("Uncheck protection only when you deliberately want a debugger override."); }
+        else if protected && !state.respect_protection { ui.small("Debugger override active: protection is being bypassed."); }
+        if let Some(message) = &state.last_edit_message { ui.small(message); }
+        if self.machine.running() { ui.small("Machine is RUNNING; the CPU may overwrite this byte immediately."); }
     }
 
-    fn draw_current_instruction_side(&self, ui: &mut egui::Ui) {
-        let pc = self.machine.cpu.pc;
+    fn draw_current_instruction_side(&mut self, ui: &mut egui::Ui) {
+        let pc = self.machine.intel8080_state().pc;
         let (instruction, bytes) = self.current_instruction();
-        // Two fixed-height, non-wrapping rows prevent instruction length or a
-        // rapidly changing PC from pushing the rest of the sidebar up/down.
         ui.add_sized(
             [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
-            egui::Label::new(
-                egui::RichText::new(format!("${pc:04X}  {instruction}"))
-                    .monospace()
-                    .strong(),
-            ),
+            egui::Label::new(egui::RichText::new(format!("${pc:04X}  {instruction}")).monospace().strong()),
         );
         ui.add_sized(
             [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
@@ -838,60 +543,31 @@ impl RusTairApp {
     }
 
     fn draw_memory_sidebar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
-        egui::ScrollArea::vertical()
-            .id_salt("ram-inspector-sidebar-scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.strong("CURRENT INSTRUCTION");
-                self.draw_current_instruction_side(ui);
-                ui.separator();
-
-                egui::CollapsingHeader::new("Selected byte / editor")
-                    .default_open(true)
-                    .show(ui, |ui| self.draw_memory_editor(ui, state));
-                ui.separator();
-
-                egui::CollapsingHeader::new("1 KiB protection map")
-                    .default_open(false)
-                    .show(ui, |ui| self.draw_memory_block_map(ui, state));
-                ui.separator();
-
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    self.draw_cpu_registers_sidebar(ui);
-                });
-                ui.separator();
-
-                egui::CollapsingHeader::new("How to read this inspector")
-                    .default_open(false)
-                    .show(ui, |ui| self.draw_memory_help(ui));
-            });
+        egui::ScrollArea::vertical().id_salt("ram-inspector-sidebar-scroll").auto_shrink([false, false]).show(ui, |ui| {
+            ui.strong("CURRENT INSTRUCTION");
+            self.draw_current_instruction_side(ui);
+            ui.separator();
+            egui::CollapsingHeader::new("Selected byte / editor").default_open(true).show(ui, |ui| self.draw_memory_editor(ui, state));
+            ui.separator();
+            egui::CollapsingHeader::new("1 KiB protection map").default_open(false).show(ui, |ui| self.draw_memory_block_map(ui, state));
+            ui.separator();
+            egui::Frame::group(ui.style()).show(ui, |ui| { self.draw_cpu_registers_sidebar(ui); });
+            ui.separator();
+            egui::CollapsingHeader::new("How to read this inspector").default_open(false).show(ui, |ui| self.draw_memory_help(ui));
+        });
     }
 
-    fn draw_memory_viewer_window(
-        &mut self,
-        ctx: &egui::Context,
-        state: &mut MemoryViewerUiState,
-    ) {
-        egui::TopBottomPanel::top("memory-viewer-toolbar")
-            .resizable(false)
-            .show(ctx, |ui| self.draw_memory_toolbar(ui, state));
-
-        egui::SidePanel::right("memory-viewer-sidebar")
-            .resizable(true)
-            .default_width(SIDEBAR_DEFAULT_WIDTH)
-            .width_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
+    fn draw_memory_viewer_window(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
+        egui::TopBottomPanel::top("memory-viewer-toolbar").resizable(false).show(ctx, |ui| self.draw_memory_toolbar(ui, state));
+        egui::SidePanel::right("memory-viewer-sidebar").resizable(true)
+            .default_width(SIDEBAR_DEFAULT_WIDTH).width_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
             .show(ctx, |ui| self.draw_memory_sidebar(ui, state));
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.draw_memory_table(ui, state);
-        });
+        egui::CentralPanel::default().show(ctx, |ui| { self.draw_memory_table(ui, state); });
     }
 
     pub(in crate::app) fn show_memory_viewer_viewport(&mut self, parent_ctx: &egui::Context) {
         let mut state = Self::memory_viewer_state(parent_ctx);
-        if !state.window_open {
-            return;
-        }
+        if !state.window_open { return; }
 
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-memory-viewer"),
@@ -902,9 +578,7 @@ impl RusTairApp {
                 .with_resizable(true),
             |memory_ctx, _class| {
                 self.draw_memory_viewer_window(memory_ctx, &mut state);
-                if memory_ctx.input(|i| i.viewport().close_requested()) {
-                    state.window_open = false;
-                }
+                if memory_ctx.input(|i| i.viewport().close_requested()) { state.window_open = false; }
             },
         );
 
