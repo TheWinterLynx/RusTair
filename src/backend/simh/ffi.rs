@@ -130,6 +130,13 @@ unsafe extern "C" {
         value: *const c_char,
     ) -> c_int;
 
+    pub fn sim_panel_device_debug_mode(
+        panel: *mut PANEL,
+        device: *const c_char,
+        set_unset: c_int,
+        mode_bits: *const c_char,
+    ) -> c_int;
+
     pub fn sim_panel_mount(
         panel: *mut PANEL,
         device: *const c_char,
