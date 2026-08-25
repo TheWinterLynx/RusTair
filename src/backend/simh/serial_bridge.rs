@@ -147,7 +147,7 @@ impl SimhRawTcpPort {
                 .read(&mut buffer[..max_read]);
             match result {
                 Ok(0) => return self.disconnect_error(),
-                Ok(count) => self.from_simh.extend(&buffer[..count]),
+                Ok(count) => self.from_simh.extend(buffer[..count].iter().copied()),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
                 Err(_) => return self.disconnect_error(),
             }
