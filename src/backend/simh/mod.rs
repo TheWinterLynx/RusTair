@@ -19,6 +19,8 @@ mod machine;
 mod machine_altairz80;
 mod profile;
 #[cfg(feature = "simh-ffi")]
+mod serial_bridge;
+#[cfg(feature = "simh-ffi")]
 mod session;
 
 #[cfg(feature = "simh-ffi")]
