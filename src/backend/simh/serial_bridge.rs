@@ -104,6 +104,21 @@ impl SimhRawTcpPort {
             return Ok(());
         }
 
+        // Probe/read first. A TMXR validation socket is already closed by the
+        // time simulator startup returns; never flush queued guest input into
+        // that disposable connection.
+        self.read_from_simh()?;
+        if self.stream.is_none() {
+            self.accept_pending()?;
+            if self.stream.is_none() {
+                return Ok(());
+            }
+            self.read_from_simh()?;
+            if self.stream.is_none() {
+                return Ok(());
+            }
+        }
+
         self.flush_to_simh()?;
         if self.stream.is_none() {
             self.accept_pending()?;
@@ -369,28 +384,25 @@ mod tests {
     }
 
     #[test]
-    fn bridge_survives_tmxr_validation_disconnect_and_reconnect() {
+    fn queued_byte_survives_tmxr_validation_socket_and_reconnect() {
         let mut bridge = SimhM2SioBridge::bind_loopback().expect("bind bridge");
         let (port0, port1) = bridge.listen_ports();
 
         let validation0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("validation port0");
         let validation1 = TcpStream::connect((Ipv4Addr::LOCALHOST, port1)).expect("validation port1");
-        poll_until(&mut bridge, |bridge| {
-            bridge.connected(BackendSerialPort::Port0)
-                && bridge.connected(BackendSerialPort::Port1)
-        });
         drop(validation0);
         drop(validation1);
+
+        // Queue before the bridge has even accepted the disposable validation
+        // sockets. Polling must detect their EOF before attempting this write.
+        bridge
+            .queue_to_simh(BackendSerialPort::Port0, 0xa5)
+            .expect("queue before validation socket is discarded");
 
         poll_until(&mut bridge, |bridge| {
             !bridge.connected(BackendSerialPort::Port0)
                 && !bridge.connected(BackendSerialPort::Port1)
         });
-
-        bridge
-            .queue_to_simh(BackendSerialPort::Port0, 0xa5)
-            .expect("queue survives disconnected period");
-        bridge.poll().expect("poll while disconnected");
         assert_eq!(bridge.to_simh_len(BackendSerialPort::Port0), 1);
 
         let mut persistent0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("persistent port0");
@@ -398,8 +410,8 @@ mod tests {
         poll_until(&mut bridge, |bridge| {
             bridge.connected(BackendSerialPort::Port0)
                 && bridge.connected(BackendSerialPort::Port1)
+                && bridge.to_simh_len(BackendSerialPort::Port0) == 0
         });
-        bridge.poll().expect("flush after reconnect");
 
         persistent0
             .set_read_timeout(Some(Duration::from_secs(1)))
