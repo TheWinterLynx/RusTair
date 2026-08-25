@@ -284,7 +284,14 @@ impl eframe::App for RusTairApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.centered_and_justified(|ui| self.draw_altair(ui));
         });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| { ui.small(&self.status); });
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.small(&self.status);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.small(format!("Core: {}", self.machine.engine().label()));
+                });
+            });
+        });
 
         self.show_tty_viewport(ctx);
         self.show_terminal_viewport(ctx);
