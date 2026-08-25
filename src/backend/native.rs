@@ -64,7 +64,7 @@ impl MachineBackend for NativeMachineBackend {
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.machine.request_hold(hold); Ok(()) }
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_examine_via_cpu_board(next); Ok(()) }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_deposit_via_cpu_board(next); Ok(()) }
-    fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.protect_current_board(protected); Ok(()) }
+    fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.front_panel_set_memory_protection_via_s100(protected); Ok(()) }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
         let changed = self.machine.panel_switches() ^ value;
