@@ -443,11 +443,14 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        // MVI A,5Ah ; STA 2000h
-        backend.load_bytes(0, &[0x3e, 0x5a, 0x32, 0x00, 0x20]).unwrap();
+        // Default RusTair RAM is 8 KiB (0000h..1FFFh). Keep the exercised
+        // write inside installed RAM and assert the first uninstalled byte too.
+        // MVI A,5Ah ; STA 1F00h
+        backend.load_bytes(0, &[0x3e, 0x5a, 0x32, 0x00, 0x1f]).unwrap();
         backend.step().unwrap();
         backend.step().unwrap();
-        assert_eq!(backend.peek_memory(0x2000).unwrap(), Some(0x5a));
+        assert_eq!(backend.peek_memory(0x1f00).unwrap(), Some(0x5a));
+        assert_eq!(backend.peek_memory(0x2000).unwrap(), None);
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.pc, 5);
         assert_eq!(state.total_t_states, Some(20));
