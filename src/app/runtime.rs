@@ -3,6 +3,7 @@ use super::*;
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
+        super::ui::ensure_persistent_configuration_loaded(self);
 
         // Embedded-suite completion must consume its meter result before the
         // generic external-.COM result dialog gets a chance to take it.
@@ -117,6 +118,11 @@ impl eframe::App for RusTairApp {
                         ));
                         ui.small("Host-side acceleration is configured under Preferences → Emulation speed; it does not change the emulated 2 MHz hardware clock.");
                     });
+
+                    if ui.button("LED visuals…").clicked() {
+                        super::ui::open_led_visual_controls(self);
+                        ui.close();
+                    }
 
                     ui.menu_button("Memory", |ui| {
                         ui.label(format!("Installed RAM: {}", self.config.machine.ram_size.label()));
@@ -301,5 +307,7 @@ impl eframe::App for RusTairApp {
         self.show_external_com_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
+
+        super::ui::persist_configuration_if_changed(self);
     }
 }
