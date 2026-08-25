@@ -1,3 +1,4 @@
+use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{TState, TickTrace};
 
 /// Machine-cycle classes emitted by the instruction-level 8080 core.
@@ -72,6 +73,34 @@ pub(crate) struct S100CpuControlLines {
     pub reset: bool,
 }
 
+/// Bytes driven by the original Display/Control board onto the 8080 data bus.
+///
+/// EXAMINE injects `JMP address` (C3, low, high). EXAMINE NEXT injects NOP.
+/// This is how the real Altair makes the CPU itself drive the requested address;
+/// the front panel does not directly load the program counter or address bus.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FrontPanelJamSequence {
+    bytes: [u8; 3],
+    len: usize,
+}
+
+impl FrontPanelJamSequence {
+    const fn examine(address: u16) -> Self {
+        Self {
+            bytes: [0xc3, address as u8, (address >> 8) as u8],
+            len: 3,
+        }
+    }
+
+    const fn examine_next() -> Self {
+        Self { bytes: [0x00, 0, 0], len: 1 }
+    }
+
+    fn byte(self, index: usize) -> Option<u8> {
+        (index < self.len).then_some(self.bytes[index])
+    }
+}
+
 /// Adapter for the validated instruction-level 8080 core.
 ///
 /// It cannot reconstruct true sub-instruction bus activity, so it synthesizes a
@@ -111,6 +140,127 @@ impl Fast8080S100Adapter {
                 hlda: false,
             });
         }
+    }
+}
+
+/// Temporary bus overlay used while the physical front panel jams an instruction
+/// into the instruction-level 8080. RAM remains untouched; only the bytes seen
+/// by the CPU on the selected read cycles are replaced by the panel sequence.
+struct FrontPanelJamBus<'a> {
+    bus: &'a mut super::AltairBus,
+    sequence: FrontPanelJamSequence,
+    index: usize,
+}
+
+impl<'a> FrontPanelJamBus<'a> {
+    fn new(bus: &'a mut super::AltairBus, sequence: FrontPanelJamSequence) -> Self {
+        Self { bus, sequence, index: 0 }
+    }
+
+    fn jam_or_memory(&mut self, address: u16, cycle: S100Cycle) -> u8 {
+        let value = if let Some(value) = self.sequence.byte(self.index) {
+            self.index += 1;
+            value
+        } else {
+            self.bus.memory.read(address)
+        };
+        self.bus.drive_cpu_cycle(address, value, cycle);
+        value
+    }
+}
+
+impl Bus for FrontPanelJamBus<'_> {
+    fn read(&mut self, address: u16) -> u8 {
+        self.jam_or_memory(address, S100Cycle::MemoryRead)
+    }
+
+    fn write(&mut self, address: u16, value: u8) {
+        self.bus.write(address, value);
+    }
+
+    fn input(&mut self, port: u8) -> u8 { self.bus.input(port) }
+    fn output(&mut self, port: u8, value: u8) { self.bus.output(port, value); }
+    fn set_inte(&mut self, enabled: bool) { self.bus.set_inte(enabled); }
+
+    fn opcode_fetch(&mut self, address: u16) -> u8 {
+        self.jam_or_memory(address, S100Cycle::InstructionFetch)
+    }
+
+    fn stack_read(&mut self, address: u16) -> u8 { self.bus.stack_read(address) }
+    fn stack_write(&mut self, address: u16, value: u8) { self.bus.stack_write(address, value); }
+    fn halt_ack(&mut self, address: u16, opcode: u8) { self.bus.halt_ack(address, opcode); }
+    fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
+        self.bus.interrupt_ack(address, opcode, while_halted);
+    }
+
+    // Front-panel-injected JMP/NOP activity is hardware control sequencing, not
+    // guest code, and must never perturb diagnostic instruction accounting.
+    fn instruction_complete(&mut self, _address: u16, _opcode: u8, _t_states: u32) {}
+}
+
+impl super::AltairBus {
+    /// Deposit is the one original front-panel operation that really does drive
+    /// the write data/pulse itself while the stopped CPU continues to provide the
+    /// address. Expose that physical action to backend CPU-board adapters.
+    pub(crate) fn cpu_board_front_panel_deposit(&mut self, address: u16, value: u8) {
+        self.panel.set_address_latch(address);
+        self.front_panel_deposit(address, value);
+    }
+}
+
+impl super::AltairMachine {
+    /// Instruction-level approximation of the original EXAMINE/EXAMINE NEXT
+    /// sequencer. The fast CPU executes the real injected JMP/NOP rather than
+    /// having its PC assigned by the GUI or backend.
+    pub(crate) fn fast_front_panel_examine_via_cpu_board(&mut self, next: bool) {
+        if !self.powered
+            || self.running
+            || self.bus.reset_asserted()
+            || self.bus.hold_requested()
+            || self.cpu.halted
+        {
+            return;
+        }
+
+        let sequence = if next {
+            FrontPanelJamSequence::examine_next()
+        } else {
+            FrontPanelJamSequence::examine(self.bus.panel_switches())
+        };
+
+        self.bus.set_hlda(false);
+        self.bus.set_ready(true);
+        {
+            let cpu: &mut Cpu8080 = &mut self.cpu;
+            let bus = &mut self.bus;
+            let mut jam_bus = FrontPanelJamBus::new(bus, sequence);
+            cpu.step(&mut jam_bus);
+        }
+        self.bus.sync_cpu_inte(self.cpu.inte);
+
+        // The next fetch is where the physical machine is stopped. Synthesise
+        // that waiting-fetch bus state for the instruction-level core.
+        self.bus.panel.set_address_latch(self.cpu.pc);
+        self.bus.set_ready(false);
+        self.bus.release_front_panel_reset_bus(self.cpu.pc, false);
+    }
+
+    pub(crate) fn fast_front_panel_deposit_via_cpu_board(&mut self, next: bool) {
+        if !self.powered
+            || self.running
+            || self.bus.reset_asserted()
+            || self.bus.hold_requested()
+            || self.cpu.halted
+        {
+            return;
+        }
+
+        if next {
+            self.fast_front_panel_examine_via_cpu_board(true);
+        }
+        let address = self.bus.panel_address();
+        let value = self.bus.panel_switches() as u8;
+        self.bus.cpu_board_front_panel_deposit(address, value);
     }
 }
 
@@ -204,5 +354,50 @@ mod tests {
         assert_eq!(sample.status_word, Some(0x82));
         assert!(sample.inte);
         assert!(sample.ready);
+    }
+
+    #[test]
+    fn fast_front_panel_examine_executes_jammed_jump_without_touching_ram() {
+        let mut machine = super::super::AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.bus.load(0, &[0x76, 0xaa, 0xbb]);
+        machine.bus.load(0x0123, &[0x5a]);
+        for bit in 0..16 {
+            if 0x0123 & (1u16 << bit) != 0 {
+                machine.toggle_sense_switch(bit);
+            }
+        }
+
+        let before = machine.cpu.cycles;
+        machine.fast_front_panel_examine_via_cpu_board(false);
+        assert_eq!(machine.cpu.pc, 0x0123);
+        assert_eq!(machine.cpu.cycles - before, 10);
+        assert_eq!(machine.bus.peek_memory(0), Some(0x76));
+        assert_eq!(machine.bus.peek_memory(1), Some(0xaa));
+        assert_eq!(machine.bus.peek_memory(2), Some(0xbb));
+        assert_eq!(machine.address_leds(), 0x0123);
+        assert_eq!(machine.data_leds(), 0x5a);
+        assert!(machine.wait_led());
+    }
+
+    #[test]
+    fn fast_front_panel_examine_next_jams_nop_and_deposit_next_uses_new_address() {
+        let mut machine = super::super::AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.bus.load(0, &[0x11, 0x22]);
+        machine.fast_front_panel_examine_via_cpu_board(true);
+        assert_eq!(machine.cpu.pc, 1);
+        assert_eq!(machine.address_leds(), 1);
+
+        // Low eight switches = A5h.
+        for bit in [0, 2, 5, 7] { machine.toggle_sense_switch(bit); }
+        machine.fast_front_panel_deposit_via_cpu_board(false);
+        assert_eq!(machine.bus.peek_memory(1), Some(0xa5));
+
+        machine.fast_front_panel_deposit_via_cpu_board(true);
+        assert_eq!(machine.cpu.pc, 2);
+        assert_eq!(machine.bus.peek_memory(2), Some(0xa5));
     }
 }
