@@ -1,3 +1,4 @@
+mod cpu_board;
 mod front_panel;
 mod io_devices;
 mod memory;
@@ -10,11 +11,13 @@ use rand::RngCore;
 
 use crate::config::{RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
+use cpu_board::{Fast8080S100Adapter, S100Cycle};
 use front_panel::FrontPanelController;
 use io_devices::IoDevices;
 use memory::Memory;
-use panel_bus::{S100BusState, S100Cycle};
+use panel_bus::S100BusState;
 
+pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
 
@@ -225,14 +228,44 @@ impl AltairBus {
     fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
+    pub(crate) fn cpu_control_lines(&self) -> S100CpuControlLines {
+        let signals = self.s100.signals();
+        S100CpuControlLines {
+            ready: signals.ready,
+            hold: signals.hold,
+            reset: signals.reset,
+        }
+    }
+
+    pub(crate) fn drive_cpu_board_sample(&mut self, sample: S100CpuSample) {
+        self.cycle_drive_s100_t_state(
+            sample.address,
+            sample.data,
+            sample.status_word,
+            sample.inte,
+            sample.ready,
+            sample.wait,
+            sample.hlda,
+        );
+    }
+
     fn refresh_protect_line(&mut self) {
         let address = self.s100.signals().address;
         self.s100.refresh_protect(self.memory.is_protected(address));
     }
 
     fn drive_cpu_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
-        let protected = self.memory.is_protected(address);
-        self.s100.drive_cpu_cycle(address, data, cycle, protected, self.cpu_inte);
+        let signals = self.s100.signals();
+        let inte = self.cpu_inte;
+        Fast8080S100Adapter::for_each_sample(
+            address,
+            data,
+            cycle,
+            inte,
+            signals.ready,
+            signals.wait,
+            |sample| self.drive_cpu_board_sample(sample),
+        );
     }
 
     fn drive_power_on_state(&mut self, address: u16, run: bool) {
@@ -834,5 +867,17 @@ mod tests {
         machine.deposit(false);
         assert_eq!(machine.bus.peek_memory(0), Some(0x56));
         assert_eq!(machine.panel_lamps().wo, 0.0);
+    }
+
+    #[test]
+    fn cpu_board_control_lines_are_read_from_the_shared_s100_state() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.request_hold(true);
+        let lines = machine.bus.cpu_control_lines();
+        assert!(!lines.ready);
+        assert!(lines.hold);
+        assert!(!lines.reset);
     }
 }
