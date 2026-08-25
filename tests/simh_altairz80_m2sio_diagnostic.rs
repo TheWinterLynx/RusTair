@@ -175,6 +175,18 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     // `set remote ...` configuration, so enable its tracing only after startup.
     session.set_device_debug_mode("REM-CON", true, "")?;
 
+    // Open-SIMH's own sim_process_event() already traces the exact UNIT it is
+    // about to dispatch through SCP-PROCESS/EVENT. This is more authoritative
+    // than trying to infer the culprit from CPU state after SCPE_STOP: the
+    // scheduler can return SCPE_STOP either from a UNIT service or from the
+    // global stop_cpu flag before/after dispatch.
+    session.set_device_debug_mode("SCP-PROCESS", true, "EVENT")?;
+
+    // Trace the console transport too. If the scheduler returns SCPE_STOP due
+    // to stop_cpu, sim_poll_kbd()/console polling is one of the code paths that
+    // can raise that flag, so this lets the same SIMH log correlate both sides.
+    session.set_device_debug_mode("CON-TELNET", true, "TRC;RCV;CON")?;
+
     // ATTACH validates each Connect= destination with one disposable TCP
     // connection. Consume those explicitly before starting guest execution.
     drop(accept_one(&listener0, "M2SIO0 validation connection")?);
