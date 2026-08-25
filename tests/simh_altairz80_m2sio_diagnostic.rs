@@ -182,10 +182,11 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     // global stop_cpu flag before/after dispatch.
     session.set_device_debug_mode("SCP-PROCESS", true, "EVENT")?;
 
-    // Trace the console transport too. If the scheduler returns SCPE_STOP due
-    // to stop_cpu, sim_poll_kbd()/console polling is one of the code paths that
-    // can raise that flag, so this lets the same SIMH log correlate both sides.
-    session.set_device_debug_mode("CON-TELNET", true, "TRC;RCV;CON")?;
+    // Trace the whole console transport as well. If the scheduler returns
+    // SCPE_STOP due to stop_cpu, sim_poll_kbd()/console polling is one of the
+    // code paths that can raise that flag. An empty mode string is the API's
+    // documented way to enable every debug category for a device.
+    session.set_device_debug_mode("CON-TELNET", true, "")?;
 
     // ATTACH validates each Connect= destination with one disposable TCP
     // connection. Consume those explicitly before starting guest execution.
