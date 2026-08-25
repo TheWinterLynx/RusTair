@@ -285,7 +285,9 @@ impl SimhM2SioBridge {
 /// Temporary config overlay used only for the lifetime of a SIMH backend.
 /// The caller's original simulator config is copied byte-for-byte and remains
 /// untouched. Open-SIMH then connects M2SIO0/1 outward to RusTair's two
-/// loopback-only listeners using TMXR raw TCP (`;notelnet`).
+/// loopback-only listeners using TMXR raw TCP (`;notelnet`). DTR is configured
+/// to follow the guest-controlled RTS signal; TMXR modem-control passthrough
+/// otherwise suppresses outgoing connections while DTR is inactive.
 pub(crate) struct SimhM2SioRuntimeConfig {
     path: PathBuf,
 }
@@ -305,6 +307,8 @@ impl SimhM2SioRuntimeConfig {
 set m2sio1 enabled\n\
 set m2sio0 noconsole\n\
 set m2sio1 noconsole\n\
+set m2sio0 dtr\n\
+set m2sio1 dtr\n\
 set m2sio0 dcd\n\
 set m2sio0 cts\n\
 set m2sio1 dcd\n\
@@ -423,5 +427,30 @@ mod tests {
         let mut byte = [0u8; 1];
         persistent0.read_exact(&mut byte).expect("read queued byte after reconnect");
         assert_eq!(byte[0], 0xa5);
+    }
+
+    #[test]
+    fn runtime_config_enables_dtr_following_rts_for_both_ports() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let base = env::temp_dir().join(format!(
+            "rustair-simh-m2sio-base-{}-{nonce}.ini",
+            std::process::id()
+        ));
+        fs::write(&base, b"set cpu 8080\n").expect("write base config");
+
+        let runtime = SimhM2SioRuntimeConfig::create(&base, 12345, 12346)
+            .expect("create runtime M2SIO config");
+        let contents = fs::read_to_string(runtime.path()).expect("read runtime config");
+
+        assert!(contents.contains("set m2sio0 dtr\n"));
+        assert!(contents.contains("set m2sio1 dtr\n"));
+        assert!(contents.contains("attach m2sio0 Connect=127.0.0.1:12345;notelnet\n"));
+        assert!(contents.contains("attach m2sio1 Connect=127.0.0.1:12346;notelnet\n"));
+
+        drop(runtime);
+        fs::remove_file(base).expect("remove base config");
     }
 }
