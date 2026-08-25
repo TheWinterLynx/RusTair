@@ -18,6 +18,7 @@ const RX_CAPTURE: u16 = 0x0400;
 
 struct TempConfig {
     path: PathBuf,
+    simh_debug_path: PathBuf,
 }
 
 impl TempConfig {
@@ -31,14 +32,22 @@ impl TempConfig {
             "rustair-simh-altairz80-m2sio-diagnostic-{}-{nonce}.ini",
             std::process::id()
         ));
+        let simh_debug_path = env::temp_dir().join(format!(
+            "rustair-simh-altairz80-m2sio-simh-{}-{nonce}.log",
+            std::process::id()
+        ));
+        let simh_debug_name = simh_debug_path.to_string_lossy();
 
         let contents = format!(
-            "set cpu 8080\n\
+            "set debug -n -a -p \"{simh_debug_name}\"\n\
+set cpu 8080\n\
 set cpu 64kb\n\
 set console telnet=buffered\n\
 set console -u telnet={console_port}\n\
 set m2sio0 enabled\n\
 set m2sio1 enabled\n\
+set m2sio0 debug=STATUS;VERBOSE;ERROR\n\
+set m2sio1 debug=STATUS;VERBOSE;ERROR\n\
 set m2sio0 noconsole\n\
 set m2sio1 noconsole\n\
 set m2sio0 dtr\n\
@@ -53,15 +62,21 @@ reset m2sio0\n\
 reset m2sio1\n"
         );
         fs::write(&path, contents)?;
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            simh_debug_path,
+        })
     }
 
     fn path(&self) -> &Path { &self.path }
+
+    fn simh_debug_path(&self) -> &Path { &self.simh_debug_path }
 }
 
 impl Drop for TempConfig {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.simh_debug_path);
     }
 }
 
@@ -204,6 +219,15 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     if captured != 0x41 {
         drop(session);
         thread::sleep(Duration::from_millis(100));
+
+        let simh_debug = match fs::read(config.simh_debug_path()) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(error) => format!("<unable to read Open-SIMH M2SIO debug log: {error}>"),
+        };
+        eprintln!(
+            "--- Open-SIMH M2SIO debug log ---\n{simh_debug}\n--- end Open-SIMH M2SIO debug log ---"
+        );
+
         let wire = match fs::read(debug.path()) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(error) => format!("<unable to read FrontPanel wire log: {error}>"),
