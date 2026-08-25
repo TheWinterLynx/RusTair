@@ -40,8 +40,6 @@ impl RusTairApp {
             });
 
         if dismissed {
-            // Keep the detailed reason in the status bar after acknowledgement,
-            // but remove the prefix so the dialog does not reopen next frame.
             self.status = format!("Load failed: {reason}");
         }
     }
@@ -74,7 +72,7 @@ impl RusTairApp {
                     ));
                     return;
                 }
-                self.machine.bus.load(0, &bytes);
+                self.machine.load_bytes(0, &bytes);
                 self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
             }
             Err(e) => self.report_load_error(format!(
@@ -100,26 +98,21 @@ impl RusTairApp {
             ));
             return;
         }
-        if !self.machine.powered {
+        if !self.machine.powered() {
             self.set_altair_power(true);
         }
-        // The physical 8800 intentionally powers up without resetting
-        // the 8080. This menu command is a convenience loader, so it
-        // explicitly performs the reset that a human operator would do.
+        // The physical 8800 intentionally powers up without resetting the 8080.
+        // This convenience loader explicitly performs the reset a human operator
+        // would do before installing and starting BASIC.
         self.machine.set_running(false);
         self.machine.reset();
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
-        self.machine.bus.clear_protection();
-        self.machine.bus.load(0, bytes);
-        self.machine.cpu.pc = 0;
+        self.machine.clear_memory_protection();
+        self.machine.load_bytes(0, bytes);
 
-        // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
-        // on a completely writable 64 KiB machine and overwrites itself.
-        // Faithful emulation leaves that bug intact by default; the
-        // compatibility option is an explicit convenience workaround.
         let full_memory_probe_guard = if self
             .config
             .compatibility
@@ -130,8 +123,6 @@ impl RusTairApp {
             false
         };
 
-        // Auto-open only reveals the endpoint already wired to Port 0.
-        // It never changes the serial cabling.
         if self.config.preferences.auto_open_basic_console {
             match self.serial_router.device_on(SerialConnection::Port0) {
                 Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
