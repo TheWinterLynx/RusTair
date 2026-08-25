@@ -12,8 +12,8 @@ struct MomentarySwitchInteraction {
 }
 
 impl RusTairApp {
-    fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, intensity: f32) {
-        if !self.machine.powered { return; }
+    fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, intensity: f32, powered: bool) {
+        if !powered { return; }
         let intensity = intensity.clamp(0.0, 1.0).sqrt();
         if intensity < 0.015 { return; }
         let alpha = (255.0 * intensity).round() as u8;
@@ -56,7 +56,7 @@ impl RusTairApp {
             self.audio.play_once("assets/click.mp3");
         }
         if response.hovered() { response.clone().on_hover_text(format!("Sense switch {}", switch.name)); }
-        let position = if self.machine.panel_switches() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
+        let position = if self.machine.switch_register() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
@@ -181,9 +181,10 @@ impl RusTairApp {
         let switch = SWITCH_POWER;
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
         let response = ui.allocate_rect(hit, Sense::click());
-        if response.clicked() { self.set_altair_power(!self.machine.powered); }
+        let powered = self.machine.powered();
+        if response.clicked() { self.set_altair_power(!powered); }
         if response.hovered() { response.clone().on_hover_text("OFF / ON"); }
-        let position = if self.machine.powered { SwitchPosition::Down } else { SwitchPosition::Up };
+        let position = if self.machine.powered() { SwitchPosition::Down } else { SwitchPosition::Up };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
@@ -194,8 +195,9 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
+            let panel = self.machine.front_panel_state();
             self.status = if historical_power_on {
-                if self.machine.running {
+                if panel.running {
                     "Power on — historical undefined RUN/STOP latch resolved to RUN; CPU may execute immediately"
                         .into()
                 } else {
@@ -214,7 +216,8 @@ impl RusTairApp {
 
     pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui) {
         self.machine.commit_panel_activity(PANEL_FRAME);
-        let lamps = self.machine.panel_lamps();
+        let panel = self.machine.front_panel_state();
+        let lamps = panel.lamps;
 
         let available = ui.available_size();
         let scale = (available.x / PANEL_W).min(available.y / PANEL_H).clamp(0.2, 2.5);
@@ -224,21 +227,21 @@ impl RusTairApp {
         else { ui.painter().rect_filled(whole, 0.0, Color32::from_rgb(20, 25, 28)); }
 
         for bit in 0..16 { self.sense_switch(ui, origin, scale, bit); }
-        for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit]); }
-        for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit]); }
+        for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit], panel.powered); }
+        for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit], panel.powered); }
 
-        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[3], STATUS_LED_Y, lamps.inp);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, lamps.m1);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[5], STATUS_LED_Y, lamps.out);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, lamps.hlta);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[7], STATUS_LED_Y, lamps.stack);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, lamps.wo);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[9], STATUS_LED_Y, lamps.int_ack);
-        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, lamps.wait);
-        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, lamps.hlda);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[3], STATUS_LED_Y, lamps.inp, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, lamps.m1, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[5], STATUS_LED_Y, lamps.out, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, lamps.hlta, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[7], STATUS_LED_Y, lamps.stack, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, lamps.wo, panel.powered);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[9], STATUS_LED_Y, lamps.int_ack, panel.powered);
+        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, lamps.wait, panel.powered);
+        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, lamps.hlda, panel.powered);
 
         self.draw_power(ui, origin, scale);
 
@@ -247,7 +250,9 @@ impl RusTairApp {
         let run_stop = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN");
         if let Some(run) = run_stop.pressed {
             self.machine.assert_run_stop(run);
-            self.status = if !run && self.machine.cpu.halted && self.machine.running {
+            let cpu = self.machine.intel8080_state();
+            let panel = self.machine.front_panel_state();
+            self.status = if !run && cpu.halted.unwrap_or(false) && panel.running {
                 "STOP held while CPU is halted — no PSYNC to capture STOP; hold STOP and assert RESET"
                     .into()
             } else if run {
@@ -262,9 +267,9 @@ impl RusTairApp {
         }
 
         let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
-        // On the original 8800 only the upper contact is wired as SINGLE STEP;
-        // the lower contact has no function. The core remains instruction-level,
-        // so the implemented upper action advances one instruction.
+        // The selected backend defines the physical stepping granularity: the
+        // cycle-accurate core advances one machine cycle; the fast core retains
+        // its instruction-level approximation.
         if let Some(down) = single_step.action {
             if !down {
                 self.machine.step();
@@ -294,7 +299,7 @@ impl RusTairApp {
                 self.status = "CLR released: S-100 EXT CLR inactive".into();
             } else {
                 self.machine.release_front_panel_reset();
-                self.status = if self.machine.running {
+                self.status = if self.machine.running() {
                     "RESET released: RUN latch preserved; execution resumes from 0000h".into()
                 } else {
                     "RESET released: 0000h fetch held in WAIT".into()
