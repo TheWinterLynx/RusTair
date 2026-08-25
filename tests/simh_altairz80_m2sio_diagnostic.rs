@@ -48,7 +48,9 @@ set m2sio0 cts\n\
 set m2sio1 dcd\n\
 set m2sio1 cts\n\
 attach m2sio0 Connect=127.0.0.1:{port0};notelnet\n\
-attach m2sio1 Connect=127.0.0.1:{port1};notelnet\n"
+attach m2sio1 Connect=127.0.0.1:{port1};notelnet\n\
+reset m2sio0\n\
+reset m2sio1\n"
         );
         fs::write(&path, contents)?;
         Ok(Self { path })
