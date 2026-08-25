@@ -170,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn 8080_mode_normalizes_psw_and_iff() {
+    fn intel8080_mode_normalizes_psw_and_iff() {
         let CpuState::Intel8080(state) = sample().to_cpu_state(AltairZ80CpuMode::Intel8080) else {
             panic!("expected 8080 snapshot")
         };
