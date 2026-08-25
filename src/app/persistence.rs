@@ -1,14 +1,18 @@
 use super::*;
 use crate::config::{
-    ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig,
+    ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
     TerminalDuplex,
 };
+use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 const CONFIG_VERSION: u32 = 1;
+const DEFAULT_LED_BRIGHTNESS: f32 = 1.0;
+const DEFAULT_LED_AURA: f32 = 1.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SavedSettings {
@@ -44,15 +48,64 @@ impl Default for SavedSettings {
             terminal_duplex: TerminalDuplex::default(),
             terminal_uppercase: true,
             tty_mode: TtyMode::Off,
-            led_brightness: 1.0,
-            led_aura: 1.0,
+            led_brightness: DEFAULT_LED_BRIGHTNESS,
+            led_aura: DEFAULT_LED_AURA,
             muted: false,
         }
     }
 }
 
+#[derive(Clone, Debug)]
+struct PersistenceRuntime {
+    loaded: bool,
+    last_saved: SavedSettings,
+    led_brightness: f32,
+    led_aura: f32,
+    led_controls_open: bool,
+}
+
+impl Default for PersistenceRuntime {
+    fn default() -> Self {
+        let saved = SavedSettings::default();
+        Self {
+            loaded: false,
+            last_saved: saved.clone(),
+            led_brightness: saved.led_brightness,
+            led_aura: saved.led_aura,
+            led_controls_open: false,
+        }
+    }
+}
+
+static PERSISTENCE_RUNTIME: OnceLock<Mutex<PersistenceRuntime>> = OnceLock::new();
+
+fn runtime() -> &'static Mutex<PersistenceRuntime> {
+    PERSISTENCE_RUNTIME.get_or_init(|| Mutex::new(PersistenceRuntime::default()))
+}
+
+pub(super) fn led_visual_settings() -> (f32, f32) {
+    let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    (state.led_brightness, state.led_aura)
+}
+
+pub(super) fn led_visual_controls_state() -> (bool, f32, f32) {
+    let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    (
+        state.led_controls_open,
+        state.led_brightness,
+        state.led_aura,
+    )
+}
+
+pub(super) fn set_led_visual_controls_state(open: bool, brightness: f32, aura: f32) {
+    let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.led_controls_open = open;
+    state.led_brightness = brightness.clamp(0.25, 3.0);
+    state.led_aura = aura.clamp(0.0, 3.0);
+}
+
 impl SavedSettings {
-    pub(super) fn load_or_default() -> Self {
+    fn load_or_default() -> Self {
         match fs::read_to_string(config_path()) {
             Ok(text) => Self::from_text(&text),
             Err(_) => Self::default(),
@@ -170,7 +223,32 @@ impl SavedSettings {
 }
 
 impl RusTairApp {
-    pub(super) fn apply_persisted_settings(&mut self, saved: &SavedSettings) {
+    pub(super) fn ensure_persistent_configuration_loaded(&mut self) {
+        {
+            let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.loaded {
+                return;
+            }
+        }
+
+        let saved = SavedSettings::load_or_default();
+        self.apply_persisted_settings(&saved);
+        let normalized = self.capture_persisted_settings_with_leds(
+            saved.led_brightness,
+            saved.led_aura,
+        );
+
+        let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.loaded = true;
+        state.last_saved = normalized;
+        state.led_brightness = saved.led_brightness;
+        state.led_aura = saved.led_aura;
+        // Window visibility is deliberately transient: it always starts closed
+        // and only opens from Configuration -> LED visuals.
+        state.led_controls_open = false;
+    }
+
+    fn apply_persisted_settings(&mut self, saved: &SavedSettings) {
         self.config = saved.config;
         let engine = if saved.engine.is_available() { saved.engine } else { EmulationEngine::RustFast8080 };
         if self.machine.engine() != engine {
@@ -202,12 +280,21 @@ impl RusTairApp {
         self.terminal.uppercase = saved.terminal_uppercase;
         self.terminal.speed = self.config.peripherals.terminal_speed;
         self.tty.set_mode(saved.tty_mode);
-        self.led_brightness = saved.led_brightness.clamp(0.25, 3.0);
-        self.led_aura = saved.led_aura.clamp(0.0, 3.0);
         self.audio.set_muted(saved.muted);
+        self.last_tick = Instant::now();
+        self.status = format!(
+            "Ready — {} — {} RAM — {} — saved configuration loaded",
+            self.machine.engine().label(),
+            self.config.machine.ram_size.label(),
+            self.config.machine.serial_board.label(),
+        );
     }
 
-    pub(super) fn capture_persisted_settings(&self) -> SavedSettings {
+    fn capture_persisted_settings_with_leds(
+        &self,
+        led_brightness: f32,
+        led_aura: f32,
+    ) -> SavedSettings {
         SavedSettings {
             config: self.config,
             engine: self.machine.engine(),
@@ -221,15 +308,24 @@ impl RusTairApp {
             terminal_duplex: self.terminal.duplex,
             terminal_uppercase: self.terminal.uppercase,
             tty_mode: self.tty.mode,
-            led_brightness: self.led_brightness,
-            led_aura: self.led_aura,
+            led_brightness: led_brightness.clamp(0.25, 3.0),
+            led_aura: led_aura.clamp(0.0, 3.0),
             muted: self.audio.muted(),
         }
     }
 
+    pub(super) fn open_led_visual_controls(&mut self) {
+        let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.led_controls_open = true;
+    }
+
     pub(super) fn persist_configuration_if_changed(&mut self) {
-        let current = self.capture_persisted_settings();
-        if current == self.last_saved_settings {
+        let (brightness, aura, last_saved) = {
+            let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            (state.led_brightness, state.led_aura, state.last_saved.clone())
+        };
+        let current = self.capture_persisted_settings_with_leds(brightness, aura);
+        if current == last_saved {
             return;
         }
         if let Err(error) = current.save() {
@@ -238,7 +334,8 @@ impl RusTairApp {
         // Remember the attempted snapshot as well. This avoids hammering the
         // filesystem every frame if a path is temporarily unwritable; the next
         // user configuration change will trigger another save attempt.
-        self.last_saved_settings = current;
+        let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.last_saved = current;
     }
 }
 
@@ -353,8 +450,8 @@ mod tests {
     #[test]
     fn persistent_defaults_match_current_led_calibration() {
         let saved = SavedSettings::default();
-        assert_eq!(saved.led_brightness, 1.0);
-        assert_eq!(saved.led_aura, 1.0);
+        assert_eq!(saved.led_brightness, DEFAULT_LED_BRIGHTNESS);
+        assert_eq!(saved.led_aura, DEFAULT_LED_AURA);
     }
 
     #[test]
