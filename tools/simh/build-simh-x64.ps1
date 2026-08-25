@@ -80,13 +80,31 @@ function Find-UniqueBuildArtifact {
         throw "Build artifact not found: $Name under $Root"
     }
 
-    # Prefer paths whose directory explicitly contains the selected configuration.
     $preferred = $matches | Where-Object { $_.FullName -match [regex]::Escape("\$Configuration\") } | Select-Object -First 1
     if ($null -ne $preferred) {
         return $preferred.FullName
     }
 
     return ($matches | Select-Object -First 1).FullName
+}
+
+function Get-CMakeCacheValue {
+    param(
+        [string]$Directory,
+        [string]$Name
+    )
+
+    $cache = Join-Path $Directory "CMakeCache.txt"
+    if (-not (Test-Path $cache -PathType Leaf)) {
+        return $null
+    }
+
+    $line = Get-Content $cache | Where-Object { $_ -match ('^' + [regex]::Escape($Name) + ':[^=]+=') } | Select-Object -First 1
+    if ($null -eq $line) {
+        return $null
+    }
+
+    return ($line -split "=", 2)[1]
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -110,9 +128,6 @@ Write-Host "Open-SIMH source: $simh"
 Write-Host "RusTair SIMH platform: x64"
 Write-Host "RusTair SIMH build:    $BuildDir"
 
-# Build the simulator processes and the FrontPanel bridge from one Open-SIMH
-# checkout and one x64 CMake configuration. This gives RusTair a homogeneous
-# Windows ABI while keeping the user's existing Win32 build untouched.
 $configureArgs = @(
     "-S", $simh,
     "-B", $BuildDir,
@@ -120,11 +135,38 @@ $configureArgs = @(
     "-A", "x64",
     "-DCMAKE_PROJECT_INCLUDE=$inject"
 )
+
+# Phase 1: let Open-SIMH decide whether it needs its dependency superbuild.
+# On a fresh MSVC x64 tree this commonly includes PThreads4W, which provides
+# pthread.h required by sim_frontpanel.c. Building simh_frontpanel directly
+# before this phase would bypass Open-SIMH's dependency machinery.
 & $cmakeExe @configureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "Open-SIMH x64 CMake configure failed with exit code $LASTEXITCODE"
 }
 
+$dependencyBuild = Get-CMakeCacheValue -Directory $BuildDir -Name "DO_DEPENDENCY_BUILD"
+if ($dependencyBuild -eq "ON") {
+    Write-Host ""
+    Write-Host "Open-SIMH reports missing x64 dependencies; running official dependency superbuild first."
+    & $cmakeExe --build $BuildDir --config $Configuration --target simh_superbuild
+    if ($LASTEXITCODE -ne 0) {
+        throw "Open-SIMH dependency superbuild failed with exit code $LASTEXITCODE"
+    }
+
+    # Phase 2: configure the real simulator build after the dependency install
+    # prefix has been populated. Force dependency mode off so a still-missing
+    # package is reported immediately instead of silently re-entering superbuild.
+    Write-Host ""
+    Write-Host "Reconfiguring Open-SIMH x64 after dependency superbuild."
+    $postDependencyArgs = $configureArgs + @("-DDO_DEPENDENCY_BUILD=OFF")
+    & $cmakeExe @postDependencyArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Open-SIMH x64 post-dependency configure failed with exit code $LASTEXITCODE"
+    }
+}
+
+# Phase 3: build only the artifacts RusTair actually consumes.
 foreach ($target in @("simh_frontpanel", "altair", "altairz80")) {
     Write-Host ""
     Write-Host "Building Open-SIMH target: $target"
