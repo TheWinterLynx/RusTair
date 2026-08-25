@@ -33,33 +33,88 @@ function(rustair_prepare_simh_frontpanel_source output_var)
     # sim_panel_gen_examine() and sim_panel_mem_examine() therefore parse the
     # first diagnostic line as a numeric value and return zero even though the
     # memory operation itself succeeded.  RusTair builds an otherwise identical
-    # private copy of sim_frontpanel.c with those two parsers selecting the last
-    # ':' in the response instead.  The Open-SIMH checkout itself is never
+    # private copy of sim_frontpanel.c with only those two parsers selecting the
+    # last ':' in the response instead.  The Open-SIMH checkout itself is never
     # modified.
     set(rustair_frontpanel_source "${CMAKE_SOURCE_DIR}/sim_frontpanel.c")
     set(rustair_frontpanel_dir "${CMAKE_BINARY_DIR}/rustair-frontpanel-src")
     set(rustair_frontpanel_patched "${rustair_frontpanel_dir}/sim_frontpanel.c")
+    set(rustair_parser_old "c = strchr (response, ':');")
+    set(rustair_parser_new "c = strrchr (response, ':');")
 
     file(READ "${rustair_frontpanel_source}" rustair_frontpanel_contents)
 
+    # Patch sim_panel_gen_examine() only.  There are other strchr(response, ':')
+    # calls elsewhere in sim_frontpanel.c with unrelated parsing semantics and
+    # they must remain untouched.
+    string(FIND "${rustair_frontpanel_contents}"
+        "\nsim_panel_gen_examine (" rustair_gen_start)
+    string(FIND "${rustair_frontpanel_contents}"
+        "\nsim_panel_get_history (" rustair_gen_end)
+    if(rustair_gen_start EQUAL -1 OR rustair_gen_end EQUAL -1 OR
+       rustair_gen_end LESS_EQUAL rustair_gen_start)
+        message(FATAL_ERROR
+            "RusTair could not isolate sim_panel_gen_examine() in "
+            "${rustair_frontpanel_source}. Open-SIMH may have changed; review "
+            "the compatibility patch before building.")
+    endif()
+    math(EXPR rustair_gen_len "${rustair_gen_end} - ${rustair_gen_start}")
+    string(SUBSTRING "${rustair_frontpanel_contents}"
+        ${rustair_gen_start} ${rustair_gen_len} rustair_gen_block)
     string(REGEX MATCHALL
         "c = strchr \\(response, ':'\\);"
-        rustair_frontpanel_parser_matches
-        "${rustair_frontpanel_contents}")
-    list(LENGTH rustair_frontpanel_parser_matches rustair_frontpanel_parser_count)
-
-    if(NOT rustair_frontpanel_parser_count EQUAL 2)
+        rustair_gen_matches "${rustair_gen_block}")
+    list(LENGTH rustair_gen_matches rustair_gen_count)
+    if(NOT rustair_gen_count EQUAL 1)
         message(FATAL_ERROR
-            "RusTair expected exactly 2 FrontPanel EXAMINE parser sites in "
-            "${rustair_frontpanel_source}, but found ${rustair_frontpanel_parser_count}. "
+            "RusTair expected exactly 1 EXAMINE parser site inside "
+            "sim_panel_gen_examine(), but found ${rustair_gen_count}. "
             "Open-SIMH may have changed; review the compatibility patch before building.")
     endif()
+    string(REPLACE "${rustair_parser_old}" "${rustair_parser_new}"
+        rustair_gen_block "${rustair_gen_block}")
+    string(SUBSTRING "${rustair_frontpanel_contents}"
+        0 ${rustair_gen_start} rustair_gen_prefix)
+    string(SUBSTRING "${rustair_frontpanel_contents}"
+        ${rustair_gen_end} -1 rustair_gen_suffix)
+    set(rustair_frontpanel_contents
+        "${rustair_gen_prefix}${rustair_gen_block}${rustair_gen_suffix}")
 
-    string(REPLACE
-        "c = strchr (response, ':');"
-        "c = strrchr (response, ':');"
-        rustair_frontpanel_contents
-        "${rustair_frontpanel_contents}")
+    # Patch sim_panel_mem_examine() only.  Recalculate offsets after the first
+    # replacement so this remains correct even if the replacement lengths ever
+    # differ in a future compatibility adjustment.
+    string(FIND "${rustair_frontpanel_contents}"
+        "\nsim_panel_mem_examine (" rustair_mem_start)
+    string(FIND "${rustair_frontpanel_contents}"
+        "\nsim_panel_mem_deposit (" rustair_mem_end)
+    if(rustair_mem_start EQUAL -1 OR rustair_mem_end EQUAL -1 OR
+       rustair_mem_end LESS_EQUAL rustair_mem_start)
+        message(FATAL_ERROR
+            "RusTair could not isolate sim_panel_mem_examine() in "
+            "${rustair_frontpanel_source}. Open-SIMH may have changed; review "
+            "the compatibility patch before building.")
+    endif()
+    math(EXPR rustair_mem_len "${rustair_mem_end} - ${rustair_mem_start}")
+    string(SUBSTRING "${rustair_frontpanel_contents}"
+        ${rustair_mem_start} ${rustair_mem_len} rustair_mem_block)
+    string(REGEX MATCHALL
+        "c = strchr \\(response, ':'\\);"
+        rustair_mem_matches "${rustair_mem_block}")
+    list(LENGTH rustair_mem_matches rustair_mem_count)
+    if(NOT rustair_mem_count EQUAL 1)
+        message(FATAL_ERROR
+            "RusTair expected exactly 1 EXAMINE parser site inside "
+            "sim_panel_mem_examine(), but found ${rustair_mem_count}. "
+            "Open-SIMH may have changed; review the compatibility patch before building.")
+    endif()
+    string(REPLACE "${rustair_parser_old}" "${rustair_parser_new}"
+        rustair_mem_block "${rustair_mem_block}")
+    string(SUBSTRING "${rustair_frontpanel_contents}"
+        0 ${rustair_mem_start} rustair_mem_prefix)
+    string(SUBSTRING "${rustair_frontpanel_contents}"
+        ${rustair_mem_end} -1 rustair_mem_suffix)
+    set(rustair_frontpanel_contents
+        "${rustair_mem_prefix}${rustair_mem_block}${rustair_mem_suffix}")
 
     file(MAKE_DIRECTORY "${rustair_frontpanel_dir}")
     file(WRITE "${rustair_frontpanel_patched}" "${rustair_frontpanel_contents}")
