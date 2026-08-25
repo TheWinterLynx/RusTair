@@ -23,12 +23,12 @@ use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
-use crate::backend::NativeMachineBackend;
+use crate::backend::{BackendHost, EmulationEngine};
 use crate::config::{
     AppConfig, Asr33Speed, EmulationSpeed, RamInit, RamSize, SerialBoard, TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
-use crate::machine::{AltairMachine, CLOCK_HZ};
+use crate::machine::CLOCK_HZ;
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
@@ -82,7 +82,7 @@ pub fn run() -> eframe::Result {
 
 struct RusTairApp {
     config: AppConfig,
-    machine: NativeMachineBackend,
+    machine: BackendHost,
     serial_router: SerialRouter,
     external_serial: ExternalSerialState,
     external_com: ExternalComState,
@@ -107,7 +107,7 @@ impl RusTairApp {
         terminal.speed = config.peripherals.terminal_speed;
         Self {
             config,
-            machine: NativeMachineBackend::default(),
+            machine: BackendHost::rust_fast(),
             serial_router: SerialRouter::default(),
             external_serial: ExternalSerialState::default(),
             external_com: ExternalComState::default(),
@@ -119,7 +119,7 @@ impl RusTairApp {
             terminal,
             audio: AudioEngine::new(),
             last_tick: now,
-            status: "Ready — Intel 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
+            status: "Ready — RusTair Fast 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
                 .into(),
         }
     }
@@ -150,6 +150,41 @@ impl RusTairApp {
         self.config.preferences.emulation_speed = speed;
         self.last_tick = Instant::now();
         self.status = format!("CPU emulation speed: {}", speed.label());
+    }
+
+    fn select_emulation_engine(&mut self, engine: EmulationEngine) {
+        if self.machine.engine() == engine { return; }
+        if !engine.is_available() {
+            self.status = format!("{} is parked until the SIMH backend branch is integrated", engine.label());
+            return;
+        }
+        if self.machine.powered {
+            self.status = "Power OFF the Altair before changing emulation engine".into();
+            return;
+        }
+
+        match self.machine.replace_engine(engine) {
+            Ok(()) => {
+                // Engine replacement intentionally creates a fresh powered-off
+                // machine. Reapply physical configuration, but do not migrate
+                // CPU/RAM/UART runtime state between emulators.
+                self.machine.configure_memory(
+                    self.config.machine.ram_size,
+                    self.config.machine.ram_init,
+                );
+                self.machine.configure_serial_board(self.config.machine.serial_board);
+                self.asr33.tx_started = None;
+                self.asr33.answerback.clear();
+                self.terminal.tx_started = None;
+                self.external_serial.reset_line_timing();
+                self.external_com.reset_line_timing();
+                self.last_tick = Instant::now();
+                self.status = format!("Emulation engine selected: {} — machine remains POWER OFF", engine.label());
+            }
+            Err(error) => {
+                self.status = format!("Could not select {}: {error}", engine.label());
+            }
+        }
     }
 
     fn apply_memory_configuration(&mut self, ram_size: RamSize, ram_init: RamInit) {
