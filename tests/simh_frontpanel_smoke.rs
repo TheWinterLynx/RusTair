@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rustair::backend::simh::{SimhAltairBackend, SimhLaunchConfig, SimhTarget};
+use rustair::backend::simh::{
+    SimhAltairBackend, SimhLaunchConfig, SimhOperationalState, SimhSession, SimhTarget,
+};
 use rustair::backend::{CpuState, MachineBackend};
 
 const STATE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -17,6 +19,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 struct TempSimhConfig {
     path: PathBuf,
+    debug_path: PathBuf,
 }
 
 impl TempSimhConfig {
@@ -28,6 +31,7 @@ impl TempSimhConfig {
             "rustair-simh-altair-smoke-{}-{nonce}.ini",
             std::process::id()
         ));
+        let debug_path = path.with_extension("frontpanel.log");
 
         // FrontPanel appends SET REMOTE ... / SET REMOTE MASTER to this file.
         // Open-SIMH only permits Master Remote Console mode when the simulator's
@@ -46,15 +50,17 @@ impl TempSimhConfig {
             "set cpu 8080\nset cpu 64k\nset console telnet=buffered\nset console -u telnet={console_port}\n"
         );
         fs::write(&path, contents)?;
-        Ok(Self { path })
+        Ok(Self { path, debug_path })
     }
 
     fn path(&self) -> &Path { &self.path }
+    fn debug_path(&self) -> &Path { &self.debug_path }
 }
 
 impl Drop for TempSimhConfig {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.debug_path);
     }
 }
 
@@ -102,17 +108,60 @@ fn wait_for_running(
     }
 }
 
+fn diagnose_frontpanel_memory(
+    executable: &Path,
+    config: &TempSimhConfig,
+) -> Result<(), Box<dyn Error>> {
+    let mut session = SimhSession::start_debug(executable, config.path(), 0, config.debug_path())?;
+    if session.state() != SimhOperationalState::Halted {
+        session.halt()?;
+    }
+
+    let before = session.read_byte(0x0200)?;
+    session.write_byte(0x0200, 0xa5)?;
+    let after_mem_api = session.read_byte(0x0200)?;
+
+    // Classic ALTAIR's native address radix is octal. 1001(octal) is a
+    // separate byte from the mem_* probe and lets us compare the generic
+    // FrontPanel DEPOSIT/EXAMINE path in the same simulator process.
+    session.deposit_u32("1001", 0x5a)?;
+    let after_generic_api = session.examine_u32("1001")? as u8;
+
+    println!(
+        "FrontPanel memory diagnostic: before={before:02X}, mem_api_after={after_mem_api:02X}, generic_api_after={after_generic_api:02X}"
+    );
+
+    drop(session);
+
+    if after_mem_api != 0xa5 || after_generic_api != 0x5a {
+        let debug = fs::read_to_string(config.debug_path())
+            .unwrap_or_else(|error| format!("<unable to read FrontPanel debug log: {error}>"));
+        println!("\n===== Open-SIMH FrontPanel wire log =====\n{debug}\n===== end FrontPanel wire log =====\n");
+        return Err(test_error(format!(
+            "FrontPanel memory round-trip mismatch: mem API wrote A5/read {after_mem_api:02X}; generic API wrote 5A/read {after_generic_api:02X}"
+        )));
+    }
+
+    Ok(())
+}
+
 #[test]
 #[ignore = "requires the local x64 Open-SIMH stack built by tools/simh/build-simh-x64.ps1"]
 fn classic_altair_frontpanel_round_trip() -> Result<(), Box<dyn Error>> {
     let executable = altair_executable();
     let config = TempSimhConfig::create()?;
-    let launch = SimhLaunchConfig::new(SimhTarget::Altair, executable, config.path());
+
+    // First prove the two raw FrontPanel memory access paths and emit the
+    // official FrontPanel wire log on any mismatch. This makes failures in the
+    // C API distinguishable from failures in the higher-level backend adapter.
+    diagnose_frontpanel_memory(&executable, &config)?;
+
+    let launch = SimhLaunchConfig::new(SimhTarget::Altair, &executable, config.path());
     let mut backend = SimhAltairBackend::launch(launch)?;
 
     wait_for_running(&mut backend, false)?;
 
-    // Memory examine/deposit through the real FrontPanel connection.
+    // Memory examine/deposit through the real backend connection.
     assert!(backend.write_memory(0x0200, 0xa5, false)?);
     assert_eq!(backend.peek_memory(0x0200)?, Some(0xa5));
 
