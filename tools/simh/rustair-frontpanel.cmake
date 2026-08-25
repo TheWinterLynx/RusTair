@@ -21,6 +21,36 @@ if(CMAKE_VERSION VERSION_LESS 3.19)
         "for cmake_language(DEFER).")
 endif()
 
+function(rustair_replace_unique_parser block_var context output_var)
+    set(rustair_parser_old "c = strchr (response, ':');")
+    set(rustair_parser_new "c = strrchr (response, ':');")
+    set(rustair_block "${${block_var}}")
+
+    # Do not use MATCHALL + list(LENGTH) here: the C statement being matched
+    # ends in ';', and CMake list semantics treat that semicolon as a list
+    # separator, which makes one match appear as two list elements.
+    string(FIND "${rustair_block}" "${rustair_parser_old}" rustair_first_parser)
+    if(rustair_first_parser EQUAL -1)
+        message(FATAL_ERROR
+            "RusTair could not find the EXAMINE parser inside ${context}. "
+            "Open-SIMH may have changed; review the compatibility patch before building.")
+    endif()
+
+    string(LENGTH "${rustair_parser_old}" rustair_parser_len)
+    math(EXPR rustair_after_first "${rustair_first_parser} + ${rustair_parser_len}")
+    string(SUBSTRING "${rustair_block}" ${rustair_after_first} -1 rustair_parser_tail)
+    string(FIND "${rustair_parser_tail}" "${rustair_parser_old}" rustair_second_parser)
+    if(NOT rustair_second_parser EQUAL -1)
+        message(FATAL_ERROR
+            "RusTair found more than one EXAMINE parser site inside ${context}. "
+            "Open-SIMH may have changed; review the compatibility patch before building.")
+    endif()
+
+    string(REPLACE "${rustair_parser_old}" "${rustair_parser_new}"
+        rustair_block "${rustair_block}")
+    set(${output_var} "${rustair_block}" PARENT_SCOPE)
+endfunction()
+
 function(rustair_prepare_simh_frontpanel_source output_var)
     # Open-SIMH FrontPanel API v12 parses EXAMINE responses by taking the first
     # ':' in the response.  The classic Altair monitor can emit symbolic-output
@@ -39,12 +69,10 @@ function(rustair_prepare_simh_frontpanel_source output_var)
     set(rustair_frontpanel_source "${CMAKE_SOURCE_DIR}/sim_frontpanel.c")
     set(rustair_frontpanel_dir "${CMAKE_BINARY_DIR}/rustair-frontpanel-src")
     set(rustair_frontpanel_patched "${rustair_frontpanel_dir}/sim_frontpanel.c")
-    set(rustair_parser_old "c = strchr (response, ':');")
-    set(rustair_parser_new "c = strrchr (response, ':');")
 
     file(READ "${rustair_frontpanel_source}" rustair_frontpanel_contents)
 
-    # Patch sim_panel_gen_examine() only.  There are other strchr(response, ':')
+    # Patch sim_panel_gen_examine() only. There are other strchr(response, ':')
     # calls elsewhere in sim_frontpanel.c with unrelated parsing semantics and
     # they must remain untouched.
     string(FIND "${rustair_frontpanel_contents}"
@@ -61,28 +89,17 @@ function(rustair_prepare_simh_frontpanel_source output_var)
     math(EXPR rustair_gen_len "${rustair_gen_end} - ${rustair_gen_start}")
     string(SUBSTRING "${rustair_frontpanel_contents}"
         ${rustair_gen_start} ${rustair_gen_len} rustair_gen_block)
-    string(REGEX MATCHALL
-        "c = strchr \\(response, ':'\\);"
-        rustair_gen_matches "${rustair_gen_block}")
-    list(LENGTH rustair_gen_matches rustair_gen_count)
-    if(NOT rustair_gen_count EQUAL 1)
-        message(FATAL_ERROR
-            "RusTair expected exactly 1 EXAMINE parser site inside "
-            "sim_panel_gen_examine(), but found ${rustair_gen_count}. "
-            "Open-SIMH may have changed; review the compatibility patch before building.")
-    endif()
-    string(REPLACE "${rustair_parser_old}" "${rustair_parser_new}"
-        rustair_gen_block "${rustair_gen_block}")
+    rustair_replace_unique_parser(
+        rustair_gen_block "sim_panel_gen_examine()" rustair_gen_block_patched)
     string(SUBSTRING "${rustair_frontpanel_contents}"
         0 ${rustair_gen_start} rustair_gen_prefix)
     string(SUBSTRING "${rustair_frontpanel_contents}"
         ${rustair_gen_end} -1 rustair_gen_suffix)
     set(rustair_frontpanel_contents
-        "${rustair_gen_prefix}${rustair_gen_block}${rustair_gen_suffix}")
+        "${rustair_gen_prefix}${rustair_gen_block_patched}${rustair_gen_suffix}")
 
-    # Patch sim_panel_mem_examine() only.  Recalculate offsets after the first
-    # replacement so this remains correct even if the replacement lengths ever
-    # differ in a future compatibility adjustment.
+    # Patch sim_panel_mem_examine() only. Recalculate offsets after the first
+    # replacement so this remains correct if replacement lengths change later.
     string(FIND "${rustair_frontpanel_contents}"
         "\nsim_panel_mem_examine (" rustair_mem_start)
     string(FIND "${rustair_frontpanel_contents}"
@@ -97,24 +114,14 @@ function(rustair_prepare_simh_frontpanel_source output_var)
     math(EXPR rustair_mem_len "${rustair_mem_end} - ${rustair_mem_start}")
     string(SUBSTRING "${rustair_frontpanel_contents}"
         ${rustair_mem_start} ${rustair_mem_len} rustair_mem_block)
-    string(REGEX MATCHALL
-        "c = strchr \\(response, ':'\\);"
-        rustair_mem_matches "${rustair_mem_block}")
-    list(LENGTH rustair_mem_matches rustair_mem_count)
-    if(NOT rustair_mem_count EQUAL 1)
-        message(FATAL_ERROR
-            "RusTair expected exactly 1 EXAMINE parser site inside "
-            "sim_panel_mem_examine(), but found ${rustair_mem_count}. "
-            "Open-SIMH may have changed; review the compatibility patch before building.")
-    endif()
-    string(REPLACE "${rustair_parser_old}" "${rustair_parser_new}"
-        rustair_mem_block "${rustair_mem_block}")
+    rustair_replace_unique_parser(
+        rustair_mem_block "sim_panel_mem_examine()" rustair_mem_block_patched)
     string(SUBSTRING "${rustair_frontpanel_contents}"
         0 ${rustair_mem_start} rustair_mem_prefix)
     string(SUBSTRING "${rustair_frontpanel_contents}"
         ${rustair_mem_end} -1 rustair_mem_suffix)
     set(rustair_frontpanel_contents
-        "${rustair_mem_prefix}${rustair_mem_block}${rustair_mem_suffix}")
+        "${rustair_mem_prefix}${rustair_mem_block_patched}${rustair_mem_suffix}")
 
     file(MAKE_DIRECTORY "${rustair_frontpanel_dir}")
     file(WRITE "${rustair_frontpanel_patched}" "${rustair_frontpanel_contents}")
