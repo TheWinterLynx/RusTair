@@ -3,6 +3,46 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
+const LED_VISIBLE_THRESHOLD: f32 = 0.01;
+const LED_HALO_MAX_ALPHA: u8 = 72;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LedVisualResponse {
+    halo_alpha: u8,
+    body_alpha: u8,
+    core_alpha: u8,
+    glare_alpha: u8,
+}
+
+fn optical_alpha(max_alpha: u8, response: f32) -> u8 {
+    (f32::from(max_alpha) * response.clamp(0.0, 1.0)).round() as u8
+}
+
+/// Convert the panel integrator's electrical duty cycle into a visual LED
+/// response. This is deliberately presentation-only: CPU/S-100 activity stays
+/// untouched. The old sqrt curve made low-duty LEDs look too similar to LEDs
+/// that were active most of the time. A shallower body response preserves a
+/// visible red lens while the core and especially the specular glare require
+/// progressively more real activity, which better matches physical red LEDs
+/// photographed through the Altair's front panel.
+fn led_visual_response(intensity: f32) -> Option<LedVisualResponse> {
+    let electrical = intensity.clamp(0.0, 1.0);
+    if electrical < LED_VISIBLE_THRESHOLD {
+        return None;
+    }
+
+    Some(LedVisualResponse {
+        // A diffuse halo should only become obvious on strongly driven LEDs.
+        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, electrical.powf(1.35)),
+        // Keep the red lens visible at moderate duty cycle without the old
+        // sqrt() compression that over-promoted very weak bus activity.
+        body_alpha: optical_alpha(255, electrical.powf(0.80)),
+        // The luminous core tracks real duty cycle much more directly.
+        core_alpha: optical_alpha(255, electrical),
+        // The white hot-spot is a high-intensity optical/camera effect.
+        glare_alpha: optical_alpha(255, electrical.powf(1.80)),
+    })
+}
 
 #[derive(Default)]
 struct MomentarySwitchInteraction {
@@ -14,13 +54,37 @@ struct MomentarySwitchInteraction {
 impl RusTairApp {
     fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, intensity: f32, powered: bool) {
         if !powered { return; }
-        let intensity = intensity.clamp(0.0, 1.0).sqrt();
-        if intensity < 0.015 { return; }
-        let alpha = (255.0 * intensity).round() as u8;
+        let Some(light) = led_visual_response(intensity) else { return; };
         let center = origin + Vec2::new(x * scale, y * scale);
-        ui.painter().circle_filled(center, 10.5 * scale, Color32::from_rgba_unmultiplied(255, 24, 42, alpha));
-        ui.painter().circle_filled(center, 5.8 * scale, Color32::from_rgba_unmultiplied(255, 104, 116, alpha));
-        ui.painter().circle_filled(center + Vec2::new(-2.8 * scale, -3.0 * scale), 2.0 * scale, Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
+
+        // The unlit LED/lens is part of the panel texture. These overlays model
+        // only emitted light: broad halo, red body, bright core and the small
+        // camera/eye specular highlight. Each responds differently to duty cycle
+        // instead of treating a weak LED as a transparent copy of a strong one.
+        if light.halo_alpha > 0 {
+            ui.painter().circle_filled(
+                center,
+                14.5 * scale,
+                Color32::from_rgba_unmultiplied(255, 12, 30, light.halo_alpha),
+            );
+        }
+        ui.painter().circle_filled(
+            center,
+            10.5 * scale,
+            Color32::from_rgba_unmultiplied(255, 24, 42, light.body_alpha),
+        );
+        ui.painter().circle_filled(
+            center,
+            5.8 * scale,
+            Color32::from_rgba_unmultiplied(255, 104, 116, light.core_alpha),
+        );
+        if light.glare_alpha > 0 {
+            ui.painter().circle_filled(
+                center + Vec2::new(-2.8 * scale, -3.0 * scale),
+                2.0 * scale,
+                Color32::from_rgba_unmultiplied(255, 255, 255, light.glare_alpha),
+            );
+        }
     }
 
     fn switch_texture(&self, sprite: SwitchSpriteId) -> Option<&egui::TextureHandle> {
@@ -266,7 +330,7 @@ impl RusTairApp {
             self.machine.release_run_stop(run);
         }
 
-        let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
+        let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE STEP", "SINGLE STEP");
         // The selected backend defines the physical stepping granularity: the
         // cycle-accurate core advances one machine cycle; the fast core retains
         // its instruction-level approximation.
@@ -313,5 +377,43 @@ impl RusTairApp {
 
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX1, "AUX 1 (unassigned)");
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX2, "AUX 2 (unassigned)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn led_optics_hide_residual_activity_below_threshold() {
+        assert_eq!(led_visual_response(0.0), None);
+        assert_eq!(led_visual_response(LED_VISIBLE_THRESHOLD * 0.5), None);
+    }
+
+    #[test]
+    fn led_optics_keep_weak_activity_red_without_white_glare() {
+        let weak = led_visual_response(0.10).unwrap();
+        assert!(weak.body_alpha > weak.core_alpha);
+        assert!(weak.core_alpha > weak.glare_alpha);
+        assert!(weak.glare_alpha <= 5);
+    }
+
+    #[test]
+    fn led_optics_reach_full_core_and_glare_at_full_duty_cycle() {
+        let full = led_visual_response(1.0).unwrap();
+        assert_eq!(full.halo_alpha, LED_HALO_MAX_ALPHA);
+        assert_eq!(full.body_alpha, 255);
+        assert_eq!(full.core_alpha, 255);
+        assert_eq!(full.glare_alpha, 255);
+    }
+
+    #[test]
+    fn led_optics_preserve_more_contrast_than_old_sqrt_curve() {
+        let quarter = led_visual_response(0.25).unwrap();
+        let half = led_visual_response(0.50).unwrap();
+        assert!(half.body_alpha > quarter.body_alpha);
+        assert!(half.core_alpha > quarter.core_alpha);
+        assert!(half.glare_alpha > quarter.glare_alpha);
+        assert!(quarter.body_alpha < 128, "25% duty should no longer render as a 50% body");
     }
 }
