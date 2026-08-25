@@ -1,6 +1,7 @@
 //! Machine-level abstraction for RusTair's selectable emulator engines.
 
 mod cycle;
+mod cycle_host;
 mod native;
 pub mod simh;
 
@@ -11,6 +12,7 @@ use std::time::Duration;
 use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::{AltairMachine, PanelLampSnapshot};
 
+use cycle_host::CycleHostBackend;
 pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
 pub type FastMachineBackend = NativeMachineBackend;
@@ -221,7 +223,7 @@ impl std::error::Error for BackendCreateError {}
 pub fn create_backend(engine: EmulationEngine) -> Result<Box<dyn MachineBackend>, BackendCreateError> {
     match engine {
         EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
-        EmulationEngine::RustCycleAccurate8080 => Ok(Box::new(CycleAccurateMachineBackend::default())),
+        EmulationEngine::RustCycleAccurate8080 => Ok(Box::new(CycleHostBackend::default())),
         EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 =>
             Err(BackendCreateError::Unavailable(engine)),
     }
