@@ -164,7 +164,9 @@ fn exercise_host_to_guest(
 
     backend.run()?;
     // The persistent outgoing TMXR connection is established by m2sio_svc()
-    // while SIMH is executing, not while the simulator is halted at launch.
+    // while SIMH is executing. The program writes 14h to the ACIA control
+    // register, asserting RTS; the runtime config wires DTR to follow RTS so
+    // TMXR modem-control passthrough is then allowed to connect.
     wait_for_running(backend, true)?;
     wait_for_serial_connected(backend, logical_port)?;
 
@@ -222,9 +224,22 @@ fn exercise_power_cycle_reconnect(
     backend.power(true)?;
     wait_for_running(backend, false)?;
 
-    // Persistent M2SIO connections do not exist yet: they are recreated by
-    // m2sio_svc() only after the restarted simulator begins executing.
-    backend.load_bytes(PROGRAM_BASE, &[0xc3, 0x00, 0x01])?; // JMP 0100h
+    // Reset and configure both ACIAs after the simulator restart. 14h asserts
+    // RTS on both channels; with the runtime DTR modifier this also asserts DTR,
+    // which is required before TMXR modem-control passthrough will initiate the
+    // two outgoing raw TCP connections.
+    backend.load_bytes(
+        PROGRAM_BASE,
+        &[
+            0x3e, 0x03,       // 0100: MVI A,03h
+            0xd3, 0x10,       // 0102: OUT M2SIO0 status (reset)
+            0xd3, 0x12,       // 0104: OUT M2SIO1 status (reset)
+            0x3e, 0x14,       // 0106: MVI A,14h (8N1, RTS low)
+            0xd3, 0x10,       // 0108: OUT M2SIO0 status
+            0xd3, 0x12,       // 010A: OUT M2SIO1 status
+            0xc3, 0x0c, 0x01, // 010C: JMP 010Ch
+        ],
+    )?;
     set_program_counter(backend, PROGRAM_BASE)?;
     backend.run()?;
     wait_for_running(backend, true)?;
