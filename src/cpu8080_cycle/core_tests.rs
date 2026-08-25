@@ -193,13 +193,13 @@ fn ready_wait_extends_external_write_and_keeps_bus_stable() {
 }
 
 #[test]
-fn unsupported_hlt_remains_an_explicit_fault() {
+fn unsupported_opcode_remains_an_explicit_fault() {
     let mut cpu = Cpu8080Cycle::new();
     cpu.tick(input(0, true));
     cpu.tick(input(0, true));
-    cpu.tick(input(0x76, true));
+    cpu.tick(input(0x08, true));
     let t4 = cpu.tick(input(0, true));
-    assert_eq!(t4.fault, Some(Cpu8080CycleFault::UnsupportedOpcode(0x76)));
+    assert_eq!(t4.fault, Some(Cpu8080CycleFault::UnsupportedOpcode(0x08)));
 }
 
 #[test]
