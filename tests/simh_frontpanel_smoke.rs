@@ -108,8 +108,6 @@ fn diagnose_frontpanel_memory(
         session.halt()?;
     }
 
-    // Known register round-trip: this isolates the generic FrontPanel command
-    // path from memory addressing/formatting completely.
     session.deposit_u32("A", 0x5a)?;
     let after_register_api = session.examine_u32("A")? as u8;
 
@@ -117,9 +115,6 @@ fn diagnose_frontpanel_memory(
     session.write_byte(0x0200, 0xa5)?;
     let after_mem_api = session.read_byte(0x0200)?;
 
-    // Classic ALTAIR's native address radix is octal. 1001(octal) is a
-    // separate byte from the mem_* probe and lets us compare generic memory
-    // DEPOSIT/EXAMINE with the dedicated mem_* API in the same simulator.
     session.deposit_u32("1001", 0x5a)?;
     let after_generic_api = session.examine_u32("1001")? as u8;
 
@@ -130,8 +125,10 @@ fn diagnose_frontpanel_memory(
     drop(session);
 
     if after_register_api != 0x5a || after_mem_api != 0xa5 || after_generic_api != 0x5a {
-        let debug = fs::read_to_string(config.debug_path())
-            .unwrap_or_else(|error| format!("<unable to read FrontPanel debug log: {error}>"));
+        let debug = match fs::read(config.debug_path()) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(error) => format!("<unable to read FrontPanel debug log: {error}>"),
+        };
         println!("\n===== Open-SIMH FrontPanel wire log =====\n{debug}\n===== end FrontPanel wire log =====\n");
         return Err(test_error(format!(
             "FrontPanel round-trip mismatch: register A wrote 5A/read {after_register_api:02X}; mem API wrote A5/read {after_mem_api:02X}; generic memory wrote 5A/read {after_generic_api:02X}"
