@@ -3,7 +3,7 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
-const LED_VISIBLE_THRESHOLD: f32 = 0.01;
+const LED_VISIBLE_THRESHOLD: f32 = 0.006;
 const LED_HALO_MAX_ALPHA: u8 = 72;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,13 +33,14 @@ fn led_visual_response(intensity: f32) -> Option<LedVisualResponse> {
 
     Some(LedVisualResponse {
         // A diffuse halo should only become obvious on strongly driven LEDs.
-        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, electrical.powf(1.35)),
-        // Keep the red lens visible at moderate duty cycle without the old
-        // sqrt() compression that over-promoted very weak bus activity.
-        body_alpha: optical_alpha(255, electrical.powf(0.80)),
-        // The luminous core tracks real duty cycle much more directly.
-        core_alpha: optical_alpha(255, electrical),
-        // The white hot-spot is a high-intensity optical/camera effect.
+        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, electrical.powf(1.30)),
+        // Let weak activity retain a little more red body than the first optical
+        // calibration, without returning to sqrt()'s excessive compression.
+        body_alpha: optical_alpha(255, electrical.powf(0.68)),
+        // The luminous core rises a little earlier, but remains clearly below
+        // the body at low duty cycle so dim LEDs still look physically dim.
+        core_alpha: optical_alpha(255, electrical.powf(0.90)),
+        // Keep the white hot-spot strongly biased toward genuinely bright LEDs.
         glare_alpha: optical_alpha(255, electrical.powf(1.80)),
     })
 }
