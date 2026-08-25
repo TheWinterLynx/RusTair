@@ -5,21 +5,17 @@ use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::backend::BackendSerialPort;
 
 const SOCKET_CHUNK: usize = 4096;
 const QUEUE_LIMIT: usize = 64 * 1024;
-const CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub(crate) enum SimhSerialBridgeError {
     Io(std::io::Error),
     QueueFull { port: BackendSerialPort },
-    Disconnected { port: BackendSerialPort },
-    ConnectTimeout { port0: bool, port1: bool },
 }
 
 impl fmt::Display for SimhSerialBridgeError {
@@ -27,11 +23,6 @@ impl fmt::Display for SimhSerialBridgeError {
         match self {
             Self::Io(error) => write!(f, "{error}"),
             Self::QueueFull { port } => write!(f, "SIMH serial queue is full for {port:?}"),
-            Self::Disconnected { port } => write!(f, "SIMH serial socket disconnected for {port:?}"),
-            Self::ConnectTimeout { port0, port1 } => write!(
-                f,
-                "timed out waiting for SIMH M2SIO raw TCP connection(s): port0_connected={port0}, port1_connected={port1}"
-            ),
         }
     }
 }
@@ -100,13 +91,29 @@ impl SimhRawTcpPort {
         Ok(())
     }
 
+    /// Poll one raw TCP line without treating a peer disconnect as fatal.
+    ///
+    /// Open-SIMH TMXR deliberately opens and closes a short-lived validation
+    /// connection while parsing `Connect=host:port`, then establishes the real
+    /// M2SIO connection later from `tmxr_poll_conn()` while the simulator is
+    /// executing.  Preserve queued bytes across that transition and accept the
+    /// persistent connection on a later poll.
     fn poll(&mut self) -> Result<(), SimhSerialBridgeError> {
         self.accept_pending()?;
         if self.stream.is_none() {
-            return Err(SimhSerialBridgeError::Disconnected { port: self.logical_port });
+            return Ok(());
         }
+
         self.flush_to_simh()?;
+        if self.stream.is_none() {
+            self.accept_pending()?;
+            return Ok(());
+        }
+
         self.read_from_simh()?;
+        if self.stream.is_none() {
+            self.accept_pending()?;
+        }
         Ok(())
     }
 
@@ -119,14 +126,20 @@ impl SimhRawTcpPort {
                 .expect("connected SIMH serial stream")
                 .write(&chunk);
             match result {
-                Ok(0) => return self.disconnect_error(),
+                Ok(0) => {
+                    self.drop_stream();
+                    return Ok(());
+                }
                 Ok(count) => {
                     for _ in 0..count {
                         self.to_simh.pop_front();
                     }
                 }
                 Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                Err(_) => return self.disconnect_error(),
+                Err(_) => {
+                    self.drop_stream();
+                    return Ok(());
+                }
             }
         }
         Ok(())
@@ -146,25 +159,28 @@ impl SimhRawTcpPort {
                 .expect("connected SIMH serial stream")
                 .read(&mut buffer[..max_read]);
             match result {
-                Ok(0) => return self.disconnect_error(),
+                Ok(0) => {
+                    self.drop_stream();
+                    return Ok(());
+                }
                 Ok(count) => self.from_simh.extend(buffer[..count].iter().copied()),
                 Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
-                Err(_) => return self.disconnect_error(),
+                Err(_) => {
+                    self.drop_stream();
+                    return Ok(());
+                }
             }
         }
     }
 
-    fn disconnect_error<T>(&mut self) -> Result<T, SimhSerialBridgeError> {
+    fn drop_stream(&mut self) {
         if let Some(stream) = self.stream.take() {
             let _ = stream.shutdown(Shutdown::Both);
         }
-        Err(SimhSerialBridgeError::Disconnected { port: self.logical_port })
     }
 
     fn disconnect(&mut self) {
-        if let Some(stream) = self.stream.take() {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
+        self.drop_stream();
         self.to_simh.clear();
         self.from_simh.clear();
     }
@@ -190,27 +206,6 @@ impl SimhM2SioBridge {
 
     pub(crate) fn listen_ports(&self) -> (u16, u16) {
         (self.port0.listen_port(), self.port1.listen_port())
-    }
-
-    pub(crate) fn wait_for_connections(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<(), SimhSerialBridgeError> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            self.port0.accept_pending()?;
-            self.port1.accept_pending()?;
-            if self.port0.connected() && self.port1.connected() {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(SimhSerialBridgeError::ConnectTimeout {
-                    port0: self.port0.connected(),
-                    port1: self.port1.connected(),
-                });
-            }
-            thread::sleep(CONNECT_POLL_INTERVAL);
-        }
     }
 
     pub(crate) fn connected(&self, port: BackendSerialPort) -> bool {
@@ -327,7 +322,22 @@ impl Drop for SimhM2SioRuntimeConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     use super::*;
+
+    fn poll_until(
+        bridge: &mut SimhM2SioBridge,
+        predicate: impl Fn(&SimhM2SioBridge) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !predicate(bridge) && Instant::now() < deadline {
+            bridge.poll().expect("poll bridge");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(predicate(bridge), "bridge condition did not become true before timeout");
+    }
 
     #[test]
     fn loopback_bridge_moves_raw_bytes_both_directions() {
@@ -335,9 +345,10 @@ mod tests {
         let (port0, port1) = bridge.listen_ports();
         let mut peer0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("connect port0");
         let _peer1 = TcpStream::connect((Ipv4Addr::LOCALHOST, port1)).expect("connect port1");
-        bridge
-            .wait_for_connections(Duration::from_secs(1))
-            .expect("accept bridge peers");
+        poll_until(&mut bridge, |bridge| {
+            bridge.connected(BackendSerialPort::Port0)
+                && bridge.connected(BackendSerialPort::Port1)
+        });
 
         bridge
             .queue_to_simh(BackendSerialPort::Port0, 0xa5)
@@ -351,11 +362,50 @@ mod tests {
         assert_eq!(byte[0], 0xa5);
 
         peer0.write_all(&[0x5a]).expect("write bridge byte");
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while bridge.from_simh_len(BackendSerialPort::Port0) == 0 && Instant::now() < deadline {
-            bridge.poll().expect("poll bridge receive");
-            thread::sleep(Duration::from_millis(1));
-        }
+        poll_until(&mut bridge, |bridge| {
+            bridge.from_simh_len(BackendSerialPort::Port0) != 0
+        });
         assert_eq!(bridge.pop_from_simh(BackendSerialPort::Port0), Some(0x5a));
+    }
+
+    #[test]
+    fn bridge_survives_tmxr_validation_disconnect_and_reconnect() {
+        let mut bridge = SimhM2SioBridge::bind_loopback().expect("bind bridge");
+        let (port0, port1) = bridge.listen_ports();
+
+        let validation0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("validation port0");
+        let validation1 = TcpStream::connect((Ipv4Addr::LOCALHOST, port1)).expect("validation port1");
+        poll_until(&mut bridge, |bridge| {
+            bridge.connected(BackendSerialPort::Port0)
+                && bridge.connected(BackendSerialPort::Port1)
+        });
+        drop(validation0);
+        drop(validation1);
+
+        poll_until(&mut bridge, |bridge| {
+            !bridge.connected(BackendSerialPort::Port0)
+                && !bridge.connected(BackendSerialPort::Port1)
+        });
+
+        bridge
+            .queue_to_simh(BackendSerialPort::Port0, 0xa5)
+            .expect("queue survives disconnected period");
+        bridge.poll().expect("poll while disconnected");
+        assert_eq!(bridge.to_simh_len(BackendSerialPort::Port0), 1);
+
+        let mut persistent0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("persistent port0");
+        let _persistent1 = TcpStream::connect((Ipv4Addr::LOCALHOST, port1)).expect("persistent port1");
+        poll_until(&mut bridge, |bridge| {
+            bridge.connected(BackendSerialPort::Port0)
+                && bridge.connected(BackendSerialPort::Port1)
+        });
+        bridge.poll().expect("flush after reconnect");
+
+        persistent0
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("read timeout");
+        let mut byte = [0u8; 1];
+        persistent0.read_exact(&mut byte).expect("read queued byte after reconnect");
+        assert_eq!(byte[0], 0xa5);
     }
 }
