@@ -19,8 +19,8 @@ impl eframe::App for RusTairApp {
             )
         });
         let io_capture_active = io_inspector_open && io_capture_requested;
-        if self.machine.bus.io_trace_enabled() != io_capture_active {
-            self.machine.bus.set_io_trace_enabled(io_capture_active);
+        if self.machine.io_trace_enabled() != io_capture_active {
+            self.machine.set_io_trace_enabled(io_capture_active);
         }
         if self.external_serial.server.network_trace_enabled() != io_capture_active {
             self.external_serial.server.set_network_trace_enabled(io_capture_active);
@@ -37,7 +37,7 @@ impl eframe::App for RusTairApp {
             self.process_terminal_input(ctx);
         }
 
-        if self.machine.running {
+        if self.machine.running() {
             let authentic_cycles = (CLOCK_HZ as f64 * dt.as_secs_f64()) as u32;
             let authentic_cycles = authentic_cycles.clamp(1, 40_000);
             let speed = self.effective_emulation_speed();
@@ -225,7 +225,7 @@ impl eframe::App for RusTairApp {
                         if ui.checkbox(&mut basic32_workaround, "BASIC 3.2 64K memory-probe workaround").changed() {
                             self.config.compatibility.basic32_64k_probe_workaround = basic32_workaround;
                             if !basic32_workaround {
-                                self.machine.bus.clear_transient_memory_guards();
+                                self.machine.clear_transient_memory_guards();
                             }
                             self.status = if basic32_workaround {
                                 "Compatibility enabled: BASIC 3.2 64K memory-probe workaround".into()
@@ -264,15 +264,17 @@ impl eframe::App for RusTairApp {
                 let mut muted = self.audio.muted();
                 if ui.checkbox(&mut muted, "Mute").changed() { self.audio.set_muted(muted); }
                 ui.separator();
-                ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", self.machine.cpu.pc, self.machine.cpu.sp, self.machine.cpu.a, self.machine.cpu.f));
+                let cpu = self.machine.intel8080_state();
+                let panel = self.machine.front_panel_state();
+                ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", cpu.pc, cpu.sp, cpu.a, cpu.flags));
                 ui.separator();
                 ui.label(self.effective_emulation_speed().label());
                 ui.separator();
-                let execution_state = if !self.machine.powered {
+                let execution_state = if !panel.powered {
                     "POWER OFF"
-                } else if self.machine.cpu.halted {
-                    if self.machine.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
-                } else if self.machine.running {
+                } else if cpu.halted.unwrap_or(false) {
+                    if panel.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+                } else if panel.running {
                     "RUNNING"
                 } else {
                     "STOPPED"
