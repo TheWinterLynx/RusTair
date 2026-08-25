@@ -229,10 +229,6 @@ impl super::AltairBus {
         }
     }
 
-    pub(crate) fn cycle_peek_input_port(&self, port: u8) -> u8 {
-        self.peek_io_port(port)
-    }
-
     pub(crate) fn cycle_output_port(&mut self, port: u8, value: u8) {
         if port != 0xff {
             self.io.output(port, value);
