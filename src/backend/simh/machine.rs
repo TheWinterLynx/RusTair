@@ -17,6 +17,7 @@ pub struct SimhAltairBackend {
     session: Option<SimhSession>,
     panel_address_latch: u16,
     panel_data_latch: u8,
+    switch_register_latch: u16,
 }
 
 impl SimhAltairBackend {
@@ -35,6 +36,7 @@ impl SimhAltairBackend {
             session: Some(session),
             panel_address_latch: 0,
             panel_data_latch: 0,
+            switch_register_latch: 0,
         };
         backend.refresh_stopped_panel_latch()?;
         Ok(backend)
@@ -96,9 +98,11 @@ impl SimhAltairBackend {
 
     fn refresh_stopped_panel_latch(&mut self) -> BackendResult<()> {
         let registers = self.registers()?;
-        self.panel_address_latch = registers.pc;
-        self.panel_data_latch = self.session()?.read_byte(registers.pc)
+        let data = self.session()?.read_byte(registers.pc)
             .map_err(|error| backend_error("SIMH panel memory examine", error))?;
+        self.panel_address_latch = registers.pc;
+        self.panel_data_latch = data;
+        self.switch_register_latch = registers.switch_register;
         Ok(())
     }
 
@@ -145,21 +149,20 @@ impl MachineBackend for SimhAltairBackend {
     }
 
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> {
-        let r = self.registers()?;
         let running = self.operational_state()? == SimhOperationalState::Running;
-        let (address, data) = if running {
-            let data = self.session()?.read_byte(r.pc)
-                .map_err(|error| backend_error("SIMH panel memory examine", error))?;
-            (r.pc, data)
-        } else {
-            (self.panel_address_latch, self.panel_data_latch)
-        };
+
+        // FrontPanel's generic EXAMINE operations are deliberately rejected
+        // while the simulator is running.  The classic SIMH backend also has
+        // no exact bus-activity feed, so do not fabricate live PC/RAM samples
+        // by attempting register or memory reads here.  While running, expose
+        // the last stopped front-panel latches; HALT and STEP refresh them from
+        // the simulator before returning.
         Ok(FrontPanelState {
             powered: self.session.is_some(),
             running,
-            switches: r.switch_register,
-            address,
-            data,
+            switches: self.switch_register_latch,
+            address: self.panel_address_latch,
+            data: self.panel_data_latch,
             lamps: PanelLampSnapshot::default(),
             current_board_protected: false,
             ext_clear_asserted: false,
@@ -172,6 +175,7 @@ impl MachineBackend for SimhAltairBackend {
                 self.session.take();
                 self.panel_address_latch = 0;
                 self.panel_data_latch = 0;
+                self.switch_register_latch = 0;
             }
             (true, false) => {
                 let session = SimhSession::start(
@@ -238,10 +242,21 @@ impl MachineBackend for SimhAltairBackend {
     }
 
     fn protect_current_board(&mut self, _protected: bool) -> BackendResult<()> { self.unsupported("front-panel memory protection") }
-    fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.registers()?.switch_register) }
+    fn switch_register(&mut self) -> BackendResult<u16> {
+        if self.operational_state()? == SimhOperationalState::Running {
+            Ok(self.switch_register_latch)
+        } else {
+            let switches = self.registers()?.switch_register;
+            self.switch_register_latch = switches;
+            Ok(switches)
+        }
+    }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
+        self.require_stopped("SIMH switch register deposit")?;
         set_switch_register(self.session_mut()?, value)
-            .map_err(|error| backend_error("SIMH switch register deposit", error))
+            .map_err(|error| backend_error("SIMH switch register deposit", error))?;
+        self.switch_register_latch = value;
+        Ok(())
     }
     fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
         if board == SerialBoard::TwoSio88 { Ok(()) } else { self.unsupported("MITS 88-SIO; classic SIMH ALTAIR is fixed to 88-2SIO") }
