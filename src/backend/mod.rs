@@ -5,10 +5,11 @@ mod native;
 pub mod simh;
 
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
-use crate::config::SerialBoard;
-use crate::machine::PanelLampSnapshot;
+use crate::config::{RamInit, RamSize, SerialBoard};
+use crate::machine::{AltairMachine, PanelLampSnapshot};
 
 pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
@@ -161,8 +162,20 @@ pub trait MachineBackend {
     fn capabilities(&self) -> BackendCapabilities;
     fn execution_model(&self) -> BackendExecutionModel;
     fn family(&self) -> BackendFamily { self.engine().family() }
+
+    /// Transitional access to RusTair's shared Altair/S-100 chassis. Both Rust
+    /// engines own the same chassis model; external engines intentionally return
+    /// `None`. The application migration uses this only for legacy read-only or
+    /// board-level access while CPU-affecting operations already dispatch through
+    /// `MachineBackend`.
+    fn rust_machine(&self) -> Option<&AltairMachine> { None }
+    fn rust_machine_mut(&mut self) -> Option<&mut AltairMachine> { None }
+
     fn cpu_state(&mut self) -> BackendResult<CpuState>;
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState>;
+    fn configure_memory(&mut self, _size: RamSize, _init: RamInit) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure memory", engine: self.engine() })
+    }
     fn power(&mut self, on: bool) -> BackendResult<()>;
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()>;
     fn run(&mut self) -> BackendResult<()>;
@@ -231,6 +244,85 @@ impl BackendHost {
     pub fn family(&self) -> BackendFamily { self.backend.family() }
     pub fn capabilities(&self) -> BackendCapabilities { self.backend.capabilities() }
     pub fn execution_model(&self) -> BackendExecutionModel { self.backend.execution_model() }
+
+    fn rust_call<T>(result: BackendResult<T>) -> T {
+        result.unwrap_or_else(|error| panic!("selected Rust backend operation failed: {error}"))
+    }
+
+    // Transitional AltairMachine-compatible facade. Inherent methods take
+    // precedence over Deref methods, ensuring anything that can execute or
+    // reconfigure the CPU is routed through the selected backend.
+    pub fn configure_memory(&mut self, size: RamSize, init: RamInit) {
+        Self::rust_call(self.backend.configure_memory(size, init));
+    }
+    pub fn configure_serial_board(&mut self, board: SerialBoard) {
+        Self::rust_call(self.backend.configure_serial_board(board));
+    }
+    pub fn serial_board(&mut self) -> SerialBoard {
+        Self::rust_call(self.backend.serial_board())
+    }
+    pub fn power(&mut self, on: bool) { Self::rust_call(self.backend.power(on)); }
+    pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) {
+        Self::rust_call(self.backend.power_with_historical_run_latch(on, historical));
+    }
+    pub fn set_running(&mut self, run: bool) {
+        if run { Self::rust_call(self.backend.run()); } else { Self::rust_call(self.backend.halt()); }
+    }
+    pub fn run_cycles(&mut self, t_state_budget: u32) {
+        Self::rust_call(self.backend.service_execution(t_state_budget));
+    }
+    pub fn step(&mut self) { Self::rust_call(self.backend.step()); }
+    pub fn commit_panel_activity(&mut self, dt: Duration) {
+        Self::rust_call(self.backend.commit_panel_activity(dt));
+    }
+    pub fn assert_run_stop(&mut self, run: bool) {
+        Self::rust_call(self.backend.assert_run_stop(run));
+    }
+    pub fn release_run_stop(&mut self, run: bool) {
+        Self::rust_call(self.backend.release_run_stop(run));
+    }
+    pub fn assert_front_panel_reset(&mut self) { Self::rust_call(self.backend.assert_reset()); }
+    pub fn release_front_panel_reset(&mut self) { Self::rust_call(self.backend.release_reset()); }
+    pub fn front_panel_reset(&mut self) {
+        self.assert_front_panel_reset();
+        self.release_front_panel_reset();
+    }
+    pub fn reset(&mut self) {
+        self.front_panel_reset();
+        Self::rust_call(self.backend.clear_serial());
+    }
+    pub fn assert_front_panel_clear(&mut self) { Self::rust_call(self.backend.assert_clear()); }
+    pub fn release_front_panel_clear(&mut self) { Self::rust_call(self.backend.release_clear()); }
+    pub fn clear_io(&mut self) {
+        self.assert_front_panel_clear();
+        self.release_front_panel_clear();
+    }
+    pub fn request_hold(&mut self, hold: bool) { Self::rust_call(self.backend.request_hold(hold)); }
+    pub fn examine(&mut self, next: bool) { Self::rust_call(self.backend.panel_examine(next)); }
+    pub fn deposit(&mut self, next: bool) { Self::rust_call(self.backend.panel_deposit(next)); }
+    pub fn protect_current_board(&mut self, protected: bool) {
+        Self::rust_call(self.backend.protect_current_board(protected));
+    }
+}
+
+/// Temporary migration aid for the two in-process Rust engines. Direct chassis
+/// reads (lamps/RAM/UART state and the synchronized CPU mirror) keep legacy UI
+/// code compiling while execution is dispatched above. This must be removed
+/// before a SIMH engine is exposed through the application UI.
+impl Deref for BackendHost {
+    type Target = AltairMachine;
+    fn deref(&self) -> &Self::Target {
+        self.backend
+            .rust_machine()
+            .expect("BackendHost AltairMachine compatibility view is available only for Rust engines")
+    }
+}
+impl DerefMut for BackendHost {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.backend
+            .rust_machine_mut()
+            .expect("BackendHost AltairMachine compatibility view is available only for Rust engines")
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +343,18 @@ mod tests {
         assert_eq!(EmulationEngine::RustCycleAccurate8080.family(), BackendFamily::Rustair);
         assert_eq!(EmulationEngine::SimhAltair.family(), BackendFamily::Simh);
         assert_eq!(EmulationEngine::SimhAltairZ80.family(), BackendFamily::Simh);
+    }
+
+    #[test]
+    fn rust_host_facade_dispatches_step_to_cycle_backend() {
+        let mut host = BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).unwrap();
+        host.configure_memory(RamSize::K1, RamInit::Zeroed);
+        host.power(true);
+        host.front_panel_reset();
+        host.bus.load(0, &[0x00]);
+        host.step();
+        assert_eq!(host.cpu.pc, 1, "legacy CPU field is only the synchronized mirror");
+        assert_eq!(host.cpu.cycles, 4);
+        assert!(host.wait_led());
     }
 }
