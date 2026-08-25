@@ -12,12 +12,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rustair::backend::simh::{
     AltairZ80CpuMode, SimhAltairZ80Backend, SimhLaunchConfig, SimhTarget,
 };
-use rustair::backend::{BackendSerialPort, MachineBackend};
+use rustair::backend::{BackendSerialPort, CpuState, MachineBackend};
 
 const STATE_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const PROGRAM_BASE: u16 = 0x0100;
 const RX_CAPTURE: u16 = 0x0400;
+const RX_STATUS_CAPTURE: u16 = 0x0401;
+const RX_STAGE_CAPTURE: u16 = 0x0402;
 
 struct TempSimhConfig {
     path: PathBuf,
@@ -121,17 +123,26 @@ fn set_program_counter(
 
 fn receiver_program(status_port: u8, data_port: u8, destination: u16) -> Vec<u8> {
     let [dest_lo, dest_hi] = destination.to_le_bytes();
+    let [status_lo, status_hi] = RX_STATUS_CAPTURE.to_le_bytes();
+    let [stage_lo, stage_hi] = RX_STAGE_CAPTURE.to_le_bytes();
     vec![
-        0x3e, 0x03,             // MVI A,03h  - ACIA master reset
-        0xd3, status_port,      // OUT status
-        0x3e, 0x14,             // MVI A,14h  - 8N1, RTS low, TX IRQ disabled
-        0xd3, status_port,      // OUT status
-        0xdb, status_port,      // 0108: IN status
-        0xe6, 0x01,             // ANI 01h    - RDRF
-        0xca, 0x08, 0x01,       // JZ 0108h
-        0xdb, data_port,        // IN data
-        0x32, dest_lo, dest_hi, // STA destination
-        0x76,                   // HLT (STOPONHALT is AltairZ80 default)
+        0x3e, 0x03,                 // 0100: MVI A,03h - ACIA master reset
+        0xd3, status_port,          // 0102: OUT status
+        0x3e, 0x14,                 // 0104: MVI A,14h - 8N1, RTS low
+        0xd3, status_port,          // 0106: OUT status
+        0x3e, 0x11,                 // 0108: MVI A,11h - stage: waiting
+        0x32, stage_lo, stage_hi,   // 010A: STA stage
+        0xdb, status_port,          // 010D: IN status
+        0x32, status_lo, status_hi, // 010F: STA last status
+        0xe6, 0x01,                 // 0112: ANI 01h - RDRF
+        0xca, 0x0d, 0x01,           // 0114: JZ 010Dh
+        0x3e, 0x22,                 // 0117: MVI A,22h - stage: RDRF observed
+        0x32, stage_lo, stage_hi,   // 0119: STA stage
+        0xdb, data_port,            // 011C: IN data
+        0x32, dest_lo, dest_hi,     // 011E: STA destination
+        0x3e, 0x33,                 // 0121: MVI A,33h - stage: data stored
+        0x32, stage_lo, stage_hi,   // 0123: STA stage
+        0x76,                       // 0126: HLT
     ]
 }
 
@@ -150,6 +161,13 @@ fn transmitter_program(status_port: u8, data_port: u8, byte: u8) -> Vec<u8> {
     ]
 }
 
+fn cpu_pc(backend: &mut SimhAltairZ80Backend) -> Result<u16, Box<dyn Error>> {
+    Ok(match backend.cpu_state()? {
+        CpuState::Intel8080(state) => state.pc,
+        CpuState::Z80(state) => state.pc,
+    })
+}
+
 fn exercise_host_to_guest(
     backend: &mut SimhAltairZ80Backend,
     logical_port: BackendSerialPort,
@@ -157,7 +175,9 @@ fn exercise_host_to_guest(
     data_port: u8,
     byte: u8,
 ) -> Result<(), Box<dyn Error>> {
-    backend.write_memory(RX_CAPTURE, 0x00, false)?;
+    backend.write_memory(RX_CAPTURE, 0xee, false)?;
+    backend.write_memory(RX_STATUS_CAPTURE, 0xee, false)?;
+    backend.write_memory(RX_STAGE_CAPTURE, 0xee, false)?;
     let program = receiver_program(status_port, data_port, RX_CAPTURE);
     backend.load_bytes(PROGRAM_BASE, &program)?;
     set_program_counter(backend, PROGRAM_BASE)?;
@@ -173,10 +193,21 @@ fn exercise_host_to_guest(
     backend.serial_receive(logical_port, byte)?;
     wait_for_running(backend, false)?;
 
+    let captured = backend.peek_memory(RX_CAPTURE)?.unwrap_or(0xff);
+    let status = backend.peek_memory(RX_STATUS_CAPTURE)?.unwrap_or(0xff);
+    let stage = backend.peek_memory(RX_STAGE_CAPTURE)?.unwrap_or(0xff);
+    let pc = cpu_pc(backend)?;
+    let queued = backend.serial_rx_len(logical_port)?;
+    let connected = backend.serial_connected(logical_port);
+
+    println!(
+        "M2SIO RX diagnostic {logical_port:?}: expected={byte:02X}, captured={captured:02X}, status={status:02X}, stage={stage:02X}, pc={pc:04X}, host_to_simh_queue={queued}, connected={connected}"
+    );
+
     assert_eq!(
-        backend.peek_memory(RX_CAPTURE)?,
-        Some(byte),
-        "guest did not receive byte {byte:02X} through {logical_port:?}"
+        captured,
+        byte,
+        "guest did not receive byte {byte:02X} through {logical_port:?}; status={status:02X}, stage={stage:02X}, pc={pc:04X}, host_to_simh_queue={queued}, connected={connected}"
     );
     Ok(())
 }
