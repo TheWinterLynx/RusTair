@@ -10,9 +10,13 @@ use super::EmulationEngine;
 #[cfg(feature = "simh-ffi")]
 mod altair;
 #[cfg(feature = "simh-ffi")]
+mod altairz80;
+#[cfg(feature = "simh-ffi")]
 mod ffi;
 #[cfg(feature = "simh-ffi")]
 mod machine;
+#[cfg(feature = "simh-ffi")]
+mod machine_altairz80;
 mod profile;
 #[cfg(feature = "simh-ffi")]
 mod session;
@@ -20,7 +24,11 @@ mod session;
 #[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
 #[cfg(feature = "simh-ffi")]
+pub use altairz80::{AltairZ80CpuMode, AltairZ80Registers, set_altairz80_switch_register_low};
+#[cfg(feature = "simh-ffi")]
 pub use machine::SimhAltairBackend;
+#[cfg(feature = "simh-ffi")]
+pub use machine_altairz80::SimhAltairZ80Backend;
 pub use profile::ClassicAltairProfile;
 #[cfg(feature = "simh-ffi")]
 pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
