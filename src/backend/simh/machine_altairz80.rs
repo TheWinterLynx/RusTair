@@ -1,8 +1,12 @@
+use std::path::Path;
 use std::time::Duration;
 
 use crate::config::SerialBoard;
 use crate::machine::PanelLampSnapshot;
 
+use super::serial_bridge::{
+    SimhM2SioBridge, SimhM2SioRuntimeConfig, SimhSerialBridgeError,
+};
 use super::{
     AltairZ80CpuMode, AltairZ80Registers, SimhLaunchConfig, SimhOperationalState, SimhSession,
     SimhSessionError, SimhTarget, set_altairz80_switch_register_low,
@@ -11,6 +15,13 @@ use crate::backend::{
     BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort,
     CpuState, EmulationEngine, FrontPanelState, MachineBackend,
 };
+
+const SERIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
+struct SimhM2SioRuntime {
+    bridge: SimhM2SioBridge,
+    config: SimhM2SioRuntimeConfig,
+}
 
 /// Open-SIMH `altairz80.exe` backend.
 ///
@@ -22,6 +33,7 @@ pub struct SimhAltairZ80Backend {
     launch: SimhLaunchConfig,
     cpu_mode: AltairZ80CpuMode,
     session: Option<SimhSession>,
+    serial_runtime: Option<SimhM2SioRuntime>,
     panel_address_latch: u16,
     panel_data_latch: u8,
     /// AltairZ80 exports only an 8-bit SR register. RusTair keeps the physical
@@ -32,13 +44,7 @@ pub struct SimhAltairZ80Backend {
 
 impl SimhAltairZ80Backend {
     pub fn launch(launch: SimhLaunchConfig, cpu_mode: AltairZ80CpuMode) -> BackendResult<Self> {
-        if launch.target != SimhTarget::AltairZ80 {
-            return Err(BackendError::Unsupported {
-                operation: "AltairZ80 backend launch for this SIMH target",
-                engine: launch.target.engine(),
-            });
-        }
-
+        Self::validate_launch_target(&launch)?;
         let session = SimhSession::start(
             launch.executable(),
             launch.simulator_config(),
@@ -50,6 +56,7 @@ impl SimhAltairZ80Backend {
             launch,
             cpu_mode,
             session: Some(session),
+            serial_runtime: None,
             panel_address_latch: 0,
             panel_data_latch: 0,
             switch_register_latch: 0,
@@ -58,14 +65,78 @@ impl SimhAltairZ80Backend {
         Ok(backend)
     }
 
+    /// Launch AltairZ80 with both MITS 88-2SIO channels bridged to RusTair over
+    /// two private loopback-only raw TCP sockets. The caller's config file is
+    /// never modified: a temporary overlay enables M2SIO0/1 and tells SIMH to
+    /// connect outward to the two listeners using TMXR `;notelnet` mode.
+    pub fn launch_with_serial(
+        launch: SimhLaunchConfig,
+        cpu_mode: AltairZ80CpuMode,
+    ) -> BackendResult<Self> {
+        Self::validate_launch_target(&launch)?;
+
+        let mut bridge = SimhM2SioBridge::bind_loopback()
+            .map_err(|error| serial_backend_error("SIMH M2SIO bridge bind", error))?;
+        let (port0, port1) = bridge.listen_ports();
+        let runtime_config = SimhM2SioRuntimeConfig::create(
+            launch.simulator_config(),
+            port0,
+            port1,
+        )
+        .map_err(|error| serial_backend_error("SIMH M2SIO runtime config", error))?;
+
+        let session = SimhSession::start(
+            launch.executable(),
+            runtime_config.path(),
+            launch.device_panel_count,
+        )
+        .map_err(|error| backend_error("SIMH AltairZ80 serial launch", error))?;
+
+        bridge
+            .wait_for_connections(SERIAL_CONNECT_TIMEOUT)
+            .map_err(|error| serial_backend_error("SIMH M2SIO connection", error))?;
+
+        let mut backend = Self {
+            launch,
+            cpu_mode,
+            session: Some(session),
+            serial_runtime: Some(SimhM2SioRuntime {
+                bridge,
+                config: runtime_config,
+            }),
+            panel_address_latch: 0,
+            panel_data_latch: 0,
+            switch_register_latch: 0,
+        };
+        backend.refresh_stopped_panel_latch()?;
+        Ok(backend)
+    }
+
+    fn validate_launch_target(launch: &SimhLaunchConfig) -> BackendResult<()> {
+        if launch.target == SimhTarget::AltairZ80 {
+            Ok(())
+        } else {
+            Err(BackendError::Unsupported {
+                operation: "AltairZ80 backend launch for this SIMH target",
+                engine: launch.target.engine(),
+            })
+        }
+    }
+
     pub fn launch_config(&self) -> &SimhLaunchConfig { &self.launch }
     pub const fn cpu_mode(&self) -> AltairZ80CpuMode { self.cpu_mode }
+
+    pub fn serial_connected(&self, port: BackendSerialPort) -> bool {
+        self.serial_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.bridge.connected(port))
+    }
 
     pub fn mount(
         &mut self,
         device: &str,
         switches: &str,
-        path: &std::path::Path,
+        path: &Path,
     ) -> BackendResult<()> {
         self.session_mut()?
             .mount(device, switches, path)
@@ -97,6 +168,33 @@ impl SimhAltairZ80Backend {
             operation: "SIMH AltairZ80 access",
             detail: "simulator is powered off".into(),
         })
+    }
+
+    fn serial_bridge_mut(&mut self) -> BackendResult<&mut SimhM2SioBridge> {
+        self.serial_runtime
+            .as_mut()
+            .map(|runtime| &mut runtime.bridge)
+            .ok_or_else(|| BackendError::Operation {
+                operation: "SIMH M2SIO serial access",
+                detail: "backend was launched without the M2SIO raw TCP bridge".into(),
+            })
+    }
+
+    fn active_simulator_config(&self) -> &Path {
+        self.serial_runtime
+            .as_ref()
+            .map(|runtime| runtime.config.path())
+            .unwrap_or_else(|| self.launch.simulator_config())
+    }
+
+    fn poll_serial(&mut self) -> BackendResult<()> {
+        if let Some(runtime) = self.serial_runtime.as_mut() {
+            runtime
+                .bridge
+                .poll()
+                .map_err(|error| serial_backend_error("SIMH M2SIO poll", error))?;
+        }
+        Ok(())
     }
 
     fn registers(&self) -> BackendResult<AltairZ80Registers> {
@@ -166,7 +264,7 @@ impl MachineBackend for SimhAltairZ80Backend {
             memory_protection: false,
             hold_hlda: false,
             direct_memory_access: true,
-            serial_routing: false,
+            serial_routing: true,
             disk_mount: true,
         }
     }
@@ -196,17 +294,29 @@ impl MachineBackend for SimhAltairZ80Backend {
         match (on, self.session.is_some()) {
             (false, true) => {
                 self.session.take();
+                if let Some(runtime) = self.serial_runtime.as_mut() {
+                    runtime.bridge.disconnect();
+                }
                 self.panel_address_latch = 0;
                 self.panel_data_latch = 0;
                 self.switch_register_latch = 0;
             }
             (true, false) => {
+                let config = self.active_simulator_config().to_path_buf();
                 let session = SimhSession::start(
                     self.launch.executable(),
-                    self.launch.simulator_config(),
+                    &config,
                     self.launch.device_panel_count,
                 )
                 .map_err(|error| backend_error("SIMH AltairZ80 power on", error))?;
+
+                if let Some(runtime) = self.serial_runtime.as_mut() {
+                    if let Err(error) = runtime.bridge.wait_for_connections(SERIAL_CONNECT_TIMEOUT) {
+                        drop(session);
+                        return Err(serial_backend_error("SIMH M2SIO reconnect", error));
+                    }
+                }
+
                 self.session = Some(session);
                 self.refresh_stopped_panel_latch()?;
             }
@@ -236,6 +346,7 @@ impl MachineBackend for SimhAltairZ80Backend {
         self.session_mut()?
             .halt()
             .map_err(|error| backend_error("SIMH AltairZ80 HALT", error))?;
+        self.poll_serial()?;
         self.refresh_stopped_panel_latch()
     }
 
@@ -244,12 +355,13 @@ impl MachineBackend for SimhAltairZ80Backend {
         self.session_mut()?
             .step()
             .map_err(|error| backend_error("SIMH AltairZ80 STEP", error))?;
+        self.poll_serial()?;
         self.refresh_stopped_panel_latch()
     }
 
     fn service_execution(&mut self, _t_state_budget: u32) -> BackendResult<()> {
         let _ = self.operational_state()?;
-        Ok(())
+        self.poll_serial()
     }
 
     fn commit_panel_activity(&mut self, _dt: Duration) -> BackendResult<()> { Ok(()) }
@@ -328,26 +440,41 @@ impl MachineBackend for SimhAltairZ80Backend {
 
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { Ok(SerialBoard::TwoSio88) }
 
-    fn serial_receive(&mut self, _port: BackendSerialPort, _byte: u8) -> BackendResult<()> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+    fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
+        self.serial_bridge_mut()?
+            .queue_to_simh(port, byte)
+            .map_err(|error| serial_backend_error("SIMH M2SIO receive queue", error))?;
+        self.poll_serial()
     }
-    fn serial_rx_empty(&mut self, _port: BackendSerialPort) -> BackendResult<bool> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+
+    fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
+        self.poll_serial()?;
+        Ok(self.serial_bridge_mut()?.to_simh_len(port) == 0)
     }
-    fn serial_rx_len(&mut self, _port: BackendSerialPort) -> BackendResult<usize> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+
+    fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize> {
+        self.poll_serial()?;
+        Ok(self.serial_bridge_mut()?.to_simh_len(port))
     }
-    fn serial_tx_busy(&mut self, _port: BackendSerialPort) -> BackendResult<bool> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+
+    fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
+        self.poll_serial()?;
+        Ok(self.serial_bridge_mut()?.from_simh_len(port) != 0)
     }
-    fn serial_tx_front(&mut self, _port: BackendSerialPort) -> BackendResult<Option<u8>> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+
+    fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
+        self.poll_serial()?;
+        Ok(self.serial_bridge_mut()?.from_simh_front(port))
     }
-    fn serial_tx_complete(&mut self, _port: BackendSerialPort) -> BackendResult<Option<u8>> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+
+    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
+        self.poll_serial()?;
+        Ok(self.serial_bridge_mut()?.pop_from_simh(port))
     }
+
     fn clear_serial(&mut self) -> BackendResult<()> {
-        self.unsupported("RusTair serial endpoint routing to SIMH M2SIO")
+        self.serial_bridge_mut()?.clear_queues();
+        Ok(())
     }
 
     fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> {
@@ -383,6 +510,13 @@ impl MachineBackend for SimhAltairZ80Backend {
 }
 
 fn backend_error(operation: &'static str, error: SimhSessionError) -> BackendError {
+    BackendError::Operation {
+        operation,
+        detail: error.to_string(),
+    }
+}
+
+fn serial_backend_error(operation: &'static str, error: SimhSerialBridgeError) -> BackendError {
     BackendError::Operation {
         operation,
         detail: error.to_string(),
