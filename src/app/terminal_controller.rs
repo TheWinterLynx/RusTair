@@ -9,7 +9,7 @@ impl RusTairApp {
         text: &str,
         append_final_cr: bool,
     ) -> usize {
-        if !self.machine.powered {
+        if !self.machine.powered() {
             self.status = "Terminal input ignored: Altair power is off".into();
             return 0;
         }
@@ -23,7 +23,7 @@ impl RusTairApp {
             self.terminal.clear_input_timing_if_empty();
             return;
         }
-        if !self.machine.powered || !self.terminal_connection().is_connected() {
+        if !self.machine.powered() || !self.terminal_connection().is_connected() {
             return;
         }
 
@@ -81,7 +81,7 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn terminal_send_control(&mut self, byte: u8, name: &str) {
-        if !self.machine.powered {
+        if !self.machine.powered() {
             self.status = format!("{name} ignored: Altair power is off");
             return;
         }
