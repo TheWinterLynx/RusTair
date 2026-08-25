@@ -6,11 +6,10 @@ mod native;
 pub mod simh;
 
 use std::fmt;
-use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
 use crate::config::{RamInit, RamSize, SerialBoard};
-use crate::machine::{AltairMachine, PanelLampSnapshot};
+use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
 pub use cycle::CycleAccurateMachineBackend;
@@ -92,6 +91,7 @@ pub struct Intel8080State {
     pub total_t_states: Option<u64>,
 }
 impl Intel8080State {
+    pub const fn af(self) -> u16 { ((self.a as u16) << 8) | self.flags as u16 }
     pub const fn bc(self) -> u16 { ((self.b as u16) << 8) | self.c as u16 }
     pub const fn de(self) -> u16 { ((self.d as u16) << 8) | self.e as u16 }
     pub const fn hl(self) -> u16 { ((self.h as u16) << 8) | self.l as u16 }
@@ -142,6 +142,9 @@ impl Default for FrontPanelState {
     }
 }
 
+pub type IoPortActivity = (Option<u8>, Option<u8>, u64, u64);
+pub type IoTraceSnapshot = Vec<(u64, u8, u8, u8, u32)>;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BackendError {
     Unsupported { operation: &'static str, engine: EmulationEngine },
@@ -164,14 +167,6 @@ pub trait MachineBackend {
     fn capabilities(&self) -> BackendCapabilities;
     fn execution_model(&self) -> BackendExecutionModel;
     fn family(&self) -> BackendFamily { self.engine().family() }
-
-    /// Transitional access to RusTair's shared Altair/S-100 chassis. Both Rust
-    /// engines own the same chassis model; external engines intentionally return
-    /// `None`. The application migration uses this only for legacy read-only or
-    /// board-level access while CPU-affecting operations already dispatch through
-    /// `MachineBackend`.
-    fn rust_machine(&self) -> Option<&AltairMachine> { None }
-    fn rust_machine_mut(&mut self) -> Option<&mut AltairMachine> { None }
 
     fn cpu_state(&mut self) -> BackendResult<CpuState>;
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState>;
@@ -206,9 +201,76 @@ pub trait MachineBackend {
     fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
     fn clear_serial(&mut self) -> BackendResult<()>;
+    fn installed_ram_bytes(&mut self) -> BackendResult<usize> {
+        Err(BackendError::Unsupported { operation: "query installed RAM", engine: self.engine() })
+    }
     fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>>;
     fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> BackendResult<bool>;
     fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()>;
+    fn memory_is_protected(&mut self, _address: u16) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "query memory protection", engine: self.engine() })
+    }
+    fn clear_memory_protection(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "clear memory protection", engine: self.engine() })
+    }
+    fn clear_transient_memory_guards(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "clear transient memory guards", engine: self.engine() })
+    }
+    fn arm_basic32_full_memory_probe_guard(&mut self) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "arm BASIC 3.2 memory guard", engine: self.engine() })
+    }
+    fn begin_cpu_diagnostic_meter(
+        &mut self,
+        _name: String,
+        _bdos_start: u16,
+        _bdos_len: usize,
+        _expected_instructions: Option<u64>,
+        _expected_t_states: Option<u64>,
+    ) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "begin CPU diagnostic meter", engine: self.engine() })
+    }
+    fn cancel_cpu_diagnostic_meter(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "cancel CPU diagnostic meter", engine: self.engine() })
+    }
+    fn take_cpu_diagnostic_result(&mut self) -> BackendResult<Option<CpuDiagnosticResult>> {
+        Err(BackendError::Unsupported { operation: "take CPU diagnostic result", engine: self.engine() })
+    }
+    fn peek_io_port(&mut self, _port: u8) -> BackendResult<u8> {
+        Err(BackendError::Unsupported { operation: "peek I/O port", engine: self.engine() })
+    }
+    fn io_port_activity(&mut self, _port: u8) -> BackendResult<IoPortActivity> {
+        Err(BackendError::Unsupported { operation: "query I/O activity", engine: self.engine() })
+    }
+    fn io_trace_snapshot(&mut self) -> BackendResult<IoTraceSnapshot> {
+        Err(BackendError::Unsupported { operation: "read I/O trace", engine: self.engine() })
+    }
+    fn io_trace_enabled(&mut self) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "query I/O trace", engine: self.engine() })
+    }
+    fn set_io_trace_enabled(&mut self, _enabled: bool) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure I/O trace", engine: self.engine() })
+    }
+    fn clear_io_trace(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "clear I/O trace", engine: self.engine() })
+    }
+    fn debugger_input_port(&mut self, _port: u8) -> BackendResult<u8> {
+        Err(BackendError::Unsupported { operation: "debugger IN", engine: self.engine() })
+    }
+    fn debugger_output_port(&mut self, _port: u8, _value: u8) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "debugger OUT", engine: self.engine() })
+    }
+    fn debugger_inject_serial_rx(&mut self, _port: u8, _byte: u8) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "inject serial RX", engine: self.engine() })
+    }
+    fn debugger_clear_serial_rx(&mut self, _port: u8) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "clear serial RX", engine: self.engine() })
+    }
+    fn debugger_clear_serial_tx(&mut self, _port: u8) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "clear serial TX", engine: self.engine() })
+    }
+    fn debugger_complete_serial_tx(&mut self, _port: u8) -> BackendResult<Option<u8>> {
+        Err(BackendError::Unsupported { operation: "complete serial TX", engine: self.engine() })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,95 +298,96 @@ impl BackendHost {
     pub fn from_engine(engine: EmulationEngine) -> Result<Self, BackendCreateError> { create_backend(engine).map(Self::new) }
     pub fn rust_fast() -> Self { Self::from_engine(EmulationEngine::RustFast8080).expect("built-in fast backend") }
     pub fn native() -> Self { Self::rust_fast() }
-    pub fn backend(&self) -> &dyn MachineBackend { self.backend.as_ref() }
-    pub fn backend_mut(&mut self) -> &mut dyn MachineBackend { self.backend.as_mut() }
-    pub fn replace(&mut self, backend: Box<dyn MachineBackend>) { self.backend = backend; }
     pub fn replace_engine(&mut self, engine: EmulationEngine) -> Result<(), BackendCreateError> {
-        self.backend = create_backend(engine)?; Ok(())
+        self.backend = create_backend(engine)?;
+        Ok(())
     }
     pub fn engine(&self) -> EmulationEngine { self.backend.engine() }
     pub fn family(&self) -> BackendFamily { self.backend.family() }
     pub fn capabilities(&self) -> BackendCapabilities { self.backend.capabilities() }
     pub fn execution_model(&self) -> BackendExecutionModel { self.backend.execution_model() }
 
-    fn rust_call<T>(result: BackendResult<T>) -> T {
-        result.unwrap_or_else(|error| panic!("selected Rust backend operation failed: {error}"))
+    fn call<T>(result: BackendResult<T>) -> T {
+        result.unwrap_or_else(|error| panic!("selected backend operation failed: {error}"))
     }
 
-    // Transitional AltairMachine-compatible facade. Inherent methods take
-    // precedence over Deref methods, ensuring anything that can execute or
-    // reconfigure the CPU is routed through the selected backend.
-    pub fn configure_memory(&mut self, size: RamSize, init: RamInit) {
-        Self::rust_call(self.backend.configure_memory(size, init));
+    pub fn cpu_state(&mut self) -> CpuState { Self::call(self.backend.cpu_state()) }
+    pub fn intel8080_state(&mut self) -> Intel8080State {
+        match self.cpu_state() {
+            CpuState::Intel8080(state) => state,
+            CpuState::Z80(_) => panic!("selected backend exposes a Z80, not an Intel 8080"),
+        }
     }
-    pub fn configure_serial_board(&mut self, board: SerialBoard) {
-        Self::rust_call(self.backend.configure_serial_board(board));
+    pub fn front_panel_state(&mut self) -> FrontPanelState { Self::call(self.backend.front_panel_state()) }
+    pub fn powered(&mut self) -> bool { self.front_panel_state().powered }
+    pub fn running(&mut self) -> bool { self.front_panel_state().running }
+    pub fn configure_memory(&mut self, size: RamSize, init: RamInit) { Self::call(self.backend.configure_memory(size, init)); }
+    pub fn configure_serial_board(&mut self, board: SerialBoard) { Self::call(self.backend.configure_serial_board(board)); }
+    pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
+    pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }
+    pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) { Self::call(self.backend.power_with_historical_run_latch(on, historical)); }
+    pub fn set_running(&mut self, run: bool) { if run { Self::call(self.backend.run()); } else { Self::call(self.backend.halt()); } }
+    pub fn run_cycles(&mut self, t_state_budget: u32) { Self::call(self.backend.service_execution(t_state_budget)); }
+    pub fn step(&mut self) { Self::call(self.backend.step()); }
+    pub fn commit_panel_activity(&mut self, dt: Duration) { Self::call(self.backend.commit_panel_activity(dt)); }
+    pub fn assert_run_stop(&mut self, run: bool) { Self::call(self.backend.assert_run_stop(run)); }
+    pub fn release_run_stop(&mut self, run: bool) { Self::call(self.backend.release_run_stop(run)); }
+    pub fn assert_front_panel_reset(&mut self) { Self::call(self.backend.assert_reset()); }
+    pub fn release_front_panel_reset(&mut self) { Self::call(self.backend.release_reset()); }
+    pub fn front_panel_reset(&mut self) { self.assert_front_panel_reset(); self.release_front_panel_reset(); }
+    pub fn reset(&mut self) { self.front_panel_reset(); Self::call(self.backend.clear_serial()); }
+    pub fn assert_front_panel_clear(&mut self) { Self::call(self.backend.assert_clear()); }
+    pub fn release_front_panel_clear(&mut self) { Self::call(self.backend.release_clear()); }
+    pub fn clear_io(&mut self) { self.assert_front_panel_clear(); self.release_front_panel_clear(); }
+    pub fn request_hold(&mut self, hold: bool) { Self::call(self.backend.request_hold(hold)); }
+    pub fn examine(&mut self, next: bool) { Self::call(self.backend.panel_examine(next)); }
+    pub fn deposit(&mut self, next: bool) { Self::call(self.backend.panel_deposit(next)); }
+    pub fn protect_current_board(&mut self, protected: bool) { Self::call(self.backend.protect_current_board(protected)); }
+    pub fn switch_register(&mut self) -> u16 { Self::call(self.backend.switch_register()) }
+    pub fn set_switch_register(&mut self, value: u16) { Self::call(self.backend.set_switch_register(value)); }
+    pub fn toggle_sense_switch(&mut self, bit: usize) {
+        let next = self.switch_register() ^ (1u16 << bit);
+        self.set_switch_register(next);
     }
-    pub fn serial_board(&mut self) -> SerialBoard {
-        Self::rust_call(self.backend.serial_board())
+    pub fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) { Self::call(self.backend.serial_receive(port, byte)); }
+    pub fn serial_rx_empty(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_empty(port)) }
+    pub fn serial_rx_len(&mut self, port: BackendSerialPort) -> usize { Self::call(self.backend.serial_rx_len(port)) }
+    pub fn serial_tx_busy(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_tx_busy(port)) }
+    pub fn serial_tx_front(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_front(port)) }
+    pub fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_complete(port)) }
+    pub fn clear_serial(&mut self) { Self::call(self.backend.clear_serial()); }
+    pub fn installed_ram_bytes(&mut self) -> usize { Self::call(self.backend.installed_ram_bytes()) }
+    pub fn peek_memory(&mut self, address: u16) -> Option<u8> { Self::call(self.backend.peek_memory(address)) }
+    pub fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> bool { Self::call(self.backend.write_memory(address, value, respect_protection)) }
+    pub fn load_bytes(&mut self, address: u16, bytes: &[u8]) { Self::call(self.backend.load_bytes(address, bytes)); }
+    pub fn memory_is_protected(&mut self, address: u16) -> bool { Self::call(self.backend.memory_is_protected(address)) }
+    pub fn clear_memory_protection(&mut self) { Self::call(self.backend.clear_memory_protection()); }
+    pub fn clear_transient_memory_guards(&mut self) { Self::call(self.backend.clear_transient_memory_guards()); }
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { Self::call(self.backend.arm_basic32_full_memory_probe_guard()) }
+    pub fn begin_cpu_diagnostic_meter(
+        &mut self,
+        name: String,
+        bdos_start: u16,
+        bdos_len: usize,
+        expected_instructions: Option<u64>,
+        expected_t_states: Option<u64>,
+    ) {
+        Self::call(self.backend.begin_cpu_diagnostic_meter(name, bdos_start, bdos_len, expected_instructions, expected_t_states));
     }
-    pub fn power(&mut self, on: bool) { Self::rust_call(self.backend.power(on)); }
-    pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) {
-        Self::rust_call(self.backend.power_with_historical_run_latch(on, historical));
-    }
-    pub fn set_running(&mut self, run: bool) {
-        if run { Self::rust_call(self.backend.run()); } else { Self::rust_call(self.backend.halt()); }
-    }
-    pub fn run_cycles(&mut self, t_state_budget: u32) {
-        Self::rust_call(self.backend.service_execution(t_state_budget));
-    }
-    pub fn step(&mut self) { Self::rust_call(self.backend.step()); }
-    pub fn commit_panel_activity(&mut self, dt: Duration) {
-        Self::rust_call(self.backend.commit_panel_activity(dt));
-    }
-    pub fn assert_run_stop(&mut self, run: bool) {
-        Self::rust_call(self.backend.assert_run_stop(run));
-    }
-    pub fn release_run_stop(&mut self, run: bool) {
-        Self::rust_call(self.backend.release_run_stop(run));
-    }
-    pub fn assert_front_panel_reset(&mut self) { Self::rust_call(self.backend.assert_reset()); }
-    pub fn release_front_panel_reset(&mut self) { Self::rust_call(self.backend.release_reset()); }
-    pub fn front_panel_reset(&mut self) {
-        self.assert_front_panel_reset();
-        self.release_front_panel_reset();
-    }
-    pub fn reset(&mut self) {
-        self.front_panel_reset();
-        Self::rust_call(self.backend.clear_serial());
-    }
-    pub fn assert_front_panel_clear(&mut self) { Self::rust_call(self.backend.assert_clear()); }
-    pub fn release_front_panel_clear(&mut self) { Self::rust_call(self.backend.release_clear()); }
-    pub fn clear_io(&mut self) {
-        self.assert_front_panel_clear();
-        self.release_front_panel_clear();
-    }
-    pub fn request_hold(&mut self, hold: bool) { Self::rust_call(self.backend.request_hold(hold)); }
-    pub fn examine(&mut self, next: bool) { Self::rust_call(self.backend.panel_examine(next)); }
-    pub fn deposit(&mut self, next: bool) { Self::rust_call(self.backend.panel_deposit(next)); }
-    pub fn protect_current_board(&mut self, protected: bool) {
-        Self::rust_call(self.backend.protect_current_board(protected));
-    }
-}
-
-/// Temporary migration aid for the two in-process Rust engines. Direct chassis
-/// reads (lamps/RAM/UART state and the synchronized CPU mirror) keep legacy UI
-/// code compiling while execution is dispatched above. This must be removed
-/// before a SIMH engine is exposed through the application UI.
-impl Deref for BackendHost {
-    type Target = AltairMachine;
-    fn deref(&self) -> &Self::Target {
-        self.backend
-            .rust_machine()
-            .expect("BackendHost AltairMachine compatibility view is available only for Rust engines")
-    }
-}
-impl DerefMut for BackendHost {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.backend
-            .rust_machine_mut()
-            .expect("BackendHost AltairMachine compatibility view is available only for Rust engines")
-    }
+    pub fn cancel_cpu_diagnostic_meter(&mut self) { Self::call(self.backend.cancel_cpu_diagnostic_meter()); }
+    pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> { Self::call(self.backend.take_cpu_diagnostic_result()) }
+    pub fn peek_io_port(&mut self, port: u8) -> u8 { Self::call(self.backend.peek_io_port(port)) }
+    pub fn io_port_activity(&mut self, port: u8) -> IoPortActivity { Self::call(self.backend.io_port_activity(port)) }
+    pub fn io_trace_snapshot(&mut self) -> IoTraceSnapshot { Self::call(self.backend.io_trace_snapshot()) }
+    pub fn io_trace_enabled(&mut self) -> bool { Self::call(self.backend.io_trace_enabled()) }
+    pub fn set_io_trace_enabled(&mut self, enabled: bool) { Self::call(self.backend.set_io_trace_enabled(enabled)); }
+    pub fn clear_io_trace(&mut self) { Self::call(self.backend.clear_io_trace()); }
+    pub fn debugger_input_port(&mut self, port: u8) -> u8 { Self::call(self.backend.debugger_input_port(port)) }
+    pub fn debugger_output_port(&mut self, port: u8, value: u8) { Self::call(self.backend.debugger_output_port(port, value)); }
+    pub fn debugger_inject_serial_rx(&mut self, port: u8, byte: u8) -> bool { Self::call(self.backend.debugger_inject_serial_rx(port, byte)) }
+    pub fn debugger_clear_serial_rx(&mut self, port: u8) -> bool { Self::call(self.backend.debugger_clear_serial_rx(port)) }
+    pub fn debugger_clear_serial_tx(&mut self, port: u8) -> bool { Self::call(self.backend.debugger_clear_serial_tx(port)) }
+    pub fn debugger_complete_serial_tx(&mut self, port: u8) -> Option<u8> { Self::call(self.backend.debugger_complete_serial_tx(port)) }
 }
 
 #[cfg(test)]
@@ -348,15 +411,17 @@ mod tests {
     }
 
     #[test]
-    fn rust_host_facade_dispatches_step_to_cycle_backend() {
+    fn host_dispatches_step_without_altair_machine_escape_hatch() {
         let mut host = BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).unwrap();
         host.configure_memory(RamSize::K1, RamInit::Zeroed);
         host.power(true);
         host.front_panel_reset();
-        host.bus.load(0, &[0x00]);
+        host.load_bytes(0, &[0x00]);
         host.step();
-        assert_eq!(host.cpu.pc, 1, "legacy CPU field is only the synchronized mirror");
-        assert_eq!(host.cpu.cycles, 4);
-        assert!(host.wait_led());
+        let cpu = host.intel8080_state();
+        let panel = host.front_panel_state();
+        assert_eq!(cpu.pc, 1);
+        assert_eq!(cpu.total_t_states, Some(4));
+        assert!(panel.lamps.wait > 0.0);
     }
 }
