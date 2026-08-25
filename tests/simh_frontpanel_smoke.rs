@@ -4,6 +4,7 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::io::{Error as IoError, ErrorKind};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,9 +29,19 @@ impl TempSimhConfig {
             std::process::id()
         ));
 
-        // FrontPanel owns execution. Keep the simulator configuration deliberately
-        // empty so no RUN/GO/BOOT command can race the test harness.
-        fs::write(&path, b"")?;
+        // FrontPanel appends SET REMOTE ... / SET REMOTE MASTER to this file.
+        // Open-SIMH only permits Master Remote Console mode when the simulator's
+        // primary console is itself Telnet or Serial. Use a buffered Telnet
+        // console on a locally selected free port; no terminal client needs to
+        // connect for CPU execution to proceed.
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let console_port = listener.local_addr()?.port();
+        drop(listener);
+
+        let contents = format!(
+            "set console telnet=buffered\nset console -u telnet={console_port}\n"
+        );
+        fs::write(&path, contents)?;
         Ok(Self { path })
     }
 
