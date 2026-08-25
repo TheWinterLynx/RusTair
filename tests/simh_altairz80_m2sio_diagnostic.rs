@@ -23,6 +23,14 @@ struct TempConfig {
 
 impl TempConfig {
     fn create(port0: u16, port1: u16) -> Result<Self, Box<dyn Error>> {
+        // FrontPanel uses Open-SIMH Remote Console in MASTER mode. Open-SIMH
+        // explicitly requires the simulator console to be Telnet or Serial in
+        // that mode, even though the FrontPanel command channel itself is
+        // REM-CON. Keep a private buffered listener for that requirement.
+        let console_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let console_port = console_listener.local_addr()?.port();
+        drop(console_listener);
+
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
         let path = env::temp_dir().join(format!(
             "rustair-simh-altairz80-m2sio-diagnostic-{}-{nonce}.ini",
@@ -41,6 +49,7 @@ impl TempConfig {
 set cpu 8080\n\
 set cpu 64kb\n\
 set console telnet=buffered\n\
+set console -u telnet={console_port}\n\
 set m2sio0 enabled\n\
 set m2sio1 enabled\n\
 set m2sio0 debug=STATUS;VERBOSE;ERROR\n\
@@ -175,6 +184,7 @@ fn focused_simh_debug(log: &str) -> String {
         .copied()
         .filter(|line| {
             line.contains("SCP-PROCESS EVENT")
+                || line.contains("RUSTAIR STOP TRACE")
                 || line.contains("REM-CON CMD: continue_cmd")
                 || line.contains("REM-CON MODE:")
                 || line.contains("CON-TELNET")
@@ -231,9 +241,9 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     // global stop_cpu flag before/after dispatch.
     session.set_device_debug_mode("SCP-PROCESS", true, "EVENT")?;
 
-    // CON-TELNET exists as an internal device even when no Telnet listener is
-    // configured. Keep its tracing enabled so this diagnostic also proves
-    // whether console polling participates in a stop_cpu transition.
+    // MASTER mode requires a Telnet/Serial simulator console. Trace that
+    // otherwise-unused private listener as well, since it is the next queued
+    // unit immediately before the unexplained SCPE_STOP in the failing probe.
     session.set_device_debug_mode("CON-TELNET", true, "")?;
 
     // ATTACH validates each Connect= destination with one disposable TCP
