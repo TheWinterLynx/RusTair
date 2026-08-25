@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::config::SerialBoard;
-use crate::cpu8080::{Bus, Cpu8080};
+use crate::cpu8080::Cpu8080;
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
@@ -14,10 +14,10 @@ use super::{
 
 /// Host-driven machine backend around the validated T-state Intel 8080 core.
 ///
-/// The CPU timing is exact at T-state granularity. This first integration stage
-/// deliberately reuses `AltairBus`'s existing instruction/machine-cycle bridge
-/// for RAM, I/O and front-panel side effects; exact per-T-state S-100 lamp
-/// sampling is added separately rather than overstating `exact_bus_activity`.
+/// RAM/I/O side effects are performed through a raw machine path that does not
+/// synthesize legacy aggregate bus cycles. Every `Cpu8080Cycle::tick()` is then
+/// sampled independently into the S-100/front-panel model, so CPU timing and
+/// visible bus activity share the same T-state source of truth.
 pub struct CycleAccurateMachineBackend {
     machine: AltairMachine,
     cpu: Cpu8080Cycle,
@@ -120,57 +120,38 @@ impl CycleAccurateMachineBackend {
         self.sync_machine_cpu();
     }
 
+    /// Supply guest-visible input only at the T3 sampling point. This is the
+    /// destructive/functional read path: serial RX is consumed exactly once and
+    /// BASIC's transient memory guard is touched only when the CPU really reads.
     fn data_in_for_current_t_state(&mut self) -> u8 {
         if self.cpu.t_state() != TState::T3 {
             return 0;
         }
         let address = self.cpu.pins().address.unwrap_or(0);
         match self.cpu.machine_cycle() {
-            MachineCycle::InstructionFetch => self.machine.bus.opcode_fetch(address),
-            MachineCycle::MemoryRead => self.machine.bus.read(address),
-            MachineCycle::StackRead => self.machine.bus.stack_read(address),
-            MachineCycle::InputRead => self.machine.bus.input(address as u8),
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
+                self.machine.bus.cycle_read_memory(address)
+            }
+            MachineCycle::InputRead => self.machine.bus.cycle_input_port(address as u8),
+            // No interrupt controller is wired into the machine abstraction yet.
+            // 0xFF preserves the existing benign external-opcode default.
             MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => 0xff,
             _ => 0,
         }
     }
 
     fn apply_trace_side_effects(&mut self, trace: &TickTrace) {
-        if trace.t_state == TState::T1 {
-            match trace.machine_cycle {
-                MachineCycle::HaltAck => {
-                    self.machine.bus.halt_ack(
-                        trace.pins.address.unwrap_or(self.cpu.registers().pc),
-                        trace.opcode.unwrap_or(0x76),
-                    );
-                }
-                MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
-                    self.machine.bus.interrupt_ack(
-                        trace.pins.address.unwrap_or(self.cpu.registers().pc),
-                        trace.opcode.unwrap_or(0xff),
-                        trace.machine_cycle == MachineCycle::InterruptAckWhileHalt,
-                    );
-                }
-                _ => {}
-            }
-        }
-
         if trace.t_state == TState::T3 {
             let address = trace.pins.address.unwrap_or(0);
             match trace.machine_cycle {
-                MachineCycle::MemoryWrite => {
+                MachineCycle::MemoryWrite | MachineCycle::StackWrite => {
                     if let Some(value) = trace.pins.data_out {
-                        self.machine.bus.write(address, value);
-                    }
-                }
-                MachineCycle::StackWrite => {
-                    if let Some(value) = trace.pins.data_out {
-                        self.machine.bus.stack_write(address, value);
+                        self.machine.bus.cycle_write_memory(address, value);
                     }
                 }
                 MachineCycle::OutputWrite => {
                     if let Some(value) = trace.pins.data_out {
-                        self.machine.bus.output(address as u8, value);
+                        self.machine.bus.cycle_output_port(address as u8, value);
                     }
                 }
                 _ => {}
@@ -184,6 +165,69 @@ impl CycleAccurateMachineBackend {
                 trace.instruction_t_states,
             );
         }
+    }
+
+    /// Data electrically visible on the S-100 data bus for this whole T-state.
+    /// CPU-driven status/write data comes directly from the pins. During reads,
+    /// T2/TW use a non-destructive preview and T3 uses the exact value consumed
+    /// by the core, so displaying the panel can never dequeue serial input.
+    fn visible_bus_data(&self, trace: &TickTrace, sampled_data_in: u8) -> Option<u8> {
+        if let Some(data) = trace.pins.data_out {
+            return Some(data);
+        }
+
+        if !matches!(trace.t_state, TState::T2 | TState::Tw | TState::T3) {
+            return None;
+        }
+
+        let address = trace.pins.address?;
+        match trace.machine_cycle {
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
+                if trace.t_state == TState::T3 {
+                    Some(sampled_data_in)
+                } else {
+                    Some(self.machine.bus.cycle_peek_memory(address))
+                }
+            }
+            MachineCycle::InputRead => {
+                if trace.t_state == TState::T3 {
+                    Some(sampled_data_in)
+                } else {
+                    Some(self.machine.bus.peek_io_port(address as u8))
+                }
+            }
+            MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => Some(0xff),
+            _ => None,
+        }
+    }
+
+    fn drive_s100_t_state(&mut self, trace: &TickTrace, sampled_data_in: u8, ready: bool) {
+        let data = self.visible_bus_data(trace, sampled_data_in);
+        // The S-100 status latch changes only when the 8080 actually asserts
+        // SYNC with a processor status byte. It otherwise retains the previous
+        // machine-cycle status. HLDA explicitly relinquishes those CPU drivers.
+        let status_word = if trace.pins.hlda {
+            None
+        } else if trace.pins.sync {
+            trace.pins.data_out
+        } else if trace.t_state == TState::Thalt {
+            // If HOLD interrupted a halted CPU, re-establish HLTA immediately
+            // when the processor owns the bus again even though no new SYNC is
+            // generated while dwelling in HALT.
+            trace.machine_cycle.status_word()
+        } else {
+            None
+        };
+
+        self.machine.bus.cycle_drive_s100_t_state(
+            trace.pins.address,
+            data,
+            status_word,
+            trace.pins.inte,
+            ready,
+            trace.pins.wait,
+            trace.pins.hlda,
+        );
     }
 
     fn tick_once(&mut self, ready: bool) -> TickTrace {
@@ -202,6 +246,7 @@ impl CycleAccurateMachineBackend {
             reset: false,
         });
         self.apply_trace_side_effects(&trace);
+        self.drive_s100_t_state(&trace, data_in, ready);
         self.sync_machine_cpu();
         trace
     }
@@ -231,10 +276,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             front_panel: true,
-            exact_bus_activity: false,
+            exact_bus_activity: true,
             exact_t_state_timing: true,
             memory_protection: true,
-            hold_hlda: false,
+            hold_hlda: true,
             direct_memory_access: true,
             serial_routing: true,
             disk_mount: false,
@@ -429,12 +474,12 @@ mod tests {
     }
 
     #[test]
-    fn cycle_backend_advertises_timing_without_overclaiming_panel_bus_accuracy() {
+    fn cycle_backend_advertises_exact_t_state_and_bus_capabilities() {
         let backend = CycleAccurateMachineBackend::default();
         let capabilities = backend.capabilities();
         assert!(capabilities.exact_t_state_timing);
-        assert!(!capabilities.exact_bus_activity);
-        assert!(!capabilities.hold_hlda);
+        assert!(capabilities.exact_bus_activity);
+        assert!(capabilities.hold_hlda);
     }
 
     #[test]
@@ -454,5 +499,37 @@ mod tests {
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.pc, 5);
         assert_eq!(state.total_t_states, Some(20));
+
+        // The last executed T-state is the STA memory-write T3 itself. The
+        // panel therefore sees the real write address/data and latched write
+        // status rather than an aggregate synthetic cycle.
+        backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
+        let panel = backend.front_panel_state().unwrap();
+        assert_eq!(panel.address, 0x1f00);
+        assert_eq!(panel.data, 0x5a);
+        assert_eq!(panel.lamps.memr, 0.0);
+        assert_eq!(panel.lamps.wo, 0.0);
+    }
+
+    #[test]
+    fn cycle_backend_hold_reaches_real_hlda_and_relinquishes_cpu() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00, 0x00]).unwrap();
+        backend.run().unwrap();
+        backend.request_hold(true).unwrap();
+
+        // T1, T2(sample HOLD), T3, T4(boundary), THOLD.
+        backend.service_execution(5).unwrap();
+        assert!(backend.cpu().is_holding());
+        backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
+        let held = backend.front_panel_state().unwrap();
+        assert_eq!(held.lamps.hlda, 1.0);
+
+        backend.request_hold(false).unwrap();
+        backend.service_execution(1).unwrap();
+        assert!(!backend.cpu().is_holding());
     }
 }
