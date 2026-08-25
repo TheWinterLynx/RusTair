@@ -8,8 +8,9 @@ const CPM_COM_LOAD_ADDRESS: usize = 0x0100;
 const BOOT_ADDRESS: usize = 0x0080;
 const BDOS_BASE: u16 = 0xff00;
 const BDOS_LEN: usize = 0x37;
-const SHORT_MAX_TICKS: usize = 5_000_000;
-const CPUTEST_MAX_TICKS: usize = 350_000_000;
+const SHORT_MAX_TICKS: u64 = 5_000_000;
+const CPUTEST_MAX_TICKS: u64 = 350_000_000;
+const EXM_MAX_TICKS: u64 = 27_000_000_000;
 
 #[derive(Debug)]
 struct DiagnosticBus {
@@ -232,7 +233,7 @@ struct DiagnosticResult {
     halted: bool,
 }
 
-fn run_diagnostic(image: &[u8], max_ticks: usize) -> DiagnosticResult {
+fn run_diagnostic(image: &[u8], max_ticks: u64) -> DiagnosticResult {
     let mut cpu = Cpu8080Cycle::new();
     let mut bus = DiagnosticBus::with_image(image);
     let mut meter = ReferenceMeter::new();
@@ -282,7 +283,7 @@ fn assert_reference(
     image: &[u8],
     expected_instructions: u64,
     expected_t_states: u64,
-    max_ticks: usize,
+    max_ticks: u64,
 ) -> DiagnosticResult {
     let result = run_diagnostic(image, max_ticks);
     assert!(result.halted, "{name}: warm boot must end in the installed HLT");
@@ -335,6 +336,25 @@ fn cycle_core_runs_cputest_with_reference_totals() {
     let emulated_mhz = result.t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     eprintln!(
         "CPUTEST cycle-core: {} instructions, {} T-states in {:.3?} ({emulated_mhz:.2} MHz host throughput)",
+        result.instructions, result.t_states, elapsed
+    );
+}
+
+#[test]
+#[ignore = "very long cycle-accurate exerciser; run explicitly in --release mode"]
+fn cycle_core_runs_8080exm_with_reference_totals() {
+    let started = Instant::now();
+    let result = assert_reference(
+        "8080EXM.COM",
+        include_bytes!("../assets/cpu-tests/8080EXM.COM"),
+        2_919_050_698,
+        23_803_381_171,
+        EXM_MAX_TICKS,
+    );
+    let elapsed = started.elapsed();
+    let emulated_mhz = result.t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    eprintln!(
+        "8080EXM cycle-core: {} instructions, {} T-states in {:.3?} ({emulated_mhz:.2} MHz host throughput)",
         result.instructions, result.t_states, elapsed
     );
 }
