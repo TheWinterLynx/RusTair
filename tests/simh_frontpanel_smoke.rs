@@ -33,19 +33,10 @@ impl TempSimhConfig {
         ));
         let debug_path = path.with_extension("frontpanel.log");
 
-        // FrontPanel appends SET REMOTE ... / SET REMOTE MASTER to this file.
-        // Open-SIMH only permits Master Remote Console mode when the simulator's
-        // primary console is itself Telnet or Serial. Use a buffered Telnet
-        // console on a locally selected free port; no terminal client needs to
-        // connect for CPU execution to proceed.
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let console_port = listener.local_addr()?.port();
         drop(listener);
 
-        // Do not depend on Open-SIMH's target defaults here. The backend contract
-        // being exercised is explicitly the classic 8080 Altair with writable
-        // RAM, so select the CPU mode and a full 64 KiB address space before
-        // FrontPanel takes control of execution.
         let contents = format!(
             "set cpu 8080\nset cpu 64k\nset console telnet=buffered\nset console -u telnet={console_port}\n"
         );
@@ -117,28 +108,33 @@ fn diagnose_frontpanel_memory(
         session.halt()?;
     }
 
+    // Known register round-trip: this isolates the generic FrontPanel command
+    // path from memory addressing/formatting completely.
+    session.deposit_u32("A", 0x5a)?;
+    let after_register_api = session.examine_u32("A")? as u8;
+
     let before = session.read_byte(0x0200)?;
     session.write_byte(0x0200, 0xa5)?;
     let after_mem_api = session.read_byte(0x0200)?;
 
     // Classic ALTAIR's native address radix is octal. 1001(octal) is a
-    // separate byte from the mem_* probe and lets us compare the generic
-    // FrontPanel DEPOSIT/EXAMINE path in the same simulator process.
+    // separate byte from the mem_* probe and lets us compare generic memory
+    // DEPOSIT/EXAMINE with the dedicated mem_* API in the same simulator.
     session.deposit_u32("1001", 0x5a)?;
     let after_generic_api = session.examine_u32("1001")? as u8;
 
     println!(
-        "FrontPanel memory diagnostic: before={before:02X}, mem_api_after={after_mem_api:02X}, generic_api_after={after_generic_api:02X}"
+        "FrontPanel diagnostic: register_A={after_register_api:02X}, before={before:02X}, mem_api_after={after_mem_api:02X}, generic_mem_after={after_generic_api:02X}"
     );
 
     drop(session);
 
-    if after_mem_api != 0xa5 || after_generic_api != 0x5a {
+    if after_register_api != 0x5a || after_mem_api != 0xa5 || after_generic_api != 0x5a {
         let debug = fs::read_to_string(config.debug_path())
             .unwrap_or_else(|error| format!("<unable to read FrontPanel debug log: {error}>"));
         println!("\n===== Open-SIMH FrontPanel wire log =====\n{debug}\n===== end FrontPanel wire log =====\n");
         return Err(test_error(format!(
-            "FrontPanel memory round-trip mismatch: mem API wrote A5/read {after_mem_api:02X}; generic API wrote 5A/read {after_generic_api:02X}"
+            "FrontPanel round-trip mismatch: register A wrote 5A/read {after_register_api:02X}; mem API wrote A5/read {after_mem_api:02X}; generic memory wrote 5A/read {after_generic_api:02X}"
         )));
     }
 
@@ -151,34 +147,26 @@ fn classic_altair_frontpanel_round_trip() -> Result<(), Box<dyn Error>> {
     let executable = altair_executable();
     let config = TempSimhConfig::create()?;
 
-    // First prove the two raw FrontPanel memory access paths and emit the
-    // official FrontPanel wire log on any mismatch. This makes failures in the
-    // C API distinguishable from failures in the higher-level backend adapter.
     diagnose_frontpanel_memory(&executable, &config)?;
 
-    let launch = SimhLaunchConfig::new(SimhTarget::Altair, &executable, config.path());
+    let launch = SimhLaunchConfig::new(SimhTarget::Altair, executable.clone(), config.path());
     let mut backend = SimhAltairBackend::launch(launch)?;
 
     wait_for_running(&mut backend, false)?;
 
-    // Memory examine/deposit through the real backend connection.
     assert!(backend.write_memory(0x0200, 0xa5, false)?);
     assert_eq!(backend.peek_memory(0x0200)?, Some(0xa5));
 
-    // Front-panel switch register + EXAMINE must update SIMH's PC.
     backend.write_memory(0x0100, 0x00, false)?; // NOP
     backend.set_switch_register(0x0100)?;
     assert_eq!(backend.switch_register()?, 0x0100);
     backend.panel_examine(false)?;
     assert_eq!(intel8080_pc(&mut backend)?, 0x0100);
 
-    // One FrontPanel STEP executes exactly the NOP and returns to Halt.
     backend.step()?;
     wait_for_running(&mut backend, false)?;
     assert_eq!(intel8080_pc(&mut backend)?, 0x0101);
 
-    // RUN/HALT against an intentional infinite loop. This proves that RusTair
-    // can transition a live external SIMH process in both directions.
     backend.load_bytes(0x0300, &[0xc3, 0x00, 0x03])?; // JMP 0300h
     backend.set_switch_register(0x0300)?;
     backend.panel_examine(false)?;
@@ -188,8 +176,6 @@ fn classic_altair_frontpanel_round_trip() -> Result<(), Box<dyn Error>> {
     backend.halt()?;
     wait_for_running(&mut backend, false)?;
 
-    // Exercise the backend's real process lifecycle. power(false) drops the
-    // FrontPanel session/process; power(true) must create a fresh usable one.
     backend.power(false)?;
     backend.power(true)?;
     wait_for_running(&mut backend, false)?;
