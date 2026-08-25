@@ -157,6 +157,10 @@ impl AltairBus {
         let mut completed = None;
 
         if let Some(meter) = self.diagnostic_meter.as_mut() {
+            // The convenience loader executes a bootstrap in page zero before
+            // entering the CP/M transient program. The historical reference
+            // harness starts counting directly at 0100h, so ignore bootstrap
+            // work until that first guest instruction fetch.
             if !meter.started {
                 if address == 0x0100 {
                     meter.started = true;
@@ -166,17 +170,29 @@ impl AltairBus {
                 return;
             }
 
+            // Reference harnesses replace CALL 0005h with two real 8080
+            // instructions: OUT 1 (10 T) and RET (10 T). RusTair deliberately
+            // runs a richer high-memory mini-BDOS through the selected physical
+            // serial card, whose polling cost depends on UART pacing. Normalize
+            // only the accounting to the reference stub while leaving execution
+            // and serial side effects completely untouched.
             if address == 0x0005 {
                 meter.instructions = meter.instructions.saturating_add(2);
                 meter.t_states = meter.t_states.saturating_add(20);
                 return;
             }
 
+            // The reference stop stub at 0000h is OUT 0 (10 T). RusTair uses a
+            // real HLT there so the front panel finishes in an authentic HALT
+            // indication. Normalize that final instruction for apples-to-apples
+            // diagnostic totals and then freeze the result.
             if address == 0x0000 {
                 meter.instructions = meter.instructions.saturating_add(1);
                 meter.t_states = meter.t_states.saturating_add(10);
                 completed = Some(meter.complete());
             } else if address >= meter.bdos_start && address < meter.bdos_end {
+                // All actual mini-BDOS instructions are intentionally excluded;
+                // their canonical OUT+RET cost was already added at 0005h.
                 return;
             } else {
                 meter.instructions = meter.instructions.saturating_add(1);
@@ -273,6 +289,8 @@ impl AltairBus {
     fn set_ext_clear(&mut self, asserted: bool) {
         let was_asserted = self.s100.signals().ext_clear;
         self.s100.set_ext_clear(asserted);
+        // EXT CLR is a physical S-100 line. Installed I/O boards react to its
+        // assertion; the GUI does not clear UART queues directly.
         if asserted && !was_asserted {
             self.io.clear_serial();
         }
@@ -358,6 +376,7 @@ pub struct AltairMachine {
     pub cpu: Cpu8080,
     pub bus: AltairBus,
     pub powered: bool,
+    /// Mirrors the physical RUN/STOP R-S latch, not merely "CPU is executing".
     pub running: bool,
     stop_switch_asserted: bool,
     run_switch_asserted: bool,
@@ -416,10 +435,16 @@ impl AltairMachine {
         self.bus.take_cpu_diagnostic_result()
     }
 
+    /// Safe default power operation. The CPU power-on state remains undefined,
+    /// but the RUN/STOP latch is forced to STOP unless historical mode is
+    /// explicitly selected by the caller.
     pub fn power(&mut self, on: bool) {
         self.power_with_historical_run_latch(on, false);
     }
 
+    /// Apply/remove power with optional reproduction of the original undefined
+    /// RUN/STOP flip-flop power-on state. Historical mode is intentionally
+    /// opt-in because a random RUN state can start executing immediately.
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) {
         self.bus.cancel_cpu_diagnostic_meter();
         self.powered = on;
@@ -463,6 +488,10 @@ impl AltairMachine {
         self.cpu.cycles = 0;
     }
 
+    /// Assert one side of the physical RUN/STOP switch. RUN sets the R-S latch
+    /// immediately. STOP is captured at the next available machine-cycle
+    /// boundary; with the 8080 halted there is no useful PSYNC, reproducing the
+    /// original case where STOP alone cannot leave HLT.
     pub fn assert_run_stop(&mut self, run: bool) {
         if !self.powered { return; }
         self.run_switch_asserted = run;
@@ -485,6 +514,10 @@ impl AltairMachine {
         }
     }
 
+    /// Assert the physical RESET switch and keep it asserted. RESET clears the
+    /// 8080 but does not itself alter the RUN/STOP latch. If STOP is being held,
+    /// however, RESET supplies the condition needed for the pending STOP to be
+    /// captured, reproducing the documented STOP+RESET recovery from HLT.
     pub fn assert_front_panel_reset(&mut self) {
         if !self.powered { return; }
         self.bus.cancel_cpu_diagnostic_meter();
@@ -500,6 +533,8 @@ impl AltairMachine {
         self.bus.assert_front_panel_reset_bus();
     }
 
+    /// Release RESET at 0000h. READY follows the independent RUN/STOP latch:
+    /// a machine that was RUN continues from zero, while STOP remains in WAIT.
     pub fn release_front_panel_reset(&mut self) {
         if !self.powered { return; }
         self.cpu.reset();
@@ -509,6 +544,8 @@ impl AltairMachine {
         self.bus.release_front_panel_reset_bus(address, self.running);
     }
 
+    /// Programmatic momentary RESET pulse used by loaders and tests. Physical
+    /// semantics are preserved: the RUN/STOP latch is not implicitly changed.
     pub fn front_panel_reset(&mut self) {
         if !self.powered { return; }
         self.assert_front_panel_reset();
@@ -521,6 +558,8 @@ impl AltairMachine {
         self.bus.clear_serial();
     }
 
+    /// Assert the physical EXT CLR line (S-100 pin 54). I/O cards react to the
+    /// bus signal; CPU registers and RUN/STOP state are untouched.
     pub fn assert_front_panel_clear(&mut self) {
         if !self.powered { return; }
         self.bus.set_ext_clear(true);
@@ -531,12 +570,15 @@ impl AltairMachine {
         self.bus.set_ext_clear(false);
     }
 
+    /// Convenience pulse used by non-interactive callers.
     pub fn clear_io(&mut self) {
         if !self.powered { return; }
         self.assert_front_panel_clear();
         self.release_front_panel_clear();
     }
 
+    /// Programmatic latch control used by loaders/configuration. The physical
+    /// front-panel switch uses `assert_run_stop`/`release_run_stop` instead.
     pub fn set_running(&mut self, run: bool) {
         if !self.powered || self.bus.reset_asserted() { return; }
         self.running = run;
@@ -562,6 +604,8 @@ impl AltairMachine {
         self.bus.set_hlda(false);
         self.bus.set_ready(true);
         self.bus.sync_cpu_inte(self.cpu.inte);
+        // Limitation retained by design: the CPU core is instruction-level, so
+        // this executes one instruction rather than one physical machine cycle.
         self.cpu.step(&mut self.bus);
         self.bus.sync_cpu_inte(self.cpu.inte);
         let address = self.bus.panel_address();
@@ -597,14 +641,22 @@ impl AltairMachine {
         self.bus.commit_panel_activity(dt, dynamic);
     }
 
+    /// Compatibility facade for the current native-UI caller. The operation
+    /// itself lives in the CPU-board/S-100 path and executes the real injected
+    /// JMP/NOP sequence rather than assigning the program counter directly.
     pub fn examine(&mut self, next: bool) {
         self.fast_front_panel_examine_via_cpu_board(next);
     }
 
+    /// Compatibility facade for the current native-UI caller. DEPOSIT uses the
+    /// front-panel memory-write pulse while the CPU board supplies ADDRESS.
     pub fn deposit(&mut self, next: bool) {
         self.fast_front_panel_deposit_via_cpu_board(next);
     }
 
+    /// Compatibility facade for the current native-UI caller. Protection is
+    /// applied to the memory board selected by live S-100 ADDRESS, never by a
+    /// private panel latch or by the current switch-register value.
     pub fn protect_current_board(&mut self, protected: bool) {
         self.front_panel_set_memory_protection_via_s100(protected);
     }
@@ -643,15 +695,23 @@ mod tests {
             Some(7),
             Some(65),
         );
+
+        // Bootstrap is ignored until the CP/M transient entry at 0100h.
         bus.instruction_complete(0x0000, 0xc3, 10);
         bus.instruction_complete(0x0080, 0x31, 10);
         bus.instruction_complete(0x0100, 0x00, 4);
         bus.instruction_complete(0x0101, 0xcd, 17);
+
+        // The real 0005h JMP plus high-BDOS work are replaced in accounting by
+        // the canonical reference OUT+RET pair (2 instructions / 20 T-states).
         bus.instruction_complete(0x0005, 0xc3, 10);
         bus.instruction_complete(0xff00, 0xf5, 11);
         bus.instruction_complete(0xff01, 0xc5, 11);
+
         bus.instruction_complete(0x0104, 0x00, 4);
         bus.instruction_complete(0x0105, 0xc3, 10);
+
+        // RusTair's final HLT is normalized to the reference OUT 0 stop stub.
         bus.instruction_complete(0x0000, 0x76, 7);
 
         let result = bus.take_cpu_diagnostic_result().unwrap();
@@ -666,6 +726,7 @@ mod tests {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.bus.load(0, &[0xa5]);
+
         machine.assert_front_panel_reset();
         assert_eq!(machine.address_leds(), 0xffff);
         assert_eq!(machine.data_leds(), 0xff);
@@ -708,10 +769,11 @@ mod tests {
         machine.front_panel_reset();
         machine.set_running(true);
         machine.cpu.halted = true;
+
         machine.assert_run_stop(false);
-        assert!(machine.running);
+        assert!(machine.running, "STOP cannot latch without PSYNC while halted");
         machine.assert_front_panel_reset();
-        assert!(!machine.running);
+        assert!(!machine.running, "held STOP must latch when RESET supplies recovery");
         machine.release_front_panel_reset();
         machine.release_run_stop(false);
         assert!(machine.wait_led());
@@ -734,10 +796,12 @@ mod tests {
         machine.front_panel_reset();
         machine.cpu.pc = 0x1234;
         machine.bus.serial_receive(b'X');
+
         machine.assert_front_panel_clear();
         assert!(machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
         assert_eq!(machine.bus.serial_rx_len(), 0);
+
         machine.release_front_panel_clear();
         assert!(!machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
@@ -776,6 +840,7 @@ mod tests {
         assert_eq!(machine.data_leds(), 0x12);
         assert_eq!(machine.panel_lamps().memr, 1.0);
         assert_eq!(machine.panel_lamps().wo, 1.0);
+
         for bit in [1, 2, 4, 6] { machine.toggle_sense_switch(bit); }
         machine.deposit(false);
         assert_eq!(machine.bus.peek_memory(0), Some(0x56));
