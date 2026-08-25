@@ -65,6 +65,29 @@ impl Drop for TempConfig {
     }
 }
 
+struct TempDebugLog {
+    path: PathBuf,
+}
+
+impl TempDebugLog {
+    fn create() -> Result<Self, Box<dyn Error>> {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = env::temp_dir().join(format!(
+            "rustair-simh-altairz80-m2sio-frontpanel-{}-{nonce}.log",
+            std::process::id()
+        ));
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path { &self.path }
+}
+
+impl Drop for TempDebugLog {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 fn simulator() -> PathBuf {
     env::var_os("RUSTAIR_SIMH_ALTAIRZ80_EXE")
         .map(PathBuf::from)
@@ -128,7 +151,8 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     let port1 = listener1.local_addr()?.port();
 
     let config = TempConfig::create(port0, port1)?;
-    let mut session = SimhSession::start(&simulator(), config.path(), 0)?;
+    let debug = TempDebugLog::create()?;
+    let mut session = SimhSession::start_debug(&simulator(), config.path(), 0, debug.path())?;
 
     // ATTACH validates each Connect= destination with one disposable TCP
     // connection. Consume those explicitly before starting guest execution.
@@ -139,18 +163,23 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     session.load_bytes(PROGRAM_BASE, &receiver_program())?;
     session.deposit_register_u32("PC", u32::from(PROGRAM_BASE))?;
     session.run()?;
+    let state_after_run = session.state();
 
     // The guest writes 14h to M2SIO0, raising RTS/DTR. m2sio_svc then asks
     // TMXR to establish the persistent outgoing raw TCP connection.
     let mut persistent0 = accept_one(&listener0, "M2SIO0 persistent connection")?;
+    let state_after_persistent_accept = session.state();
     persistent0.write_all(&[0x41])?;
+    persistent0.flush()?;
+    let state_after_write = session.state();
 
     let deadline = Instant::now() + TIMEOUT;
     while session.state() == SimhOperationalState::Running && Instant::now() < deadline {
         thread::sleep(POLL_INTERVAL);
     }
 
-    let stopped_naturally = session.state() == SimhOperationalState::Halted;
+    let final_state_before_forced_halt = session.state();
+    let stopped_naturally = final_state_before_forced_halt == SimhOperationalState::Halted;
     if !stopped_naturally {
         session.halt()?;
     }
@@ -160,7 +189,7 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     let halt = session.halt_text();
 
     println!(
-        "DIRECT M2SIO diagnostic: stopped_naturally={stopped_naturally}, halt_text={halt:?}, pc={pc:04X}, captured={captured:02X}, M2STA0={}, M2CTL0={}, M2CON0={}, M2RTS0={}, M2DCD0={}, M2CTS0={}, M2RDRF0={}, M2RXD0={}, M2WAIT0={}",
+        "DIRECT M2SIO diagnostic: state_after_run={state_after_run:?}, state_after_persistent_accept={state_after_persistent_accept:?}, state_after_write={state_after_write:?}, final_state_before_forced_halt={final_state_before_forced_halt:?}, stopped_naturally={stopped_naturally}, halt_text={halt:?}, pc={pc:04X}, captured={captured:02X}, M2STA0={}, M2CTL0={}, M2CON0={}, M2RTS0={}, M2DCD0={}, M2CTS0={}, M2RDRF0={}, M2RXD0={}, M2WAIT0={}",
         examine(&session, "M2STA0"),
         examine(&session, "M2CTL0"),
         examine(&session, "M2CON0"),
@@ -172,6 +201,18 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
         examine(&session, "M2WAIT0"),
     );
 
-    assert_eq!(captured, 0x41, "direct SIMH M2SIO receive path did not deliver 41h");
+    if captured != 0x41 {
+        drop(session);
+        thread::sleep(Duration::from_millis(100));
+        let wire = match fs::read(debug.path()) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(error) => format!("<unable to read FrontPanel wire log: {error}>"),
+        };
+        eprintln!("--- FrontPanel wire log ---\n{wire}\n--- end FrontPanel wire log ---");
+        return Err(test_error(format!(
+            "direct SIMH M2SIO receive path did not deliver 41h (captured {captured:02X})"
+        )));
+    }
+
     Ok(())
 }
