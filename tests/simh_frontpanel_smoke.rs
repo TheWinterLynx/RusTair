@@ -38,8 +38,12 @@ impl TempSimhConfig {
         let console_port = listener.local_addr()?.port();
         drop(listener);
 
+        // Do not depend on Open-SIMH's target defaults here. The backend contract
+        // being exercised is explicitly the classic 8080 Altair with writable
+        // RAM, so select the CPU mode and a full 64 KiB address space before
+        // FrontPanel takes control of execution.
         let contents = format!(
-            "set console telnet=buffered\nset console -u telnet={console_port}\n"
+            "set cpu 8080\nset cpu 64k\nset console telnet=buffered\nset console -u telnet={console_port}\n"
         );
         fs::write(&path, contents)?;
         Ok(Self { path })
