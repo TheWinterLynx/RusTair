@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::config::SerialBoard;
-use crate::cpu8080::Cpu8080;
+use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
@@ -313,6 +313,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn step(&mut self) -> BackendResult<()> {
         if self.machine.powered && !self.machine.running {
             self.run_one_instruction();
+            // STEP momentarily releases READY for one instruction. Reassert the
+            // stopped front-panel state afterwards without altering the real
+            // cycle-core PC/registers or the last bus address/data/status.
+            self.machine.set_running(false);
         }
         Ok(())
     }
@@ -471,6 +475,7 @@ mod tests {
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(4));
         assert_eq!(backend.machine().cpu.pc, 1, "legacy field must only mirror the cycle core");
+        assert!(backend.machine().wait_led(), "STEP must return to the stopped WAIT state");
     }
 
     #[test]
@@ -500,15 +505,15 @@ mod tests {
         assert_eq!(state.pc, 5);
         assert_eq!(state.total_t_states, Some(20));
 
-        // The last executed T-state is the STA memory-write T3 itself. The
-        // panel therefore sees the real write address/data and latched write
-        // status rather than an aggregate synthetic cycle.
+        // The last executed T-state is the STA memory-write T3 itself. STEP then
+        // reasserts WAIT without replacing that exact address/data/write status.
         backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
         let panel = backend.front_panel_state().unwrap();
         assert_eq!(panel.address, 0x1f00);
         assert_eq!(panel.data, 0x5a);
         assert_eq!(panel.lamps.memr, 0.0);
         assert_eq!(panel.lamps.wo, 0.0);
+        assert_eq!(panel.lamps.wait, 1.0);
     }
 
     #[test]
@@ -531,5 +536,29 @@ mod tests {
         backend.request_hold(false).unwrap();
         backend.service_execution(1).unwrap();
         assert!(!backend.cpu().is_holding());
+    }
+
+    #[test]
+    fn cycle_backend_io_preview_does_not_consume_serial_before_t3() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        // IN 01h on the default 88-SIO data port.
+        backend.load_bytes(0, &[0xdb, 0x01]).unwrap();
+        backend.serial_receive(BackendSerialPort::Port0, b'R').unwrap();
+        backend.run().unwrap();
+
+        // 4T fetch + 3T immediate read + M3 T1/T2 = 9T. The T2 panel sample
+        // peeks at the UART but must leave the byte queued for the actual T3.
+        backend.service_execution(9).unwrap();
+        assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 1);
+
+        backend.service_execution(1).unwrap();
+        assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 0);
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(state.a, b'R');
+        assert_eq!(state.pc, 2);
+        assert_eq!(state.total_t_states, Some(10));
     }
 }
