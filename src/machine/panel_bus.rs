@@ -420,6 +420,54 @@ impl S100BusState {
             .sample(&self.signals, cycle.t_states().saturating_sub(1));
     }
 
+    /// Drive exactly one CPU T-state into the S-100/front-panel model.
+    ///
+    /// `status_word` is the status latch value associated with the current
+    /// machine cycle. `None` means that no new external status byte exists
+    /// (for example an internal DAD cycle), so the previously latched S-100
+    /// status lines remain untouched. During HLDA the CPU relinquishes the bus;
+    /// status drivers are considered inactive while the last address/data
+    /// values are allowed to remain electrically visible to the presentation
+    /// model rather than inventing zeroes on a tri-stated bus.
+    pub(super) fn drive_cpu_t_state(
+        &mut self,
+        address: Option<u16>,
+        data: Option<u8>,
+        status_word: Option<u8>,
+        protected: bool,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+        hlda: bool,
+    ) {
+        self.signals.reset = false;
+        self.signals.inte = inte;
+        self.signals.ready = ready;
+        self.signals.wait = wait;
+        self.signals.hlda = hlda;
+
+        if hlda {
+            self.signals.owner = BusOwner::None;
+            self.signals.prot = false;
+            self.signals.clear_status();
+            self.lamps.sample(&self.signals, 1);
+            return;
+        }
+
+        self.signals.owner = BusOwner::Cpu;
+        if let Some(address) = address {
+            self.signals.address = address;
+            self.signals.prot = protected;
+        }
+        if let Some(status_word) = status_word {
+            self.signals.apply_status_word(status_word);
+        }
+        if let Some(data) = data {
+            self.signals.data = data;
+        }
+        self.lamps.sample(&self.signals, 1);
+    }
+
     /// Electrical state while the physical RESET switch is held. MITS' 1975
     /// checkout procedure specifies all ADDRESS/DATA lamps on and all status
     /// lamps off for this phase.
@@ -584,6 +632,55 @@ mod tests {
         let s = bus.signals();
         assert!(!s.memr);
         assert!(!s.wo);
+    }
+
+    #[test]
+    fn t_state_path_samples_once_and_preserves_latched_status_on_internal_states() {
+        let mut bus = S100BusState::default();
+        bus.drive_cpu_t_state(
+            Some(0x1234),
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            false,
+            true,
+            false,
+            false,
+        );
+        assert_eq!(bus.lamps.total_weight, 1);
+        let fetch = bus.signals();
+        assert_eq!(fetch.address, 0x1234);
+        assert_eq!(fetch.data, 0xa2);
+        assert!(fetch.memr && fetch.m1 && fetch.wo);
+
+        bus.drive_cpu_t_state(None, None, None, false, false, true, false, false);
+        assert_eq!(bus.lamps.total_weight, 2);
+        let internal = bus.signals();
+        assert_eq!(internal.address, 0x1234);
+        assert!(internal.memr && internal.m1 && internal.wo);
+    }
+
+    #[test]
+    fn t_state_path_relinquishes_status_bus_while_hlda_is_asserted() {
+        let mut bus = S100BusState::default();
+        bus.set_hold(true);
+        bus.drive_cpu_t_state(
+            Some(0x2000),
+            Some(0x82),
+            Some(0x82),
+            false,
+            true,
+            true,
+            false,
+            false,
+        );
+        bus.drive_cpu_t_state(None, None, None, false, true, true, false, true);
+
+        let held = bus.signals();
+        assert_eq!(held.owner, BusOwner::None);
+        assert!(held.hold && held.hlda && held.inte);
+        assert!(!held.memr && !held.inp && !held.m1 && !held.out && !held.stack);
+        assert_eq!(bus.lamps.total_weight, 2);
     }
 
     #[test]
