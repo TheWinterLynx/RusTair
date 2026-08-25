@@ -216,9 +216,9 @@ impl CycleAccurateMachineBackend {
         let lines = self.machine.bus.cpu_control_lines();
         let trace = self.cpu.tick(Cpu8080Inputs {
             data_in,
-            // STEP deliberately overrides the stopped READY line for the one
-            // instruction it is executing. HOLD and RESET, however, always
-            // arrive through the shared S-100 control-line contract.
+            // SINGLE STEP may momentarily override the stopped READY line for
+            // exactly one machine cycle. HOLD and RESET always arrive through
+            // the shared S-100 control-line contract.
             ready,
             interrupt: false,
             hold: lines.hold,
@@ -230,10 +230,51 @@ impl CycleAccurateMachineBackend {
         trace
     }
 
-    fn run_one_instruction(&mut self) {
-        for _ in 0..128 {
+    fn machine_cycle_finished_since(
+        &self,
+        start_cycle: MachineCycle,
+        start_index: u8,
+        trace: &TickTrace,
+    ) -> bool {
+        self.cpu.machine_cycle() != start_cycle
+            || self.cpu.machine_cycle_index() != start_index
+            || (self.cpu.t_state() == TState::T1 && trace.t_state != TState::T1)
+            || self.cpu.is_halted()
+            || self.cpu.is_holding()
+    }
+
+    /// The original 8800 SINGLE STEP circuit releases READY for one machine
+    /// cycle and removes it again at the following PSYNC. Unlike the fast core,
+    /// this backend can reproduce that boundary directly.
+    fn run_one_machine_cycle(&mut self) {
+        let start_cycle = self.cpu.machine_cycle();
+        let start_index = self.cpu.machine_cycle_index();
+        for _ in 0..32 {
             let trace = self.tick_once(true);
-            if trace.instruction_complete || trace.fault.is_some() || self.cpu.is_halted() {
+            if trace.fault.is_some()
+                || self.machine_cycle_finished_since(start_cycle, start_index, &trace)
+            {
+                break;
+            }
+        }
+    }
+
+    /// STOP is latched by the display/control hardware at PSYNC. If the switch
+    /// is actuated in the middle of a machine cycle, let that cycle reach the
+    /// next externally visible SYNC before dropping the RUN latch/READY line.
+    /// A processor already dwelling in HLT produces no useful new PSYNC, so the
+    /// historical STOP+RESET recovery behavior remains intact.
+    fn advance_to_stop_sync(&mut self) {
+        if self.cpu.is_halted() {
+            return;
+        }
+        for _ in 0..64 {
+            let ready = self.machine.bus.cpu_control_lines().ready;
+            let trace = self.tick_once(ready);
+            if trace.fault.is_some() || self.cpu.is_halted() || self.cpu.is_holding() {
+                break;
+            }
+            if trace.t_state == TState::T1 && trace.pins.sync {
                 break;
             }
         }
@@ -290,10 +331,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn step(&mut self) -> BackendResult<()> {
         if self.machine.powered && !self.machine.running {
-            self.run_one_instruction();
-            // STEP momentarily releases READY for one instruction. Reassert the
-            // stopped front-panel state afterwards without altering the real
-            // cycle-core PC/registers or the last bus address/data/status.
+            self.run_one_machine_cycle();
+            // SINGLE STEP releases READY only for the selected machine cycle.
+            // Reassert STOP afterwards without replacing the last real bus
+            // address/data/status sample produced by that cycle.
             self.machine.set_running(false);
         }
         Ok(())
@@ -320,6 +361,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
         self.sync_machine_cpu();
+        if !run && self.machine.powered && self.machine.running && !self.cpu.is_halted() {
+            self.advance_to_stop_sync();
+        }
         self.machine.assert_run_stop(run);
         Ok(())
     }
@@ -457,6 +501,30 @@ mod tests {
     }
 
     #[test]
+    fn cycle_backend_single_step_advances_one_machine_cycle_not_whole_instruction() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
+
+        backend.step().unwrap();
+        let CpuState::Intel8080(after_fetch) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(after_fetch.pc, 1);
+        assert_eq!(after_fetch.a, 0x00, "MVI operand cycle must not have executed yet");
+        assert_eq!(after_fetch.total_t_states, Some(4));
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
+        assert_eq!(backend.cpu().machine_cycle_index(), 2);
+
+        backend.step().unwrap();
+        let CpuState::Intel8080(after_operand) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(after_operand.pc, 2);
+        assert_eq!(after_operand.a, 0x5a);
+        assert_eq!(after_operand.total_t_states, Some(7));
+        assert!(backend.machine().wait_led());
+    }
+
+    #[test]
     fn cycle_backend_advertises_exact_t_state_and_bus_capabilities() {
         let backend = CycleAccurateMachineBackend::default();
         let capabilities = backend.capabilities();
@@ -471,20 +539,18 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        // Default RusTair RAM is 8 KiB (0000h..1FFFh). Keep the exercised
-        // write inside installed RAM and assert the first uninstalled byte too.
-        // MVI A,5Ah ; STA 1F00h
+        // MVI A,5Ah is two machine cycles; STA 1F00h is four. SINGLE STEP on
+        // the original 8800 advances one machine cycle at a time.
         backend.load_bytes(0, &[0x3e, 0x5a, 0x32, 0x00, 0x1f]).unwrap();
-        backend.step().unwrap();
-        backend.step().unwrap();
+        for _ in 0..6 {
+            backend.step().unwrap();
+        }
         assert_eq!(backend.peek_memory(0x1f00).unwrap(), Some(0x5a));
         assert_eq!(backend.peek_memory(0x2000).unwrap(), None);
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.pc, 5);
         assert_eq!(state.total_t_states, Some(20));
 
-        // The last executed T-state is the STA memory-write T3 itself. STEP then
-        // reasserts WAIT without replacing that exact address/data/write status.
         backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
         let panel = backend.front_panel_state().unwrap();
         assert_eq!(panel.address, 0x1f00);
@@ -492,6 +558,41 @@ mod tests {
         assert_eq!(panel.lamps.memr, 0.0);
         assert_eq!(panel.lamps.wo, 0.0);
         assert_eq!(panel.lamps.wait, 1.0);
+    }
+
+    #[test]
+    fn physical_stop_waits_for_next_psync_boundary() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x3e, 0x5a, 0x00]).unwrap(); // MVI A,5Ah; NOP
+        backend.run().unwrap();
+
+        // Stop is requested after fetch T2. The current M1 is allowed to finish,
+        // then the M2 PSYNC/status T1 is exposed before READY is withdrawn.
+        backend.service_execution(2).unwrap();
+        assert_eq!(backend.cpu().t_state(), TState::T3);
+        backend.assert_run_stop(false).unwrap();
+
+        assert!(!backend.machine().running);
+        assert!(backend.machine().wait_led());
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
+        assert_eq!(backend.cpu().machine_cycle_index(), 2);
+        assert_eq!(backend.cpu().t_state(), TState::T2);
+        let CpuState::Intel8080(stopped) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(stopped.pc, 1);
+        assert_eq!(stopped.a, 0x00);
+        assert_eq!(stopped.total_t_states, Some(5));
+
+        backend.release_run_stop(false).unwrap();
+        backend.assert_run_stop(true).unwrap();
+        backend.release_run_stop(true).unwrap();
+        backend.service_execution(2).unwrap();
+        let CpuState::Intel8080(resumed) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(resumed.pc, 2);
+        assert_eq!(resumed.a, 0x5a);
+        assert_eq!(resumed.total_t_states, Some(7));
     }
 
     #[test]
