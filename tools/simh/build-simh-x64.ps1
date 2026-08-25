@@ -81,6 +81,26 @@ function Get-CMakeCacheValue {
     return ($line -split "=", 2)[1]
 }
 
+function Assert-CompatibleCMakeCache {
+    param([string]$Directory)
+
+    $cache = Join-Path $Directory "CMakeCache.txt"
+    if (-not (Test-Path $cache -PathType Leaf)) {
+        return
+    }
+
+    $generator = Get-CMakeCacheValue -Directory $Directory -Name "CMAKE_GENERATOR"
+    $platform = Get-CMakeCacheValue -Directory $Directory -Name "CMAKE_GENERATOR_PLATFORM"
+
+    if ($null -ne $generator -and $generator -ne "Visual Studio 17 2022") {
+        throw "RusTair SIMH build directory '$Directory' uses CMake generator '$generator'. Expected 'Visual Studio 17 2022'. Remove only that dedicated build directory or choose a different -BuildDir."
+    }
+
+    if ($null -ne $platform -and -not [string]::IsNullOrWhiteSpace($platform) -and $platform -ne "x64") {
+        throw "RusTair SIMH build directory '$Directory' targets '$platform'. Expected x64. Remove only that dedicated build directory or choose a different -BuildDir."
+    }
+}
+
 function Get-PeMachine {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -150,17 +170,21 @@ if (-not (Test-Path $inject -PathType Leaf)) {
     throw "Missing RusTair CMake injection file: $inject"
 }
 
+Assert-CompatibleCMakeCache -Directory $BuildDir
+
 Write-Host "Using CMake: $cmakeExe"
 Write-Host "Open-SIMH source: $simh"
 Write-Host "RusTair SIMH platform: x64"
 Write-Host "RusTair SIMH build:    $BuildDir"
 
+# -A x64 selects the target architecture. Do not force a generator toolset
+# (for example -T host=x64) here: changing the toolset after a CMake cache has
+# been created makes CMake reject an otherwise compatible x64 build tree.
 $configureArgs = @(
     "-S", $simh,
     "-B", $BuildDir,
     "-G", "Visual Studio 17 2022",
     "-A", "x64",
-    "-T", "host=x64",
     "-DCMAKE_PROJECT_INCLUDE=$inject"
 )
 
