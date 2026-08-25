@@ -158,6 +158,54 @@ fn examine(session: &SimhSession, name: &str) -> String {
     }
 }
 
+fn focused_simh_debug(log: &str) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.contains("continue_cmd executing"))
+        .unwrap_or_else(|| lines.len().saturating_sub(120));
+    let stop = lines[start..]
+        .iter()
+        .position(|line| line.contains("Master Session Returned: Status -"))
+        .map(|relative| start + relative + 1)
+        .unwrap_or(lines.len());
+
+    let focused: Vec<&str> = lines[start..stop]
+        .iter()
+        .copied()
+        .filter(|line| {
+            line.contains("SCP-PROCESS EVENT")
+                || line.contains("REM-CON CMD: continue_cmd")
+                || line.contains("REM-CON MODE:")
+                || line.contains("CON-TELNET")
+                || line.contains("M2SIO0 STATUS")
+                || line.contains("M2SIO1 STATUS")
+                || line.contains("Simulation stopped")
+                || line.contains("Simulator Running")
+                || line.contains("stop_cpu")
+        })
+        .collect();
+
+    if focused.is_empty() {
+        lines[start..stop].join("\n")
+    } else {
+        focused.join("\n")
+    }
+}
+
+fn focused_frontpanel_wire(log: &str) -> String {
+    log.lines()
+        .filter(|line| {
+            line.contains("CONT")
+                || line.contains("Simulator Running")
+                || line.contains("Simulation stopped")
+                || line.contains("Status - 77")
+                || line.contains("State transitioning")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 #[ignore = "direct diagnostic requiring the local x64 Open-SIMH stack"]
 fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
@@ -240,18 +288,20 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
         thread::sleep(Duration::from_millis(100));
 
         let simh_debug = match fs::read(config.simh_debug_path()) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(error) => format!("<unable to read Open-SIMH M2SIO debug log: {error}>"),
+            Ok(bytes) => focused_simh_debug(&String::from_utf8_lossy(&bytes)),
+            Err(error) => format!("<unable to read Open-SIMH debug log: {error}>"),
         };
         eprintln!(
-            "--- Open-SIMH M2SIO debug log ---\n{simh_debug}\n--- end Open-SIMH M2SIO debug log ---"
+            "--- focused Open-SIMH diagnostic ---\n{simh_debug}\n--- end focused Open-SIMH diagnostic ---"
         );
 
         let wire = match fs::read(debug.path()) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(bytes) => focused_frontpanel_wire(&String::from_utf8_lossy(&bytes)),
             Err(error) => format!("<unable to read FrontPanel wire log: {error}>"),
         };
-        eprintln!("--- FrontPanel wire log ---\n{wire}\n--- end FrontPanel wire log ---");
+        eprintln!(
+            "--- focused FrontPanel wire ---\n{wire}\n--- end focused FrontPanel wire ---"
+        );
         return Err(test_error(format!(
             "direct SIMH M2SIO receive path did not deliver 41h (captured {captured:02X})"
         )));
