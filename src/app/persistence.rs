@@ -1,4 +1,4 @@
-use super::*;
+use super::super::*;
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
@@ -370,7 +370,11 @@ fn valid_connection(board: SerialBoard, connection: SerialConnection) -> SerialC
 }
 
 fn encode_hex_string(value: &str) -> String {
-    value.as_bytes().iter().map(|byte| format!("{byte:02X}")).collect()
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value.as_bytes() {
+        let _ = write!(encoded, "{byte:02X}");
+    }
+    encoded
 }
 
 fn decode_hex_string(value: &str) -> Option<String> {
