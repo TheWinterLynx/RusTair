@@ -16,8 +16,6 @@ use crate::backend::{
     CpuState, EmulationEngine, FrontPanelState, MachineBackend,
 };
 
-const SERIAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-
 struct SimhM2SioRuntime {
     bridge: SimhM2SioBridge,
     config: SimhM2SioRuntimeConfig,
@@ -69,13 +67,19 @@ impl SimhAltairZ80Backend {
     /// two private loopback-only raw TCP sockets. The caller's config file is
     /// never modified: a temporary overlay enables M2SIO0/1 and tells SIMH to
     /// connect outward to the two listeners using TMXR `;notelnet` mode.
+    ///
+    /// TMXR validates each outgoing destination with a short-lived connection
+    /// while parsing ATTACH, but the persistent M2SIO connection is established
+    /// later from `m2sio_svc()`/`tmxr_poll_conn()` while the simulator executes.
+    /// Therefore launch must not require a persistent serial connection while
+    /// the CPU is halted.
     pub fn launch_with_serial(
         launch: SimhLaunchConfig,
         cpu_mode: AltairZ80CpuMode,
     ) -> BackendResult<Self> {
         Self::validate_launch_target(&launch)?;
 
-        let mut bridge = SimhM2SioBridge::bind_loopback()
+        let bridge = SimhM2SioBridge::bind_loopback()
             .map_err(|error| serial_backend_error("SIMH M2SIO bridge bind", error))?;
         let (port0, port1) = bridge.listen_ports();
         let runtime_config = SimhM2SioRuntimeConfig::create(
@@ -91,10 +95,6 @@ impl SimhAltairZ80Backend {
             launch.device_panel_count,
         )
         .map_err(|error| backend_error("SIMH AltairZ80 serial launch", error))?;
-
-        bridge
-            .wait_for_connections(SERIAL_CONNECT_TIMEOUT)
-            .map_err(|error| serial_backend_error("SIMH M2SIO connection", error))?;
 
         let mut backend = Self {
             launch,
@@ -127,9 +127,10 @@ impl SimhAltairZ80Backend {
     pub const fn cpu_mode(&self) -> AltairZ80CpuMode { self.cpu_mode }
 
     pub fn serial_connected(&self, port: BackendSerialPort) -> bool {
-        self.serial_runtime
-            .as_ref()
-            .is_some_and(|runtime| runtime.bridge.connected(port))
+        match self.serial_runtime.as_ref() {
+            Some(runtime) => runtime.bridge.connected(port),
+            None => false,
+        }
     }
 
     pub fn mount(
@@ -264,7 +265,7 @@ impl MachineBackend for SimhAltairZ80Backend {
             memory_protection: false,
             hold_hlda: false,
             direct_memory_access: true,
-            serial_routing: true,
+            serial_routing: self.serial_runtime.is_some(),
             disk_mount: true,
         }
     }
@@ -309,13 +310,6 @@ impl MachineBackend for SimhAltairZ80Backend {
                     self.launch.device_panel_count,
                 )
                 .map_err(|error| backend_error("SIMH AltairZ80 power on", error))?;
-
-                if let Some(runtime) = self.serial_runtime.as_mut() {
-                    if let Err(error) = runtime.bridge.wait_for_connections(SERIAL_CONNECT_TIMEOUT) {
-                        drop(session);
-                        return Err(serial_backend_error("SIMH M2SIO reconnect", error));
-                    }
-                }
 
                 self.session = Some(session);
                 self.refresh_stopped_panel_latch()?;
