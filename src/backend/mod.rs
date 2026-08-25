@@ -1,5 +1,6 @@
 //! Machine-level abstraction for RusTair's selectable emulator engines.
 
+mod cycle;
 mod native;
 pub mod simh;
 
@@ -9,6 +10,7 @@ use std::time::Duration;
 use crate::config::SerialBoard;
 use crate::machine::PanelLampSnapshot;
 
+pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
 pub type FastMachineBackend = NativeMachineBackend;
 
@@ -44,7 +46,9 @@ impl EmulationEngine {
             Self::SimhAltairZ80 => "Open SIMH — AltairZ80",
         }
     }
-    pub const fn is_available(self) -> bool { matches!(self, Self::RustFast8080) }
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::RustFast8080 | Self::RustCycleAccurate8080)
+    }
 }
 
 impl Default for EmulationEngine { fn default() -> Self { Self::RustFast8080 } }
@@ -204,7 +208,8 @@ impl std::error::Error for BackendCreateError {}
 pub fn create_backend(engine: EmulationEngine) -> Result<Box<dyn MachineBackend>, BackendCreateError> {
     match engine {
         EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
-        EmulationEngine::RustCycleAccurate8080 | EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 =>
+        EmulationEngine::RustCycleAccurate8080 => Ok(Box::new(CycleAccurateMachineBackend::default())),
+        EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 =>
             Err(BackendCreateError::Unavailable(engine)),
     }
 }
@@ -226,4 +231,25 @@ impl BackendHost {
     pub fn family(&self) -> BackendFamily { self.backend.family() }
     pub fn capabilities(&self) -> BackendCapabilities { self.backend.capabilities() }
     pub fn execution_model(&self) -> BackendExecutionModel { self.backend.execution_model() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_builtin_rust_8080_engines_are_available() {
+        assert!(EmulationEngine::RustFast8080.is_available());
+        assert!(EmulationEngine::RustCycleAccurate8080.is_available());
+        assert!(BackendHost::from_engine(EmulationEngine::RustFast8080).is_ok());
+        assert!(BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).is_ok());
+    }
+
+    #[test]
+    fn engine_families_remain_separate_from_simh() {
+        assert_eq!(EmulationEngine::RustFast8080.family(), BackendFamily::Rustair);
+        assert_eq!(EmulationEngine::RustCycleAccurate8080.family(), BackendFamily::Rustair);
+        assert_eq!(EmulationEngine::SimhAltair.family(), BackendFamily::Simh);
+        assert_eq!(EmulationEngine::SimhAltairZ80.family(), BackendFamily::Simh);
+    }
 }
