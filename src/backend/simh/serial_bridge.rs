@@ -5,12 +5,17 @@ use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::backend::BackendSerialPort;
 
 const SOCKET_CHUNK: usize = 4096;
 const QUEUE_LIMIT: usize = 64 * 1024;
+/// TMXR opens a disposable connection while validating `Connect=host:port`.
+/// On Windows the peer FIN may not be observable immediately after `accept()`.
+/// Keep a newly accepted socket in a probationary state long enough to observe
+/// that close before advertising the line as connected or sending guest input.
+const CONNECTION_SETTLE: Duration = Duration::from_millis(75);
 
 #[derive(Debug)]
 pub(crate) enum SimhSerialBridgeError {
@@ -37,6 +42,8 @@ struct SimhRawTcpPort {
     logical_port: BackendSerialPort,
     listener: TcpListener,
     stream: Option<TcpStream>,
+    accepted_at: Option<Instant>,
+    ready: bool,
     to_simh: VecDeque<u8>,
     from_simh: VecDeque<u8>,
 }
@@ -49,6 +56,8 @@ impl SimhRawTcpPort {
             logical_port,
             listener,
             stream: None,
+            accepted_at: None,
+            ready: false,
             to_simh: VecDeque::new(),
             from_simh: VecDeque::new(),
         })
@@ -61,7 +70,7 @@ impl SimhRawTcpPort {
             .port()
     }
 
-    fn connected(&self) -> bool { self.stream.is_some() }
+    fn connected(&self) -> bool { self.ready && self.stream.is_some() }
 
     fn accept_pending(&mut self) -> Result<(), SimhSerialBridgeError> {
         if self.stream.is_some() {
@@ -76,6 +85,8 @@ impl SimhRawTcpPort {
                 stream.set_nonblocking(true)?;
                 let _ = stream.set_nodelay(true);
                 self.stream = Some(stream);
+                self.accepted_at = Some(Instant::now());
+                self.ready = false;
                 Ok(())
             }
             Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(()),
@@ -96,39 +107,39 @@ impl SimhRawTcpPort {
     /// Open-SIMH TMXR deliberately opens and closes a short-lived validation
     /// connection while parsing `Connect=host:port`, then establishes the real
     /// M2SIO connection later from `tmxr_poll_conn()` while the simulator is
-    /// executing. Preserve queued bytes across that transition and accept the
-    /// persistent connection on a later poll.
+    /// executing. A newly accepted socket is therefore probationary: we probe
+    /// it for EOF for `CONNECTION_SETTLE` before advertising it as connected or
+    /// flushing RusTair-to-SIMH bytes into it.
     fn poll(&mut self) -> Result<(), SimhSerialBridgeError> {
         self.accept_pending()?;
         if self.stream.is_none() {
             return Ok(());
         }
 
-        // Probe/read first. A TMXR validation socket is already closed by the
-        // time simulator startup returns; never flush queued guest input into
-        // that disposable connection.
+        // Probe/read first so the disposable ATTACH validation connection can
+        // disappear without consuming any queued guest input.
         self.read_from_simh()?;
         if self.stream.is_none() {
-            self.accept_pending()?;
-            if self.stream.is_none() {
+            return Ok(());
+        }
+
+        if !self.ready {
+            let settled = self
+                .accepted_at
+                .map(|accepted_at| accepted_at.elapsed() >= CONNECTION_SETTLE)
+                .unwrap_or(false);
+            if !settled {
                 return Ok(());
             }
-            self.read_from_simh()?;
-            if self.stream.is_none() {
-                return Ok(());
-            }
+            self.ready = true;
         }
 
         self.flush_to_simh()?;
         if self.stream.is_none() {
-            self.accept_pending()?;
             return Ok(());
         }
 
         self.read_from_simh()?;
-        if self.stream.is_none() {
-            self.accept_pending()?;
-        }
         Ok(())
     }
 
@@ -192,6 +203,8 @@ impl SimhRawTcpPort {
         if let Some(stream) = self.stream.take() {
             let _ = stream.shutdown(Shutdown::Both);
         }
+        self.accepted_at = None;
+        self.ready = false;
     }
 
     fn disconnect(&mut self) {
@@ -388,30 +401,37 @@ mod tests {
     }
 
     #[test]
-    fn queued_byte_survives_tmxr_validation_socket_and_reconnect() {
+    fn queued_byte_survives_slow_tmxr_validation_socket_and_reconnect() {
         let mut bridge = SimhM2SioBridge::bind_loopback().expect("bind bridge");
         let (port0, port1) = bridge.listen_ports();
 
-        let validation0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("validation port0");
+        let mut validation0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("validation port0");
         let validation1 = TcpStream::connect((Ipv4Addr::LOCALHOST, port1)).expect("validation port1");
-        drop(validation0);
-        drop(validation1);
+        validation0
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .expect("validation read timeout");
 
-        // Queue before the bridge has even accepted the disposable validation
-        // sockets. Polling must detect their EOF before attempting this write.
         bridge
             .queue_to_simh(BackendSerialPort::Port0, 0xa5)
             .expect("queue before validation socket is discarded");
 
-        // Force one real poll: before this call the bridge is trivially in the
-        // disconnected state and a predicate-only wait would not exercise the
-        // queued validation sockets at all.
-        bridge.poll().expect("discard TMXR validation sockets");
-        poll_until(&mut bridge, |bridge| {
-            !bridge.connected(BackendSerialPort::Port0)
-                && !bridge.connected(BackendSerialPort::Port1)
-        });
-        assert_eq!(bridge.to_simh_len(BackendSerialPort::Port0), 1);
+        // Keep the disposable peers alive briefly. RusTair must not advertise
+        // them as ready or flush queued bytes merely because accept() succeeded.
+        let probation_deadline = Instant::now() + Duration::from_millis(25);
+        while Instant::now() < probation_deadline {
+            bridge.poll().expect("poll validation socket during probation");
+            assert!(!bridge.connected(BackendSerialPort::Port0));
+            assert_eq!(bridge.to_simh_len(BackendSerialPort::Port0), 1);
+            thread::sleep(Duration::from_millis(1));
+        }
+        let mut unexpected = [0u8; 1];
+        assert!(
+            validation0.read_exact(&mut unexpected).is_err(),
+            "queued byte leaked into the disposable TMXR validation socket"
+        );
+
+        drop(validation0);
+        drop(validation1);
 
         let mut persistent0 = TcpStream::connect((Ipv4Addr::LOCALHOST, port0)).expect("persistent port0");
         let _persistent1 = TcpStream::connect((Ipv4Addr::LOCALHOST, port1)).expect("persistent port1");
