@@ -5,7 +5,6 @@ use super::front_panel_switches::*;
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
 const LED_VISIBLE_THRESHOLD: f32 = 0.0045;
 const LED_HALO_MAX_ALPHA: u8 = 72;
-const LED_VISUAL_SETTINGS_ID: &str = "rustair-led-visual-settings";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LedDisplaySettings {
@@ -34,13 +33,9 @@ fn optical_alpha(max_alpha: u8, response: f32) -> u8 {
     (f32::from(max_alpha) * response.clamp(0.0, 1.0)).round() as u8
 }
 
-fn led_display_settings(ctx: &egui::Context) -> LedDisplaySettings {
-    ctx.data_mut(|data| {
-        *data.get_temp_mut_or(
-            egui::Id::new(LED_VISUAL_SETTINGS_ID),
-            LedDisplaySettings::default(),
-        )
-    })
+fn led_display_settings() -> LedDisplaySettings {
+    let (brightness, aura) = super::persistence::led_visual_settings();
+    LedDisplaySettings { brightness, aura }
 }
 
 /// Convert the panel integrator's electrical duty cycle into a visual LED
@@ -82,13 +77,19 @@ struct MomentarySwitchInteraction {
 
 impl RusTairApp {
     fn draw_led_visual_controls(&mut self, ctx: &egui::Context) {
-        let settings_id = egui::Id::new(LED_VISUAL_SETTINGS_ID);
-        let mut settings = led_display_settings(ctx);
+        let (mut open, brightness, aura) = super::persistence::led_visual_controls_state();
+        if !open {
+            return;
+        }
+
+        let was_open = open;
+        let mut settings = LedDisplaySettings { brightness, aura };
         let mut changed = false;
         let mut reset = false;
 
         egui::Window::new("LED Visual Controls")
             .id(egui::Id::new("rustair-led-visual-controls-window"))
+            .open(&mut open)
             .default_pos(Pos2::new(12.0, 52.0))
             .default_width(285.0)
             .resizable(false)
@@ -124,19 +125,23 @@ impl RusTairApp {
                 }
             });
 
-        if changed {
-            ctx.data_mut(|data| {
-                *data.get_temp_mut_or(settings_id, LedDisplaySettings::default()) = settings;
-            });
-            self.status = if reset {
-                "LED visuals reset to default: Brightness 1.00× · Aura 1.00×".into()
-            } else {
-                format!(
-                    "LED visuals: Brightness {:.2}× · Aura {:.2}×",
-                    settings.brightness, settings.aura
-                )
-            };
-            ctx.request_repaint();
+        if changed || open != was_open {
+            super::persistence::set_led_visual_controls_state(
+                open,
+                settings.brightness,
+                settings.aura,
+            );
+            if changed {
+                self.status = if reset {
+                    "LED visuals reset to default: Brightness 1.00× · Aura 1.00×".into()
+                } else {
+                    format!(
+                        "LED visuals: Brightness {:.2}× · Aura {:.2}×",
+                        settings.brightness, settings.aura
+                    )
+                };
+                ctx.request_repaint();
+            }
         }
     }
 
@@ -379,7 +384,7 @@ impl RusTairApp {
     pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui) {
         self.machine.commit_panel_activity(PANEL_FRAME);
         self.draw_led_visual_controls(ui.ctx());
-        let led_settings = led_display_settings(ui.ctx());
+        let led_settings = led_display_settings();
         let panel = self.machine.front_panel_state();
         let lamps = panel.lamps;
 
