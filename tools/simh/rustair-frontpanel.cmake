@@ -21,6 +21,52 @@ if(CMAKE_VERSION VERSION_LESS 3.19)
         "for cmake_language(DEFER).")
 endif()
 
+function(rustair_prepare_simh_frontpanel_source output_var)
+    # Open-SIMH FrontPanel API v12 parses EXAMINE responses by taking the first
+    # ':' in the response.  The classic Altair monitor can emit symbolic-output
+    # diagnostics before the actual memory value, e.g.:
+    #
+    #   %SIM-ERROR: No such opcode:
+    #   %SIM-ERROR: No such opcode:
+    #   1000:      A5
+    #
+    # sim_panel_gen_examine() and sim_panel_mem_examine() therefore parse the
+    # first diagnostic line as a numeric value and return zero even though the
+    # memory operation itself succeeded.  RusTair builds an otherwise identical
+    # private copy of sim_frontpanel.c with those two parsers selecting the last
+    # ':' in the response instead.  The Open-SIMH checkout itself is never
+    # modified.
+    set(rustair_frontpanel_source "${CMAKE_SOURCE_DIR}/sim_frontpanel.c")
+    set(rustair_frontpanel_dir "${CMAKE_BINARY_DIR}/rustair-frontpanel-src")
+    set(rustair_frontpanel_patched "${rustair_frontpanel_dir}/sim_frontpanel.c")
+
+    file(READ "${rustair_frontpanel_source}" rustair_frontpanel_contents)
+
+    string(REGEX MATCHALL
+        "c = strchr \\(response, ':'\\);"
+        rustair_frontpanel_parser_matches
+        "${rustair_frontpanel_contents}")
+    list(LENGTH rustair_frontpanel_parser_matches rustair_frontpanel_parser_count)
+
+    if(NOT rustair_frontpanel_parser_count EQUAL 2)
+        message(FATAL_ERROR
+            "RusTair expected exactly 2 FrontPanel EXAMINE parser sites in "
+            "${rustair_frontpanel_source}, but found ${rustair_frontpanel_parser_count}. "
+            "Open-SIMH may have changed; review the compatibility patch before building.")
+    endif()
+
+    string(REPLACE
+        "c = strchr (response, ':');"
+        "c = strrchr (response, ':');"
+        rustair_frontpanel_contents
+        "${rustair_frontpanel_contents}")
+
+    file(MAKE_DIRECTORY "${rustair_frontpanel_dir}")
+    file(WRITE "${rustair_frontpanel_patched}" "${rustair_frontpanel_contents}")
+
+    set(${output_var} "${rustair_frontpanel_patched}" PARENT_SCOPE)
+endfunction()
+
 function(rustair_add_simh_frontpanel)
     if(NOT TARGET thread_lib OR NOT TARGET os_features)
         message(FATAL_ERROR
@@ -28,8 +74,10 @@ function(rustair_add_simh_frontpanel)
     endif()
 
     if(NOT TARGET simh_frontpanel)
+        rustair_prepare_simh_frontpanel_source(rustair_frontpanel_source)
+
         add_library(simh_frontpanel SHARED
-            "${CMAKE_SOURCE_DIR}/sim_frontpanel.c"
+            "${rustair_frontpanel_source}"
             "${CMAKE_SOURCE_DIR}/sim_sock.c")
 
         set_target_properties(simh_frontpanel PROPERTIES
@@ -57,6 +105,8 @@ function(rustair_add_simh_frontpanel)
 
         message(STATUS
             "RusTair: added minimal simh_frontpanel shared library from Open-SIMH source ${CMAKE_SOURCE_DIR}")
+        message(STATUS
+            "RusTair: applied classic Altair FrontPanel EXAMINE parser compatibility patch in build tree")
     endif()
 
     # Open-SIMH historically sends every Windows simulator to BIN/Win32,
