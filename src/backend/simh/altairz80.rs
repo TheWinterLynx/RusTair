@@ -40,9 +40,12 @@ pub struct AltairZ80Registers {
     pub ir: u16,
     /// AltairZ80 exposes only an 8-bit SR pseudo-register.
     pub switch_register_low: u8,
-    /// Instruction-model T-state accounting exported by SIMH. This is useful
-    /// for diagnostics but does not imply pin/T-state-accurate simulation.
-    pub total_t_states: u64,
+    /// Raw Open-SIMH `TSTATES` pseudo-register. Open-SIMH resets its internal
+    /// t-state counter on each `sim_instr()` invocation and copies that value
+    /// here when execution stops, so this is *not* a lifetime/cumulative total.
+    /// Keep it available for SIMH-specific diagnostics without mapping it onto
+    /// the backend-neutral `CpuState::total_t_states` field.
+    pub last_execution_t_states: u32,
 }
 
 impl AltairZ80Registers {
@@ -64,7 +67,7 @@ impl AltairZ80Registers {
             interrupt_mode: read_u8(session, "IM")?,
             ir: read_u16(session, "IR")?,
             switch_register_low: read_u8(session, "SR")?,
-            total_t_states: u64::from(session.examine_register_u32("TSTATES")?),
+            last_execution_t_states: session.examine_register_u32("TSTATES")?,
         })
     }
 
@@ -88,7 +91,7 @@ impl AltairZ80Registers {
                     sp: self.sp,
                     inte: self.iff & 0x01 != 0,
                     halted: None,
-                    total_t_states: Some(self.total_t_states),
+                    total_t_states: None,
                 })
             }
             AltairZ80CpuMode::Z80 => CpuState::Z80(Z80State {
@@ -109,7 +112,7 @@ impl AltairZ80Registers {
                 interrupt_mode: self.interrupt_mode,
                 ir: self.ir,
                 halted: None,
-                total_t_states: Some(self.total_t_states),
+                total_t_states: None,
             }),
         }
     }
@@ -152,13 +155,15 @@ mod tests {
             interrupt_mode: 2,
             ir: 0x2233,
             switch_register_low: 0xa5,
-            total_t_states: 123_456,
+            last_execution_t_states: 123_456,
         }
     }
 
     #[test]
-    fn z80_snapshot_preserves_extended_registers_and_tstates() {
-        let CpuState::Z80(state) = sample().to_cpu_state(AltairZ80CpuMode::Z80) else {
+    fn z80_snapshot_preserves_extended_registers_without_claiming_total_tstates() {
+        let raw = sample();
+        assert_eq!(raw.last_execution_t_states, 123_456);
+        let CpuState::Z80(state) = raw.to_cpu_state(AltairZ80CpuMode::Z80) else {
             panic!("expected Z80 snapshot")
         };
         assert_eq!(state.a, 0x12);
@@ -166,18 +171,20 @@ mod tests {
         assert_eq!(state.ix, 0x5060);
         assert_eq!(state.iy, 0x7080);
         assert_eq!(state.af_alt, 0x90a0);
-        assert_eq!(state.total_t_states, Some(123_456));
+        assert_eq!(state.total_t_states, None);
     }
 
     #[test]
-    fn intel8080_mode_normalizes_psw_and_iff() {
-        let CpuState::Intel8080(state) = sample().to_cpu_state(AltairZ80CpuMode::Intel8080) else {
+    fn intel8080_mode_normalizes_psw_and_iff_without_claiming_total_tstates() {
+        let raw = sample();
+        assert_eq!(raw.last_execution_t_states, 123_456);
+        let CpuState::Intel8080(state) = raw.to_cpu_state(AltairZ80CpuMode::Intel8080) else {
             panic!("expected 8080 snapshot")
         };
         assert_eq!(state.a, 0x12);
         assert_eq!(state.bc(), 0x3456);
         assert_eq!(state.flags, 0xd7);
         assert!(state.inte);
-        assert_eq!(state.total_t_states, Some(123_456));
+        assert_eq!(state.total_t_states, None);
     }
 }
