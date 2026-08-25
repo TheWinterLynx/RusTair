@@ -89,17 +89,13 @@ fn wait_for_running(
     }
 }
 
-fn pc_and_tstates(
+fn pc(
     backend: &mut SimhAltairZ80Backend,
     expected_mode: AltairZ80CpuMode,
-) -> Result<(u16, u64), Box<dyn Error>> {
+) -> Result<u16, Box<dyn Error>> {
     match (expected_mode, backend.cpu_state()?) {
-        (AltairZ80CpuMode::Intel8080, CpuState::Intel8080(state)) => {
-            Ok((state.pc, state.total_t_states.unwrap_or_default()))
-        }
-        (AltairZ80CpuMode::Z80, CpuState::Z80(state)) => {
-            Ok((state.pc, state.total_t_states.unwrap_or_default()))
-        }
+        (AltairZ80CpuMode::Intel8080, CpuState::Intel8080(state)) => Ok(state.pc),
+        (AltairZ80CpuMode::Z80, CpuState::Z80(state)) => Ok(state.pc),
         (AltairZ80CpuMode::Intel8080, CpuState::Z80(_)) => {
             Err(test_error("AltairZ80 8080 mode returned a Z80 CpuState"))
         }
@@ -116,7 +112,7 @@ fn run_mode(mode: AltairZ80CpuMode) -> Result<(), Box<dyn Error>> {
     let mut backend = SimhAltairZ80Backend::launch(launch, mode)?;
 
     wait_for_running(&mut backend, false)?;
-    let _ = pc_and_tstates(&mut backend, mode)?;
+    let _ = pc(&mut backend, mode)?;
 
     assert!(backend.write_memory(0x0200, 0xa5, false)?);
     assert_eq!(backend.peek_memory(0x0200)?, Some(0xa5));
@@ -126,38 +122,37 @@ fn run_mode(mode: AltairZ80CpuMode) -> Result<(), Box<dyn Error>> {
     backend.set_switch_register(0xabcd)?;
     assert_eq!(backend.switch_register()?, 0xabcd);
 
+    // STEP is validated by architecturally visible state. Open-SIMH's raw
+    // TSTATES pseudo-register is per sim_instr() invocation rather than a
+    // cumulative counter, and on the pinned a1f57fa3 build a FrontPanel STEP
+    // reports zero there despite advancing the PC. It therefore must not be
+    // used as the backend-neutral total_t_states contract.
     backend.write_memory(0x0100, 0x00, false)?; // NOP in both 8080 and Z80
     backend.set_switch_register(0x0100)?;
     backend.panel_examine(false)?;
-    let (pc_before, tstates_before) = pc_and_tstates(&mut backend, mode)?;
-    assert_eq!(pc_before, 0x0100);
+    assert_eq!(pc(&mut backend, mode)?, 0x0100);
 
     backend.step()?;
     wait_for_running(&mut backend, false)?;
-    let (pc_after, tstates_after) = pc_and_tstates(&mut backend, mode)?;
-    assert_eq!(pc_after, 0x0101);
-    assert!(
-        tstates_after > tstates_before,
-        "AltairZ80 {mode:?} STEP did not advance TSTATES: before={tstates_before}, after={tstates_after}"
-    );
+    assert_eq!(pc(&mut backend, mode)?, 0x0101);
 
     // JP/JMP 0300h is C3 00 03 in both personalities and gives us a stable
     // running loop until FrontPanel HALT is requested.
     backend.load_bytes(0x0300, &[0xc3, 0x00, 0x03])?;
     backend.set_switch_register(0x0300)?;
     backend.panel_examine(false)?;
-    assert_eq!(pc_and_tstates(&mut backend, mode)?.0, 0x0300);
+    assert_eq!(pc(&mut backend, mode)?, 0x0300);
 
     backend.run()?;
     wait_for_running(&mut backend, true)?;
     backend.halt()?;
     wait_for_running(&mut backend, false)?;
-    assert_eq!(pc_and_tstates(&mut backend, mode)?.0, 0x0300);
+    assert_eq!(pc(&mut backend, mode)?, 0x0300);
 
     backend.power(false)?;
     backend.power(true)?;
     wait_for_running(&mut backend, false)?;
-    let _ = pc_and_tstates(&mut backend, mode)?;
+    let _ = pc(&mut backend, mode)?;
 
     println!("RusTair -> FrontPanel -> Open-SIMH AltairZ80 {mode:?} smoke test passed");
     Ok(())
