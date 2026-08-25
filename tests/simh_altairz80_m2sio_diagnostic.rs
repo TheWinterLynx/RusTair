@@ -36,10 +36,12 @@ impl TempConfig {
             "rustair-simh-altairz80-m2sio-simh-{}-{nonce}.log",
             std::process::id()
         ));
-        let simh_debug_name = simh_debug_path.to_string_lossy();
+        // SET DEBUG is parsed with get_glyph_nc(), which does not strip quotes.
+        // Use an unquoted, slash-normalized path so Windows opens the intended file.
+        let simh_debug_name = simh_debug_path.to_string_lossy().replace('\\', "/");
 
         let contents = format!(
-            "set debug -n -a -p \"{simh_debug_name}\"\n\
+            "set debug -n -a -p {simh_debug_name}\n\
 set cpu 8080\n\
 set cpu 64kb\n\
 set console telnet=buffered\n\
@@ -168,6 +170,10 @@ fn direct_open_simh_m2sio_receive_probe() -> Result<(), Box<dyn Error>> {
     let config = TempConfig::create(port0, port1)?;
     let debug = TempDebugLog::create()?;
     let mut session = SimhSession::start_debug(&simulator(), config.path(), 0, debug.path())?;
+
+    // REM-CON is an internal device registered by the FrontPanel-appended
+    // `set remote ...` configuration, so enable its tracing only after startup.
+    session.set_device_debug_mode("REM-CON", true, "")?;
 
     // ATTACH validates each Connect= destination with one disposable TCP
     // connection. Consume those explicitly before starting guest execution.
