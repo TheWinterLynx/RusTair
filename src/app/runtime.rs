@@ -79,14 +79,43 @@ impl eframe::App for RusTairApp {
 
                 ui.menu_button("Configuration", |ui| {
                     ui.menu_button("CPU", |ui| {
+                        let active_engine = self.machine.engine();
+                        ui.label(format!("Emulation engine: {}", active_engine.label()));
+                        ui.small("Engine changes require POWER OFF. Runtime CPU/RAM/UART state is intentionally not migrated between engines.");
+                        ui.separator();
+                        for engine in [
+                            EmulationEngine::RustFast8080,
+                            EmulationEngine::RustCycleAccurate8080,
+                        ] {
+                            if ui.selectable_label(active_engine == engine, engine.label()).clicked() {
+                                self.select_emulation_engine(engine);
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        ui.add_enabled(false, egui::Button::new("Open SIMH — Altair (integration parked)"));
+                        ui.add_enabled(false, egui::Button::new("Open SIMH — AltairZ80 (integration parked)"));
+
+                        let capabilities = self.machine.capabilities();
+                        ui.separator();
+                        if capabilities.exact_t_state_timing {
+                            ui.small("Timing: exact 8080 T-state core; front-panel SINGLE STEP advances one machine cycle.");
+                        } else {
+                            ui.small("Timing: fast instruction-level 8080; front-panel SINGLE STEP is an instruction-level approximation.");
+                        }
+                        ui.small(format!(
+                            "S-100 activity: {}",
+                            if capabilities.exact_bus_activity { "exact T-state samples" } else { "machine-cycle samples synthesized by the fast CPU-board adapter" }
+                        ));
+
                         let cpu = self.config.machine.cpu_model;
+                        ui.separator();
                         ui.label(format!("Processor: {}", cpu.label()));
                         ui.small(format!(
                             "Authentic hardware clock: {:.1} MHz",
                             cpu.clock_hz() as f32 / 1_000_000.0
                         ));
-                        ui.separator();
-                        ui.small("The emulated hardware remains an Intel 8080 at 2 MHz. Host-side acceleration is configured under Preferences → Emulation speed.");
+                        ui.small("Host-side acceleration is configured under Preferences → Emulation speed; it does not change the emulated 2 MHz hardware clock.");
                     });
 
                     ui.menu_button("Memory", |ui| {
