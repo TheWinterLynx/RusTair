@@ -193,13 +193,13 @@ fn ready_wait_extends_external_write_and_keeps_bus_stable() {
 }
 
 #[test]
-fn unsupported_opcode_remains_an_explicit_fault() {
+fn undocumented_nop_alias_is_a_real_four_t_state_nop() {
     let mut cpu = Cpu8080Cycle::new();
-    cpu.tick(input(0, true));
-    cpu.tick(input(0, true));
-    cpu.tick(input(0x08, true));
-    let t4 = cpu.tick(input(0, true));
-    assert_eq!(t4.fault, Some(Cpu8080CycleFault::UnsupportedOpcode(0x08)));
+    let trace = fetch(&mut cpu, 0x08);
+    assert!(trace[3].instruction_complete);
+    assert_eq!(trace[3].instruction_t_states, 4);
+    assert_eq!(cpu.registers().pc, 1);
+    assert_eq!(cpu.fault(), None);
 }
 
 #[test]
