@@ -274,12 +274,15 @@ fn run_control_line_baseline() -> ControlLineReport {
     });
 
     // Freeze the fast backend's existing READY/WAIT + HOLD/HLDA baseline via
-    // the same BackendHost contract used by the application UI.
+    // the same BackendHost contract used by the application UI. WAIT/HLDA in
+    // FrontPanelState are presentation snapshots, so settle the visual model
+    // after changing the RUN latch before asserting the UI-facing state.
     let mut machine = BackendHost::rust_fast();
     machine.power(true);
     machine.set_running(false);
     let wait_when_stopped = machine.front_panel_state().lamps.wait > 0.5;
     machine.set_running(true);
+    machine.commit_panel_activity(Duration::from_secs(1));
     let ready_when_running = machine.front_panel_state().lamps.wait < 0.5;
     let pc_before_hold = machine.intel8080_state().pc;
     machine.request_hold(true);
