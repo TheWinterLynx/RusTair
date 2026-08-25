@@ -62,32 +62,6 @@ Install the Visual Studio 2022 'C++ CMake tools for Windows' component, add CMak
 "@
 }
 
-function Find-UniqueBuildArtifact {
-    param(
-        [string]$Root,
-        [string]$Name,
-        [string]$Configuration
-    )
-
-    $matches = Get-ChildItem -Path $Root -Recurse -File -Filter $Name |
-        Where-Object { $_.FullName -match [regex]::Escape("\$Configuration\") -or $_.DirectoryName -match [regex]::Escape($Configuration) }
-
-    if ($matches.Count -eq 0) {
-        $matches = Get-ChildItem -Path $Root -Recurse -File -Filter $Name
-    }
-
-    if ($matches.Count -eq 0) {
-        throw "Build artifact not found: $Name under $Root"
-    }
-
-    $preferred = $matches | Where-Object { $_.FullName -match [regex]::Escape("\$Configuration\") } | Select-Object -First 1
-    if ($null -ne $preferred) {
-        return $preferred.FullName
-    }
-
-    return ($matches | Select-Object -First 1).FullName
-}
-
 function Get-CMakeCacheValue {
     param(
         [string]$Directory,
@@ -105,6 +79,59 @@ function Get-CMakeCacheValue {
     }
 
     return ($line -split "=", 2)[1]
+}
+
+function Get-PeMachine {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    try {
+        $reader = [System.IO.BinaryReader]::new($stream)
+        try {
+            if ($stream.Length -lt 64) {
+                throw "File is too small to be a PE image: $Path"
+            }
+
+            $stream.Position = 0x3c
+            $peOffset = $reader.ReadInt32()
+            if ($peOffset -lt 0 -or ($peOffset + 6) -gt $stream.Length) {
+                throw "Invalid PE header offset in $Path"
+            }
+
+            $stream.Position = $peOffset
+            $signature = $reader.ReadUInt32()
+            if ($signature -ne 0x00004550) {
+                throw "File does not contain a PE signature: $Path"
+            }
+
+            return $reader.ReadUInt16()
+        }
+        finally {
+            $reader.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-PeX64 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (-not (Test-Path $Path -PathType Leaf)) {
+        throw "$Label was not created: $Path"
+    }
+
+    $machine = Get-PeMachine -Path $Path
+    if ($machine -ne 0x8664) {
+        $machineHex = '0x{0:X4}' -f $machine
+        throw "$Label is not an x64/AMD64 PE image ($machineHex): $Path"
+    }
+
+    Write-Host "$Label architecture: AMD64 (x64)"
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -133,6 +160,7 @@ $configureArgs = @(
     "-B", $BuildDir,
     "-G", "Visual Studio 17 2022",
     "-A", "x64",
+    "-T", "host=x64",
     "-DCMAKE_PROJECT_INCLUDE=$inject"
 )
 
@@ -154,9 +182,6 @@ if ($dependencyBuild -eq "ON") {
         throw "Open-SIMH dependency superbuild failed with exit code $LASTEXITCODE"
     }
 
-    # Phase 2: configure the real simulator build after the dependency install
-    # prefix has been populated. Force dependency mode off so a still-missing
-    # package is reported immediately instead of silently re-entering superbuild.
     Write-Host ""
     Write-Host "Reconfiguring Open-SIMH x64 after dependency superbuild."
     $postDependencyArgs = $configureArgs + @("-DDO_DEPENDENCY_BUILD=OFF")
@@ -166,7 +191,9 @@ if ($dependencyBuild -eq "ON") {
     }
 }
 
-# Phase 3: build only the artifacts RusTair actually consumes.
+# Build only the artifacts RusTair actually consumes. The injected CMake file
+# redirects altair and altairz80 away from Open-SIMH's historical BIN/Win32
+# output path into this architecture-specific build tree.
 foreach ($target in @("simh_frontpanel", "altair", "altairz80")) {
     Write-Host ""
     Write-Host "Building Open-SIMH target: $target"
@@ -176,21 +203,27 @@ foreach ($target in @("simh_frontpanel", "altair", "altairz80")) {
     }
 }
 
-$frontPanelDir = Join-Path (Resolve-Path $BuildDir).Path "rustair-frontpanel\$Configuration"
+$resolvedBuildDir = (Resolve-Path $BuildDir).Path
+$frontPanelDir = Join-Path $resolvedBuildDir "rustair-frontpanel\$Configuration"
+$simulatorDir = Join-Path $resolvedBuildDir "rustair-simh\$Configuration"
 $frontPanelLib = Join-Path $frontPanelDir "simh_frontpanel.lib"
 $frontPanelDll = Join-Path $frontPanelDir "simh_frontpanel.dll"
-if (-not (Test-Path $frontPanelLib -PathType Leaf) -or -not (Test-Path $frontPanelDll -PathType Leaf)) {
-    throw "x64 FrontPanel output was not created in $frontPanelDir"
+$altairExe = Join-Path $simulatorDir "altair.exe"
+$altairZ80Exe = Join-Path $simulatorDir "altairz80.exe"
+
+if (-not (Test-Path $frontPanelLib -PathType Leaf)) {
+    throw "x64 FrontPanel import library was not created: $frontPanelLib"
 }
 
-$altairExe = Find-UniqueBuildArtifact -Root $BuildDir -Name "altair.exe" -Configuration $Configuration
-$altairZ80Exe = Find-UniqueBuildArtifact -Root $BuildDir -Name "altairz80.exe" -Configuration $Configuration
+Assert-PeX64 -Path $frontPanelDll -Label "FrontPanel DLL"
+Assert-PeX64 -Path $altairExe -Label "Classic Altair"
+Assert-PeX64 -Path $altairZ80Exe -Label "AltairZ80"
 
 $env:RUSTAIR_SIMH_FRONTPANEL_DIR = $frontPanelDir
 $env:RUSTAIR_SIMH_ALTAIR_EXE = $altairExe
 $env:RUSTAIR_SIMH_ALTAIRZ80_EXE = $altairZ80Exe
 
-foreach ($dir in @($frontPanelDir, (Split-Path -Parent $altairExe), (Split-Path -Parent $altairZ80Exe))) {
+foreach ($dir in @($frontPanelDir, $simulatorDir)) {
     if (($env:PATH -split ';') -notcontains $dir) {
         $env:PATH = "$dir;$env:PATH"
     }
