@@ -56,18 +56,46 @@ impl SimhSession {
         config: &Path,
         device_panel_count: usize,
     ) -> Result<Self, SimhSessionError> {
+        Self::start_impl(simulator, config, device_panel_count, None)
+    }
+
+    /// Start a session with Open-SIMH FrontPanel's own wire/debug logging enabled.
+    /// Intended for integration diagnostics; normal product operation uses `start`.
+    pub fn start_debug(
+        simulator: &Path,
+        config: &Path,
+        device_panel_count: usize,
+        debug_file: &Path,
+    ) -> Result<Self, SimhSessionError> {
+        Self::start_impl(simulator, config, device_panel_count, Some(debug_file))
+    }
+
+    fn start_impl(
+        simulator: &Path,
+        config: &Path,
+        device_panel_count: usize,
+        debug_file: Option<&Path>,
+    ) -> Result<Self, SimhSessionError> {
         let simulator = path_cstring(simulator)?;
         let config = path_cstring(config)?;
+        let debug = debug_file.map(path_cstring).transpose()?;
         let raw = unsafe {
-            ffi::sim_panel_start_simulator(
-                simulator.as_ptr(),
-                config.as_ptr(),
-                device_panel_count,
-            )
+            match debug.as_ref() {
+                Some(debug) => ffi::sim_panel_start_simulator_debug(
+                    simulator.as_ptr(),
+                    config.as_ptr(),
+                    device_panel_count,
+                    debug.as_ptr(),
+                ),
+                None => ffi::sim_panel_start_simulator(
+                    simulator.as_ptr(),
+                    config.as_ptr(),
+                    device_panel_count,
+                ),
+            }
         };
-        let panel = NonNull::new(raw).ok_or_else(|| {
-            SimhSessionError::StartFailed(last_error_text())
-        })?;
+        let panel = NonNull::new(raw)
+            .ok_or_else(|| SimhSessionError::StartFailed(last_error_text()))?;
         Ok(Self {
             panel,
             _not_send_sync: PhantomData,
@@ -123,22 +151,45 @@ impl SimhSession {
         self.check("boot", status)
     }
 
-    /// Examine a SIMH register into the API's conventional 32-bit host buffer.
-    /// This is sufficient for the 8/16-bit programmer-visible Altair registers
-    /// and matches the official FrontPanel sample application's usage.
-    pub fn examine_register_u32(&self, name: &str) -> Result<u32, SimhSessionError> {
-        let name = CString::new(name)?;
+    /// Generic FrontPanel EXAMINE by register name or simulator-formatted address.
+    pub fn examine_u32(&self, name_or_addr: &str) -> Result<u32, SimhSessionError> {
+        let name_or_addr = CString::new(name_or_addr)?;
         let mut value = 0u32;
         let status = unsafe {
             ffi::sim_panel_gen_examine(
                 self.raw(),
-                name.as_ptr(),
+                name_or_addr.as_ptr(),
                 size_of::<u32>(),
                 (&mut value as *mut u32).cast::<c_void>(),
             )
         };
-        self.check("register examine", status)?;
+        self.check("generic examine", status)?;
         Ok(value)
+    }
+
+    /// Generic FrontPanel DEPOSIT by register name or simulator-formatted address.
+    pub fn deposit_u32(
+        &mut self,
+        name_or_addr: &str,
+        value: u32,
+    ) -> Result<(), SimhSessionError> {
+        let name_or_addr = CString::new(name_or_addr)?;
+        let status = unsafe {
+            ffi::sim_panel_gen_deposit(
+                self.raw(),
+                name_or_addr.as_ptr(),
+                size_of::<u32>(),
+                (&value as *const u32).cast::<c_void>(),
+            )
+        };
+        self.check("generic deposit", status)
+    }
+
+    /// Examine a SIMH register into the API's conventional 32-bit host buffer.
+    /// This is sufficient for the 8/16-bit programmer-visible Altair registers
+    /// and matches the official FrontPanel sample application's usage.
+    pub fn examine_register_u32(&self, name: &str) -> Result<u32, SimhSessionError> {
+        self.examine_u32(name)
     }
 
     pub fn deposit_register_u32(
@@ -146,16 +197,7 @@ impl SimhSession {
         name: &str,
         value: u32,
     ) -> Result<(), SimhSessionError> {
-        let name = CString::new(name)?;
-        let status = unsafe {
-            ffi::sim_panel_gen_deposit(
-                self.raw(),
-                name.as_ptr(),
-                size_of::<u32>(),
-                (&value as *const u32).cast::<c_void>(),
-            )
-        };
-        self.check("register deposit", status)
+        self.deposit_u32(name, value)
     }
 
     pub fn read_byte(&self, address: u16) -> Result<u8, SimhSessionError> {
