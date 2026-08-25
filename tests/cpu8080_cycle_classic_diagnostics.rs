@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use rustair::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080Inputs, MachineCycle, TState, TickTrace,
 };
@@ -6,7 +8,8 @@ const CPM_COM_LOAD_ADDRESS: usize = 0x0100;
 const BOOT_ADDRESS: usize = 0x0080;
 const BDOS_BASE: u16 = 0xff00;
 const BDOS_LEN: usize = 0x37;
-const MAX_TICKS: usize = 5_000_000;
+const SHORT_MAX_TICKS: usize = 5_000_000;
+const CPUTEST_MAX_TICKS: usize = 350_000_000;
 
 #[derive(Debug)]
 struct DiagnosticBus {
@@ -229,13 +232,13 @@ struct DiagnosticResult {
     halted: bool,
 }
 
-fn run_diagnostic(image: &[u8]) -> DiagnosticResult {
+fn run_diagnostic(image: &[u8], max_ticks: usize) -> DiagnosticResult {
     let mut cpu = Cpu8080Cycle::new();
     let mut bus = DiagnosticBus::with_image(image);
     let mut meter = ReferenceMeter::new();
     let mut instruction_address = 0u16;
 
-    for _ in 0..MAX_TICKS {
+    for _ in 0..max_ticks {
         if cpu.machine_cycle() == MachineCycle::InstructionFetch && cpu.t_state() == TState::T1 {
             instruction_address = cpu.registers().pc;
         }
@@ -269,7 +272,7 @@ fn run_diagnostic(image: &[u8]) -> DiagnosticResult {
     }
 
     panic!(
-        "diagnostic did not reach CP/M warm boot within {MAX_TICKS} T-state ticks; PC={:04x}",
+        "diagnostic did not reach CP/M warm boot within {max_ticks} T-state ticks; PC={:04x}",
         cpu.registers().pc
     );
 }
@@ -279,8 +282,9 @@ fn assert_reference(
     image: &[u8],
     expected_instructions: u64,
     expected_t_states: u64,
-) {
-    let result = run_diagnostic(image);
+    max_ticks: usize,
+) -> DiagnosticResult {
+    let result = run_diagnostic(image, max_ticks);
     assert!(result.halted, "{name}: warm boot must end in the installed HLT");
     assert!(!result.output.is_empty(), "{name}: diagnostic produced no console output");
     assert_eq!(
@@ -291,6 +295,7 @@ fn assert_reference(
         result.t_states, expected_t_states,
         "{name}: normalized T-state count"
     );
+    result
 }
 
 #[test]
@@ -300,6 +305,7 @@ fn cycle_core_runs_8080pre_with_reference_totals() {
         include_bytes!("../assets/cpu-tests/8080PRE.COM"),
         1_061,
         7_817,
+        SHORT_MAX_TICKS,
     );
 }
 
@@ -310,5 +316,25 @@ fn cycle_core_runs_tst8080_with_reference_totals() {
         include_bytes!("../assets/cpu-tests/TST8080.COM"),
         651,
         4_924,
+        SHORT_MAX_TICKS,
+    );
+}
+
+#[test]
+#[ignore = "long-running cycle-accurate diagnostic; run explicitly in --release mode"]
+fn cycle_core_runs_cputest_with_reference_totals() {
+    let started = Instant::now();
+    let result = assert_reference(
+        "CPUTEST.COM",
+        include_bytes!("../assets/cpu-tests/CPUTEST.COM"),
+        33_971_311,
+        255_653_383,
+        CPUTEST_MAX_TICKS,
+    );
+    let elapsed = started.elapsed();
+    let emulated_mhz = result.t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    eprintln!(
+        "CPUTEST cycle-core: {} instructions, {} T-states in {:.3?} ({emulated_mhz:.2} MHz host throughput)",
+        result.instructions, result.t_states, elapsed
     );
 }
