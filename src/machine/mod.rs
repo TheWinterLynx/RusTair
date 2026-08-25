@@ -648,39 +648,24 @@ impl AltairMachine {
         self.bus.commit_panel_activity(dt, dynamic);
     }
 
+    /// Compatibility facade for the current native-UI caller. The operation
+    /// itself lives in the CPU-board/S-100 path and executes the real injected
+    /// JMP/NOP sequence rather than assigning the program counter directly.
     pub fn examine(&mut self, next: bool) {
-        if !self.powered || self.running || self.bus.reset_asserted() { return; }
-        let address = if next {
-            self.bus.panel.examine_next_address()
-        } else {
-            self.bus.panel.examine_address()
-        };
-        self.cpu.pc = address;
-        self.bus.sync_cpu_inte(self.cpu.inte);
-        self.bus.set_ready(false);
-        let _ = self.bus.front_panel_examine(address);
+        self.fast_front_panel_examine_via_cpu_board(next);
     }
 
+    /// Compatibility facade for the current native-UI caller. DEPOSIT uses the
+    /// front-panel memory-write pulse while the CPU board supplies ADDRESS.
     pub fn deposit(&mut self, next: bool) {
-        if !self.powered || self.running || self.bus.reset_asserted() { return; }
-        let address = if next {
-            self.bus.panel.deposit_next_address()
-        } else {
-            self.bus.panel.deposit_address()
-        };
-        if next { self.cpu.pc = address; }
-        let value = self.bus.panel_switches() as u8;
-        self.bus.sync_cpu_inte(self.cpu.inte);
-        self.bus.set_ready(false);
-        self.bus.front_panel_deposit(address, value);
+        self.fast_front_panel_deposit_via_cpu_board(next);
     }
 
+    /// Compatibility facade for the current native-UI caller. Protection is
+    /// applied to the memory board selected by live S-100 ADDRESS, never by a
+    /// private panel latch or by the current switch-register value.
     pub fn protect_current_board(&mut self, protected: bool) {
-        if !self.powered || self.running || self.bus.reset_asserted() { return; }
-        let address = self.bus.panel.address_latch();
-        self.bus.set_protected(address, protected);
-        self.bus.refresh_protect_line();
-        self.bus.freeze_panel_bus();
+        self.front_panel_set_memory_protection_via_s100(protected);
     }
 
     pub fn current_board_protected(&self) -> bool { self.powered && self.bus.s100.signals().prot }
