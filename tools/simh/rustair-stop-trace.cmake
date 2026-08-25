@@ -4,11 +4,12 @@
 # build-tree copy of scp.c used by the simulator core linked into altairz80.
 # The Open-SIMH checkout itself is never modified.
 #
-# The trace answers one narrow question: who raises the global stop_cpu flag
-# which sim_process_event() converts into SCPE_STOP?  It records:
+# The trace answers one narrow question: where does the simulation stop come
+# from? It records:
 #   - signals delivered through int_handler();
 #   - the UNIT/device identity for every dispatched event while SCP EVENT
 #     debugging is enabled;
+#   - the status returned by each event action;
 #   - whether stop_cpu was already set on entry to sim_process_event();
 #   - the final stop_cpu -> SCPE_STOP conversion.
 
@@ -100,6 +101,15 @@ volatile t_bool sigterm_received = FALSE;]=])
             reason = uptr->action (uptr);
         else
             reason = SCPE_OK;
+        if ((reason != SCPE_OK) || stop_cpu)
+            sim_debug (SIM_DBG_EVENT, &sim_scp_dev,
+                "RUSTAIR ACTION TRACE: unit='%s' device='%s' index=%d reason=%d stop_cpu=%d signal=%d\n",
+                sim_uname (uptr),
+                rustair_dptr ? sim_dname (rustair_dptr) : "<none>",
+                rustair_unit_index,
+                reason,
+                stop_cpu,
+                rustair_stop_signal);
         }]=])
     rustair_trace_replace_unique(
         rustair_contents rustair_old_dispatch rustair_new_dispatch
@@ -169,7 +179,7 @@ function(rustair_apply_stop_trace)
                     set_property(TARGET "${rustair_link}" PROPERTY SOURCES "${rustair_sources}")
                     math(EXPR rustair_replaced "${rustair_replaced} + 1")
                     message(STATUS
-                        "RusTair: stop_cpu diagnostic trace injected into ${rustair_link} for altairz80")
+                        "RusTair: stop diagnostic trace injected into ${rustair_link} for altairz80")
                 endif()
             endif()
         endif()
