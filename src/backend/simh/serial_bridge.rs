@@ -96,7 +96,7 @@ impl SimhRawTcpPort {
     /// Open-SIMH TMXR deliberately opens and closes a short-lived validation
     /// connection while parsing `Connect=host:port`, then establishes the real
     /// M2SIO connection later from `tmxr_poll_conn()` while the simulator is
-    /// executing.  Preserve queued bytes across that transition and accept the
+    /// executing. Preserve queued bytes across that transition and accept the
     /// persistent connection on a later poll.
     fn poll(&mut self) -> Result<(), SimhSerialBridgeError> {
         self.accept_pending()?;
@@ -399,6 +399,10 @@ mod tests {
             .queue_to_simh(BackendSerialPort::Port0, 0xa5)
             .expect("queue before validation socket is discarded");
 
+        // Force one real poll: before this call the bridge is trivially in the
+        // disconnected state and a predicate-only wait would not exercise the
+        // queued validation sockets at all.
+        bridge.poll().expect("discard TMXR validation sockets");
         poll_until(&mut bridge, |bridge| {
             !bridge.connected(BackendSerialPort::Port0)
                 && !bridge.connected(BackendSerialPort::Port1)
