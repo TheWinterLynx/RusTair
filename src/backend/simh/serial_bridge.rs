@@ -3,7 +3,7 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, SocketAddrV4, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
