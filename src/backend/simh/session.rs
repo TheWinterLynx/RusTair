@@ -247,6 +247,27 @@ impl SimhSession {
         Ok(())
     }
 
+    /// Enable or disable one or more simulator debug categories for a device.
+    /// An empty `mode_bits` string means all categories, matching FrontPanel API v12.
+    pub fn set_device_debug_mode(
+        &mut self,
+        device: &str,
+        enabled: bool,
+        mode_bits: &str,
+    ) -> Result<(), SimhSessionError> {
+        let device = CString::new(device)?;
+        let mode_bits = CString::new(mode_bits)?;
+        let status = unsafe {
+            ffi::sim_panel_device_debug_mode(
+                self.raw(),
+                device.as_ptr(),
+                i32::from(enabled),
+                mode_bits.as_ptr(),
+            )
+        };
+        self.check("device debug mode", status)
+    }
+
     pub fn mount(
         &mut self,
         device: &str,
