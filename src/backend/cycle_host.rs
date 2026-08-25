@@ -87,7 +87,18 @@ impl MachineBackend for CycleHostBackend {
         self.inner.set_switch_register(value)
     }
     fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
-        self.inner.configure_serial_board(board)
+        if self.inner.machine().serial_board() == board {
+            return Ok(());
+        }
+        let powered = self.inner.machine().powered;
+        self.inner.machine_mut().configure_serial_board(board);
+        if powered {
+            // `AltairMachine` resets its legacy mirror when a card is changed.
+            // Reset the real T-state core through its backend path as well.
+            self.inner.assert_reset()?;
+            self.inner.release_reset()?;
+        }
+        Ok(())
     }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { self.inner.serial_board() }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
@@ -142,5 +153,22 @@ mod tests {
         assert_eq!(backend.inner.machine().cpu.pc, 1);
         assert_eq!(backend.inner.machine().cpu.cycles, 4);
         assert!(backend.inner.machine().wait_led());
+    }
+
+    #[test]
+    fn powered_serial_board_change_resets_real_cycle_core() {
+        let mut backend = CycleHostBackend::default();
+        backend.power(true).unwrap();
+        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.run().unwrap();
+        backend.service_execution(4).unwrap();
+        let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(before.pc, 1);
+
+        backend.configure_serial_board(SerialBoard::TwoSio88).unwrap();
+        let CpuState::Intel8080(after) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(after.pc, 0);
+        assert!(!backend.inner.machine().running);
+        assert_eq!(backend.inner.machine().serial_board(), SerialBoard::TwoSio88);
     }
 }
