@@ -3,12 +3,13 @@
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rustair::backend::{CpuState, MachineBackend};
 use rustair::backend::simh::{SimhAltairBackend, SimhLaunchConfig, SimhTarget};
+use rustair::backend::{CpuState, MachineBackend};
 
 const STATE_TIMEOUT: Duration = Duration::from_secs(3);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -53,10 +54,16 @@ fn altair_executable() -> PathBuf {
         })
 }
 
+fn test_error(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(IoError::new(ErrorKind::Other, message.into()))
+}
+
 fn intel8080_pc(backend: &mut SimhAltairBackend) -> Result<u16, Box<dyn Error>> {
     match backend.cpu_state()? {
         CpuState::Intel8080(state) => Ok(state.pc),
-        CpuState::Z80(_) => Err("classic Open-SIMH Altair unexpectedly reported Z80 state".into()),
+        CpuState::Z80(_) => Err(test_error(
+            "classic Open-SIMH Altair unexpectedly reported Z80 state",
+        )),
     }
 }
 
@@ -71,11 +78,10 @@ fn wait_for_running(
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(format!(
+            return Err(test_error(format!(
                 "timed out waiting for SIMH running={expected}; last state was running={}",
                 state.running
-            )
-            .into());
+            )));
         }
         thread::sleep(POLL_INTERVAL);
     }
