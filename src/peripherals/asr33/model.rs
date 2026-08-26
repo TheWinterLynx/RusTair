@@ -111,8 +111,11 @@ impl Teletype {
     }
 
     pub fn print_serial(&mut self, byte: u8) -> Vec<PrintEvent> {
+        // Guest UART activity must never move the physical OFF/LINE/LOCAL
+        // selector. With the ASR-33 switched OFF the serial line can continue
+        // transmitting electrically, but the printer mechanism stays silent.
         if self.mode == Mode::Off {
-            self.mode = Mode::Line;
+            return Vec::new();
         }
         self.print(byte)
     }
@@ -260,6 +263,15 @@ mod tests {
     #[test]
     fn default_paper_is_72_columns() {
         assert_eq!(Teletype::default().paper_width, PAPER_COLUMNS);
+    }
+
+    #[test]
+    fn serial_output_does_not_change_physical_off_mode() {
+        let mut tty = Teletype::default();
+        assert_eq!(tty.mode, Mode::Off);
+        assert!(tty.print_serial(b'A').is_empty());
+        assert_eq!(tty.mode, Mode::Off);
+        assert!(tty.output.is_empty());
     }
 
     #[test]
