@@ -51,8 +51,6 @@ impl LivePanelRegisters {
     }
 }
 
-/// Context owned by `SimhSession` and passed verbatim to Open-SIMH's callback
-/// thread. All pointed-to buffers are stable heap allocations.
 struct LivePanelCallbackContext {
     pc: *const u32,
     data: *const u32,
@@ -69,9 +67,7 @@ unsafe extern "C" fn live_panel_callback(
     simulation_time: u64,
     context: *mut c_void,
 ) {
-    if context.is_null() {
-        return;
-    }
+    if context.is_null() { return; }
     let context = unsafe { &*(context.cast::<LivePanelCallbackContext>()) };
     let pc = unsafe { *context.pc } as u16;
     let data_raw = unsafe { *context.data };
@@ -139,8 +135,6 @@ impl From<NulError> for SimhSessionError { fn from(value: NulError) -> Self { Se
 impl From<runtime::SimhRuntimeError> for SimhSessionError { fn from(value: runtime::SimhRuntimeError) -> Self { Self::Runtime(value) } }
 impl From<ffi::FrontPanelLoadError> for SimhSessionError { fn from(value: ffi::FrontPanelLoadError) -> Self { Self::FrontPanelLoad(value) } }
 
-/// RAII owner for one Open-SIMH FrontPanel connection.
-/// Product code creates and owns this object only on the dedicated SIMH worker.
 pub struct SimhSession {
     panel: NonNull<ffi::PANEL>,
     api: ffi::FrontPanelApi,
@@ -213,9 +207,6 @@ impl SimhSession {
         let device = std::ptr::null();
         let raw = self.raw();
 
-        // Only three ordinary register subscriptions are required. Unlike the
-        // *_bits sampling mode, this does not establish a separate SIMH sample
-        // collector or block startup on rolling-average setup.
         let status = unsafe { self.api.add_register(raw, pc.as_ptr(), device, size_of::<u32>(), (&mut *self.live.pc as *mut u32).cast()) };
         self.check("register live PC", status)?;
         let status = unsafe { self.api.add_register(raw, data.as_ptr(), device, size_of::<u32>(), (&mut *self.live.data as *mut u32).cast()) };
@@ -244,7 +235,6 @@ impl SimhSession {
         Ok(())
     }
 
-    /// Local copy only. No command is sent to SIMH.
     pub fn live_panel_sample(&self) -> SimhLivePanelSample {
         *self.latest_live.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -299,8 +289,7 @@ impl SimhSession {
         self.check("memory deposit", status)
     }
 
-    /// Compatibility fallback used by low-level tests and old FrontPanel DLLs.
-    pub fn load_bytes(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
+    fn load_bytes_deposit(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let Some(address) = u16::try_from(offset).ok().and_then(|offset| base.checked_add(offset)) else { break; };
             self.write_byte(address, byte)?;
@@ -308,15 +297,16 @@ impl SimhSession {
         Ok(())
     }
 
-    /// Fast product loader. With the RusTair FrontPanel extension, transfer the
-    /// bytes through the simulator's own binary LOAD command instead of making
-    /// one FrontPanel round-trip per byte. AltairZ80 accepts the start address as
-    /// a LOAD argument; classic Altair loads at PC, so temporarily place PC at
-    /// the requested base first. Old DLLs automatically fall back to deposits.
+    /// Default block loader. New RusTair bundles use SIMH's native LOAD command;
+    /// an older/upstream FrontPanel DLL transparently falls back to deposits.
+    pub fn load_bytes(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
+        self.load_bytes_fast(base, bytes)
+    }
+
     pub fn load_bytes_fast(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
         if bytes.is_empty() { return Ok(()); }
         if !self.console_available() {
-            return self.load_bytes(base, bytes);
+            return self.load_bytes_deposit(base, bytes);
         }
         if self.state() == SimhOperationalState::Running {
             return Err(SimhSessionError::Api {
@@ -368,9 +358,6 @@ impl SimhSession {
 
     pub fn console_available(&self) -> bool { self.api.has_rustair_exec_command() }
 
-    /// Execute a halted SCP command on this exact simulator process. Commands
-    /// which transfer execution away from the `sim>` prompt are intentionally
-    /// rejected; RUN/STOP remains owned by the physical RusTair panel controls.
     pub fn console_command(&mut self, command: &str) -> Result<String, SimhSessionError> {
         if !self.api.has_rustair_exec_command() {
             return Err(SimhSessionError::ConsoleUnavailable);
