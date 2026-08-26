@@ -11,6 +11,7 @@ mod io_inspector;
 mod memory_viewer;
 #[path = "../persistence.rs"]
 pub(super) mod persistence;
+mod simh_console;
 pub(super) mod terminal;
 
 pub(in crate::app) fn ensure_persistent_configuration_loaded(app: &mut RusTairApp) {
