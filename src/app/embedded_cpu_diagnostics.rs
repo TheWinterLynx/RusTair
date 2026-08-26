@@ -224,12 +224,13 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
             return ControlLineReport { engine, checks };
         }
     };
+    machine.set_running(true);
     let before = machine.intel8080_state().total_t_states.unwrap_or(0);
-    machine.step();
+    machine.run_cycles(4); // EI
     let after_ei = machine.intel8080_state();
-    machine.step();
+    machine.run_cycles(4); // NOP
     let after_nop = machine.intel8080_state();
-    machine.step();
+    machine.run_cycles(4); // DI
     let after_di = machine.intel8080_state();
     let after = after_di.total_t_states.unwrap_or(before);
     checks.push(ControlCheck {
@@ -242,9 +243,10 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     });
 
     let mut machine = baseline_machine(engine, &[0xfb, 0xf3]).expect("selected Rust backend already created above");
-    machine.step();
+    machine.set_running(true);
+    machine.run_cycles(4); // EI
     let after_ei = machine.intel8080_state();
-    machine.step();
+    machine.run_cycles(4); // DI
     let after_di = machine.intel8080_state();
     checks.push(ControlCheck {
         name: "EI immediately followed by DI",
@@ -254,7 +256,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
 
     let mut machine = baseline_machine(engine, &[0x76]).expect("selected Rust backend already created above");
     machine.set_running(true);
-    machine.run_cycles(24);
+    machine.run_cycles(7); // HLT
     let halted = machine.intel8080_state();
     checks.push(ControlCheck {
         name: "HLT entry / RUN latch",
@@ -269,7 +271,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
         .expect("selected Rust backend already created above");
     machine.set_switch_register(0xa500);
     machine.set_running(true);
-    machine.run_cycles(64);
+    machine.run_cycles(27); // IN FFh + OUT 01h + HLT
     let io_cpu = machine.intel8080_state();
     let (_, last_out, _, out_count) = machine.io_port_activity(0x01);
     checks.push(ControlCheck {
@@ -515,7 +517,7 @@ impl RusTairApp {
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                     ui.label("T-states"); ui.monospace(format_count(result.t_states));
-                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(expected)); ui.monospace(format_diff(result.t_states, expected)); }
+                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(result.t_states)); ui.monospace(format_diff(result.t_states, expected)); }
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                 });
