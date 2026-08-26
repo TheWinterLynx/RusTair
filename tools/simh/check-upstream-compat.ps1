@@ -112,10 +112,10 @@ function Run-Test {
 
     $output | Select-String -Pattern "FrontPanel diagnostic|M2SIO RX diagnostic|smoke test passed|Simulation stopped|Error:|FAILED|test result:" | ForEach-Object { $_.Line }
     if ($exit -eq 0) {
-        Write-Host "RESULT $Label: PASS"
+        Write-Host "RESULT ${Label}: PASS"
         return $true
     }
-    Write-Host "RESULT $Label: FAIL"
+    Write-Host "RESULT ${Label}: FAIL"
     return $false
 }
 
