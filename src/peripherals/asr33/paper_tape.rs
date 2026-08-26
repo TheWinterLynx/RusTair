@@ -89,6 +89,16 @@ impl PaperTape {
         self.punch_running = false;
     }
 
+    /// Remove the finished output after it has been saved or explicitly
+    /// discarded. Keeping this separate from finish_capture() is important:
+    /// cancelling a Save dialog must not destroy the only copy of the tape.
+    pub(super) fn eject_output(&mut self) {
+        self.output.clear();
+        self.punch_pending.clear();
+        self.capture = false;
+        self.punch_running = false;
+    }
+
     pub(super) fn capture_enabled(&self) -> bool {
         self.capture
     }
@@ -167,7 +177,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_flushes_already_accepted_punch_bytes() {
+    fn finish_preserves_output_until_explicit_eject() {
         let mut tape = PaperTape::default();
         tape.begin_capture();
         tape.record(b'A');
@@ -176,5 +186,7 @@ mod tests {
         assert_eq!(tape.output(), b"AB");
         assert!(!tape.capture_enabled());
         assert!(!tape.capture_running());
+        tape.eject_output();
+        assert!(tape.output().is_empty());
     }
 }
