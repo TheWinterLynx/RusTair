@@ -49,7 +49,10 @@ impl EmulationEngine {
         }
     }
     pub const fn is_available(self) -> bool {
-        matches!(self, Self::RustFast8080 | Self::RustCycleAccurate8080)
+        match self {
+            Self::RustFast8080 | Self::RustCycleAccurate8080 => true,
+            Self::SimhAltair | Self::SimhAltairZ80 => cfg!(all(feature = "simh-ffi", windows)),
+        }
     }
 }
 
@@ -273,11 +276,17 @@ pub trait MachineBackend {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BackendCreateError { Unavailable(EmulationEngine) }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackendCreateError {
+    Unavailable(EmulationEngine),
+    Initialization { engine: EmulationEngine, detail: String },
+}
 impl fmt::Display for BackendCreateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self { Self::Unavailable(engine) => write!(f, "{} backend is not available in this build", engine.label()) }
+        match self {
+            Self::Unavailable(engine) => write!(f, "{} backend is not available in this build", engine.label()),
+            Self::Initialization { engine, detail } => write!(f, "{} backend initialization failed: {detail}", engine.label()),
+        }
     }
 }
 impl std::error::Error for BackendCreateError {}
@@ -286,12 +295,23 @@ pub fn create_backend(engine: EmulationEngine) -> Result<Box<dyn MachineBackend>
     match engine {
         EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
         EmulationEngine::RustCycleAccurate8080 => Ok(Box::new(CycleHostBackend::default())),
-        EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 =>
-            Err(BackendCreateError::Unavailable(engine)),
+        EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 => {
+            #[cfg(all(feature = "simh-ffi", windows))]
+            {
+                simh::create_embedded_backend(engine).map_err(|error| BackendCreateError::Initialization {
+                    engine,
+                    detail: error.to_string(),
+                })
+            }
+            #[cfg(not(all(feature = "simh-ffi", windows)))]
+            {
+                Err(BackendCreateError::Unavailable(engine))
+            }
+        }
     }
 }
 
-pub struct BackendHost { backend: Box<dyn MachineBackend> }
+pub struct BackendHost { pub(crate) backend: Box<dyn MachineBackend> }
 impl Default for BackendHost { fn default() -> Self { Self::rust_fast() } }
 impl BackendHost {
     pub fn new(backend: Box<dyn MachineBackend>) -> Self { Self { backend } }
@@ -395,9 +415,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn both_builtin_rust_8080_engines_are_available() {
+    fn built_in_engine_availability_matches_platform() {
         assert!(EmulationEngine::RustFast8080.is_available());
         assert!(EmulationEngine::RustCycleAccurate8080.is_available());
+        assert_eq!(EmulationEngine::SimhAltair.is_available(), cfg!(all(feature = "simh-ffi", windows)));
+        assert_eq!(EmulationEngine::SimhAltairZ80.is_available(), cfg!(all(feature = "simh-ffi", windows)));
         assert!(BackendHost::from_engine(EmulationEngine::RustFast8080).is_ok());
         assert!(BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).is_ok());
     }
