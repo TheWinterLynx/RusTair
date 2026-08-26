@@ -270,6 +270,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     let mut machine = baseline_machine(engine, &[0xdb, 0xff, 0xd3, 0x01, 0x76])
         .expect("selected Rust backend already created above");
     machine.set_switch_register(0xa500);
+    machine.set_io_trace_enabled(true);
     machine.set_running(true);
     machine.run_cycles(27); // IN FFh + OUT 01h + HLT
     let io_cpu = machine.intel8080_state();
