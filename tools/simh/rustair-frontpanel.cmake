@@ -48,6 +48,66 @@ function(rustair_replace_unique_parser block_var context output_var)
     set(${output_var} "${rustair_block}" PARENT_SCOPE)
 endfunction()
 
+function(rustair_replace_frontpanel_port_probe contents_var output_var)
+    set(rustair_contents "${${contents_var}}")
+    set(rustair_probe_start_marker "    for (port=1024; port < 2048; port++) {")
+    set(rustair_probe_end_marker "    if (stat (sim_config, &statb) < 0) {")
+
+    string(FIND "${rustair_contents}" "${rustair_probe_start_marker}" rustair_probe_start)
+    string(FIND "${rustair_contents}" "${rustair_probe_end_marker}" rustair_probe_end)
+    if(rustair_probe_start EQUAL -1 OR rustair_probe_end EQUAL -1 OR
+       rustair_probe_end LESS_EQUAL rustair_probe_start)
+        message(FATAL_ERROR
+            "RusTair could not isolate Open-SIMH FrontPanel's 1024..2047 control-port probe. "
+            "Open-SIMH may have changed; review the low-latency port allocation patch before building.")
+    endif()
+
+    string(SUBSTRING "${rustair_contents}" 0 ${rustair_probe_start} rustair_probe_prefix)
+    string(SUBSTRING "${rustair_contents}" ${rustair_probe_end} -1 rustair_probe_suffix)
+
+    # Upstream FrontPanel searches for a free control port by performing
+    # blocking TCP connect() attempts against ports 1024..2047. On Windows the
+    # duration of a failed blocking connect is controlled by the networking
+    # stack/firewall and can therefore make panel startup take several seconds.
+    # Ask the OS for an unused loopback ephemeral port instead. The socket is
+    # closed immediately, matching upstream's existing small bind race while
+    # eliminating all blocking connection probes.
+    set(rustair_probe_replacement [=[    {
+        SOCKET probe_sock;
+        struct sockaddr_in probe_addr;
+#if defined(_WIN32)
+        int probe_addr_len = sizeof(probe_addr);
+#else
+        socklen_t probe_addr_len = sizeof(probe_addr);
+#endif
+
+        probe_sock = socket (AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (probe_sock == INVALID_SOCKET) {
+            sim_panel_set_error (NULL, "Can't create socket while allocating FrontPanel control port");
+            goto Error_Return;
+            }
+        memset (&probe_addr, 0, sizeof(probe_addr));
+        probe_addr.sin_family = AF_INET;
+        probe_addr.sin_addr.s_addr = htonl (INADDR_LOOPBACK);
+        probe_addr.sin_port = htons (0);
+        if ((bind (probe_sock, (struct sockaddr *)&probe_addr, sizeof(probe_addr)) == SOCKET_ERROR) ||
+            (getsockname (probe_sock, (struct sockaddr *)&probe_addr, &probe_addr_len) == SOCKET_ERROR)) {
+            const char *socket_error = sim_get_err_sock ("FrontPanel ephemeral port allocation");
+            sim_panel_set_error (NULL, "%s", socket_error);
+            sim_close_sock (probe_sock);
+            goto Error_Return;
+            }
+        port = (int)ntohs (probe_addr.sin_port);
+        sim_close_sock (probe_sock);
+        sprintf (hostport, "%d", port);
+        }
+]=])
+
+    set(${output_var}
+        "${rustair_probe_prefix}${rustair_probe_replacement}${rustair_probe_suffix}"
+        PARENT_SCOPE)
+endfunction()
+
 function(rustair_prepare_simh_frontpanel_source output_var)
     # Open-SIMH FrontPanel API v12 parses EXAMINE responses by taking the first
     # ':' in the response. The classic Altair monitor can emit symbolic-output
@@ -104,6 +164,9 @@ function(rustair_prepare_simh_frontpanel_source output_var)
         ${rustair_mem_end} -1 rustair_mem_suffix)
     set(rustair_frontpanel_contents
         "${rustair_mem_prefix}${rustair_mem_block_patched}${rustair_mem_suffix}")
+
+    rustair_replace_frontpanel_port_probe(
+        rustair_frontpanel_contents rustair_frontpanel_contents)
 
     # RusTair product integration also needs access to the same interactive SCP
     # console that a user would see at the simulator's `sim>` prompt. API v12
@@ -197,6 +260,8 @@ function(rustair_add_simh_frontpanel)
             "RusTair: added minimal simh_frontpanel shared library from Open-SIMH source ${CMAKE_SOURCE_DIR}")
         message(STATUS
             "RusTair: applied classic Altair FrontPanel EXAMINE parser compatibility patch in build tree")
+        message(STATUS
+            "RusTair: replaced blocking FrontPanel low-port scan with OS ephemeral loopback allocation")
         message(STATUS
             "RusTair: added halted interactive SCP console export rustair_panel_exec_command")
     endif()
