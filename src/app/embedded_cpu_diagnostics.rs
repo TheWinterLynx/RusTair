@@ -289,12 +289,13 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     machine.set_running(true);
     machine.commit_panel_activity(Duration::from_secs(1));
     let ready_when_running = machine.front_panel_state().lamps.wait < 0.5;
-    let pc_before_hold = machine.intel8080_state().pc;
     machine.request_hold(true);
     machine.run_cycles(16);
     machine.commit_panel_activity(Duration::from_secs(1));
     let hlda_asserted = machine.front_panel_state().lamps.hlda > 0.5;
-    let cpu_frozen = machine.intel8080_state().pc == pc_before_hold;
+    let pc_at_hlda = machine.intel8080_state().pc;
+    machine.run_cycles(16);
+    let cpu_frozen = machine.intel8080_state().pc == pc_at_hlda;
     machine.request_hold(false);
     machine.set_running(false);
     machine.commit_panel_activity(Duration::from_secs(1));
@@ -303,8 +304,8 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
         name: "READY/WAIT + HOLD/HLDA baseline",
         passed: wait_when_stopped && ready_when_running && hlda_asserted && cpu_frozen && hlda_released,
         detail: format!(
-            "engine={} · WAIT@STOP={} · READY@RUN={} · HLDA={} · CPU frozen={} · HLDA released={}",
-            engine.label(), wait_when_stopped, ready_when_running, hlda_asserted, cpu_frozen, hlda_released
+            "engine={} · WAIT@STOP={} · READY@RUN={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA released={}",
+            engine.label(), wait_when_stopped, ready_when_running, hlda_asserted, pc_at_hlda, cpu_frozen, hlda_released
         ),
     });
 
