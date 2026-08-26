@@ -29,20 +29,24 @@ pub struct SimhLivePanelSample {
 
 struct LivePanelRegisters {
     pc: Box<u32>,
-    a: Box<u32>,
+    data: Box<u32>,
     sp: Box<u32>,
     pc_bits: Box<[c_int; 16]>,
-    a_bits: Box<[c_int; 8]>,
+    data_bits: Box<[c_int; 16]>,
+    data_width: usize,
+    data_shift: usize,
 }
 
-impl Default for LivePanelRegisters {
-    fn default() -> Self {
+impl LivePanelRegisters {
+    fn new(data_width: usize, data_shift: usize) -> Self {
         Self {
             pc: Box::new(0),
-            a: Box::new(0),
+            data: Box::new(0),
             sp: Box::new(0),
             pc_bits: Box::new([0; 16]),
-            a_bits: Box::new([0; 8]),
+            data_bits: Box::new([0; 16]),
+            data_width,
+            data_shift,
         }
     }
 }
@@ -53,10 +57,7 @@ pub enum SimhSessionError {
     Runtime(runtime::SimhRuntimeError),
     FrontPanelLoad(ffi::FrontPanelLoadError),
     StartFailed(String),
-    Api {
-        operation: &'static str,
-        detail: String,
-    },
+    Api { operation: &'static str, detail: String },
 }
 
 impl fmt::Display for SimhSessionError {
@@ -81,22 +82,12 @@ impl std::error::Error for SimhSessionError {
         }
     }
 }
-
-impl From<NulError> for SimhSessionError {
-    fn from(value: NulError) -> Self { Self::InteriorNul(value) }
-}
-impl From<runtime::SimhRuntimeError> for SimhSessionError {
-    fn from(value: runtime::SimhRuntimeError) -> Self { Self::Runtime(value) }
-}
-impl From<ffi::FrontPanelLoadError> for SimhSessionError {
-    fn from(value: ffi::FrontPanelLoadError) -> Self { Self::FrontPanelLoad(value) }
-}
+impl From<NulError> for SimhSessionError { fn from(value: NulError) -> Self { Self::InteriorNul(value) } }
+impl From<runtime::SimhRuntimeError> for SimhSessionError { fn from(value: runtime::SimhRuntimeError) -> Self { Self::Runtime(value) } }
+impl From<ffi::FrontPanelLoadError> for SimhSessionError { fn from(value: ffi::FrontPanelLoadError) -> Self { Self::FrontPanelLoad(value) } }
 
 /// RAII owner for one Open-SIMH FrontPanel connection.
-///
-/// The handle is deliberately !Send + !Sync. Product code places the entire
-/// session on the dedicated SIMH worker thread; the egui thread only consumes
-/// cached snapshots and sends commands to that worker.
+/// Product code creates and owns this object only on the dedicated SIMH worker.
 pub struct SimhSession {
     panel: NonNull<ffi::PANEL>,
     api: ffi::FrontPanelApi,
@@ -109,12 +100,7 @@ impl SimhSession {
         Self::start_impl(simulator, config, device_panel_count, None)
     }
 
-    pub fn start_debug(
-        simulator: &Path,
-        config: &Path,
-        device_panel_count: usize,
-        debug_file: &Path,
-    ) -> Result<Self, SimhSessionError> {
+    pub fn start_debug(simulator: &Path, config: &Path, device_panel_count: usize, debug_file: &Path) -> Result<Self, SimhSessionError> {
         Self::start_impl(simulator, config, device_panel_count, Some(debug_file))
     }
 
@@ -124,26 +110,33 @@ impl SimhSession {
         device_panel_count: usize,
         debug_file: Option<&Path>,
     ) -> Result<Self, SimhSessionError> {
+        let is_altairz80 = simulator
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("altairz80"));
+        let data_register = if is_altairz80 { "AF" } else { "A" };
+        let data_width = if is_altairz80 { 16 } else { 8 };
+        let data_shift = if is_altairz80 { 8 } else { 0 };
+
         let frontpanel_path = runtime::frontpanel_dll_path()?;
         let api = ffi::FrontPanelApi::load(&frontpanel_path)?;
-        let simulator = path_cstring(simulator)?;
-        let config = path_cstring(config)?;
+        let simulator_c = path_cstring(simulator)?;
+        let config_c = path_cstring(config)?;
         let debug = debug_file.map(path_cstring).transpose()?;
         let raw = unsafe {
             match debug.as_ref() {
-                Some(debug) => api.start_simulator_debug(simulator.as_ptr(), config.as_ptr(), device_panel_count, debug.as_ptr()),
-                None => api.start_simulator(simulator.as_ptr(), config.as_ptr(), device_panel_count),
+                Some(debug) => api.start_simulator_debug(simulator_c.as_ptr(), config_c.as_ptr(), device_panel_count, debug.as_ptr()),
+                None => api.start_simulator(simulator_c.as_ptr(), config_c.as_ptr(), device_panel_count),
             }
         };
-        let panel = NonNull::new(raw)
-            .ok_or_else(|| SimhSessionError::StartFailed(last_error_text(&api)))?;
+        let panel = NonNull::new(raw).ok_or_else(|| SimhSessionError::StartFailed(last_error_text(&api)))?;
         let mut session = Self {
             panel,
             api,
-            live: LivePanelRegisters::default(),
+            live: LivePanelRegisters::new(data_width, data_shift),
             _not_send_sync: PhantomData,
         };
-        session.configure_live_panel_sampling()?;
+        session.configure_live_panel_sampling(data_register)?;
         Ok(session)
     }
 
@@ -151,47 +144,32 @@ impl SimhSession {
     fn raw(&self) -> *mut ffi::PANEL { self.panel.as_ptr() }
 
     fn check(&self, operation: &'static str, status: i32) -> Result<(), SimhSessionError> {
-        if status == 0 { Ok(()) } else {
-            Err(SimhSessionError::Api { operation, detail: last_error_text(&self.api) })
-        }
+        if status == 0 { Ok(()) } else { Err(SimhSessionError::Api { operation, detail: last_error_text(&self.api) }) }
     }
 
-    fn configure_live_panel_sampling(&mut self) -> Result<(), SimhSessionError> {
+    fn configure_live_panel_sampling(&mut self, data_register: &str) -> Result<(), SimhSessionError> {
         let pc = CString::new("PC")?;
-        let a = CString::new("A")?;
+        let data = CString::new(data_register)?;
         let sp = CString::new("SP")?;
         let device = std::ptr::null();
         let raw = self.raw();
 
-        let status = unsafe {
-            self.api.add_register(raw, pc.as_ptr(), device, size_of::<u32>(), (&mut *self.live.pc as *mut u32).cast())
-        };
+        let status = unsafe { self.api.add_register(raw, pc.as_ptr(), device, size_of::<u32>(), (&mut *self.live.pc as *mut u32).cast()) };
         self.check("register live PC", status)?;
-        let status = unsafe {
-            self.api.add_register(raw, a.as_ptr(), device, size_of::<u32>(), (&mut *self.live.a as *mut u32).cast())
-        };
-        self.check("register live A", status)?;
-        let status = unsafe {
-            self.api.add_register(raw, sp.as_ptr(), device, size_of::<u32>(), (&mut *self.live.sp as *mut u32).cast())
-        };
+        let status = unsafe { self.api.add_register(raw, data.as_ptr(), device, size_of::<u32>(), (&mut *self.live.data as *mut u32).cast()) };
+        self.check("register live data", status)?;
+        let status = unsafe { self.api.add_register(raw, sp.as_ptr(), device, size_of::<u32>(), (&mut *self.live.sp as *mut u32).cast()) };
         self.check("register live SP", status)?;
-        let status = unsafe {
-            self.api.add_register_bits(raw, pc.as_ptr(), device, 16, self.live.pc_bits.as_mut_ptr())
-        };
+        let status = unsafe { self.api.add_register_bits(raw, pc.as_ptr(), device, 16, self.live.pc_bits.as_mut_ptr()) };
         self.check("register live PC bits", status)?;
-        let status = unsafe {
-            self.api.add_register_bits(raw, a.as_ptr(), device, 8, self.live.a_bits.as_mut_ptr())
-        };
-        self.check("register live A bits", status)?;
-        let status = unsafe {
-            self.api.set_sampling_parameters(raw, LIVE_SAMPLE_FREQUENCY, LIVE_SAMPLE_DEPTH)
-        };
+        let status = unsafe { self.api.add_register_bits(raw, data.as_ptr(), device, self.live.data_width, self.live.data_bits.as_mut_ptr()) };
+        self.check("register live data bits", status)?;
+        let status = unsafe { self.api.set_sampling_parameters(raw, LIVE_SAMPLE_FREQUENCY, LIVE_SAMPLE_DEPTH) };
         self.check("configure live register sampling", status)
     }
 
-    /// Poll the FrontPanel register set intended for running front-panel displays.
-    /// Unlike generic EXAMINE, this API is explicitly designed for observation
-    /// while the simulated CPU is executing.
+    /// Use the FrontPanel API's live register set, designed specifically for
+    /// displays that must observe a simulator while its CPU is executing.
     pub fn live_panel_sample(&mut self) -> Result<SimhLivePanelSample, SimhSessionError> {
         let mut simulation_time = 0u64;
         let status = unsafe { self.api.get_registers(self.raw(), &mut simulation_time) };
@@ -202,13 +180,15 @@ impl SimhSession {
             *dst = (*src).clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
         }
         let mut data_activity = [0.0f32; 8];
-        for (dst, src) in data_activity.iter_mut().zip(self.live.a_bits.iter()) {
-            *dst = (*src).clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
+        for (bit, dst) in data_activity.iter_mut().enumerate() {
+            let src = self.live.data_bits[self.live.data_shift + bit];
+            *dst = src.clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
         }
+        let data_value = (*self.live.data >> self.live.data_shift) as u8;
 
         Ok(SimhLivePanelSample {
             pc: *self.live.pc as u16,
-            a: *self.live.a as u8,
+            a: data_value,
             sp: *self.live.sp as u16,
             address_activity,
             data_activity,
@@ -224,22 +204,10 @@ impl SimhSession {
         }
     }
 
-    pub fn halt(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { self.api.exec_halt(self.raw()) };
-        self.check("halt", status)
-    }
-    pub fn run(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { self.api.exec_run(self.raw()) };
-        self.check("run", status)
-    }
-    pub fn start_from_reset(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { self.api.exec_start(self.raw()) };
-        self.check("start", status)
-    }
-    pub fn step(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { self.api.exec_step(self.raw()) };
-        self.check("step", status)
-    }
+    pub fn halt(&mut self) -> Result<(), SimhSessionError> { let status = unsafe { self.api.exec_halt(self.raw()) }; self.check("halt", status) }
+    pub fn run(&mut self) -> Result<(), SimhSessionError> { let status = unsafe { self.api.exec_run(self.raw()) }; self.check("run", status) }
+    pub fn start_from_reset(&mut self) -> Result<(), SimhSessionError> { let status = unsafe { self.api.exec_start(self.raw()) }; self.check("start", status) }
+    pub fn step(&mut self) -> Result<(), SimhSessionError> { let status = unsafe { self.api.exec_step(self.raw()) }; self.check("step", status) }
     pub fn boot(&mut self, device: &str) -> Result<(), SimhSessionError> {
         let device = CString::new(device)?;
         let status = unsafe { self.api.exec_boot(self.raw(), device.as_ptr()) };
@@ -249,17 +217,13 @@ impl SimhSession {
     pub fn examine_u32(&self, name_or_addr: &str) -> Result<u32, SimhSessionError> {
         let name_or_addr = CString::new(name_or_addr)?;
         let mut value = 0u32;
-        let status = unsafe {
-            self.api.gen_examine(self.raw(), name_or_addr.as_ptr(), size_of::<u32>(), (&mut value as *mut u32).cast::<c_void>())
-        };
+        let status = unsafe { self.api.gen_examine(self.raw(), name_or_addr.as_ptr(), size_of::<u32>(), (&mut value as *mut u32).cast::<c_void>()) };
         self.check("generic examine", status)?;
         Ok(value)
     }
     pub fn deposit_u32(&mut self, name_or_addr: &str, value: u32) -> Result<(), SimhSessionError> {
         let name_or_addr = CString::new(name_or_addr)?;
-        let status = unsafe {
-            self.api.gen_deposit(self.raw(), name_or_addr.as_ptr(), size_of::<u32>(), (&value as *const u32).cast::<c_void>())
-        };
+        let status = unsafe { self.api.gen_deposit(self.raw(), name_or_addr.as_ptr(), size_of::<u32>(), (&value as *const u32).cast::<c_void>()) };
         self.check("generic deposit", status)
     }
     pub fn examine_register_u32(&self, name: &str) -> Result<u32, SimhSessionError> { self.examine_u32(name) }
@@ -308,21 +272,14 @@ impl SimhSession {
         let status = unsafe { self.api.dismount(self.raw(), device.as_ptr()) };
         self.check("dismount", status)
     }
-    pub fn halt_text(&self) -> String {
-        let text = unsafe { self.api.halt_text(self.raw()) };
-        c_text(text)
-    }
+    pub fn halt_text(&self) -> String { let text = unsafe { self.api.halt_text(self.raw()) }; c_text(text) }
 }
 
 impl Drop for SimhSession {
-    fn drop(&mut self) {
-        unsafe { let _ = self.api.destroy(self.raw()); }
-    }
+    fn drop(&mut self) { unsafe { let _ = self.api.destroy(self.raw()); } }
 }
 
-fn path_cstring(path: &Path) -> Result<CString, SimhSessionError> {
-    Ok(CString::new(path.to_string_lossy().as_bytes())?)
-}
+fn path_cstring(path: &Path) -> Result<CString, SimhSessionError> { Ok(CString::new(path.to_string_lossy().as_bytes())?) }
 fn last_error_text(api: &ffi::FrontPanelApi) -> String {
     let ptr = unsafe { api.get_error() };
     let text = c_text(ptr);
@@ -336,13 +293,11 @@ fn c_text(ptr: *const std::ffi::c_char) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn operational_state_is_backend_neutral() {
         assert_ne!(SimhOperationalState::Halted, SimhOperationalState::Running);
         assert_ne!(SimhOperationalState::Running, SimhOperationalState::Error);
     }
-
     #[test]
     fn path_conversion_rejects_embedded_nul() {
         let path = Path::new("bad\0path");
