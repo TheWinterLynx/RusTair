@@ -28,6 +28,8 @@ mod runtime;
 mod serial_bridge;
 #[cfg(feature = "simh-ffi")]
 mod session;
+#[cfg(feature = "simh-ffi")]
+mod threaded;
 
 #[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
@@ -47,7 +49,11 @@ pub use runtime::{
     prepare_embedded_runtime,
 };
 #[cfg(feature = "simh-ffi")]
-pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
+pub use session::{
+    SimhLivePanelSample, SimhOperationalState, SimhSession, SimhSessionError,
+};
+#[cfg(feature = "simh-ffi")]
+pub use threaded::SimhThreadedBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimhTarget {
@@ -142,11 +148,7 @@ mod tests {
 
     #[test]
     fn launch_config_never_implies_execution() {
-        let config = SimhLaunchConfig::new(
-            SimhTarget::Altair,
-            "altair.exe",
-            "rustair-altair.ini",
-        );
+        let config = SimhLaunchConfig::new(SimhTarget::Altair, "altair.exe", "rustair-altair.ini");
         assert_eq!(config.device_panel_count, 0);
         assert_eq!(config.target.executable_stem(), "altair");
     }
