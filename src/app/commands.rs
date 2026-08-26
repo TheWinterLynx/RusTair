@@ -94,6 +94,30 @@ impl RusTairApp {
             ));
             return;
         }
+
+        // Microsoft 4K BASIC 3.2 samples the Altair sense register during
+        // startup to choose its console hardware.  0008h selects the MITS
+        // 88-2SIO path; clear selects the 88-SIO path.  Do not silently rewrite
+        // a physical front-panel switch just because a board is configured:
+        // make an inconsistent operator setup explicit before BASIC starts.
+        let sense = self.machine.switch_register();
+        let basic_uses_two_sio = sense & 0x0008 != 0;
+        match self.config.machine.serial_board {
+            SerialBoard::TwoSio88 if !basic_uses_two_sio => {
+                self.report_load_error(
+                    "Microsoft 4K BASIC 3.2 is configured for the MITS 88-2SIO, but the front-panel sense register does not select it. Set sense value 0008h (SR bit 3 / the 08h BASIC console switch) and Quick Load again. RusTair deliberately does not move a physical sense switch automatically."
+                );
+                return;
+            }
+            SerialBoard::Sio88 if basic_uses_two_sio => {
+                self.report_load_error(
+                    "Microsoft 4K BASIC 3.2 currently has sense value 0008h, which selects the MITS 88-2SIO, but the installed board is 88-SIO. Clear the 08h BASIC console sense switch and Quick Load again."
+                );
+                return;
+            }
+            _ => {}
+        }
+
         if !self.machine.powered() {
             self.set_altair_power(true);
         }
@@ -153,8 +177,7 @@ impl RusTairApp {
                 self.audio.play_once("assets/click.mp3");
                 self.status = format!(
                     "Paper tape mounted: {} bytes from {} — press Read to start",
-                    bytes.len(),
-                    path.display()
+                    bytes.len(), path.display()
                 );
             }
             Err(e) => self.status = format!("Paper tape load failed: {e}"),
