@@ -1,20 +1,19 @@
 use std::ffi::{CStr, CString, NulError, c_int, c_void};
 use std::fmt;
-use std::fs;
 use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::{ffi, runtime};
 
-// 30 Hz is sufficient for a human front panel and keeps the FrontPanel control
-// channel comfortably below the rate at which it can compete with user commands.
+// The callback is backed by SIMH's simulator-side REPEAT mechanism while RUN
+// is active. The FrontPanel callback thread itself is not polled by egui.
 const LIVE_CALLBACK_INTERVAL_US: c_int = 33_333;
 const CONSOLE_RESPONSE_BYTES: usize = 64 * 1024;
-static BULK_LOAD_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const BULK_DEPOSIT_CHUNK: usize = 48;
+const LEGACY_DEPOSIT_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimhOperationalState {
@@ -47,6 +46,28 @@ impl LivePanelRegisters {
             data: Box::new(0),
             sp: Box::new(0),
             data_shift,
+        }
+    }
+
+    fn sample(&self, simulation_time: u64) -> SimhLivePanelSample {
+        let pc = *self.pc as u16;
+        let a = (*self.data >> self.data_shift) as u8;
+        let sp = *self.sp as u16;
+        let mut address_activity = [0.0f32; 16];
+        let mut data_activity = [0.0f32; 8];
+        for (bit, dst) in address_activity.iter_mut().enumerate() {
+            *dst = if pc & (1u16 << bit) != 0 { 1.0 } else { 0.0 };
+        }
+        for (bit, dst) in data_activity.iter_mut().enumerate() {
+            *dst = if a & (1u8 << bit) != 0 { 1.0 } else { 0.0 };
+        }
+        SimhLivePanelSample {
+            pc,
+            a,
+            sp,
+            address_activity,
+            data_activity,
+            simulation_time,
         }
     }
 }
@@ -115,7 +136,7 @@ impl fmt::Display for SimhSessionError {
             Self::Api { operation, detail } => write!(f, "SIMH {operation} failed: {detail}"),
             Self::ConsoleUnavailable => write!(
                 f,
-                "the embedded simh_frontpanel.dll predates RusTair console support; rebuild the SIMH bundle"
+                "the embedded simh_frontpanel.dll predates RusTair console support; update the embedded bundle"
             ),
         }
     }
@@ -141,7 +162,6 @@ pub struct SimhSession {
     live: LivePanelRegisters,
     latest_live: Arc<Mutex<SimhLivePanelSample>>,
     _callback_context: Option<Box<LivePanelCallbackContext>>,
-    is_altairz80: bool,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
@@ -186,7 +206,6 @@ impl SimhSession {
             live: LivePanelRegisters::new(data_shift),
             latest_live,
             _callback_context: None,
-            is_altairz80,
             _not_send_sync: PhantomData,
         };
         session.configure_live_panel_callback(data_register)?;
@@ -207,6 +226,9 @@ impl SimhSession {
         let device = std::ptr::null();
         let raw = self.raw();
 
+        // These three validation calls are the only register EXAMINEs performed
+        // during product startup. The old worker subsequently read 13 more
+        // registers one by one; that pathological sweep has been removed.
         let status = unsafe { self.api.add_register(raw, pc.as_ptr(), device, size_of::<u32>(), (&mut *self.live.pc as *mut u32).cast()) };
         self.check("register live PC", status)?;
         let status = unsafe { self.api.add_register(raw, data.as_ptr(), device, size_of::<u32>(), (&mut *self.live.data as *mut u32).cast()) };
@@ -237,6 +259,20 @@ impl SimhSession {
 
     pub fn live_panel_sample(&self) -> SimhLivePanelSample {
         *self.latest_live.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// One batched register request, intended for an explicit halted refresh.
+    /// This is not used in the per-frame path.
+    pub fn refresh_live_panel_now(&mut self) -> Result<SimhLivePanelSample, SimhSessionError> {
+        if self.state() == SimhOperationalState::Running {
+            return Ok(self.live_panel_sample());
+        }
+        let mut simulation_time = 0u64;
+        let status = unsafe { self.api.get_registers(self.raw(), &mut simulation_time) };
+        self.check("refresh live front-panel registers", status)?;
+        let sample = self.live.sample(simulation_time);
+        *self.latest_live.lock().unwrap_or_else(|p| p.into_inner()) = sample;
+        Ok(sample)
     }
 
     pub fn state(&self) -> SimhOperationalState {
@@ -297,43 +333,56 @@ impl SimhSession {
         Ok(())
     }
 
-    /// Default block loader. New RusTair bundles use SIMH's native LOAD command;
-    /// an older/upstream FrontPanel DLL transparently falls back to deposits.
+    /// Product block loader.
+    ///
+    /// With RusTair's FrontPanel extension, arbitrary bytes are grouped inside
+    /// `EXECUTE` commands, the same batching facility used internally by
+    /// FrontPanel register queries. This turns a BASIC image from thousands of
+    /// remote round trips into roughly bytes/48 round trips.
+    ///
+    /// An older DLL is permitted to use individual DEPOSITs only for tiny
+    /// writes. Large images fail immediately instead of occupying the worker
+    /// for minutes and making SIMH appear unresponsive.
     pub fn load_bytes(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
-        self.load_bytes_fast(base, bytes)
-    }
-
-    pub fn load_bytes_fast(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
         if bytes.is_empty() { return Ok(()); }
-        if !self.console_available() {
-            return self.load_bytes_deposit(base, bytes);
-        }
         if self.state() == SimhOperationalState::Running {
             return Err(SimhSessionError::Api {
                 operation: "bulk binary load",
                 detail: "simulator must be halted".into(),
             });
         }
+        if self.console_available() {
+            return self.load_bytes_batched(base, bytes);
+        }
+        if bytes.len() <= LEGACY_DEPOSIT_LIMIT {
+            return self.load_bytes_deposit(base, bytes);
+        }
+        Err(SimhSessionError::Api {
+            operation: "bulk binary load",
+            detail: format!(
+                "the embedded FrontPanel DLL has no RusTair command extension; refusing {} individual SCP DEPOSIT round trips. Update the embedded SIMH bundle before Quick Load",
+                bytes.len()
+            ),
+        })
+    }
 
-        let sequence = BULK_LOAD_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "rustair-simh-load-{}-{sequence}.bin",
-            std::process::id()
-        ));
-        fs::write(&path, bytes).map_err(|error| SimhSessionError::Api {
-            operation: "create bulk-load image",
-            detail: format!("{}: {error}", path.display()),
-        })?;
+    pub fn load_bytes_fast(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
+        self.load_bytes(base, bytes)
+    }
 
-        let command = if self.is_altairz80 {
-            format!("LOAD \"{}\" {:X}", path.display(), base)
-        } else {
-            self.deposit_register_u32("PC", u32::from(base))?;
-            format!("LOAD \"{}\"", path.display())
-        };
-        let result = self.console_command(&command).map(|_| ());
-        let _ = fs::remove_file(&path);
-        result
+    fn load_bytes_batched(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
+        for (chunk_index, chunk) in bytes.chunks(BULK_DEPOSIT_CHUNK).enumerate() {
+            let base_offset = chunk_index * BULK_DEPOSIT_CHUNK;
+            let mut command = String::from("EXECUTE ");
+            for (index, byte) in chunk.iter().copied().enumerate() {
+                let absolute = base as usize + base_offset + index;
+                if absolute > u16::MAX as usize { break; }
+                if index != 0 { command.push(';'); }
+                command.push_str(&format!("DEPOSIT -H {absolute:X} {byte:02X}"));
+            }
+            self.console_command(&command)?;
+        }
+        Ok(())
     }
 
     pub fn set_device_debug_mode(&mut self, device: &str, enabled: bool, mode_bits: &str) -> Result<(), SimhSessionError> {
