@@ -100,7 +100,7 @@ fn bootstrap_matches(machine: &mut BackendHost, definition: BootstrapDefinition)
         .all(|(address, expected)| machine.peek_memory(address as u16) == Some(*expected))
 }
 
-fn require_panel_entry_ready(machine: &BackendHost) -> Result<(), String> {
+fn require_panel_entry_ready(machine: &mut BackendHost) -> Result<(), String> {
     if !machine.powered() {
         return Err("Power ON the Altair before operating the front panel.".into());
     }
@@ -231,7 +231,7 @@ impl RusTairApp {
     }
 
     fn execute_operator_examine(&mut self, address: u16) -> Result<(), String> {
-        require_panel_entry_ready(&self.machine)?;
+        require_panel_entry_ready(&mut self.machine)?;
         let switches = self.machine.switch_register();
         if switches != address {
             return Err(format!(
@@ -255,7 +255,7 @@ impl RusTairApp {
         byte: u8,
         deposit_next: bool,
     ) -> Result<(), String> {
-        require_panel_entry_ready(&self.machine)?;
+        require_panel_entry_ready(&mut self.machine)?;
 
         let switches = self.machine.switch_register();
         if switches != u16::from(byte) {
