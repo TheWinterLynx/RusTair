@@ -1,6 +1,7 @@
 use super::super::{egui, RusTairApp};
 use crate::cpu8080::{FLAG_AC, FLAG_C, FLAG_P, FLAG_S, FLAG_Z};
 use crate::debugger8080::{decode_at, detect_simple_backward_loop, InstructionAt, SimpleLoop};
+use crate::explain8080::explain_instruction;
 use crate::machine::{MAX_MEM_SIZE, MEMORY_BOARD_SIZE};
 
 const BYTES_PER_ROW: usize = 16;
@@ -9,6 +10,7 @@ const ROW_HEIGHT: f32 = 22.0;
 const SIDEBAR_DEFAULT_WIDTH: f32 = 410.0;
 const CURRENT_INSTRUCTION_LINE_HEIGHT: f32 = 18.0;
 const CURRENT_INSTRUCTION_BLOCK_HEIGHT: f32 = 126.0;
+const INSTRUCTION_EXPLAINER_HEIGHT: f32 = 230.0;
 
 #[derive(Clone)]
 struct MemoryViewerUiState {
@@ -176,13 +178,13 @@ impl RusTairApp {
             Self::ascii_description(byte)
         );
         if address == pc {
-            hover.push_str(" — PC");
+            hover.push_str(" - PC");
         }
         if address == sp {
-            hover.push_str(" — SP");
+            hover.push_str(" - SP");
         }
         if protected {
-            hover.push_str(" — protected 1 KiB block");
+            hover.push_str(" - protected 1 KiB block");
         }
 
         hover.push_str("\n\n");
@@ -194,7 +196,7 @@ impl RusTairApp {
         if address == pc {
             hover.push_str("CPU instruction at PC:\n");
         } else {
-            hover.push_str("Decode only — if execution started at this byte:\n");
+            hover.push_str("Decode only - if execution started at this byte:\n");
             hover.push_str("This address is not the current PC; it may be code, an operand, text or arbitrary data.\n");
         }
         hover.push_str(&format!(
@@ -202,9 +204,9 @@ impl RusTairApp {
             instruction.decoded.bytes_text(instruction.bytes),
             instruction.decoded.text()
         ));
-        hover.push_str(&format!("Length: {} byte(s) · {}\n", instruction.decoded.length, instruction.decoded.timing.label()));
+        hover.push_str(&format!("Length: {} byte(s) | {}\n", instruction.decoded.length, instruction.decoded.timing.label()));
         hover.push_str(&format!("Flags affected: {}\n", instruction.decoded.flags.label()));
-        hover.push_str(&format!("Memory: {} · I/O: {}\n", instruction.decoded.memory.label(), instruction.decoded.io.label()));
+        hover.push_str(&format!("Memory: {} | I/O: {}\n", instruction.decoded.memory.label(), instruction.decoded.io.label()));
         hover.push_str(&format!("Flow: {}", instruction.decoded.flow_label()));
         if instruction.decoded.undocumented_alias {
             hover.push_str("\nUndocumented Intel 8080 alias accepted by the RusTair cores.");
@@ -226,7 +228,7 @@ impl RusTairApp {
         ui.small("The 8080 can use BC, DE and HL as 16-bit pairs. A and F form the PSW when pushed or popped together.");
         ui.add_space(5.0);
 
-        Self::draw_register_pair_header(ui, "PSW", cpu.af(), "A = accumulator · F = flags");
+        Self::draw_register_pair_header(ui, "PSW", cpu.af(), "A = accumulator | F = flags");
         egui::Grid::new("ram-cpu-registers-psw").num_columns(7).spacing([6.0, 3.0]).show(ui, |ui| {
             Self::draw_register8_cells(ui, "A", cpu.a);
             ui.separator();
@@ -253,7 +255,7 @@ impl RusTairApp {
         });
         ui.add_space(4.0);
 
-        Self::draw_register_pair_header(ui, "HL", cpu.hl(), "address pair · M means memory at [HL]");
+        Self::draw_register_pair_header(ui, "HL", cpu.hl(), "address pair | M means memory at [HL]");
         egui::Grid::new("ram-cpu-registers-hl").num_columns(7).spacing([6.0, 3.0]).show(ui, |ui| {
             Self::draw_register8_cells(ui, "H", cpu.h); ui.separator(); Self::draw_register8_cells(ui, "L", cpu.l); ui.end_row();
         });
@@ -261,11 +263,11 @@ impl RusTairApp {
         ui.separator();
         ui.small("16-BIT CONTROL REGISTERS");
         egui::Grid::new("ram-cpu-registers-16-sidebar").num_columns(3).spacing([6.0, 3.0]).show(ui, |ui| {
-            ui.strong("SP").on_hover_text("Stack Pointer — address of the top of the 8080 stack");
+            ui.strong("SP").on_hover_text("Stack Pointer - address of the top of the 8080 stack");
             ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
             ui.label(egui::RichText::new(format!("${:04X}", cpu.sp)).monospace().strong());
             ui.end_row();
-            ui.strong("PC").on_hover_text("Program Counter — address of the next instruction to fetch");
+            ui.strong("PC").on_hover_text("Program Counter - address of the next instruction to fetch");
             ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
             ui.label(egui::RichText::new(format!("${:04X}", cpu.pc)).monospace().strong());
             ui.end_row();
@@ -280,14 +282,14 @@ impl RusTairApp {
         let pc = cpu.pc;
         let sp = cpu.sp;
         let execution_state = if cpu.halted.unwrap_or(false) {
-            if panel.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+            if panel.running { "HALTED | RUN latch ON" } else { "HALTED | RUN latch OFF" }
         } else if panel.running { "RUNNING" } else { "STOPPED" };
 
         ui.horizontal_wrapped(|ui| {
             ui.strong("RAM INSPECTOR / 8080 DEBUGGER");
             ui.separator(); ui.label(execution_state); ui.separator();
             ui.small(format!("cycles {}", cpu.total_t_states.unwrap_or(0))); ui.separator();
-            ui.small(format!("RAM {} (0000h–{:04X}h)", self.config.machine.ram_size.label(), installed_end));
+            ui.small(format!("RAM {} (0000h-{:04X}h)", self.config.machine.ram_size.label(), installed_end));
             ui.separator(); ui.label("Jump:");
             let response = ui.add_sized(
                 [66.0, 22.0],
@@ -311,18 +313,19 @@ impl RusTairApp {
     }
 
     fn draw_memory_help(&self, ui: &mut egui::Ui) {
-        ui.small("• Hover a RAM byte to decode the 8080 instruction that would begin there. Away from PC this is explicitly only a possible decode: RAM may contain operands or data.");
-        ui.small("• The instruction metadata comes from one shared decoder used by debugger analysis, not a second UI-only opcode table.");
-        ui.small("• A is the accumulator and F contains the condition flags. PUSH/POP PSW transfers A and F together.");
-        ui.small("• B+C, D+E and H+L are the 8080's natural 16-bit register pairs: BC, DE and HL. The first register is the high byte and the second is the low byte.");
-        ui.small("• HL is especially important for memory access: register M in 8080 assembly means the byte in memory addressed by HL.");
-        ui.small("• PC is the Program Counter (next instruction address). SP is the Stack Pointer.");
-        ui.small("• The Loop Inspector only claims simple straight-line loops ending in one direct backward JMP/Jcc; ambiguous/nested control flow is deliberately rejected.");
-        ui.small("• The 8080 address space is 0000h–FFFFh. '--' means that no physical RAM is installed at that address.");
-        ui.small("• ADDR is the row base; 00–0F are the hexadecimal byte offsets. ASCII is the printable interpretation of the same 16 bytes.");
-        ui.small("• PC bytes are highlighted; SP is underlined when it falls on a visible byte.");
-        ui.small("• P marks a write-protected 1 KiB block. The block map is a logical protection map, not a literal S-100 card inventory.");
-        ui.small("• RAM editing is a debugger feature. Keep 'Respect write protection' enabled unless you deliberately want to force-patch protected memory.");
+        ui.small("- Hover a RAM byte to decode the 8080 instruction that would begin there. Away from PC this is explicitly only a possible decode: RAM may contain operands or data.");
+        ui.small("- The instruction metadata comes from one shared decoder used by debugger analysis, not a second UI-only opcode table.");
+        ui.small("- Explain selected instruction is deliberately tied to the selected RAM address so a fast loop cannot resize or flicker the explanation layout.");
+        ui.small("- A is the accumulator and F contains the condition flags. PUSH/POP PSW transfers A and F together.");
+        ui.small("- B+C, D+E and H+L are the 8080's natural 16-bit register pairs: BC, DE and HL. The first register is the high byte and the second is the low byte.");
+        ui.small("- HL is especially important for memory access: register M in 8080 assembly means the byte in memory addressed by HL.");
+        ui.small("- PC is the Program Counter (next instruction address). SP is the Stack Pointer.");
+        ui.small("- The Loop Inspector only claims simple straight-line loops ending in one direct backward JMP/Jcc; ambiguous/nested control flow is deliberately rejected.");
+        ui.small("- The 8080 address space is 0000h-FFFFh. '--' means that no physical RAM is installed at that address.");
+        ui.small("- ADDR is the row base; 00-0F are the hexadecimal byte offsets. ASCII is the printable interpretation of the same 16 bytes.");
+        ui.small("- PC bytes are highlighted; SP is underlined when it falls on a visible byte.");
+        ui.small("- P marks a write-protected 1 KiB block. The block map is a logical protection map, not a literal S-100 card inventory.");
+        ui.small("- RAM editing is a debugger feature. Keep 'Respect write protection' enabled unless you deliberately want to force-patch protected memory.");
     }
 
     fn draw_memory_block_map(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
@@ -343,8 +346,8 @@ impl RusTairApp {
                 let response = ui.selectable_label(selected_block == block, label);
                 if response.clicked() { state.follow_pc = false; self.select_memory_address(state, start as u16, true); }
                 response.on_hover_text(if installed_block {
-                    format!("Installed RAM {start:04X}h–{end:04X}h — {}", if protected { "WRITE PROTECTED" } else { "writable" })
-                } else { format!("No RAM installed at {start:04X}h–{end:04X}h") });
+                    format!("Installed RAM {start:04X}h-{end:04X}h - {}", if protected { "WRITE PROTECTED" } else { "writable" })
+                } else { format!("No RAM installed at {start:04X}h-{end:04X}h") });
                 if (block + 1) % columns == 0 { ui.end_row(); }
             }
         });
@@ -415,7 +418,7 @@ impl RusTairApp {
                             None => {
                                 ascii.push(' ');
                                 ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("--").monospace().color(weak_color)))
-                                    .on_hover_text(format!("{:04X}h — no RAM installed; guest reads return 00h", address));
+                                    .on_hover_text(format!("{:04X}h - no RAM installed; guest reads return 00h", address));
                             }
                         }
                     }
@@ -465,7 +468,7 @@ impl RusTairApp {
         let block = address as usize / MEMORY_BOARD_SIZE;
         let block_start = block * MEMORY_BOARD_SIZE;
         let block_end = block_start + MEMORY_BOARD_SIZE - 1;
-        ui.small(format!("Block {block}: {block_start:04X}h–{block_end:04X}h — {}", if protected { "WRITE PROTECTED" } else { "writable" }));
+        ui.small(format!("Block {block}: {block_start:04X}h-{block_end:04X}h - {}", if protected { "WRITE PROTECTED" } else { "writable" }));
 
         let cpu = self.machine.intel8080_state();
         let pc_here = address == cpu.pc;
@@ -519,6 +522,60 @@ impl RusTairApp {
         if self.machine.running() { ui.small("Machine is RUNNING; the CPU may overwrite this byte immediately."); }
     }
 
+    fn draw_instruction_explainer(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
+        let address = state.selected_address;
+        let cpu = self.machine.intel8080_state();
+        let instruction = self.decode_memory_instruction(address);
+        let memory_at_hl = self.machine.peek_memory(cpu.hl());
+        let width = ui.available_width();
+
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, INSTRUCTION_EXPLAINER_HEIGHT),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("ram-instruction-explainer-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let Some(instruction) = instruction.as_ref() else {
+                            ui.label("No complete 8080 instruction can be decoded at the selected address.");
+                            return;
+                        };
+
+                        ui.horizontal(|ui| {
+                            ui.strong(format!("${address:04X}"));
+                            ui.monospace(instruction.decoded.bytes_text(instruction.bytes));
+                            ui.monospace(instruction.decoded.text());
+                            if address == cpu.pc { ui.strong("PC"); }
+                        });
+                        if address != cpu.pc {
+                            ui.small("Decode context: selected RAM address. Live register values below still come from the current CPU state.");
+                        }
+                        ui.separator();
+
+                        let explanation = explain_instruction(&instruction.decoded, cpu, memory_at_hl);
+                        ui.label(&explanation.summary);
+                        ui.add_space(4.0);
+                        egui::Grid::new("ram-instruction-explanation-grid")
+                            .num_columns(2)
+                            .spacing([8.0, 4.0])
+                            .show(ui, |ui| {
+                                ui.strong("Reads"); ui.label(&explanation.reads); ui.end_row();
+                                ui.strong("Writes"); ui.label(&explanation.writes); ui.end_row();
+                                ui.strong("Flags"); ui.label(&explanation.flags); ui.end_row();
+                                ui.strong("Timing"); ui.label(instruction.decoded.timing.label()); ui.end_row();
+                                ui.strong("Memory"); ui.label(&explanation.memory); ui.end_row();
+                                ui.strong("I/O"); ui.label(&explanation.io); ui.end_row();
+                                ui.strong("Flow"); ui.label(&explanation.flow); ui.end_row();
+                            });
+                        for line in &explanation.context {
+                            ui.small(line);
+                        }
+                    });
+            },
+        );
+    }
+
     fn draw_current_instruction_side(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let cpu = self.machine.intel8080_state();
         let pc = cpu.pc;
@@ -540,10 +597,10 @@ impl RusTairApp {
                 let Some(instruction) = instruction.as_ref() else {
                     add_row(ui, egui::RichText::new(format!("${pc:04X}  UNMAPPED")).monospace().strong());
                     add_row(ui, egui::RichText::new("--").monospace().weak());
-                    add_row(ui, egui::RichText::new("Timing: — · flags: —").small());
-                    add_row(ui, egui::RichText::new("Memory: — · I/O: —").small());
-                    add_row(ui, egui::RichText::new("Flow: —").small());
-                    add_row(ui, egui::RichText::new("Loop: —").small());
+                    add_row(ui, egui::RichText::new("Timing: - | flags: -").small());
+                    add_row(ui, egui::RichText::new("Memory: - | I/O: -").small());
+                    add_row(ui, egui::RichText::new("Flow: -").small());
+                    add_row(ui, egui::RichText::new("Loop: -").small());
                     return;
                 };
 
@@ -564,23 +621,23 @@ impl RusTairApp {
                 add_row(
                     ui,
                     egui::RichText::new(format!(
-                        "{} · flags {}{}",
+                        "{} | flags {}{}",
                         instruction.decoded.timing.label(),
                         instruction.decoded.flags.label(),
-                        if instruction.decoded.undocumented_alias { " · undocumented alias" } else { "" }
+                        if instruction.decoded.undocumented_alias { " | undocumented alias" } else { "" }
                     )).small(),
                 );
                 add_row(
                     ui,
                     egui::RichText::new(format!(
-                        "Memory: {} · I/O: {}",
+                        "Memory: {} | I/O: {}",
                         instruction.decoded.memory.label(),
                         instruction.decoded.io.label()
                     )).small(),
                 );
                 let flow_text = if let Some(condition) = instruction.decoded.control_flow.condition() {
                     format!(
-                        "Flow: {} · {} → {}",
+                        "Flow: {} | {} -> {}",
                         instruction.decoded.flow_label(),
                         condition.label(),
                         if condition.evaluate(cpu.flags) { "TAKEN" } else { "NOT TAKEN" }
@@ -597,7 +654,7 @@ impl RusTairApp {
                             [label_width, 22.0],
                             egui::Label::new(
                                 egui::RichText::new(format!(
-                                    "Loop: {:04X}–{:04X} · {}",
+                                    "Loop: {:04X}-{:04X} | {}",
                                     loop_info.start,
                                     loop_info.back_edge,
                                     if loop_info.branch_taken_now { "TAKEN" } else { "EXIT" }
@@ -610,7 +667,7 @@ impl RusTairApp {
                     } else {
                         ui.add_sized(
                             [ui.available_width(), 22.0],
-                            egui::Label::new(egui::RichText::new("Loop: —").small()),
+                            egui::Label::new(egui::RichText::new("Loop: -").small()),
                         );
                     }
                 });
@@ -623,7 +680,9 @@ impl RusTairApp {
             ui.strong("CURRENT INSTRUCTION");
             self.draw_current_instruction_side(ui, state);
             ui.separator();
-            egui::CollapsingHeader::new("Selected byte / editor").default_open(true).show(ui, |ui| self.draw_memory_editor(ui, state));
+            egui::CollapsingHeader::new("Explain selected instruction").default_open(true).show(ui, |ui| self.draw_instruction_explainer(ui, state));
+            ui.separator();
+            egui::CollapsingHeader::new("Selected byte / editor").default_open(false).show(ui, |ui| self.draw_memory_editor(ui, state));
             ui.separator();
             egui::CollapsingHeader::new("1 KiB protection map").default_open(false).show(ui, |ui| self.draw_memory_block_map(ui, state));
             ui.separator();
@@ -655,7 +714,7 @@ impl RusTairApp {
                 };
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.strong(format!("Loop {:04X}h → {:04X}h", loop_info.start, loop_info.back_edge));
+                    ui.strong(format!("Loop {:04X}h -> {:04X}h", loop_info.start, loop_info.back_edge));
                     ui.separator();
                     ui.label(format!("{} instructions", loop_info.instructions.len()));
                 });
@@ -665,7 +724,7 @@ impl RusTairApp {
                         "Back-edge condition {} ({}) is currently {}.",
                         condition.label(),
                         condition.description(),
-                        if loop_info.branch_taken_now { "TRUE → TAKEN" } else { "FALSE → NOT TAKEN / EXIT" }
+                        if loop_info.branch_taken_now { "TRUE -> TAKEN" } else { "FALSE -> NOT TAKEN / EXIT" }
                     ));
                 } else {
                     ui.small("Back-edge is an unconditional JMP and is always taken if reached.");
@@ -713,7 +772,7 @@ impl RusTairApp {
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-memory-viewer"),
             egui::ViewportBuilder::default()
-                .with_title("RusTair — RAM Inspector / 8080 Debugger")
+                .with_title("RusTair - RAM Inspector / 8080 Debugger")
                 .with_inner_size([1380.0, 800.0])
                 .with_min_inner_size([1190.0, 600.0])
                 .with_resizable(true),
