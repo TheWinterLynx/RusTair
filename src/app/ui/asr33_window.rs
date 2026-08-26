@@ -249,7 +249,11 @@ impl RusTairApp {
     /// between channels 4 and 3. The operator can reverse only this drawing;
     /// the byte sent to the emulated UART is never modified.
     fn draw_reader_byte_visual(ui: &mut egui::Ui, byte: Option<u8>, order: TapeBitOrder) {
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(170.0, 24.0), Sense::hover());
+        // Match the exact interaction height used by labels/buttons/combo boxes
+        // in this toolbar so the tape and its data sit on the same row center.
+        let row_height = ui.spacing().interact_size.y;
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(170.0, row_height), Sense::hover());
         let painter = ui.painter();
 
         // The mini-tape is part of the dark toolbar, not a separate cream card:
@@ -495,10 +499,27 @@ impl RusTairApp {
         });
     }
 
-    fn request_tape_transport_repaint(&self, ctx: &egui::Context) {
-        let reader = self.asr33.reader_running.then(|| self.asr33.reader_speed.char_time());
-        let punch = (self.asr33.punch_running && self.tty.tape_punch_pending_len() > 0)
-            .then(|| self.asr33.punch_speed.char_time());
+    fn request_tape_transport_repaint(&mut self, ctx: &egui::Context) {
+        // Do not wake the viewport at the media cadence while a transport is
+        // physically blocked. User input or the running guest will repaint us
+        // when the condition changes. This is especially important on native
+        // child viewports, where pointless timer wakeups make window dragging
+        // visibly step at the tape cadence.
+        let reader_can_advance = self.asr33.reader_running
+            && self.tty.tape_input_pending()
+            && self.tty.mode == TtyMode::Line
+            && self.asr_connection().is_connected()
+            && self.machine.powered()
+            && self.machine.running()
+            && self.asr_serial_rx_empty();
+        let reader = reader_can_advance.then(|| self.asr33.reader_speed.char_time());
+
+        let punch_can_advance = self.asr33.punch_running
+            && self.tty.tape_capture_enabled()
+            && self.tty.mode != TtyMode::Off
+            && self.tty.tape_punch_pending_len() > 0;
+        let punch = punch_can_advance.then(|| self.asr33.punch_speed.char_time());
+
         let wait = match (reader, punch) {
             (Some(a), Some(b)) => a.min(b),
             (Some(a), None) | (None, Some(a)) => a,
