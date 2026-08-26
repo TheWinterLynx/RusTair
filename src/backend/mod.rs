@@ -44,7 +44,13 @@ impl EmulationEngine {
             Self::SimhAltairZ80 => "Open SIMH — AltairZ80",
         }
     }
-    pub const fn is_available(self) -> bool { matches!(self, Self::RustFast8080) }
+    pub const fn is_available(self) -> bool {
+        match self {
+            Self::RustFast8080 => true,
+            Self::RustCycleAccurate8080 => false,
+            Self::SimhAltair | Self::SimhAltairZ80 => cfg!(all(feature = "simh-ffi", windows)),
+        }
+    }
 }
 
 impl Default for EmulationEngine { fn default() -> Self { Self::RustFast8080 } }
@@ -192,20 +198,60 @@ pub trait MachineBackend {
     fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BackendCreateError { Unavailable(EmulationEngine) }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackendCreateError {
+    Unavailable(EmulationEngine),
+    Initialization { engine: EmulationEngine, detail: String },
+}
 impl fmt::Display for BackendCreateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self { Self::Unavailable(engine) => write!(f, "{} backend is not available in this build", engine.label()) }
+        match self {
+            Self::Unavailable(engine) => write!(f, "{} backend is not available in this build", engine.label()),
+            Self::Initialization { engine, detail } => write!(f, "{} backend initialization failed: {detail}", engine.label()),
+        }
     }
 }
 impl std::error::Error for BackendCreateError {}
 
+fn create_error(engine: EmulationEngine, error: impl fmt::Display) -> BackendCreateError {
+    BackendCreateError::Initialization { engine, detail: error.to_string() }
+}
+
 pub fn create_backend(engine: EmulationEngine) -> Result<Box<dyn MachineBackend>, BackendCreateError> {
     match engine {
         EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
-        EmulationEngine::RustCycleAccurate8080 | EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 =>
-            Err(BackendCreateError::Unavailable(engine)),
+        EmulationEngine::RustCycleAccurate8080 => Err(BackendCreateError::Unavailable(engine)),
+        EmulationEngine::SimhAltair => {
+            #[cfg(all(feature = "simh-ffi", windows))]
+            {
+                let launch = simh::embedded_altair_launch_config()
+                    .map_err(|error| create_error(engine, error))?;
+                let backend = simh::SimhAltairBackend::launch(launch)
+                    .map_err(|error| create_error(engine, error))?;
+                Ok(Box::new(backend))
+            }
+            #[cfg(not(all(feature = "simh-ffi", windows)))]
+            {
+                Err(BackendCreateError::Unavailable(engine))
+            }
+        }
+        EmulationEngine::SimhAltairZ80 => {
+            #[cfg(all(feature = "simh-ffi", windows))]
+            {
+                // Preserve RusTair's Altair/8080 semantics by default while
+                // using altairz80's richer device model (notably M2SIO0/1).
+                let mode = simh::AltairZ80CpuMode::Intel8080;
+                let launch = simh::embedded_altairz80_launch_config(mode)
+                    .map_err(|error| create_error(engine, error))?;
+                let backend = simh::SimhAltairZ80Backend::launch_with_serial(launch, mode)
+                    .map_err(|error| create_error(engine, error))?;
+                Ok(Box::new(backend))
+            }
+            #[cfg(not(all(feature = "simh-ffi", windows)))]
+            {
+                Err(BackendCreateError::Unavailable(engine))
+            }
+        }
     }
 }
 
