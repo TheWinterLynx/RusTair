@@ -194,6 +194,7 @@ impl SimhThreadedBackend {
                     let mut state = failure_shared.lock().unwrap_or_else(|p| p.into_inner());
                     state.busy = false;
                     state.panel.powered = false;
+                    state.panel.running = false;
                     state.error(format!("worker initialization failed: {error}"));
                 }
             })
@@ -497,12 +498,29 @@ impl Worker {
     fn handle(&mut self, command: Command) {
         match command {
             Command::Power(on) => {
-                let result = self.power(on);
-                self.finish(if on { "POWER ON" } else { "POWER OFF" }, result);
+                match self.power(on) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        if on {
+                            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                            state.panel.powered = false;
+                            state.panel.running = false;
+                            state.console_available = false;
+                        }
+                        self.record_error(if on { "POWER ON" } else { "POWER OFF" }, error.to_string());
+                    }
+                }
             }
             Command::Running(run) => {
-                let result = self.set_running(run);
-                self.finish(if run { "RUN" } else { "STOP" }, result);
+                match self.set_running(run) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                        state.panel.running = false;
+                        drop(state);
+                        self.record_error(if run { "RUN" } else { "STOP" }, error.to_string());
+                    }
+                }
             }
             Command::Step => { let result = self.step(); self.finish("STEP", result); }
             Command::Reset => { let result = self.reset(); self.finish("RESET", result); }
@@ -745,12 +763,15 @@ impl Worker {
 
     fn serial_rx(&mut self, port: BackendSerialPort, byte: u8) {
         let index = port_index(port);
-        if let Some(bridge) = self.bridge.as_mut() {
-            if let Err(error) = bridge.queue_to_simh(port, byte) {
-                self.record_error("serial RX queue", error.to_string());
-            } else {
-                self.serial_in_glow = 1.0;
-            }
+        let queue_error = self
+            .bridge
+            .as_mut()
+            .and_then(|bridge| bridge.queue_to_simh(port, byte).err())
+            .map(|error| error.to_string());
+        if let Some(error) = queue_error {
+            self.record_error("serial RX queue", error);
+        } else if self.bridge.is_some() {
+            self.serial_in_glow = 1.0;
         }
         let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         shared.to_simh[index] = shared.to_simh[index].saturating_sub(1);
@@ -763,11 +784,14 @@ impl Worker {
             let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             state.log(format!("sim> {command}"));
         }
-        let Some(session) = self.session.as_mut() else {
-            self.record_error("SIMH console", "simulator is powered off or still starting");
-            return;
+        let result = match self.session.as_mut() {
+            Some(session) => session.console_command(&command),
+            None => {
+                self.record_error("SIMH console", "simulator is powered off or still starting");
+                return;
+            }
         };
-        match session.console_command(&command) {
+        match result {
             Ok(response) => {
                 let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
                 if response.trim().is_empty() {
@@ -781,10 +805,16 @@ impl Worker {
     }
 
     fn background(&mut self) {
+        let bridge_poll_error = self
+            .bridge
+            .as_mut()
+            .and_then(|bridge| bridge.poll().err())
+            .map(|error| error.to_string());
+        if let Some(error) = bridge_poll_error {
+            self.record_error("M2SIO bridge poll", error);
+        }
+
         if let Some(bridge) = self.bridge.as_mut() {
-            if let Err(error) = bridge.poll() {
-                self.record_error("M2SIO bridge poll", error.to_string());
-            }
             for port in BackendSerialPort::ALL {
                 while let Some(byte) = bridge.pop_from_simh(port) {
                     let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
