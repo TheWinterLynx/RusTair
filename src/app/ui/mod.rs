@@ -7,6 +7,7 @@ mod front_panel;
 mod front_panel_assets;
 mod front_panel_operator;
 mod front_panel_switches;
+mod instruction_history;
 mod io_inspector;
 mod memory_viewer;
 #[path = "../persistence.rs"]
