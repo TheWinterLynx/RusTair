@@ -5,7 +5,7 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-use super::ffi;
+use super::{ffi, runtime};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimhOperationalState {
@@ -17,6 +17,8 @@ pub enum SimhOperationalState {
 #[derive(Debug)]
 pub enum SimhSessionError {
     InteriorNul(NulError),
+    Runtime(runtime::SimhRuntimeError),
+    FrontPanelLoad(ffi::FrontPanelLoadError),
     StartFailed(String),
     Api {
         operation: &'static str,
@@ -28,25 +30,46 @@ impl fmt::Display for SimhSessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InteriorNul(error) => write!(f, "SIMH string contains an interior NUL: {error}"),
+            Self::Runtime(error) => write!(f, "SIMH runtime preparation failed: {error}"),
+            Self::FrontPanelLoad(error) => write!(f, "SIMH FrontPanel load failed: {error}"),
             Self::StartFailed(detail) => write!(f, "failed to start SIMH: {detail}"),
             Self::Api { operation, detail } => write!(f, "SIMH {operation} failed: {detail}"),
         }
     }
 }
 
-impl std::error::Error for SimhSessionError {}
+impl std::error::Error for SimhSessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InteriorNul(error) => Some(error),
+            Self::Runtime(error) => Some(error),
+            Self::FrontPanelLoad(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl From<NulError> for SimhSessionError {
     fn from(value: NulError) -> Self { Self::InteriorNul(value) }
 }
 
-/// RAII owner for one Open SIMH FrontPanel connection.
+impl From<runtime::SimhRuntimeError> for SimhSessionError {
+    fn from(value: runtime::SimhRuntimeError) -> Self { Self::Runtime(value) }
+}
+
+impl From<ffi::FrontPanelLoadError> for SimhSessionError {
+    fn from(value: ffi::FrontPanelLoadError) -> Self { Self::FrontPanelLoad(value) }
+}
+
+/// RAII owner for one Open-SIMH FrontPanel connection.
 ///
 /// The C API creates a simulator process and internal communication threads.
-/// The handle is deliberately !Send + !Sync until the thread-safety guarantees
-/// required by RusTair's UI/runtime have been audited explicitly.
+/// The FrontPanel DLL itself is resolved dynamically from RusTair's embedded
+/// runtime bundle, so no SIMH import library or external installation is needed
+/// at compile time. The handle remains deliberately !Send + !Sync.
 pub struct SimhSession {
     panel: NonNull<ffi::PANEL>,
+    api: ffi::FrontPanelApi,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
@@ -76,18 +99,20 @@ impl SimhSession {
         device_panel_count: usize,
         debug_file: Option<&Path>,
     ) -> Result<Self, SimhSessionError> {
+        let frontpanel_path = runtime::frontpanel_dll_path()?;
+        let api = ffi::FrontPanelApi::load(&frontpanel_path)?;
         let simulator = path_cstring(simulator)?;
         let config = path_cstring(config)?;
         let debug = debug_file.map(path_cstring).transpose()?;
         let raw = unsafe {
             match debug.as_ref() {
-                Some(debug) => ffi::sim_panel_start_simulator_debug(
+                Some(debug) => api.start_simulator_debug(
                     simulator.as_ptr(),
                     config.as_ptr(),
                     device_panel_count,
                     debug.as_ptr(),
                 ),
-                None => ffi::sim_panel_start_simulator(
+                None => api.start_simulator(
                     simulator.as_ptr(),
                     config.as_ptr(),
                     device_panel_count,
@@ -95,9 +120,10 @@ impl SimhSession {
             }
         };
         let panel = NonNull::new(raw)
-            .ok_or_else(|| SimhSessionError::StartFailed(last_error_text()))?;
+            .ok_or_else(|| SimhSessionError::StartFailed(last_error_text(&api)))?;
         Ok(Self {
             panel,
+            api,
             _not_send_sync: PhantomData,
         })
     }
@@ -111,13 +137,13 @@ impl SimhSession {
         } else {
             Err(SimhSessionError::Api {
                 operation,
-                detail: last_error_text(),
+                detail: last_error_text(&self.api),
             })
         }
     }
 
     pub fn state(&self) -> SimhOperationalState {
-        match unsafe { ffi::sim_panel_get_state(self.raw()) } {
+        match unsafe { self.api.get_state(self.raw()) } {
             ffi::OperationalState::Halt => SimhOperationalState::Halted,
             ffi::OperationalState::Run => SimhOperationalState::Running,
             ffi::OperationalState::Error => SimhOperationalState::Error,
@@ -125,29 +151,29 @@ impl SimhSession {
     }
 
     pub fn halt(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { ffi::sim_panel_exec_halt(self.raw()) };
+        let status = unsafe { self.api.exec_halt(self.raw()) };
         self.check("halt", status)
     }
 
     pub fn run(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { ffi::sim_panel_exec_run(self.raw()) };
+        let status = unsafe { self.api.exec_run(self.raw()) };
         self.check("run", status)
     }
 
     /// Reset all SIMH devices and start instruction execution.
     pub fn start_from_reset(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { ffi::sim_panel_exec_start(self.raw()) };
+        let status = unsafe { self.api.exec_start(self.raw()) };
         self.check("start", status)
     }
 
     pub fn step(&mut self) -> Result<(), SimhSessionError> {
-        let status = unsafe { ffi::sim_panel_exec_step(self.raw()) };
+        let status = unsafe { self.api.exec_step(self.raw()) };
         self.check("step", status)
     }
 
     pub fn boot(&mut self, device: &str) -> Result<(), SimhSessionError> {
         let device = CString::new(device)?;
-        let status = unsafe { ffi::sim_panel_exec_boot(self.raw(), device.as_ptr()) };
+        let status = unsafe { self.api.exec_boot(self.raw(), device.as_ptr()) };
         self.check("boot", status)
     }
 
@@ -156,7 +182,7 @@ impl SimhSession {
         let name_or_addr = CString::new(name_or_addr)?;
         let mut value = 0u32;
         let status = unsafe {
-            ffi::sim_panel_gen_examine(
+            self.api.gen_examine(
                 self.raw(),
                 name_or_addr.as_ptr(),
                 size_of::<u32>(),
@@ -175,7 +201,7 @@ impl SimhSession {
     ) -> Result<(), SimhSessionError> {
         let name_or_addr = CString::new(name_or_addr)?;
         let status = unsafe {
-            ffi::sim_panel_gen_deposit(
+            self.api.gen_deposit(
                 self.raw(),
                 name_or_addr.as_ptr(),
                 size_of::<u32>(),
@@ -185,9 +211,6 @@ impl SimhSession {
         self.check("generic deposit", status)
     }
 
-    /// Examine a SIMH register into the API's conventional 32-bit host buffer.
-    /// This is sufficient for the 8/16-bit programmer-visible Altair registers
-    /// and matches the official FrontPanel sample application's usage.
     pub fn examine_register_u32(&self, name: &str) -> Result<u32, SimhSessionError> {
         self.examine_u32(name)
     }
@@ -204,7 +227,7 @@ impl SimhSession {
         let address = u32::from(address);
         let mut value = 0u8;
         let status = unsafe {
-            ffi::sim_panel_mem_examine(
+            self.api.mem_examine(
                 self.raw(),
                 size_of::<u32>(),
                 (&address as *const u32).cast::<c_void>(),
@@ -219,7 +242,7 @@ impl SimhSession {
     pub fn write_byte(&mut self, address: u16, value: u8) -> Result<(), SimhSessionError> {
         let address = u32::from(address);
         let status = unsafe {
-            ffi::sim_panel_mem_deposit(
+            self.api.mem_deposit(
                 self.raw(),
                 size_of::<u32>(),
                 (&address as *const u32).cast::<c_void>(),
@@ -230,10 +253,8 @@ impl SimhSession {
         self.check("memory deposit", status)
     }
 
-    /// Deliberately byte-wise for the first implementation. The FrontPanel API
-    /// describes `value_size` as the host representation of one addressed
-    /// value, not a bulk-transfer length, so this avoids relying on undocumented
-    /// contiguous-block semantics.
+    /// Deliberately byte-wise. FrontPanel's value size describes one addressed
+    /// host value rather than a contiguous transfer length.
     pub fn load_bytes(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
         for (offset, byte) in bytes.iter().copied().enumerate() {
             let Some(address) = u16::try_from(offset)
@@ -247,8 +268,6 @@ impl SimhSession {
         Ok(())
     }
 
-    /// Enable or disable one or more simulator debug categories for a device.
-    /// An empty `mode_bits` string means all categories, matching FrontPanel API v12.
     pub fn set_device_debug_mode(
         &mut self,
         device: &str,
@@ -259,7 +278,7 @@ impl SimhSession {
         let mode_bits = CString::new(mode_bits)?;
         let set_unset = if enabled { 1 } else { 0 };
         let status = unsafe {
-            ffi::sim_panel_device_debug_mode(
+            self.api.device_debug_mode(
                 self.raw(),
                 device.as_ptr(),
                 set_unset,
@@ -279,7 +298,7 @@ impl SimhSession {
         let switches = CString::new(switches)?;
         let path = path_cstring(path)?;
         let status = unsafe {
-            ffi::sim_panel_mount(
+            self.api.mount(
                 self.raw(),
                 device.as_ptr(),
                 switches.as_ptr(),
@@ -291,12 +310,12 @@ impl SimhSession {
 
     pub fn dismount(&mut self, device: &str) -> Result<(), SimhSessionError> {
         let device = CString::new(device)?;
-        let status = unsafe { ffi::sim_panel_dismount(self.raw(), device.as_ptr()) };
+        let status = unsafe { self.api.dismount(self.raw(), device.as_ptr()) };
         self.check("dismount", status)
     }
 
     pub fn halt_text(&self) -> String {
-        let text = unsafe { ffi::sim_panel_halt_text(self.raw()) };
+        let text = unsafe { self.api.halt_text(self.raw()) };
         c_text(text)
     }
 }
@@ -304,7 +323,7 @@ impl SimhSession {
 impl Drop for SimhSession {
     fn drop(&mut self) {
         unsafe {
-            let _ = ffi::sim_panel_destroy(self.raw());
+            let _ = self.api.destroy(self.raw());
         }
     }
 }
@@ -313,8 +332,8 @@ fn path_cstring(path: &Path) -> Result<CString, SimhSessionError> {
     Ok(CString::new(path.to_string_lossy().as_bytes())?)
 }
 
-fn last_error_text() -> String {
-    let ptr = unsafe { ffi::sim_panel_get_error() };
+fn last_error_text(api: &ffi::FrontPanelApi) -> String {
+    let ptr = unsafe { api.get_error() };
     let text = c_text(ptr);
     if text.is_empty() {
         "unknown FrontPanel error".to_owned()
