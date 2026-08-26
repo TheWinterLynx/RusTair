@@ -1,14 +1,15 @@
-# Diagnostic-only guard for an Open-SIMH timer edge case exposed by
+# Open-SIMH compatibility guard for a timer edge case exposed by
 # FrontPanel/REMOTE MASTER startup.
 #
-# sim_timer_stop_time defaults to 0.  During FrontPanel startup sim_gtime()
-# can temporarily be negative.  The upstream sim_start_timer_services() check
+# sim_timer_stop_time defaults to 0. During FrontPanel startup sim_gtime()
+# can temporarily be negative. The upstream sim_start_timer_services() check
 # then interprets the default 0 as a future requested stop and schedules the
 # global sim_stop_unit, which later returns SCPE_STOP.
 #
-# This file patches only a build-tree copy of sim_timer.c.  It is intentionally
-# included only by rustair-stop-trace-injection.cmake until the direct M2SIO
-# diagnostic confirms the diagnosis.
+# RusTair's A/B/C compatibility regression demonstrates that the parser-only
+# AltairZ80 M2SIO/FrontPanel path fails while the otherwise identical build
+# with this guard passes. The Open-SIMH checkout itself is never modified;
+# only a build-tree copy of sim_timer.c is substituted for the altairz80 core.
 
 if(CMAKE_VERSION VERSION_LESS 3.19)
     message(FATAL_ERROR "RusTair timer stop guard requires CMake 3.19 or newer")
@@ -63,10 +64,11 @@ function(rustair_apply_timer_stop_guard)
         if(TARGET "${rustair_link}")
             get_target_property(rustair_sources "${rustair_link}" SOURCES)
             if(rustair_sources)
-                # The stop-trace diagnostic may already have replaced sim_timer.c
-                # with its own build-tree copy.  Replace either form with this
-                # clean source+guard copy so the disproved precalibration patch
-                # is not present in the executable under test.
+                # Diagnostic configurations may already have replaced
+                # sim_timer.c with their own build-tree copy. Replace either
+                # form with the clean upstream source plus this compatibility
+                # guard so the production and diagnostic configurations agree
+                # on the validated timer behavior.
                 set(rustair_timer_index -1)
                 list(FIND rustair_sources "${CMAKE_SOURCE_DIR}/sim_timer.c" rustair_timer_index)
                 if(rustair_timer_index EQUAL -1)
@@ -79,7 +81,7 @@ function(rustair_apply_timer_stop_guard)
                     set_property(TARGET "${rustair_link}" PROPERTY SOURCES "${rustair_sources}")
                     math(EXPR rustair_replaced "${rustair_replaced} + 1")
                     message(STATUS
-                        "RusTair: diagnostic timer stop guard injected into ${rustair_link} for altairz80")
+                        "RusTair: timer stop compatibility guard injected into ${rustair_link} for altairz80")
                 endif()
             endif()
         endif()
@@ -95,8 +97,8 @@ endfunction()
 get_property(rustair_timer_stop_guard_scheduled GLOBAL PROPERTY RUSTAIR_TIMER_STOP_GUARD_SCHEDULED)
 if(NOT rustair_timer_stop_guard_scheduled)
     set_property(GLOBAL PROPERTY RUSTAIR_TIMER_STOP_GUARD_SCHEDULED TRUE)
-    # This include comes after rustair-stop-trace.cmake, so this deferred call
-    # runs after the trace source substitution and intentionally wins for
-    # sim_timer.c while preserving the scp.c scheduler instrumentation.
+    # Deferred application runs after Open-SIMH has created the altairz80 core
+    # target. If a diagnostic trace injection also replaces sim_timer.c, this
+    # callback intentionally substitutes the validated guarded source last.
     cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL rustair_apply_timer_stop_guard)
 endif()
