@@ -66,7 +66,10 @@ function Invoke-CMakeChecked {
         $ErrorActionPreference = $previousErrorActionPreference
     }
 
-    $output | Select-String -Pattern "RusTair|error|failed|fatal|warning" -CaseSensitive:$false | ForEach-Object { $_.Line }
+    $output |
+        Select-String -Pattern "RusTair|error|failed|fatal|warning" -CaseSensitive:$false |
+        ForEach-Object { Write-Host $_.Line }
+
     if ($exit -ne 0) {
         throw "$Label failed with exit code $exit"
     }
@@ -112,6 +115,7 @@ function Use-Variant {
 
 function Run-Test {
     param([string]$Label, [string]$TestName)
+
     Write-Host ""
     Write-Host "=== TEST $Label ==="
     Push-Location $script:RepoRoot
@@ -122,7 +126,7 @@ function Run-Test {
         $previousErrorActionPreference = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
-            $output = & cargo test --color never --features simh-ffi --test $TestName -- --ignored --nocapture 2>&1
+            $output = @(& cargo test --color never --features simh-ffi --test $TestName -- --ignored --nocapture 2>&1)
             $exit = $LASTEXITCODE
         }
         finally {
@@ -133,12 +137,22 @@ function Run-Test {
         Pop-Location
     }
 
-    $output | Select-String -Pattern "FrontPanel diagnostic|M2SIO RX diagnostic|smoke test passed|Simulation stopped|Error:|FAILED|test result:" | ForEach-Object { $_.Line }
+    # Write diagnostic lines to the host rather than returning them through the
+    # PowerShell pipeline. Run-Test must return exactly one Boolean; otherwise a
+    # non-empty array of log lines becomes truthy and corrupts the summary.
+    $output |
+        Select-String -Pattern "FrontPanel diagnostic|M2SIO RX diagnostic|smoke test passed|Simulation stopped|Error:|FAILED|test result:" -CaseSensitive:$false |
+        ForEach-Object { Write-Host $_.Line }
+
     if ($exit -eq 0) {
         Write-Host "RESULT ${Label}: PASS"
         return $true
     }
+
     Write-Host "RESULT ${Label}: FAIL"
+    Write-Host "--- failure tail ---"
+    $output | Select-Object -Last 30 | ForEach-Object { Write-Host ([string]$_) }
+    Write-Host "--- end failure tail ---"
     return $false
 }
 
@@ -149,15 +163,18 @@ $script:CMakeExe = Resolve-CMakeExecutable $CMake
 
 $upstreamInjection = (Resolve-Path (Join-Path $scriptDir "rustair-upstream-frontpanel.cmake")).Path
 $parserInjection = (Resolve-Path (Join-Path $scriptDir "rustair-frontpanel.cmake")).Path
+$timerInjection = (Resolve-Path (Join-Path $scriptDir "rustair-parser-timer.cmake")).Path
 $upstreamBuild = Join-Path $script:Simh "cmake\build-rustair-upstream-check-x64"
 $parserBuild = Join-Path $script:Simh "cmake\build-rustair-parser-only-check-x64"
+$timerBuild = Join-Path $script:Simh "cmake\build-rustair-parser-timer-check-x64"
 
 Write-Host "Open-SIMH: $script:Simh"
 Write-Host "CMake:     $script:CMakeExe"
 Write-Host ""
 Write-Host "Variant A: upstream sim_frontpanel.c + upstream sim_timer.c"
 Write-Host "Variant B: RusTair FrontPanel parser patch + upstream sim_timer.c"
-Write-Host "No scheduler/RX diagnostic patches are included in either variant."
+Write-Host "Variant C: parser patch + timer stop guard"
+Write-Host "No scheduler or M2SIO RX diagnostic tracing is included in any variant."
 
 Build-Variant -Name "A UPSTREAM" -BuildDir $upstreamBuild -Injection $upstreamInjection
 Use-Variant -BuildDir $upstreamBuild
@@ -170,6 +187,13 @@ $bFront = Run-Test -Label "B parser-only / classic FrontPanel" -TestName "simh_f
 $bZ80 = Run-Test -Label "B parser-only / AltairZ80 FrontPanel" -TestName "simh_altairz80_smoke"
 $bSerial = Run-Test -Label "B parser-only / M2SIO serial" -TestName "simh_altairz80_serial_smoke"
 
+# Only run the serial regression on C. B already proves the parser-only
+# FrontPanel paths; C exists solely to isolate whether sim_timer.c is necessary
+# for the M2SIO/FrontPanel execution path.
+Build-Variant -Name "C PARSER+TIMER" -BuildDir $timerBuild -Injection $timerInjection
+Use-Variant -BuildDir $timerBuild
+$cSerial = Run-Test -Label "C parser+timer / M2SIO serial" -TestName "simh_altairz80_serial_smoke"
+
 Write-Host ""
 Write-Host "=== COMPATIBILITY SUMMARY ==="
 Write-Host "A upstream classic FrontPanel : $(if ($aFront) {'PASS'} else {'FAIL'})"
@@ -177,18 +201,26 @@ Write-Host "A upstream AltairZ80         : $(if ($aZ80) {'PASS'} else {'FAIL'})"
 Write-Host "B parser-only classic        : $(if ($bFront) {'PASS'} else {'FAIL'})"
 Write-Host "B parser-only AltairZ80      : $(if ($bZ80) {'PASS'} else {'FAIL'})"
 Write-Host "B parser-only M2SIO          : $(if ($bSerial) {'PASS'} else {'FAIL'})"
+Write-Host "C parser+timer M2SIO         : $(if ($cSerial) {'PASS'} else {'FAIL'})"
 Write-Host ""
+
 if (-not $aFront -and $bFront) {
-    Write-Host "Parser conclusion: REQUIRED for this Open-SIMH revision."
+    Write-Host "Parser conclusion: REQUIRED for classic Altair FrontPanel on this Open-SIMH revision."
+    if ($aZ80) {
+        Write-Host "AltairZ80 note: its basic FrontPanel smoke passes with the upstream parser."
+    }
 } elseif ($aFront -and $aZ80) {
     Write-Host "Parser conclusion: NOT REQUIRED by these regression tests."
 } else {
     Write-Host "Parser conclusion: INCONCLUSIVE; inspect the failing A/B test."
 }
 
-if ($bFront -and $bZ80 -and $bSerial) {
-    Write-Host "Timer conclusion: NOT REQUIRED by the full parser-only regression set."
-    Write-Host "The production-compatible simulator core can remain upstream/unmodified."
+if ($bSerial) {
+    Write-Host "Timer conclusion: NOT REQUIRED by the parser-only M2SIO regression."
+    Write-Host "The simulator core can remain upstream/unmodified for the tested paths."
+} elseif ($cSerial) {
+    Write-Host "Timer conclusion: REQUIRED for the tested M2SIO/FrontPanel execution path on this revision."
+    Write-Host "The parser-only build fails while the otherwise identical parser+timer build passes."
 } else {
-    Write-Host "Timer conclusion: NOT YET CLEARED; parser-only regression set has a failure."
+    Write-Host "Timer conclusion: INCONCLUSIVE; M2SIO fails both without and with the timer guard."
 }
