@@ -51,8 +51,21 @@ function Get-CacheValue {
 
 function Invoke-CMakeChecked {
     param([string[]]$Arguments, [string]$Label)
-    $output = & $script:CMakeExe @Arguments 2>&1
-    $exit = $LASTEXITCODE
+
+    # Windows PowerShell 5.1 converts stderr from native programs into
+    # NativeCommandError records when ErrorActionPreference is Stop. CMake may
+    # legitimately write warnings/progress to stderr, so native success/failure
+    # must be decided from LASTEXITCODE instead.
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $output = & $script:CMakeExe @Arguments 2>&1
+        $exit = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
     $output | Select-String -Pattern "RusTair|error|failed|fatal|warning" -CaseSensitive:$false | ForEach-Object { $_.Line }
     if ($exit -ne 0) {
         throw "$Label failed with exit code $exit"
@@ -103,8 +116,18 @@ function Run-Test {
     Write-Host "=== TEST $Label ==="
     Push-Location $script:RepoRoot
     try {
-        $output = & cargo test --color never --features simh-ffi --test $TestName -- --ignored --nocapture 2>&1
-        $exit = $LASTEXITCODE
+        # cargo writes normal compile progress to stderr. On Windows PowerShell
+        # 5.1 that becomes NativeCommandError under ErrorActionPreference=Stop.
+        # Capture both streams and use cargo's exit code as the authority.
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $output = & cargo test --color never --features simh-ffi --test $TestName -- --ignored --nocapture 2>&1
+            $exit = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
     }
     finally {
         Pop-Location
