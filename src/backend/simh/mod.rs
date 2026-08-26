@@ -29,7 +29,7 @@ mod serial_bridge;
 #[cfg(feature = "simh-ffi")]
 mod session;
 #[cfg(feature = "simh-ffi")]
-mod threaded;
+mod threaded_worker;
 
 #[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
@@ -53,7 +53,7 @@ pub use session::{
     SimhLivePanelSample, SimhOperationalState, SimhSession, SimhSessionError,
 };
 #[cfg(feature = "simh-ffi")]
-pub use threaded::SimhThreadedBackend;
+pub use threaded_worker::SimhThreadedBackend;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimhTarget {
