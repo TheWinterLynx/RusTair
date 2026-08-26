@@ -167,7 +167,7 @@ impl RusTairApp {
             });
     }
 
-    fn reader_can_run(&self) -> bool {
+    fn reader_can_run(&mut self) -> bool {
         self.tty.tape_input_total_len() > 0
             && self.tty.tape_input_pending()
             && self.tty.mode == TtyMode::Line
