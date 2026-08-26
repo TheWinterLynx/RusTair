@@ -1,5 +1,6 @@
 mod asr33_controller;
 mod asr33_state;
+mod authentic_loader;
 mod commands;
 mod cpu_diagnostics;
 mod embedded_cpu_diagnostics;
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
+use self::authentic_loader::AuthenticLoaderState;
 use self::cpu_diagnostics::DiagnosticFileDialog;
 use self::embedded_cpu_diagnostics::EmbeddedDiagnosticsState;
 use self::external_com::ExternalComState;
@@ -88,6 +90,7 @@ struct RusTairApp {
     external_com: ExternalComState,
     diagnostic_file_dialog: Option<DiagnosticFileDialog>,
     embedded_diagnostics: EmbeddedDiagnosticsState,
+    authentic_loader: AuthenticLoaderState,
     tex: Tex,
     tty: Teletype,
     asr33: Asr33State,
@@ -113,6 +116,7 @@ impl RusTairApp {
             external_com: ExternalComState::default(),
             diagnostic_file_dialog: None,
             embedded_diagnostics: EmbeddedDiagnosticsState::default(),
+            authentic_loader: AuthenticLoaderState::default(),
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
@@ -315,7 +319,7 @@ impl RusTairApp {
     }
 
     fn terminal_serial_rx_empty(&mut self) -> bool { let c = self.terminal_connection(); self.serial_rx_empty_at(c) }
-    fn terminal_serial_rx_len(&mut self) -> usize { let c = self.terminal_connection(); self.serial_rx_len_at(c) }
+    fn terminal_serial_rx_len(&mut self, connection: SerialConnection) -> usize { self.serial_rx_len_at(connection) }
     fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
     fn terminal_serial_tx_busy(&mut self) -> bool { let c = self.terminal_connection(); self.serial_tx_busy_at(c) }
     fn terminal_serial_tx_front(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_front_at(c) }
