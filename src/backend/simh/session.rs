@@ -160,12 +160,17 @@ impl SimhSession {
         self.check("register live data", status)?;
         let status = unsafe { self.api.add_register(raw, sp.as_ptr(), device, size_of::<u32>(), (&mut *self.live.sp as *mut u32).cast()) };
         self.check("register live SP", status)?;
+
+        // FrontPanel API v12 requires sampling parameters to exist before any
+        // *_bits register is declared; otherwise sim_panel_add_register_bits()
+        // rejects the registration with "must be called first".
+        let status = unsafe { self.api.set_sampling_parameters(raw, LIVE_SAMPLE_FREQUENCY, LIVE_SAMPLE_DEPTH) };
+        self.check("configure live register sampling", status)?;
+
         let status = unsafe { self.api.add_register_bits(raw, pc.as_ptr(), device, 16, self.live.pc_bits.as_mut_ptr()) };
         self.check("register live PC bits", status)?;
         let status = unsafe { self.api.add_register_bits(raw, data.as_ptr(), device, self.live.data_width, self.live.data_bits.as_mut_ptr()) };
-        self.check("register live data bits", status)?;
-        let status = unsafe { self.api.set_sampling_parameters(raw, LIVE_SAMPLE_FREQUENCY, LIVE_SAMPLE_DEPTH) };
-        self.check("configure live register sampling", status)
+        self.check("register live data bits", status)
     }
 
     /// Use the FrontPanel API's live register set, designed specifically for
