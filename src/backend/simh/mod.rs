@@ -16,6 +16,8 @@ mod altairz80;
 #[cfg(feature = "simh-ffi")]
 mod ffi;
 #[cfg(feature = "simh-ffi")]
+mod integration;
+#[cfg(feature = "simh-ffi")]
 mod machine;
 #[cfg(feature = "simh-ffi")]
 mod machine_altairz80;
@@ -31,6 +33,8 @@ mod session;
 pub use altair::{ClassicAltairRegisters, set_switch_register};
 #[cfg(feature = "simh-ffi")]
 pub use altairz80::{AltairZ80CpuMode, AltairZ80Registers, set_altairz80_switch_register_low};
+#[cfg(feature = "simh-ffi")]
+pub use integration::{create_embedded_backend, embedded_backend_available};
 #[cfg(feature = "simh-ffi")]
 pub use machine::SimhAltairBackend;
 #[cfg(feature = "simh-ffi")]
