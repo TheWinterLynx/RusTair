@@ -64,17 +64,7 @@ function(rustair_apply_timer_stop_guard)
         if(TARGET "${rustair_link}")
             get_target_property(rustair_sources "${rustair_link}" SOURCES)
             if(rustair_sources)
-                # Diagnostic configurations may already have replaced
-                # sim_timer.c with their own build-tree copy. Replace either
-                # form with the clean upstream source plus this compatibility
-                # guard so the production and diagnostic configurations agree
-                # on the validated timer behavior.
-                set(rustair_timer_index -1)
                 list(FIND rustair_sources "${CMAKE_SOURCE_DIR}/sim_timer.c" rustair_timer_index)
-                if(rustair_timer_index EQUAL -1)
-                    list(FIND rustair_sources "${CMAKE_BINARY_DIR}/rustair-stop-trace-src/sim_timer.c" rustair_timer_index)
-                endif()
-
                 if(NOT rustair_timer_index EQUAL -1)
                     list(REMOVE_AT rustair_sources ${rustair_timer_index})
                     list(INSERT rustair_sources ${rustair_timer_index} "${rustair_guarded_timer}")
@@ -98,7 +88,6 @@ get_property(rustair_timer_stop_guard_scheduled GLOBAL PROPERTY RUSTAIR_TIMER_ST
 if(NOT rustair_timer_stop_guard_scheduled)
     set_property(GLOBAL PROPERTY RUSTAIR_TIMER_STOP_GUARD_SCHEDULED TRUE)
     # Deferred application runs after Open-SIMH has created the altairz80 core
-    # target. If a diagnostic trace injection also replaces sim_timer.c, this
-    # callback intentionally substitutes the validated guarded source last.
+    # target, so the production build substitutes the validated guarded source.
     cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL rustair_apply_timer_stop_guard)
 endif()
