@@ -26,9 +26,6 @@ function(rustair_replace_unique_parser block_var context output_var)
     set(rustair_parser_new "c = strrchr (response, ':');")
     set(rustair_block "${${block_var}}")
 
-    # Do not use MATCHALL + list(LENGTH) here: the C statement being matched
-    # ends in ';', and CMake list semantics treat that semicolon as a list
-    # separator, which makes one match appear as two list elements.
     string(FIND "${rustair_block}" "${rustair_parser_old}" rustair_first_parser)
     if(rustair_first_parser EQUAL -1)
         message(FATAL_ERROR
@@ -53,28 +50,15 @@ endfunction()
 
 function(rustair_prepare_simh_frontpanel_source output_var)
     # Open-SIMH FrontPanel API v12 parses EXAMINE responses by taking the first
-    # ':' in the response.  The classic Altair monitor can emit symbolic-output
-    # diagnostics before the actual memory value, e.g.:
-    #
-    #   %SIM-ERROR: No such opcode:
-    #   %SIM-ERROR: No such opcode:
-    #   1000:      A5
-    #
-    # sim_panel_gen_examine() and sim_panel_mem_examine() therefore parse the
-    # first diagnostic line as a numeric value and return zero even though the
-    # memory operation itself succeeded.  RusTair builds an otherwise identical
-    # private copy of sim_frontpanel.c with only those two parsers selecting the
-    # last ':' in the response instead.  The Open-SIMH checkout itself is never
-    # modified.
+    # ':' in the response. The classic Altair monitor can emit symbolic-output
+    # diagnostics before the actual memory value. RusTair changes only the two
+    # EXAMINE parsers to use the final ':' in the response.
     set(rustair_frontpanel_source "${CMAKE_SOURCE_DIR}/sim_frontpanel.c")
     set(rustair_frontpanel_dir "${CMAKE_BINARY_DIR}/rustair-frontpanel-src")
     set(rustair_frontpanel_patched "${rustair_frontpanel_dir}/sim_frontpanel.c")
 
     file(READ "${rustair_frontpanel_source}" rustair_frontpanel_contents)
 
-    # Patch sim_panel_gen_examine() only. There are other strchr(response, ':')
-    # calls elsewhere in sim_frontpanel.c with unrelated parsing semantics and
-    # they must remain untouched.
     string(FIND "${rustair_frontpanel_contents}"
         "\nsim_panel_gen_examine (" rustair_gen_start)
     string(FIND "${rustair_frontpanel_contents}"
@@ -98,8 +82,6 @@ function(rustair_prepare_simh_frontpanel_source output_var)
     set(rustair_frontpanel_contents
         "${rustair_gen_prefix}${rustair_gen_block_patched}${rustair_gen_suffix}")
 
-    # Patch sim_panel_mem_examine() only. Recalculate offsets after the first
-    # replacement so this remains correct if replacement lengths change later.
     string(FIND "${rustair_frontpanel_contents}"
         "\nsim_panel_mem_examine (" rustair_mem_start)
     string(FIND "${rustair_frontpanel_contents}"
@@ -122,6 +104,58 @@ function(rustair_prepare_simh_frontpanel_source output_var)
         ${rustair_mem_end} -1 rustair_mem_suffix)
     set(rustair_frontpanel_contents
         "${rustair_mem_prefix}${rustair_mem_block_patched}${rustair_mem_suffix}")
+
+    # RusTair product integration also needs access to the same interactive SCP
+    # console that a user would see at the simulator's `sim>` prompt. API v12
+    # deliberately exposes structured operations but no arbitrary command
+    # function. Add one small RusTair-only export inside this private DLL. It
+    # reuses FrontPanel's existing synchronized command path and is available
+    # only while the simulator is halted, matching the real SIMH console.
+    string(FIND "${rustair_frontpanel_contents}"
+        "rustair_panel_exec_command" rustair_existing_console_extension)
+    if(NOT rustair_existing_console_extension EQUAL -1)
+        message(FATAL_ERROR
+            "Open-SIMH source already contains rustair_panel_exec_command; review the RusTair console extension before building.")
+    endif()
+
+    set(rustair_console_extension [=[
+
+/* RusTair private FrontPanel extension: execute one halted SCP command. */
+int
+rustair_panel_exec_command (PANEL *panel,
+                            const char *command,
+                            char *buffer,
+                            size_t buffer_size)
+{
+char *response = NULL;
+int cmd_stat = 0;
+
+if ((!panel) || (panel->State == Error) || (!command) || (!buffer) || (buffer_size == 0)) {
+    sim_panel_set_error (NULL, "Invalid RusTair console request");
+    return -1;
+    }
+if (panel->State == Run) {
+    sim_panel_set_error (NULL, "Not Halted");
+    return -1;
+    }
+buffer[0] = '\0';
+if (_panel_sendf (panel, &cmd_stat, &response, "%s", command)) {
+    free (response);
+    return -1;
+    }
+if (response) {
+    strncpy (buffer, response, buffer_size - 1);
+    buffer[buffer_size - 1] = '\0';
+    free (response);
+    }
+if (cmd_stat) {
+    sim_panel_set_error (NULL, "SIMH command status %d: %s", cmd_stat, command);
+    return -1;
+    }
+return 0;
+}
+]=])
+    string(APPEND rustair_frontpanel_contents "${rustair_console_extension}")
 
     file(MAKE_DIRECTORY "${rustair_frontpanel_dir}")
     file(WRITE "${rustair_frontpanel_patched}" "${rustair_frontpanel_contents}")
@@ -150,12 +184,6 @@ function(rustair_add_simh_frontpanel)
             ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/rustair-frontpanel/$<CONFIG>")
 
         target_include_directories(simh_frontpanel PUBLIC "${CMAKE_SOURCE_DIR}")
-
-        # thread_lib provides the pthread implementation used by sim_frontpanel.c.
-        # os_features provides platform feature definitions and the native socket
-        # libraries required by sim_sock.c. Linking simh_network here would also
-        # inherit optional simulator networking stacks (notably SLiRP) that the
-        # FrontPanel client does not use.
         target_link_libraries(simh_frontpanel PRIVATE os_features thread_lib)
 
         if(MSVC)
@@ -169,12 +197,10 @@ function(rustair_add_simh_frontpanel)
             "RusTair: added minimal simh_frontpanel shared library from Open-SIMH source ${CMAKE_SOURCE_DIR}")
         message(STATUS
             "RusTair: applied classic Altair FrontPanel EXAMINE parser compatibility patch in build tree")
+        message(STATUS
+            "RusTair: added halted interactive SCP console export rustair_panel_exec_command")
     endif()
 
-    # Open-SIMH historically sends every Windows simulator to BIN/Win32,
-    # including x64 builds. Keep the RusTair-owned x64 simulator artifacts in
-    # this architecture-specific build tree instead so they cannot overwrite or
-    # be confused with an existing Win32 build from the same source checkout.
     foreach(rustair_simh_target IN ITEMS altair altairz80)
         if(TARGET ${rustair_simh_target})
             set_target_properties(${rustair_simh_target} PROPERTIES
