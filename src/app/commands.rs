@@ -145,6 +145,7 @@ impl RusTairApp {
         match std::fs::read(&path) {
             Ok(bytes) => {
                 self.asr33.reader_running = false;
+                self.asr33.last_reader_byte = None;
                 self.tty.load_tape(&bytes);
                 self.asr33.last_reader_tick = Instant::now();
                 self.audio.play_once("assets/click.mp3");
