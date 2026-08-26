@@ -69,10 +69,18 @@ impl eframe::App for RusTairApp {
                         self.load_binary_dialog();
                         ui.close();
                     }
-                    if ui.button("Load bundled Microsoft 4K BASIC").clicked() {
-                        self.load_bundled_basic();
-                        ui.close();
-                    }
+                    ui.menu_button("Microsoft 4K BASIC 3.2", |ui| {
+                        if ui.button("Quick Load — direct RAM").clicked() {
+                            self.load_bundled_basic();
+                            ui.close();
+                        }
+                        if ui.button("Authentic Load — paper tape…").clicked() {
+                            self.open_authentic_basic_loader();
+                            ui.close();
+                        }
+                        ui.separator();
+                        ui.small("Quick Load is the emulator convenience path. Authentic Load executes the historical bootstrap and receives BASIC through the emulated serial board.");
+                    });
                     ui.menu_button("CPU diagnostics", |ui| {
                         self.draw_cpu_diagnostics_menu(ui);
                     });
@@ -307,6 +315,7 @@ impl eframe::App for RusTairApp {
         self.show_external_com_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
+        self.draw_authentic_loader_window(ctx);
 
         super::ui::persist_configuration_if_changed(self);
     }
