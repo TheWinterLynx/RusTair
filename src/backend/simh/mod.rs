@@ -1,38 +1,48 @@
-//! Open SIMH backend support.
+//! Open-SIMH backend support.
 //!
-//! Enable `simh-ffi` only when `simh_frontpanel` has been built from the same
-//! Open-SIMH source revision as the simulator executables.
+//! RusTair ships a validated Windows x64 Open-SIMH runtime bundle. The three
+//! runtime binaries are embedded into the Rust executable and materialized only
+//! when a SIMH backend is started. `simh_frontpanel.dll` is loaded dynamically,
+//! so no Open-SIMH installation or import library is required to compile.
 
 use std::path::{Path, PathBuf};
 
 use super::EmulationEngine;
 
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 mod altair;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 mod altairz80;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 mod ffi;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 mod machine;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 mod machine_altairz80;
 mod profile;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
+mod runtime;
+#[cfg(all(feature = "simh-ffi", windows))]
 mod serial_bridge;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 mod session;
 
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 pub use altairz80::{AltairZ80CpuMode, AltairZ80Registers, set_altairz80_switch_register_low};
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 pub use machine::SimhAltairBackend;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
 pub use machine_altairz80::SimhAltairZ80Backend;
 pub use profile::ClassicAltairProfile;
-#[cfg(feature = "simh-ffi")]
+#[cfg(all(feature = "simh-ffi", windows))]
+pub use runtime::{
+    OPEN_SIMH_UPSTREAM_COMMIT, RUSTAIR_SIMH_BUNDLE_REVISION, SimhRuntimeError,
+    SimhRuntimePaths, embedded_altair_launch_config, embedded_altairz80_launch_config,
+    prepare_embedded_runtime,
+};
+#[cfg(all(feature = "simh-ffi", windows))]
 pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
