@@ -20,8 +20,10 @@
 
 ## P0 — Authentic Altair paper-tape bootstrap / loader
 
+> Active implementation branch: `feature/authentic-paper-tape-bootstrap`. Source implementation currently includes the split Quick/Authentic workflow, manual octal procedure, assisted EXAMINE/DEPOSIT installation, ASR-33/UART guest-paced path, 4 KiB/port/mode/sense validation, loader diagnostics and Fast/Cycle regression tests. These implementation items remain unchecked until local `cargo test` + `cargo build --release` and a real `4K BASIC Ver 3-2.tap` end-to-end run are completed.
+
 - [ ] **[P0] Keep Quick Load and Authentic Load as explicitly separate workflows.** Quick Load may continue copying bytes directly to RAM; Authentic Load must use the emulated machine, serial board and ASR-33 reader.
-- [ ] **[P0] Establish and document the historically correct bootstrap loader(s)** for the supported MITS 88-SIO / 88-2SIO configurations, including provenance and exact bytes.
+- [x] ~~**[P0] Establish and document the historically correct bootstrap loader(s)** for the supported MITS 88-SIO / 88-2SIO configurations, including provenance and exact bytes.~~ See `docs/AUTHENTIC_BASIC_BOOTSTRAP.md`.
 - [ ] **[P0] Support manual front-panel entry of the bootstrap** as the fully authentic path.
 - [ ] **[P0] Add an optional assisted “Install bootstrap” convenience action** that performs the same deposits transparently and shows exactly what was entered; it must not silently bypass the emulated loader.
 - [ ] **[P0] Make Authentic Load consume the mounted ASR-33 paper tape through the selected serial port**, so `WAIT GUEST RX` advances because the bootstrap genuinely executes `IN` instructions.
