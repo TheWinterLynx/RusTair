@@ -1,7 +1,7 @@
 //! Compile-time registry for all runtime assets shipped with RusTair.
 //!
 //! Keeping these bytes in the executable makes release builds self-contained:
-//! no `assets/` directory is required next to `rustair.exe` at runtime.
+//! no `assets/` or SIMH runtime directory is required next to `rustair.exe`.
 
 pub(crate) fn get(path: &str) -> Option<&'static [u8]> {
     Some(match path {
@@ -38,6 +38,12 @@ pub(crate) fn get(path: &str) -> Option<&'static [u8]> {
         "assets/printcharpadded.mp3" => include_bytes!("../assets/printcharpadded.mp3"),
         "assets/up-hum4.mp3" => include_bytes!("../assets/up-hum4.mp3"),
 
+        "SIMH-backend/altair.exe" => include_bytes!("../SIMH-backend/altair.exe"),
+        "SIMH-backend/altairz80.exe" => include_bytes!("../SIMH-backend/altairz80.exe"),
+        "SIMH-backend/simh_frontpanel.dll" => {
+            include_bytes!("../SIMH-backend/simh_frontpanel.dll")
+        }
+
         _ => return None,
     })
 }
@@ -70,6 +76,9 @@ mod tests {
             "assets/powerbtn.mp3",
             "assets/printcharpadded.mp3",
             "assets/up-hum4.mp3",
+            "SIMH-backend/altair.exe",
+            "SIMH-backend/altairz80.exe",
+            "SIMH-backend/simh_frontpanel.dll",
         ] {
             assert!(get(path).is_some(), "missing embedded asset: {path}");
         }
