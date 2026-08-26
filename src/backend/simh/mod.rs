@@ -55,6 +55,7 @@ pub use runtime::{
 #[cfg(feature = "simh-ffi")]
 pub use session::{
     SimhLivePanelSample, SimhOperationalState, SimhSession, SimhSessionError,
+    SimhStartupTimings,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
