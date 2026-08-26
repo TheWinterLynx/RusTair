@@ -2,7 +2,6 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -220,21 +219,6 @@ fn write_launch_config(
     stem: &str,
     machine_setup: &str,
 ) -> Result<PathBuf, SimhRuntimeError> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|source| SimhRuntimeError::Io {
-        operation: "reserve SIMH console port",
-        path: root.to_path_buf(),
-        source,
-    })?;
-    let console_port = listener
-        .local_addr()
-        .map_err(|source| SimhRuntimeError::Io {
-            operation: "read SIMH console port",
-            path: root.to_path_buf(),
-            source,
-        })?
-        .port();
-    drop(listener);
-
     let sequence = CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let config_dir = root.join("configs");
     fs::create_dir_all(&config_dir).map_err(|source| SimhRuntimeError::Io {
@@ -246,10 +230,11 @@ fn write_launch_config(
         "{stem}-{}-{sequence}.ini",
         std::process::id()
     ));
-    let contents = format!(
-        "{machine_setup}set console telnet=buffered\nset console -u telnet={console_port}\n"
-    );
-    fs::write(&path, contents).map_err(|source| SimhRuntimeError::Io {
+
+    // FrontPanel appends and owns its REMOTE MASTER control channel. Do not
+    // configure SIMH's ordinary console/Telnet here: that is a separate device
+    // and caused RusTair to create a second, unnecessary console endpoint.
+    fs::write(&path, machine_setup).map_err(|source| SimhRuntimeError::Io {
         operation: "write SIMH launch config",
         path: path.clone(),
         source,
@@ -271,5 +256,20 @@ mod tests {
         for path in [ALTAIR_ASSET, ALTAIRZ80_ASSET, FRONTPANEL_ASSET] {
             assert!(embedded_assets::get(path).is_some(), "missing {path}");
         }
+    }
+
+    #[test]
+    fn launch_config_leaves_console_control_to_frontpanel() {
+        let root = std::env::temp_dir().join(format!(
+            "rustair-simh-runtime-test-{}-{}",
+            std::process::id(),
+            CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path = write_launch_config(&root, "test", "set cpu 8080\n").unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        assert_eq!(contents, "set cpu 8080\n");
+        assert!(!contents.to_ascii_lowercase().contains("set console"));
+        assert!(!contents.to_ascii_lowercase().contains("set remote"));
+        let _ = fs::remove_dir_all(root);
     }
 }
