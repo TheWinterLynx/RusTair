@@ -29,6 +29,12 @@ The byte listings are the period MITS bootstrap listings cross-checked against l
    - confirms `256` octal for BASIC 3.2 and `017` octal for 4K BASIC;
    - documents the leader → reverse checksum loader → checksummed program records → go-record flow.
 
+4. **Archived BASIC paper-tape images for external validation**  
+   https://deramp.com/downloads/altair/software/papertape_cassette/  
+   https://altairclone.com/downloads/basic/Paper%20Tape%20and%20Cassette/
+   - both archives list `4K BASIC Ver 3-2.tap` as a binary paper-tape image;
+   - this file is useful as an external interoperability/validation input but is intentionally **not** copied into the RusTair repository.
+
 No downloaded BASIC tape image is added by this work. The user mounts a legally obtained `.tap`/`.bin` image in the existing ASR-33 reader.
 
 ## 88-SIO rev. 1 — 4K BASIC 3.2
