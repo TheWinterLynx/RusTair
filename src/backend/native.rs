@@ -1,12 +1,12 @@
-use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
-use crate::config::SerialBoard;
-use crate::machine::AltairMachine;
+use crate::config::{RamInit, RamSize, SerialBoard};
+use crate::machine::{AltairMachine, CpuDiagnosticResult};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
-    EmulationEngine, FrontPanelState, Intel8080State, MachineBackend,
+    EmulationEngine, FrontPanelState, Intel8080State, IoPortActivity, IoTraceSnapshot,
+    MachineBackend,
 };
 
 pub struct NativeMachineBackend { machine: AltairMachine }
@@ -34,8 +34,6 @@ impl NativeMachineBackend {
         }
     }
 }
-impl Deref for NativeMachineBackend { type Target = AltairMachine; fn deref(&self) -> &Self::Target { &self.machine } }
-impl DerefMut for NativeMachineBackend { fn deref_mut(&mut self) -> &mut Self::Target { &mut self.machine } }
 
 impl MachineBackend for NativeMachineBackend {
     fn engine(&self) -> EmulationEngine { EmulationEngine::RustFast8080 }
@@ -48,6 +46,10 @@ impl MachineBackend for NativeMachineBackend {
     fn execution_model(&self) -> BackendExecutionModel { BackendExecutionModel::HostDriven }
     fn cpu_state(&mut self) -> BackendResult<CpuState> { Ok(self.snapshot_cpu()) }
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
+    fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
+        self.machine.configure_memory(size, init);
+        Ok(())
+    }
     fn power(&mut self, on: bool) -> BackendResult<()> { self.machine.power(on); Ok(()) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> { self.machine.power_with_historical_run_latch(on, historical); Ok(()) }
     fn run(&mut self) -> BackendResult<()> { self.machine.set_running(true); Ok(()) }
@@ -62,9 +64,9 @@ impl MachineBackend for NativeMachineBackend {
     fn assert_clear(&mut self) -> BackendResult<()> { self.machine.assert_front_panel_clear(); Ok(()) }
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.machine.request_hold(hold); Ok(()) }
-    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.machine.examine(next); Ok(()) }
-    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.deposit(next); Ok(()) }
-    fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.protect_current_board(protected); Ok(()) }
+    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_examine_via_cpu_board(next); Ok(()) }
+    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_deposit_via_cpu_board(next); Ok(()) }
+    fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.front_panel_set_memory_protection_via_s100(protected); Ok(()) }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
         let changed = self.machine.panel_switches() ^ value;
@@ -82,7 +84,37 @@ impl MachineBackend for NativeMachineBackend {
     fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_front(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_front() }) }
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_complete(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_complete() }) }
     fn clear_serial(&mut self) -> BackendResult<()> { self.machine.bus.clear_serial(); Ok(()) }
+    fn installed_ram_bytes(&mut self) -> BackendResult<usize> { Ok(self.machine.installed_ram_bytes()) }
     fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> { Ok(self.machine.bus.peek_memory(address)) }
     fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> BackendResult<bool> { Ok(self.machine.bus.debugger_write_memory(address, value, respect_protection)) }
     fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> { self.machine.bus.load(address, bytes); Ok(()) }
+    fn memory_is_protected(&mut self, address: u16) -> BackendResult<bool> { Ok(self.machine.bus.is_protected(address)) }
+    fn clear_memory_protection(&mut self) -> BackendResult<()> { self.machine.bus.clear_protection(); Ok(()) }
+    fn clear_transient_memory_guards(&mut self) -> BackendResult<()> { self.machine.bus.clear_transient_memory_guards(); Ok(()) }
+    fn arm_basic32_full_memory_probe_guard(&mut self) -> BackendResult<bool> { Ok(self.machine.arm_basic32_full_memory_probe_guard()) }
+    fn begin_cpu_diagnostic_meter(
+        &mut self,
+        name: String,
+        bdos_start: u16,
+        bdos_len: usize,
+        expected_instructions: Option<u64>,
+        expected_t_states: Option<u64>,
+    ) -> BackendResult<()> {
+        self.machine.begin_cpu_diagnostic_meter(name, bdos_start, bdos_len, expected_instructions, expected_t_states);
+        Ok(())
+    }
+    fn cancel_cpu_diagnostic_meter(&mut self) -> BackendResult<()> { self.machine.bus.cancel_cpu_diagnostic_meter(); Ok(()) }
+    fn take_cpu_diagnostic_result(&mut self) -> BackendResult<Option<CpuDiagnosticResult>> { Ok(self.machine.take_cpu_diagnostic_result()) }
+    fn peek_io_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.machine.bus.peek_io_port(port)) }
+    fn io_port_activity(&mut self, port: u8) -> BackendResult<IoPortActivity> { Ok(self.machine.bus.io_port_activity(port)) }
+    fn io_trace_snapshot(&mut self) -> BackendResult<IoTraceSnapshot> { Ok(self.machine.bus.io_trace_snapshot()) }
+    fn io_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.machine.bus.io_trace_enabled()) }
+    fn set_io_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> { self.machine.bus.set_io_trace_enabled(enabled); Ok(()) }
+    fn clear_io_trace(&mut self) -> BackendResult<()> { self.machine.bus.clear_io_trace(); Ok(()) }
+    fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.machine.bus.debugger_input_port(port)) }
+    fn debugger_output_port(&mut self, port: u8, value: u8) -> BackendResult<()> { self.machine.bus.debugger_output_port(port, value); Ok(()) }
+    fn debugger_inject_serial_rx(&mut self, port: u8, byte: u8) -> BackendResult<bool> { Ok(self.machine.bus.debugger_inject_serial_rx(port, byte)) }
+    fn debugger_clear_serial_rx(&mut self, port: u8) -> BackendResult<bool> { Ok(self.machine.bus.debugger_clear_serial_rx(port)) }
+    fn debugger_clear_serial_tx(&mut self, port: u8) -> BackendResult<bool> { Ok(self.machine.bus.debugger_clear_serial_tx(port)) }
+    fn debugger_complete_serial_tx(&mut self, port: u8) -> BackendResult<Option<u8>> { Ok(self.machine.bus.debugger_complete_serial_tx(port)) }
 }

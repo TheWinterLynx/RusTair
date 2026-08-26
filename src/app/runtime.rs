@@ -3,6 +3,7 @@ use super::*;
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
+        super::ui::ensure_persistent_configuration_loaded(self);
 
         // Embedded-suite completion must consume its meter result before the
         // generic external-.COM result dialog gets a chance to take it.
@@ -19,8 +20,8 @@ impl eframe::App for RusTairApp {
             )
         });
         let io_capture_active = io_inspector_open && io_capture_requested;
-        if self.machine.bus.io_trace_enabled() != io_capture_active {
-            self.machine.bus.set_io_trace_enabled(io_capture_active);
+        if self.machine.io_trace_enabled() != io_capture_active {
+            self.machine.set_io_trace_enabled(io_capture_active);
         }
         if self.external_serial.server.network_trace_enabled() != io_capture_active {
             self.external_serial.server.set_network_trace_enabled(io_capture_active);
@@ -37,7 +38,7 @@ impl eframe::App for RusTairApp {
             self.process_terminal_input(ctx);
         }
 
-        if self.machine.running {
+        if self.machine.running() {
             let authentic_cycles = (CLOCK_HZ as f64 * dt.as_secs_f64()) as u32;
             let authentic_cycles = authentic_cycles.clamp(1, 40_000);
             let speed = self.effective_emulation_speed();
@@ -68,10 +69,22 @@ impl eframe::App for RusTairApp {
                         self.load_binary_dialog();
                         ui.close();
                     }
-                    if ui.button("Load bundled Microsoft 4K BASIC").clicked() {
-                        self.load_bundled_basic();
+                    if ui.button("Front Panel Operator…").clicked() {
+                        self.open_standalone_front_panel_operator(ctx);
                         ui.close();
                     }
+                    ui.menu_button("Microsoft 4K BASIC 3.2", |ui| {
+                        if ui.button("Quick Load — direct RAM").clicked() {
+                            self.load_bundled_basic();
+                            ui.close();
+                        }
+                        if ui.button("Authentic Load — paper tape…").clicked() {
+                            self.open_authentic_basic_loader();
+                            ui.close();
+                        }
+                        ui.separator();
+                        ui.small("Quick Load is the emulator convenience path. Authentic Load executes the historical bootstrap and receives BASIC through the emulated serial board.");
+                    });
                     ui.menu_button("CPU diagnostics", |ui| {
                         self.draw_cpu_diagnostics_menu(ui);
                     });
@@ -79,15 +92,49 @@ impl eframe::App for RusTairApp {
 
                 ui.menu_button("Configuration", |ui| {
                     ui.menu_button("CPU", |ui| {
+                        let active_engine = self.machine.engine();
+                        ui.label(format!("Emulation engine: {}", active_engine.label()));
+                        ui.small("Engine changes require POWER OFF. Runtime CPU/RAM/UART state is intentionally not migrated between engines.");
+                        ui.separator();
+                        for engine in [
+                            EmulationEngine::RustFast8080,
+                            EmulationEngine::RustCycleAccurate8080,
+                        ] {
+                            if ui.selectable_label(active_engine == engine, engine.label()).clicked() {
+                                self.select_emulation_engine(engine);
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        ui.add_enabled(false, egui::Button::new("Open SIMH — Altair (integration parked)"));
+                        ui.add_enabled(false, egui::Button::new("Open SIMH — AltairZ80 (integration parked)"));
+
+                        let capabilities = self.machine.capabilities();
+                        ui.separator();
+                        if capabilities.exact_t_state_timing {
+                            ui.small("Timing: exact 8080 T-state core; front-panel SINGLE STEP advances one machine cycle.");
+                        } else {
+                            ui.small("Timing: fast instruction-level 8080; front-panel SINGLE STEP is an instruction-level approximation.");
+                        }
+                        ui.small(format!(
+                            "S-100 activity: {}",
+                            if capabilities.exact_bus_activity { "exact T-state samples" } else { "machine-cycle samples synthesized by the fast CPU-board adapter" }
+                        ));
+
                         let cpu = self.config.machine.cpu_model;
+                        ui.separator();
                         ui.label(format!("Processor: {}", cpu.label()));
                         ui.small(format!(
                             "Authentic hardware clock: {:.1} MHz",
                             cpu.clock_hz() as f32 / 1_000_000.0
                         ));
-                        ui.separator();
-                        ui.small("The emulated hardware remains an Intel 8080 at 2 MHz. Host-side acceleration is configured under Preferences → Emulation speed.");
+                        ui.small("Host-side acceleration is configured under Preferences → Emulation speed; it does not change the emulated 2 MHz hardware clock.");
                     });
+
+                    if ui.button("LED visuals…").clicked() {
+                        super::ui::open_led_visual_controls(self);
+                        ui.close();
+                    }
 
                     ui.menu_button("Memory", |ui| {
                         ui.label(format!("Installed RAM: {}", self.config.machine.ram_size.label()));
@@ -196,7 +243,7 @@ impl eframe::App for RusTairApp {
                         if ui.checkbox(&mut basic32_workaround, "BASIC 3.2 64K memory-probe workaround").changed() {
                             self.config.compatibility.basic32_64k_probe_workaround = basic32_workaround;
                             if !basic32_workaround {
-                                self.machine.bus.clear_transient_memory_guards();
+                                self.machine.clear_transient_memory_guards();
                             }
                             self.status = if basic32_workaround {
                                 "Compatibility enabled: BASIC 3.2 64K memory-probe workaround".into()
@@ -231,19 +278,22 @@ impl eframe::App for RusTairApp {
                 }
                 if ui.button("RAM VIEWER").clicked() { self.open_memory_viewer(ctx); }
                 if ui.button("I/O INSPECTOR").clicked() { self.open_io_inspector(ctx); }
+                if ui.button("PANEL OPERATOR").clicked() { self.open_standalone_front_panel_operator(ctx); }
                 ui.separator();
                 let mut muted = self.audio.muted();
                 if ui.checkbox(&mut muted, "Mute").changed() { self.audio.set_muted(muted); }
                 ui.separator();
-                ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", self.machine.cpu.pc, self.machine.cpu.sp, self.machine.cpu.a, self.machine.cpu.f));
+                let cpu = self.machine.intel8080_state();
+                let panel = self.machine.front_panel_state();
+                ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", cpu.pc, cpu.sp, cpu.a, cpu.flags));
                 ui.separator();
                 ui.label(self.effective_emulation_speed().label());
                 ui.separator();
-                let execution_state = if !self.machine.powered {
+                let execution_state = if !panel.powered {
                     "POWER OFF"
-                } else if self.machine.cpu.halted {
-                    if self.machine.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
-                } else if self.machine.running {
+                } else if cpu.halted.unwrap_or(false) {
+                    if panel.running { "HALTED · RUN latch ON" } else { "HALTED · RUN latch OFF" }
+                } else if panel.running {
                     "RUNNING"
                 } else {
                     "STOPPED"
@@ -255,7 +305,20 @@ impl eframe::App for RusTairApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.centered_and_justified(|ui| self.draw_altair(ui));
         });
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| { ui.small(&self.status); });
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.small(&self.status);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.small(format!("Core: {}", self.machine.engine().label()));
+                });
+            });
+        });
+
+        // Manual mouse operation on the main panel already plays the physical
+        // switch click inside front_panel.rs. Capture the register *after* that
+        // panel has been drawn so changes made by native helper viewports can be
+        // detected separately without double-playing manual clicks.
+        let switches_before_helper_viewports = self.machine.switch_register();
 
         self.show_tty_viewport(ctx);
         self.show_terminal_viewport(ctx);
@@ -263,5 +326,20 @@ impl eframe::App for RusTairApp {
         self.show_external_com_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
+        self.show_standalone_front_panel_operator_viewport(ctx);
+        self.draw_authentic_loader_window(ctx);
+
+        // Config switches in the BASIC bootstrap/operator windows changes the
+        // same real switch register as the main panel. Give that assisted move
+        // the same electromechanical click instead of silently teleporting the
+        // toggle sprites. One composite click represents one assisted switch-set
+        // operation even when several A15..A0 bits change together.
+        let switches_after_helper_viewports = self.machine.switch_register();
+        if switches_after_helper_viewports != switches_before_helper_viewports {
+            self.audio.play_once("assets/click.mp3");
+            ctx.request_repaint();
+        }
+
+        super::ui::persist_configuration_if_changed(self);
     }
 }

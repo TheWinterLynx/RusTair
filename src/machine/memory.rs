@@ -203,6 +203,63 @@ impl super::AltairBus {
         self.memory
             .debugger_write(address, value, respect_protection)
     }
+
+    // Raw accessors used only by the T-state CPU backend. Unlike the legacy
+    // `Bus` trait implementation these perform the functional RAM/I/O action
+    // without synthesizing an aggregate S-100 machine cycle. The caller drives
+    // the actual per-T-state electrical sample separately through
+    // `cycle_drive_s100_t_state`, preventing duplicate panel activity.
+    pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 {
+        self.memory.read(address)
+    }
+
+    pub(crate) fn cycle_peek_memory(&self, address: u16) -> u8 {
+        self.memory.peek(address).unwrap_or(0)
+    }
+
+    pub(crate) fn cycle_write_memory(&mut self, address: u16, value: u8) {
+        self.memory.write(address, value);
+    }
+
+    pub(crate) fn cycle_input_port(&mut self, port: u8) -> u8 {
+        if port == 0xff {
+            self.panel.input()
+        } else {
+            self.io.input(port)
+        }
+    }
+
+    pub(crate) fn cycle_output_port(&mut self, port: u8, value: u8) {
+        if port != 0xff {
+            self.io.output(port, value);
+        }
+    }
+
+    pub(crate) fn cycle_drive_s100_t_state(
+        &mut self,
+        address: Option<u16>,
+        data: Option<u8>,
+        status_word: Option<u8>,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+        hlda: bool,
+    ) {
+        let protected = address
+            .map(|address| self.memory.is_protected(address))
+            .unwrap_or(false);
+        self.cpu_inte = inte;
+        self.s100.drive_cpu_t_state(
+            address,
+            data,
+            status_word,
+            protected,
+            inte,
+            ready,
+            wait,
+            hlda,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -247,5 +304,20 @@ mod tests {
 
         assert!(memory.debugger_write(0x0010, 0x34, false));
         assert_eq!(memory.peek(0x0010), Some(0x34));
+    }
+
+    #[test]
+    fn cycle_raw_memory_path_does_not_synthesize_panel_activity() {
+        let mut bus = super::super::AltairBus::default();
+        bus.load(0x0010, &[0x5a]);
+        let before = bus.s100.signals();
+        assert_eq!(bus.cycle_read_memory(0x0010), 0x5a);
+        bus.cycle_write_memory(0x0011, 0xa5);
+        assert_eq!(bus.peek_memory(0x0011), Some(0xa5));
+        let after = bus.s100.signals();
+        assert_eq!(after.address, before.address);
+        assert_eq!(after.data, before.data);
+        assert_eq!(after.memr, before.memr);
+        assert_eq!(after.m1, before.m1);
     }
 }

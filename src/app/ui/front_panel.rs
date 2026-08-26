@@ -3,6 +3,70 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
+const LED_VISIBLE_THRESHOLD: f32 = 0.0045;
+const LED_HALO_MAX_ALPHA: u8 = 72;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LedDisplaySettings {
+    brightness: f32,
+    aura: f32,
+}
+
+impl Default for LedDisplaySettings {
+    fn default() -> Self {
+        Self {
+            brightness: 1.0,
+            aura: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LedVisualResponse {
+    halo_alpha: u8,
+    body_alpha: u8,
+    core_alpha: u8,
+    glare_alpha: u8,
+}
+
+fn optical_alpha(max_alpha: u8, response: f32) -> u8 {
+    (f32::from(max_alpha) * response.clamp(0.0, 1.0)).round() as u8
+}
+
+fn led_display_settings() -> LedDisplaySettings {
+    let (brightness, aura) = super::persistence::led_visual_settings();
+    LedDisplaySettings { brightness, aura }
+}
+
+/// Convert the panel integrator's electrical duty cycle into a visual LED
+/// response. This is deliberately presentation-only: CPU/S-100 activity stays
+/// untouched. The calibrated curve remains fixed; the two live controls are
+/// multipliers layered on top so 1.00x / 1.00x reproduces the current default
+/// exactly and Reset to default is deterministic.
+fn led_visual_response(
+    intensity: f32,
+    settings: LedDisplaySettings,
+) -> Option<LedVisualResponse> {
+    let electrical = intensity.clamp(0.0, 1.0);
+    if electrical < LED_VISIBLE_THRESHOLD {
+        return None;
+    }
+
+    Some(LedVisualResponse {
+        // Aura controls only the diffuse outer glow. It never changes the
+        // electrical activity or the LED body itself.
+        halo_alpha: optical_alpha(
+            LED_HALO_MAX_ALPHA,
+            electrical.powf(1.25) * settings.aura,
+        ),
+        // Brightness controls emitted light from the red body, luminous core
+        // and high-intensity white hot-spot while preserving their relative
+        // optical response curves.
+        body_alpha: optical_alpha(255, electrical.powf(0.60) * settings.brightness),
+        core_alpha: optical_alpha(255, electrical.powf(0.82) * settings.brightness),
+        glare_alpha: optical_alpha(255, electrical.powf(1.80) * settings.brightness),
+    })
+}
 
 #[derive(Default)]
 struct MomentarySwitchInteraction {
@@ -12,15 +76,118 @@ struct MomentarySwitchInteraction {
 }
 
 impl RusTairApp {
-    fn draw_led(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, x: f32, y: f32, intensity: f32) {
-        if !self.machine.powered { return; }
-        let intensity = intensity.clamp(0.0, 1.0).sqrt();
-        if intensity < 0.015 { return; }
-        let alpha = (255.0 * intensity).round() as u8;
+    fn draw_led_visual_controls(&mut self, ctx: &egui::Context) {
+        let (mut open, brightness, aura) = super::persistence::led_visual_controls_state();
+        if !open {
+            return;
+        }
+
+        let was_open = open;
+        let mut settings = LedDisplaySettings { brightness, aura };
+        let mut changed = false;
+        let mut reset = false;
+
+        egui::Window::new("LED Visual Controls")
+            .id(egui::Id::new("rustair-led-visual-controls-window"))
+            .open(&mut open)
+            .default_pos(Pos2::new(12.0, 52.0))
+            .default_width(285.0)
+            .resizable(false)
+            .collapsible(true)
+            .show(ctx, |ui| {
+                ui.small("Presentation only — CPU, S-100 timing and LED duty-cycle are unchanged.");
+                ui.separator();
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut settings.brightness, 0.25..=3.0)
+                            .text("Brightness")
+                            .suffix("×")
+                            .step_by(0.01),
+                    )
+                    .changed();
+                changed |= ui
+                    .add(
+                        egui::Slider::new(&mut settings.aura, 0.0..=3.0)
+                            .text("Aura")
+                            .suffix("×")
+                            .step_by(0.01),
+                    )
+                    .changed();
+                ui.small(format!(
+                    "Brightness {:.2}× · Aura {:.2}×",
+                    settings.brightness, settings.aura
+                ));
+                ui.separator();
+                if ui.button("Reset to default").clicked() {
+                    settings = LedDisplaySettings::default();
+                    changed = true;
+                    reset = true;
+                }
+            });
+
+        if changed || open != was_open {
+            super::persistence::set_led_visual_controls_state(
+                open,
+                settings.brightness,
+                settings.aura,
+            );
+            if changed {
+                self.status = if reset {
+                    "LED visuals reset to default: Brightness 1.00× · Aura 1.00×".into()
+                } else {
+                    format!(
+                        "LED visuals: Brightness {:.2}× · Aura {:.2}×",
+                        settings.brightness, settings.aura
+                    )
+                };
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    fn draw_led(
+        &self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        x: f32,
+        y: f32,
+        intensity: f32,
+        powered: bool,
+        settings: LedDisplaySettings,
+    ) {
+        if !powered { return; }
+        let Some(light) = led_visual_response(intensity, settings) else { return; };
         let center = origin + Vec2::new(x * scale, y * scale);
-        ui.painter().circle_filled(center, 10.5 * scale, Color32::from_rgba_unmultiplied(255, 24, 42, alpha));
-        ui.painter().circle_filled(center, 5.8 * scale, Color32::from_rgba_unmultiplied(255, 104, 116, alpha));
-        ui.painter().circle_filled(center + Vec2::new(-2.8 * scale, -3.0 * scale), 2.0 * scale, Color32::from_rgba_unmultiplied(255, 255, 255, alpha));
+
+        // The unlit LED/lens is part of the panel texture. These overlays model
+        // only emitted light: broad halo, red body, bright core and the small
+        // camera/eye specular highlight. Each responds differently to duty cycle
+        // instead of treating a weak LED as a transparent copy of a strong one.
+        if light.halo_alpha > 0 {
+            ui.painter().circle_filled(
+                center,
+                14.5 * scale,
+                Color32::from_rgba_unmultiplied(255, 12, 30, light.halo_alpha),
+            );
+        }
+        ui.painter().circle_filled(
+            center,
+            10.5 * scale,
+            Color32::from_rgba_unmultiplied(255, 24, 42, light.body_alpha),
+        );
+        ui.painter().circle_filled(
+            center,
+            5.8 * scale,
+            Color32::from_rgba_unmultiplied(255, 104, 116, light.core_alpha),
+        );
+        if light.glare_alpha > 0 {
+            ui.painter().circle_filled(
+                center + Vec2::new(-2.8 * scale, -3.0 * scale),
+                2.0 * scale,
+                Color32::from_rgba_unmultiplied(255, 255, 255, light.glare_alpha),
+            );
+        }
     }
 
     fn switch_texture(&self, sprite: SwitchSpriteId) -> Option<&egui::TextureHandle> {
@@ -56,7 +223,7 @@ impl RusTairApp {
             self.audio.play_once("assets/click.mp3");
         }
         if response.hovered() { response.clone().on_hover_text(format!("Sense switch {}", switch.name)); }
-        let position = if self.machine.panel_switches() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
+        let position = if self.machine.switch_register() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
@@ -181,9 +348,10 @@ impl RusTairApp {
         let switch = SWITCH_POWER;
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
         let response = ui.allocate_rect(hit, Sense::click());
-        if response.clicked() { self.set_altair_power(!self.machine.powered); }
+        let powered = self.machine.powered();
+        if response.clicked() { self.set_altair_power(!powered); }
         if response.hovered() { response.clone().on_hover_text("OFF / ON"); }
-        let position = if self.machine.powered { SwitchPosition::Down } else { SwitchPosition::Up };
+        let position = if self.machine.powered() { SwitchPosition::Down } else { SwitchPosition::Up };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
@@ -194,8 +362,9 @@ impl RusTairApp {
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
+            let panel = self.machine.front_panel_state();
             self.status = if historical_power_on {
-                if self.machine.running {
+                if panel.running {
                     "Power on — historical undefined RUN/STOP latch resolved to RUN; CPU may execute immediately"
                         .into()
                 } else {
@@ -214,7 +383,10 @@ impl RusTairApp {
 
     pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui) {
         self.machine.commit_panel_activity(PANEL_FRAME);
-        let lamps = self.machine.panel_lamps();
+        self.draw_led_visual_controls(ui.ctx());
+        let led_settings = led_display_settings();
+        let panel = self.machine.front_panel_state();
+        let lamps = panel.lamps;
 
         let available = ui.available_size();
         let scale = (available.x / PANEL_W).min(available.y / PANEL_H).clamp(0.2, 2.5);
@@ -224,21 +396,21 @@ impl RusTairApp {
         else { ui.painter().rect_filled(whole, 0.0, Color32::from_rgb(20, 25, 28)); }
 
         for bit in 0..16 { self.sense_switch(ui, origin, scale, bit); }
-        for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit]); }
-        for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit]); }
+        for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit], panel.powered, led_settings); }
+        for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit], panel.powered, led_settings); }
 
-        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[3], STATUS_LED_Y, lamps.inp);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, lamps.m1);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[5], STATUS_LED_Y, lamps.out);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, lamps.hlta);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[7], STATUS_LED_Y, lamps.stack);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, lamps.wo);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[9], STATUS_LED_Y, lamps.int_ack);
-        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, lamps.wait);
-        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, lamps.hlda);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[3], STATUS_LED_Y, lamps.inp, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, lamps.m1, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[5], STATUS_LED_Y, lamps.out, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, lamps.hlta, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[7], STATUS_LED_Y, lamps.stack, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, lamps.wo, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, STATUS_LED_X[9], STATUS_LED_Y, lamps.int_ack, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, lamps.wait, panel.powered, led_settings);
+        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, lamps.hlda, panel.powered, led_settings);
 
         self.draw_power(ui, origin, scale);
 
@@ -247,7 +419,9 @@ impl RusTairApp {
         let run_stop = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN");
         if let Some(run) = run_stop.pressed {
             self.machine.assert_run_stop(run);
-            self.status = if !run && self.machine.cpu.halted && self.machine.running {
+            let cpu = self.machine.intel8080_state();
+            let panel = self.machine.front_panel_state();
+            self.status = if !run && cpu.halted.unwrap_or(false) && panel.running {
                 "STOP held while CPU is halted — no PSYNC to capture STOP; hold STOP and assert RESET"
                     .into()
             } else if run {
@@ -262,9 +436,9 @@ impl RusTairApp {
         }
 
         let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
-        // On the original 8800 only the upper contact is wired as SINGLE STEP;
-        // the lower contact has no function. The core remains instruction-level,
-        // so the implemented upper action advances one instruction.
+        // The selected backend defines the physical stepping granularity: the
+        // cycle-accurate core advances one machine cycle; the fast core retains
+        // its instruction-level approximation.
         if let Some(down) = single_step.action {
             if !down {
                 self.machine.step();
@@ -294,7 +468,7 @@ impl RusTairApp {
                 self.status = "CLR released: S-100 EXT CLR inactive".into();
             } else {
                 self.machine.release_front_panel_reset();
-                self.status = if self.machine.running {
+                self.status = if self.machine.running() {
                     "RESET released: RUN latch preserved; execution resumes from 0000h".into()
                 } else {
                     "RESET released: 0000h fetch held in WAIT".into()
@@ -308,5 +482,79 @@ impl RusTairApp {
 
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX1, "AUX 1 (unassigned)");
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX2, "AUX 2 (unassigned)");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn led_optics_hide_residual_activity_below_threshold() {
+        let settings = LedDisplaySettings::default();
+        assert_eq!(led_visual_response(0.0, settings), None);
+        assert_eq!(
+            led_visual_response(LED_VISIBLE_THRESHOLD * 0.5, settings),
+            None
+        );
+    }
+
+    #[test]
+    fn led_optics_keep_weak_activity_red_without_white_glare() {
+        let weak = led_visual_response(0.10, LedDisplaySettings::default()).unwrap();
+        assert!(weak.body_alpha > weak.core_alpha);
+        assert!(weak.core_alpha > weak.glare_alpha);
+        assert!(weak.glare_alpha <= 5);
+    }
+
+    #[test]
+    fn led_optics_reach_full_core_and_glare_at_full_duty_cycle() {
+        let full = led_visual_response(1.0, LedDisplaySettings::default()).unwrap();
+        assert_eq!(full.halo_alpha, LED_HALO_MAX_ALPHA);
+        assert_eq!(full.body_alpha, 255);
+        assert_eq!(full.core_alpha, 255);
+        assert_eq!(full.glare_alpha, 255);
+    }
+
+    #[test]
+    fn led_optics_preserve_more_contrast_than_old_sqrt_curve() {
+        let settings = LedDisplaySettings::default();
+        let quarter = led_visual_response(0.25, settings).unwrap();
+        let half = led_visual_response(0.50, settings).unwrap();
+        assert!(half.body_alpha > quarter.body_alpha);
+        assert!(half.core_alpha > quarter.core_alpha);
+        assert!(half.glare_alpha > quarter.glare_alpha);
+        assert!(quarter.body_alpha < 128, "25% duty should no longer render as a 50% body");
+    }
+
+    #[test]
+    fn led_live_controls_scale_brightness_and_aura_independently() {
+        let base = led_visual_response(0.25, LedDisplaySettings::default()).unwrap();
+        let brighter = led_visual_response(
+            0.25,
+            LedDisplaySettings {
+                brightness: 1.5,
+                aura: 1.0,
+            },
+        )
+        .unwrap();
+        let more_aura = led_visual_response(
+            0.25,
+            LedDisplaySettings {
+                brightness: 1.0,
+                aura: 2.0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(brighter.halo_alpha, base.halo_alpha);
+        assert!(brighter.body_alpha > base.body_alpha);
+        assert!(brighter.core_alpha > base.core_alpha);
+        assert!(brighter.glare_alpha >= base.glare_alpha);
+
+        assert!(more_aura.halo_alpha > base.halo_alpha);
+        assert_eq!(more_aura.body_alpha, base.body_alpha);
+        assert_eq!(more_aura.core_alpha, base.core_alpha);
+        assert_eq!(more_aura.glare_alpha, base.glare_alpha);
     }
 }

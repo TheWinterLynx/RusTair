@@ -1,3 +1,4 @@
+mod cpu_board;
 mod front_panel;
 mod io_devices;
 mod memory;
@@ -10,11 +11,13 @@ use rand::RngCore;
 
 use crate::config::{RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
+use cpu_board::{Fast8080S100Adapter, S100Cycle};
 use front_panel::FrontPanelController;
 use io_devices::IoDevices;
 use memory::Memory;
-use panel_bus::{S100BusState, S100Cycle};
+use panel_bus::S100BusState;
 
+pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
 
@@ -225,14 +228,44 @@ impl AltairBus {
     fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
+    pub(crate) fn cpu_control_lines(&self) -> S100CpuControlLines {
+        let signals = self.s100.signals();
+        S100CpuControlLines {
+            ready: signals.ready,
+            hold: signals.hold,
+            reset: signals.reset,
+        }
+    }
+
+    pub(crate) fn drive_cpu_board_sample(&mut self, sample: S100CpuSample) {
+        self.cycle_drive_s100_t_state(
+            sample.address,
+            sample.data,
+            sample.status_word,
+            sample.inte,
+            sample.ready,
+            sample.wait,
+            sample.hlda,
+        );
+    }
+
     fn refresh_protect_line(&mut self) {
         let address = self.s100.signals().address;
         self.s100.refresh_protect(self.memory.is_protected(address));
     }
 
     fn drive_cpu_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
-        let protected = self.memory.is_protected(address);
-        self.s100.drive_cpu_cycle(address, data, cycle, protected, self.cpu_inte);
+        let signals = self.s100.signals();
+        let inte = self.cpu_inte;
+        Fast8080S100Adapter::for_each_sample(
+            address,
+            data,
+            cycle,
+            inte,
+            signals.ready,
+            signals.wait,
+            |sample| self.drive_cpu_board_sample(sample),
+        );
     }
 
     fn drive_power_on_state(&mut self, address: u16, run: bool) {
@@ -261,13 +294,6 @@ impl AltairBus {
         if asserted && !was_asserted {
             self.io.clear_serial();
         }
-    }
-
-    fn front_panel_examine(&mut self, address: u16) -> u8 {
-        let data = self.memory.read(address);
-        let protected = self.memory.is_protected(address);
-        self.s100.drive_front_panel_examine(address, data, protected, self.cpu_inte);
-        data
     }
 
     fn front_panel_deposit(&mut self, address: u16, value: u8) {
@@ -615,39 +641,24 @@ impl AltairMachine {
         self.bus.commit_panel_activity(dt, dynamic);
     }
 
+    /// Compatibility facade for the current native-UI caller. The operation
+    /// itself lives in the CPU-board/S-100 path and executes the real injected
+    /// JMP/NOP sequence rather than assigning the program counter directly.
     pub fn examine(&mut self, next: bool) {
-        if !self.powered || self.running || self.bus.reset_asserted() { return; }
-        let address = if next {
-            self.bus.panel.examine_next_address()
-        } else {
-            self.bus.panel.examine_address()
-        };
-        self.cpu.pc = address;
-        self.bus.sync_cpu_inte(self.cpu.inte);
-        self.bus.set_ready(false);
-        let _ = self.bus.front_panel_examine(address);
+        self.fast_front_panel_examine_via_cpu_board(next);
     }
 
+    /// Compatibility facade for the current native-UI caller. DEPOSIT uses the
+    /// front-panel memory-write pulse while the CPU board supplies ADDRESS.
     pub fn deposit(&mut self, next: bool) {
-        if !self.powered || self.running || self.bus.reset_asserted() { return; }
-        let address = if next {
-            self.bus.panel.deposit_next_address()
-        } else {
-            self.bus.panel.deposit_address()
-        };
-        if next { self.cpu.pc = address; }
-        let value = self.bus.panel_switches() as u8;
-        self.bus.sync_cpu_inte(self.cpu.inte);
-        self.bus.set_ready(false);
-        self.bus.front_panel_deposit(address, value);
+        self.fast_front_panel_deposit_via_cpu_board(next);
     }
 
+    /// Compatibility facade for the current native-UI caller. Protection is
+    /// applied to the memory board selected by live S-100 ADDRESS, never by a
+    /// private panel latch or by the current switch-register value.
     pub fn protect_current_board(&mut self, protected: bool) {
-        if !self.powered || self.running || self.bus.reset_asserted() { return; }
-        let address = self.bus.panel.address_latch();
-        self.bus.set_protected(address, protected);
-        self.bus.refresh_protect_line();
-        self.bus.freeze_panel_bus();
+        self.front_panel_set_memory_protection_via_s100(protected);
     }
 
     pub fn current_board_protected(&self) -> bool { self.powered && self.bus.s100.signals().prot }
@@ -834,5 +845,17 @@ mod tests {
         machine.deposit(false);
         assert_eq!(machine.bus.peek_memory(0), Some(0x56));
         assert_eq!(machine.panel_lamps().wo, 0.0);
+    }
+
+    #[test]
+    fn cpu_board_control_lines_are_read_from_the_shared_s100_state() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.request_hold(true);
+        let lines = machine.bus.cpu_control_lines();
+        assert!(!lines.ready);
+        assert!(lines.hold);
+        assert!(!lines.reset);
     }
 }

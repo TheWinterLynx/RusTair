@@ -111,8 +111,11 @@ impl Teletype {
     }
 
     pub fn print_serial(&mut self, byte: u8) -> Vec<PrintEvent> {
+        // Guest UART activity must never move the physical OFF/LINE/LOCAL
+        // selector. With the ASR-33 switched OFF the serial line can continue
+        // transmitting electrically, but the printer mechanism stays silent.
         if self.mode == Mode::Off {
-            self.mode = Mode::Line;
+            return Vec::new();
         }
         self.print(byte)
     }
@@ -147,20 +150,22 @@ impl Teletype {
         }
     }
 
-    fn print(&mut self, byte: u8) -> Vec<PrintEvent> {
+    fn print(&mut self, raw_byte: u8) -> Vec<PrintEvent> {
         if self.mode == Mode::Off {
             return Vec::new();
         }
 
-        let byte = byte & 0x7f;
+        // The paper punch is an 8-level device and sees the incoming character
+        // before the printer's 7-bit ASCII/typewheel normalization.
+        self.tape.record(raw_byte);
+
+        let byte = raw_byte & 0x7f;
         let byte = if byte.is_ascii_lowercase() {
             byte.to_ascii_uppercase()
         } else {
             byte
         };
         let mut events = Vec::new();
-
-        self.tape.record(byte);
 
         if self.auto_wrap_pending {
             return events;
@@ -216,6 +221,8 @@ impl Teletype {
         events
     }
 
+    // ---------------- Paper-tape reader ----------------
+
     pub fn load_tape(&mut self, bytes: &[u8]) {
         self.tape.load(bytes);
     }
@@ -232,16 +239,62 @@ impl Teletype {
         self.tape.input_len()
     }
 
+    pub fn tape_input_total_len(&self) -> usize {
+        self.tape.input_total_len()
+    }
+
+    pub fn tape_input_position(&self) -> usize {
+        self.tape.input_position()
+    }
+
+    pub fn rewind_tape_reader(&mut self) {
+        self.tape.rewind_input();
+    }
+
+    pub fn eject_tape_reader(&mut self) {
+        self.tape.eject_input();
+    }
+
+    // ---------------- Paper-tape punch ----------------
+
     pub fn tape_capture_enabled(&self) -> bool {
         self.tape.capture_enabled()
+    }
+
+    pub fn tape_punch_running(&self) -> bool {
+        self.tape.capture_running()
+    }
+
+    pub fn prepare_tape_punch(&mut self) {
+        self.tape.prepare_capture();
     }
 
     pub fn start_tape_punch(&mut self) {
         self.tape.begin_capture();
     }
 
+    pub fn resume_tape_punch(&mut self) {
+        self.tape.resume_capture();
+    }
+
+    pub fn pause_tape_punch(&mut self) {
+        self.tape.pause_capture();
+    }
+
+    pub fn step_tape_punch(&mut self) -> Option<u8> {
+        self.tape.punch_next()
+    }
+
+    pub fn tape_punch_pending_len(&self) -> usize {
+        self.tape.punch_pending_len()
+    }
+
     pub fn finish_tape_punch(&mut self) {
         self.tape.finish_capture();
+    }
+
+    pub fn eject_punched_tape(&mut self) {
+        self.tape.eject_output();
     }
 
     pub fn punched_tape(&self) -> &[u8] {
@@ -260,6 +313,15 @@ mod tests {
     #[test]
     fn default_paper_is_72_columns() {
         assert_eq!(Teletype::default().paper_width, PAPER_COLUMNS);
+    }
+
+    #[test]
+    fn serial_output_does_not_change_physical_off_mode() {
+        let mut tty = Teletype::default();
+        assert_eq!(tty.mode, Mode::Off);
+        assert!(tty.print_serial(b'A').is_empty());
+        assert_eq!(tty.mode, Mode::Off);
+        assert!(tty.output.is_empty());
     }
 
     #[test]
@@ -349,12 +411,20 @@ mod tests {
     }
 
     #[test]
-    fn tape_punch_is_exposed_as_behavior_not_public_buffers() {
+    fn punch_transport_is_explicit_and_keeps_raw_eight_bit_data() {
         let mut tty = Teletype::default();
         tty.set_mode(Mode::Line);
-        tty.start_tape_punch();
-        tty.print_serial(b'a');
+        tty.prepare_tape_punch();
+        tty.print_serial(0xff);
+        assert_eq!(tty.tape_punch_pending_len(), 0);
+
+        tty.resume_tape_punch();
+        tty.print_serial(0xff);
+        assert_eq!(tty.tape_punch_pending_len(), 1);
+        assert_eq!(tty.step_tape_punch(), Some(0xff));
         tty.finish_tape_punch();
-        assert_eq!(tty.punched_tape(), b"A");
+        assert_eq!(tty.punched_tape(), &[0xff]);
+        tty.eject_punched_tape();
+        assert!(tty.punched_tape().is_empty());
     }
 }

@@ -13,11 +13,7 @@ impl RusTairApp {
     /// every frame, so failures from the raw binary, BASIC and CP/M diagnostic
     /// loaders all use the same visible reporting path.
     pub(in crate::app) fn draw_load_error_dialog(&mut self, ctx: &egui::Context) {
-        let Some(reason) = self
-            .status
-            .strip_prefix(LOAD_ERROR_PREFIX)
-            .map(str::to_owned)
-        else {
+        let Some(reason) = self.status.strip_prefix(LOAD_ERROR_PREFIX).map(str::to_owned) else {
             return;
         };
 
@@ -40,17 +36,13 @@ impl RusTairApp {
             });
 
         if dismissed {
-            // Keep the detailed reason in the status bar after acknowledgement,
-            // but remove the prefix so the dialog does not reopen next frame.
             self.status = format!("Load failed: {reason}");
         }
     }
 
     /// Select and load a raw binary image at address zero.
     pub(in crate::app) fn load_binary_dialog(&mut self) {
-        let Some(path) = rfd::FileDialog::new().pick_file() else {
-            return;
-        };
+        let Some(path) = rfd::FileDialog::new().pick_file() else { return; };
 
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -74,7 +66,7 @@ impl RusTairApp {
                     ));
                     return;
                 }
-                self.machine.bus.load(0, &bytes);
+                self.machine.load_bytes(0, &bytes);
                 self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
             }
             Err(e) => self.report_load_error(format!(
@@ -100,38 +92,24 @@ impl RusTairApp {
             ));
             return;
         }
-        if !self.machine.powered {
+        if !self.machine.powered() {
             self.set_altair_power(true);
         }
-        // The physical 8800 intentionally powers up without resetting
-        // the 8080. This menu command is a convenience loader, so it
-        // explicitly performs the reset that a human operator would do.
         self.machine.set_running(false);
         self.machine.reset();
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
-        self.machine.bus.clear_protection();
-        self.machine.bus.load(0, bytes);
-        self.machine.cpu.pc = 0;
+        self.machine.clear_memory_protection();
+        self.machine.load_bytes(0, bytes);
 
-        // BASIC 3.2's automatic MEMORY SIZE probe wraps FFFFh -> 0000h
-        // on a completely writable 64 KiB machine and overwrites itself.
-        // Faithful emulation leaves that bug intact by default; the
-        // compatibility option is an explicit convenience workaround.
-        let full_memory_probe_guard = if self
-            .config
-            .compatibility
-            .basic32_64k_probe_workaround
-        {
+        let full_memory_probe_guard = if self.config.compatibility.basic32_64k_probe_workaround {
             self.machine.arm_basic32_full_memory_probe_guard()
         } else {
             false
         };
 
-        // Auto-open only reveals the endpoint already wired to Port 0.
-        // It never changes the serial cabling.
         if self.config.preferences.auto_open_basic_console {
             match self.serial_router.device_on(SerialConnection::Port0) {
                 Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
@@ -144,11 +122,9 @@ impl RusTairApp {
 
         self.machine.set_running(true);
         self.status = if full_memory_probe_guard {
-            "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active"
-                .into()
+            "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active".into()
         } else if self.machine.installed_ram_bytes() == 64 * 1024 {
-            "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled"
-                .into()
+            "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled".into()
         } else if self.config.preferences.auto_open_basic_console {
             "Microsoft 4K BASIC loaded and running — console auto-open enabled".into()
         } else {
@@ -156,6 +132,8 @@ impl RusTairApp {
         };
     }
 
+    /// Put a paper tape in the reader. Loading media does not start it: the
+    /// operator must explicitly press Read after the Altair is powered/RUNning.
     pub(in crate::app) fn load_paper_tape(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Paper tape", &["txt", "tap", "bin"])
@@ -166,25 +144,48 @@ impl RusTairApp {
 
         match std::fs::read(&path) {
             Ok(bytes) => {
+                self.asr33.reader_running = false;
+                self.asr33.last_reader_byte = None;
                 self.tty.load_tape(&bytes);
-                self.status = format!("Paper tape loaded: {} bytes", bytes.len());
+                self.asr33.last_reader_tick = Instant::now();
+                self.audio.play_once("assets/click.mp3");
+                self.status = format!(
+                    "Paper tape mounted: {} bytes from {} — press Read to start",
+                    bytes.len(),
+                    path.display()
+                );
             }
             Err(e) => self.status = format!("Paper tape load failed: {e}"),
         }
     }
 
-    pub(in crate::app) fn save_punched_tape(&mut self) {
+    /// Save a completed punched tape. Return true only when bytes reached disk;
+    /// cancellation/error deliberately leaves the virtual tape intact so the
+    /// operator can retry rather than losing the physical-media equivalent.
+    pub(in crate::app) fn save_punched_tape(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
-            .set_file_name("myPaperTape.txt")
+            .set_file_name("myPaperTape.tap")
             .save_file()
         else {
-            return;
+            self.status = format!(
+                "Punch save cancelled — {} bytes remain in the virtual tape",
+                self.tty.punched_tape_len()
+            );
+            return false;
         };
 
         let tape = self.tty.punched_tape();
+        let len = tape.len();
         match std::fs::write(&path, tape) {
-            Ok(_) => self.status = format!("Punched tape saved: {} bytes", tape.len()),
-            Err(e) => self.status = format!("Paper tape save failed: {e}"),
+            Ok(_) => {
+                self.status = format!("Punched tape saved: {len} bytes to {}", path.display());
+                self.tty.eject_punched_tape();
+                true
+            }
+            Err(e) => {
+                self.status = format!("Paper tape save failed: {e} — tape retained for retry");
+                false
+            }
         }
     }
 

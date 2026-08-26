@@ -1,5 +1,6 @@
 mod asr33_controller;
 mod asr33_state;
+mod authentic_loader;
 mod commands;
 mod cpu_diagnostics;
 mod embedded_cpu_diagnostics;
@@ -16,6 +17,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
 use self::asr33_state::Asr33State;
+use self::authentic_loader::AuthenticLoaderState;
 use self::cpu_diagnostics::DiagnosticFileDialog;
 use self::embedded_cpu_diagnostics::EmbeddedDiagnosticsState;
 use self::external_com::ExternalComState;
@@ -23,12 +25,12 @@ use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
-use crate::backend::NativeMachineBackend;
+use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
     AppConfig, Asr33Speed, EmulationSpeed, RamInit, RamSize, SerialBoard, TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
-use crate::machine::{AltairMachine, CLOCK_HZ};
+use crate::machine::CLOCK_HZ;
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
@@ -82,12 +84,13 @@ pub fn run() -> eframe::Result {
 
 struct RusTairApp {
     config: AppConfig,
-    machine: NativeMachineBackend,
+    machine: BackendHost,
     serial_router: SerialRouter,
     external_serial: ExternalSerialState,
     external_com: ExternalComState,
     diagnostic_file_dialog: Option<DiagnosticFileDialog>,
     embedded_diagnostics: EmbeddedDiagnosticsState,
+    authentic_loader: AuthenticLoaderState,
     tex: Tex,
     tty: Teletype,
     asr33: Asr33State,
@@ -107,19 +110,20 @@ impl RusTairApp {
         terminal.speed = config.peripherals.terminal_speed;
         Self {
             config,
-            machine: NativeMachineBackend::default(),
+            machine: BackendHost::rust_fast(),
             serial_router: SerialRouter::default(),
             external_serial: ExternalSerialState::default(),
             external_com: ExternalComState::default(),
             diagnostic_file_dialog: None,
             embedded_diagnostics: EmbeddedDiagnosticsState::default(),
+            authentic_loader: AuthenticLoaderState::default(),
             tex: Tex::load(&cc.egui_ctx),
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
             terminal,
             audio: AudioEngine::new(),
             last_tick: now,
-            status: "Ready — Intel 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
+            status: "Ready — RusTair Fast 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
                 .into(),
         }
     }
@@ -150,6 +154,38 @@ impl RusTairApp {
         self.config.preferences.emulation_speed = speed;
         self.last_tick = Instant::now();
         self.status = format!("CPU emulation speed: {}", speed.label());
+    }
+
+    fn select_emulation_engine(&mut self, engine: EmulationEngine) {
+        if self.machine.engine() == engine { return; }
+        if !engine.is_available() {
+            self.status = format!("{} is parked until the SIMH backend branch is integrated", engine.label());
+            return;
+        }
+        if self.machine.powered() {
+            self.status = "Power OFF the Altair before changing emulation engine".into();
+            return;
+        }
+
+        match self.machine.replace_engine(engine) {
+            Ok(()) => {
+                self.machine.configure_memory(
+                    self.config.machine.ram_size,
+                    self.config.machine.ram_init,
+                );
+                self.machine.configure_serial_board(self.config.machine.serial_board);
+                self.asr33.tx_started = None;
+                self.asr33.answerback.clear();
+                self.terminal.tx_started = None;
+                self.external_serial.reset_line_timing();
+                self.external_com.reset_line_timing();
+                self.last_tick = Instant::now();
+                self.status = format!("Emulation engine selected: {} — machine remains POWER OFF", engine.label());
+            }
+            Err(error) => {
+                self.status = format!("Could not select {}: {error}", engine.label());
+            }
+        }
     }
 
     fn apply_memory_configuration(&mut self, ram_size: RamSize, ram_init: RamInit) {
@@ -225,85 +261,81 @@ impl RusTairApp {
         };
     }
 
-    fn serial_rx_empty_at(&self, connection: SerialConnection) -> bool {
+    fn backend_serial_port(connection: SerialConnection) -> Option<BackendSerialPort> {
         match connection {
-            SerialConnection::Disconnected => true,
-            SerialConnection::Port0 => self.machine.bus.serial_rx_empty(),
-            SerialConnection::Port1 => self.machine.bus.serial_port1_rx_empty(),
+            SerialConnection::Disconnected => None,
+            SerialConnection::Port0 => Some(BackendSerialPort::Port0),
+            SerialConnection::Port1 => Some(BackendSerialPort::Port1),
         }
     }
 
-    fn serial_rx_len_at(&self, connection: SerialConnection) -> usize {
-        match connection {
-            SerialConnection::Disconnected => 0,
-            SerialConnection::Port0 => self.machine.bus.serial_rx_len(),
-            SerialConnection::Port1 => self.machine.bus.serial_port1_rx_len(),
-        }
+    fn serial_rx_empty_at(&mut self, connection: SerialConnection) -> bool {
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_rx_empty(port))
+            .unwrap_or(true)
+    }
+
+    fn serial_rx_len_at(&mut self, connection: SerialConnection) -> usize {
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_rx_len(port))
+            .unwrap_or(0)
     }
 
     fn serial_receive_at(&mut self, connection: SerialConnection, byte: u8) {
-        match connection {
-            SerialConnection::Disconnected => {}
-            SerialConnection::Port0 => self.machine.bus.serial_receive(byte),
-            SerialConnection::Port1 => self.machine.bus.serial_port1_receive(byte),
+        if let Some(port) = Self::backend_serial_port(connection) {
+            self.machine.serial_receive(port, byte);
         }
     }
 
-    fn serial_tx_busy_at(&self, connection: SerialConnection) -> bool {
-        match connection {
-            SerialConnection::Disconnected => false,
-            SerialConnection::Port0 => self.machine.bus.tx_busy(),
-            SerialConnection::Port1 => self.machine.bus.serial_port1_tx_busy(),
-        }
+    fn serial_tx_busy_at(&mut self, connection: SerialConnection) -> bool {
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_tx_busy(port))
+            .unwrap_or(false)
     }
 
-    fn serial_tx_front_at(&self, connection: SerialConnection) -> Option<u8> {
-        match connection {
-            SerialConnection::Disconnected => None,
-            SerialConnection::Port0 => self.machine.bus.serial_tx_front(),
-            SerialConnection::Port1 => self.machine.bus.serial_port1_tx_front(),
-        }
+    fn serial_tx_front_at(&mut self, connection: SerialConnection) -> Option<u8> {
+        Self::backend_serial_port(connection)
+            .and_then(|port| self.machine.serial_tx_front(port))
     }
 
     fn serial_tx_complete_at(&mut self, connection: SerialConnection) -> Option<u8> {
-        match connection {
-            SerialConnection::Disconnected => None,
-            SerialConnection::Port0 => self.machine.bus.serial_tx_complete(),
-            SerialConnection::Port1 => self.machine.bus.serial_port1_tx_complete(),
-        }
+        Self::backend_serial_port(connection)
+            .and_then(|port| self.machine.serial_tx_complete(port))
     }
 
     fn asr_connection(&self) -> SerialConnection {
         self.serial_connection(SerialDevice::InternalAsr33)
     }
 
-    fn asr_serial_rx_empty(&self) -> bool { self.serial_rx_empty_at(self.asr_connection()) }
-    fn asr_serial_rx_len(&self) -> usize { self.serial_rx_len_at(self.asr_connection()) }
+    fn asr_serial_rx_empty(&mut self) -> bool { let c = self.asr_connection(); self.serial_rx_empty_at(c) }
+    fn asr_serial_rx_len(&mut self) -> usize { let c = self.asr_connection(); self.serial_rx_len_at(c) }
     fn asr_serial_receive(&mut self, byte: u8) { let c = self.asr_connection(); self.serial_receive_at(c, byte); }
-    fn asr_serial_tx_busy(&self) -> bool { self.serial_tx_busy_at(self.asr_connection()) }
-    fn asr_serial_tx_front(&self) -> Option<u8> { self.serial_tx_front_at(self.asr_connection()) }
+    fn asr_serial_tx_busy(&mut self) -> bool { let c = self.asr_connection(); self.serial_tx_busy_at(c) }
+    fn asr_serial_tx_front(&mut self) -> Option<u8> { let c = self.asr_connection(); self.serial_tx_front_at(c) }
     fn asr_serial_tx_complete(&mut self) -> Option<u8> { let c = self.asr_connection(); self.serial_tx_complete_at(c) }
 
     fn terminal_connection(&self) -> SerialConnection {
         self.serial_connection(SerialDevice::TextTerminal)
     }
 
-    fn terminal_serial_rx_empty(&self) -> bool { self.serial_rx_empty_at(self.terminal_connection()) }
-    fn terminal_serial_rx_len(&self) -> usize { self.serial_rx_len_at(self.terminal_connection()) }
+    fn terminal_serial_rx_empty(&mut self) -> bool { let c = self.terminal_connection(); self.serial_rx_empty_at(c) }
+    fn terminal_serial_rx_len(&mut self) -> usize { let c = self.terminal_connection(); self.serial_rx_len_at(c) }
     fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
-    fn terminal_serial_tx_busy(&self) -> bool { self.serial_tx_busy_at(self.terminal_connection()) }
-    fn terminal_serial_tx_front(&self) -> Option<u8> { self.serial_tx_front_at(self.terminal_connection()) }
+    fn terminal_serial_tx_busy(&mut self) -> bool { let c = self.terminal_connection(); self.serial_tx_busy_at(c) }
+    fn terminal_serial_tx_front(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_front_at(c) }
     fn terminal_serial_tx_complete(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_complete_at(c) }
 
     fn service_disconnected_serial_ports(&mut self) {
-        if self.serial_router.device_on(SerialConnection::Port0).is_none() && self.machine.bus.tx_busy() {
-            self.machine.bus.serial_tx_complete();
+        if self.serial_router.device_on(SerialConnection::Port0).is_none()
+            && self.machine.serial_tx_busy(BackendSerialPort::Port0)
+        {
+            self.machine.serial_tx_complete(BackendSerialPort::Port0);
         }
         if self.config.machine.serial_board == SerialBoard::TwoSio88
             && self.serial_router.device_on(SerialConnection::Port1).is_none()
-            && self.machine.bus.serial_port1_tx_busy()
+            && self.machine.serial_tx_busy(BackendSerialPort::Port1)
         {
-            self.machine.bus.serial_port1_tx_complete();
+            self.machine.serial_tx_complete(BackendSerialPort::Port1);
         }
     }
 

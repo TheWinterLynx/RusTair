@@ -806,30 +806,7 @@ impl RusTairApp {
             }
         }
 
-        let tape_reading = self.tty.tape_input_pending();
-        let tape_punching = self.tty.tape_capture_enabled();
-        if tape_reading || tape_punching {
-            let tape = Rect::from_min_size(
-                Pos2::new(rect.left() + 18.0 * scale, rect.bottom() - 250.0 * scale),
-                Vec2::new(520.0 * scale, 115.0 * scale),
-            );
-            ui.painter().rect_filled(tape, 3.0, Color32::from_rgb(224, 210, 160));
-            let n = if tape_punching {
-                self.tty.punched_tape_len()
-            } else {
-                self.tty.tape_input_len()
-            };
-            ui.painter().text(
-                tape.center(),
-                egui::Align2::CENTER_CENTER,
-                if tape_punching {
-                    format!("PUNCHING PAPER TAPE  {n} bytes")
-                } else {
-                    format!("READING PAPER TAPE  {n} bytes")
-                },
-                FontId::monospace((22.0 * scale).max(8.0)),
-                Color32::from_rgb(45, 42, 34),
-            );
-        }
+        // Paper-tape transport state now lives in the responsive reader/punch
+        // toolbar. Do not paint a second status badge over the machine photo.
     }
 }
