@@ -82,6 +82,9 @@ type AddRegisterBitsFn = unsafe extern "C" fn(
 ) -> c_int;
 type GetRegistersFn = unsafe extern "C" fn(*mut PANEL, *mut u64) -> c_int;
 type SetSamplingParametersFn = unsafe extern "C" fn(*mut PANEL, u32, u32) -> c_int;
+pub type DisplayCallback = Option<unsafe extern "C" fn(*mut PANEL, u64, *mut c_void)>;
+type SetDisplayCallbackIntervalFn =
+    unsafe extern "C" fn(*mut PANEL, DisplayCallback, *mut c_void, c_int) -> c_int;
 type GenExamineFn = unsafe extern "C" fn(*mut PANEL, *const c_char, usize, *mut c_void) -> c_int;
 type GenDepositFn = unsafe extern "C" fn(*mut PANEL, *const c_char, usize, *const c_void) -> c_int;
 type MemExamineFn = unsafe extern "C" fn(
@@ -110,6 +113,11 @@ type DismountFn = unsafe extern "C" fn(*mut PANEL, *const c_char) -> c_int;
 type GetStateFn = unsafe extern "C" fn(*mut PANEL) -> OperationalState;
 type GetErrorFn = unsafe extern "C" fn() -> *const c_char;
 
+/// RusTair-only optional extension exported by our patched FrontPanel DLL.
+/// Older embedded bundles do not have it, so runtime detection is required.
+pub type RustairExecCommandFn =
+    unsafe extern "C" fn(*mut PANEL, *const c_char, *mut c_char, usize) -> c_int;
+
 pub struct FrontPanelApi {
     #[cfg(windows)]
     module: *mut c_void,
@@ -126,6 +134,7 @@ pub struct FrontPanelApi {
     add_register_bits: AddRegisterBitsFn,
     get_registers: GetRegistersFn,
     set_sampling_parameters: SetSamplingParametersFn,
+    set_display_callback_interval: SetDisplayCallbackIntervalFn,
     gen_examine: GenExamineFn,
     gen_deposit: GenDepositFn,
     mem_examine: MemExamineFn,
@@ -135,6 +144,7 @@ pub struct FrontPanelApi {
     dismount: DismountFn,
     get_state: GetStateFn,
     get_error: GetErrorFn,
+    rustair_exec_command: Option<RustairExecCommandFn>,
 }
 
 impl FrontPanelApi {
@@ -152,15 +162,23 @@ impl FrontPanelApi {
 
         macro_rules! symbol {
             ($name:literal, $ty:ty) => {{
-                let ptr = unsafe {
-                    GetProcAddress(module, concat!($name, "\0").as_ptr())
-                };
+                let ptr = unsafe { GetProcAddress(module, concat!($name, "\0").as_ptr()) };
                 if ptr.is_null() {
                     let code = unsafe { GetLastError() };
                     unsafe { FreeLibrary(module); }
                     return Err(FrontPanelLoadError::MissingSymbol { symbol: $name, code });
                 }
                 unsafe { std::mem::transmute::<*mut c_void, $ty>(ptr) }
+            }};
+        }
+        macro_rules! optional_symbol {
+            ($name:literal, $ty:ty) => {{
+                let ptr = unsafe { GetProcAddress(module, concat!($name, "\0").as_ptr()) };
+                if ptr.is_null() {
+                    None
+                } else {
+                    Some(unsafe { std::mem::transmute::<*mut c_void, $ty>(ptr) })
+                }
             }};
         }
 
@@ -179,6 +197,10 @@ impl FrontPanelApi {
             add_register_bits: symbol!("sim_panel_add_register_bits", AddRegisterBitsFn),
             get_registers: symbol!("sim_panel_get_registers", GetRegistersFn),
             set_sampling_parameters: symbol!("sim_panel_set_sampling_parameters", SetSamplingParametersFn),
+            set_display_callback_interval: symbol!(
+                "sim_panel_set_display_callback_interval",
+                SetDisplayCallbackIntervalFn
+            ),
             gen_examine: symbol!("sim_panel_gen_examine", GenExamineFn),
             gen_deposit: symbol!("sim_panel_gen_deposit", GenDepositFn),
             mem_examine: symbol!("sim_panel_mem_examine", MemExamineFn),
@@ -188,6 +210,7 @@ impl FrontPanelApi {
             dismount: symbol!("sim_panel_dismount", DismountFn),
             get_state: symbol!("sim_panel_get_state", GetStateFn),
             get_error: symbol!("sim_panel_get_error", GetErrorFn),
+            rustair_exec_command: optional_symbol!("rustair_panel_exec_command", RustairExecCommandFn),
         })
     }
 
@@ -222,6 +245,15 @@ impl FrontPanelApi {
     pub unsafe fn set_sampling_parameters(&self, panel: *mut PANEL, sample_frequency: u32, sample_depth: u32) -> c_int {
         unsafe { (self.set_sampling_parameters)(panel, sample_frequency, sample_depth) }
     }
+    pub unsafe fn set_display_callback_interval(
+        &self,
+        panel: *mut PANEL,
+        callback: DisplayCallback,
+        context: *mut c_void,
+        usecs_between_callbacks: c_int,
+    ) -> c_int {
+        unsafe { (self.set_display_callback_interval)(panel, callback, context, usecs_between_callbacks) }
+    }
 
     pub unsafe fn gen_examine(&self, panel: *mut PANEL, name_or_addr: *const c_char, size: usize, value: *mut c_void) -> c_int {
         unsafe { (self.gen_examine)(panel, name_or_addr, size, value) }
@@ -244,6 +276,16 @@ impl FrontPanelApi {
     pub unsafe fn dismount(&self, panel: *mut PANEL, device: *const c_char) -> c_int { unsafe { (self.dismount)(panel, device) } }
     pub unsafe fn get_state(&self, panel: *mut PANEL) -> OperationalState { unsafe { (self.get_state)(panel) } }
     pub unsafe fn get_error(&self) -> *const c_char { unsafe { (self.get_error)() } }
+    pub fn has_rustair_exec_command(&self) -> bool { self.rustair_exec_command.is_some() }
+    pub unsafe fn rustair_exec_command(
+        &self,
+        panel: *mut PANEL,
+        command: *const c_char,
+        response: *mut c_char,
+        response_size: usize,
+    ) -> Option<c_int> {
+        self.rustair_exec_command.map(|exec| unsafe { exec(panel, command, response, response_size) })
+    }
 }
 
 #[cfg(windows)]
