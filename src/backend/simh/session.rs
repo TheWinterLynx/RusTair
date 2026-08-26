@@ -373,14 +373,10 @@ impl SimhSession {
     fn load_bytes_batched(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
         for (chunk_index, chunk) in bytes.chunks(BULK_DEPOSIT_CHUNK).enumerate() {
             let base_offset = chunk_index * BULK_DEPOSIT_CHUNK;
-            let mut command = String::from("EXECUTE ");
-            for (index, byte) in chunk.iter().copied().enumerate() {
-                let absolute = base as usize + base_offset + index;
-                if absolute > u16::MAX as usize { break; }
-                if index != 0 { command.push(';'); }
-                command.push_str(&format!("DEPOSIT -H {absolute:X} {byte:02X}"));
+            let command = build_deposit_batch(base, base_offset, chunk);
+            if command != "EXECUTE " {
+                self.console_command(&command)?;
             }
-            self.console_command(&command)?;
         }
         Ok(())
     }
@@ -444,6 +440,20 @@ impl Drop for SimhSession {
     }
 }
 
+fn build_deposit_batch(base: u16, base_offset: usize, chunk: &[u8]) -> String {
+    let mut command = String::from("EXECUTE ");
+    for (index, byte) in chunk.iter().copied().enumerate() {
+        let absolute = base as usize + base_offset + index;
+        if absolute > u16::MAX as usize { break; }
+        if index != 0 { command.push(';'); }
+        // Always emit a four-digit address. Bare A/C/etc. are legal register
+        // names in SIMH and can be parsed as registers rather than memory.
+        let address = absolute as u16;
+        command.push_str(&format!("DEPOSIT -H {address:04X} {byte:02X}"));
+    }
+    command
+}
+
 fn path_cstring(path: &Path) -> Result<CString, SimhSessionError> { Ok(CString::new(path.to_string_lossy().as_bytes())?) }
 fn last_error_text(api: &ffi::FrontPanelApi) -> String {
     let ptr = unsafe { api.get_error() };
@@ -467,5 +477,13 @@ mod tests {
     fn path_conversion_rejects_embedded_nul() {
         let path = Path::new("bad\0path");
         assert!(matches!(path_cstring(path), Err(SimhSessionError::InteriorNul(_))));
+    }
+    #[test]
+    fn bulk_deposit_addresses_cannot_alias_register_names() {
+        let command = build_deposit_batch(0, 0, &[0; 16]);
+        assert!(command.contains("DEPOSIT -H 000A 00"));
+        assert!(command.contains("DEPOSIT -H 000C 00"));
+        assert!(!command.contains("DEPOSIT -H A 00"));
+        assert!(!command.contains("DEPOSIT -H C 00"));
     }
 }
