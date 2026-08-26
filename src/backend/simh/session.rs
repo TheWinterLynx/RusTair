@@ -5,6 +5,7 @@ use std::path::Path;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use super::{ffi, runtime};
 
@@ -12,7 +13,10 @@ use super::{ffi, runtime};
 // is active. The FrontPanel callback thread itself is not polled by egui.
 const LIVE_CALLBACK_INTERVAL_US: c_int = 33_333;
 const CONSOLE_RESPONSE_BYTES: usize = 64 * 1024;
-const BULK_DEPOSIT_CHUNK: usize = 48;
+// Remote Console processes commands in a 4*CBUFSIZE (~4096 byte) work buffer.
+// 180 deposits stay comfortably below that limit even with six-digit octal
+// classic-Altair addresses, reducing a 4 KiB image from ~86 to ~23 round trips.
+const BULK_DEPOSIT_CHUNK: usize = 180;
 const LEGACY_DEPOSIT_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,12 +28,33 @@ pub enum SimhOperationalState {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SimhLivePanelSample {
+    /// True only after values have actually been obtained from SIMH.  A zeroed
+    /// Rust default must never be painted as if it were backend activity.
+    pub valid: bool,
     pub pc: u16,
     pub a: u8,
     pub sp: u16,
     pub address_activity: [f32; 16],
     pub data_activity: [f32; 8],
     pub simulation_time: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SimhStartupTimings {
+    pub runtime_ms: u128,
+    pub dll_load_ms: u128,
+    /// Time spent inside sim_panel_start_simulator(): CreateProcess, REM-CON
+    /// availability/connection, Telnet handshake, API version and radix checks.
+    pub start_api_ms: u128,
+    /// Registration of PC/A(or AF)/SP plus callback-thread startup.
+    pub live_panel_setup_ms: u128,
+    pub total_ms: u128,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AddressRadix {
+    Octal,
+    Hex,
 }
 
 struct LivePanelRegisters {
@@ -62,6 +87,7 @@ impl LivePanelRegisters {
             *dst = if a & (1u8 << bit) != 0 { 1.0 } else { 0.0 };
         }
         SimhLivePanelSample {
+            valid: true,
             pc,
             a,
             sp,
@@ -105,6 +131,7 @@ unsafe extern "C" fn live_panel_callback(
     }
 
     let sample = SimhLivePanelSample {
+        valid: true,
         pc,
         a,
         sp,
@@ -161,6 +188,8 @@ pub struct SimhSession {
     api: ffi::FrontPanelApi,
     live: LivePanelRegisters,
     latest_live: Arc<Mutex<SimhLivePanelSample>>,
+    address_radix: AddressRadix,
+    startup_timings: SimhStartupTimings,
     _callback_context: Option<Box<LivePanelCallbackContext>>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
@@ -180,24 +209,34 @@ impl SimhSession {
         device_panel_count: usize,
         debug_file: Option<&Path>,
     ) -> Result<Self, SimhSessionError> {
+        let total_started = Instant::now();
         let is_altairz80 = simulator
             .file_stem()
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.eq_ignore_ascii_case("altairz80"));
         let data_register = if is_altairz80 { "AF" } else { "A" };
         let data_shift = if is_altairz80 { 8 } else { 0 };
+        let address_radix = if is_altairz80 { AddressRadix::Hex } else { AddressRadix::Octal };
 
+        let phase = Instant::now();
         let frontpanel_path = runtime::frontpanel_dll_path()?;
+        let runtime_ms = phase.elapsed().as_millis();
+
+        let phase = Instant::now();
         let api = ffi::FrontPanelApi::load(&frontpanel_path)?;
+        let dll_load_ms = phase.elapsed().as_millis();
+
         let simulator_c = path_cstring(simulator)?;
         let config_c = path_cstring(config)?;
         let debug = debug_file.map(path_cstring).transpose()?;
+        let phase = Instant::now();
         let raw = unsafe {
             match debug.as_ref() {
                 Some(debug) => api.start_simulator_debug(simulator_c.as_ptr(), config_c.as_ptr(), device_panel_count, debug.as_ptr()),
                 None => api.start_simulator(simulator_c.as_ptr(), config_c.as_ptr(), device_panel_count),
             }
         };
+        let start_api_ms = phase.elapsed().as_millis();
         let panel = NonNull::new(raw).ok_or_else(|| SimhSessionError::StartFailed(last_error_text(&api)))?;
         let latest_live = Arc::new(Mutex::new(SimhLivePanelSample::default()));
         let mut session = Self {
@@ -205,15 +244,28 @@ impl SimhSession {
             api,
             live: LivePanelRegisters::new(data_shift),
             latest_live,
+            address_radix,
+            startup_timings: SimhStartupTimings {
+                runtime_ms,
+                dll_load_ms,
+                start_api_ms,
+                ..Default::default()
+            },
             _callback_context: None,
             _not_send_sync: PhantomData,
         };
+
+        let phase = Instant::now();
         session.configure_live_panel_callback(data_register)?;
+        session.startup_timings.live_panel_setup_ms = phase.elapsed().as_millis();
+        session.startup_timings.total_ms = total_started.elapsed().as_millis();
         Ok(session)
     }
 
     #[inline]
     fn raw(&self) -> *mut ffi::PANEL { self.panel.as_ptr() }
+
+    pub fn startup_timings(&self) -> SimhStartupTimings { self.startup_timings }
 
     fn check(&self, operation: &'static str, status: i32) -> Result<(), SimhSessionError> {
         if status == 0 { Ok(()) } else { Err(SimhSessionError::Api { operation, detail: last_error_text(&self.api) }) }
@@ -227,8 +279,8 @@ impl SimhSession {
         let raw = self.raw();
 
         // These three validation calls are the only register EXAMINEs performed
-        // during product startup. The old worker subsequently read 13 more
-        // registers one by one; that pathological sweep has been removed.
+        // during product startup. Their returned values are real SIMH values and
+        // seed the first valid display sample before the callback thread fires.
         let status = unsafe { self.api.add_register(raw, pc.as_ptr(), device, size_of::<u32>(), (&mut *self.live.pc as *mut u32).cast()) };
         self.check("register live PC", status)?;
         let status = unsafe { self.api.add_register(raw, data.as_ptr(), device, size_of::<u32>(), (&mut *self.live.data as *mut u32).cast()) };
@@ -254,6 +306,10 @@ impl SimhSession {
         };
         self.check("start live front-panel callback", status)?;
         self._callback_context = Some(context);
+
+        // add_register() has already performed real EXAMINEs. Publish exactly
+        // those backend values instead of ever painting SimhLivePanelSample::default().
+        *self.latest_live.lock().unwrap_or_else(|p| p.into_inner()) = self.live.sample(0);
         Ok(())
     }
 
@@ -337,8 +393,8 @@ impl SimhSession {
     ///
     /// With RusTair's FrontPanel extension, arbitrary bytes are grouped inside
     /// `EXECUTE` commands, the same batching facility used internally by
-    /// FrontPanel register queries. This turns a BASIC image from thousands of
-    /// remote round trips into roughly bytes/48 round trips.
+    /// FrontPanel register queries. Commands stay below Remote Console's ~4 KiB
+    /// work buffer, so a 4 KiB image needs only about 23 round trips.
     ///
     /// An older DLL is permitted to use individual DEPOSITs only for tiny
     /// writes. Large images fail immediately instead of occupying the worker
@@ -373,7 +429,7 @@ impl SimhSession {
     fn load_bytes_batched(&mut self, base: u16, bytes: &[u8]) -> Result<(), SimhSessionError> {
         for (chunk_index, chunk) in bytes.chunks(BULK_DEPOSIT_CHUNK).enumerate() {
             let base_offset = chunk_index * BULK_DEPOSIT_CHUNK;
-            let command = build_deposit_batch(base, base_offset, chunk);
+            let command = build_deposit_batch(self.address_radix, base, base_offset, chunk);
             if command != "EXECUTE " {
                 self.console_command(&command)?;
             }
@@ -440,16 +496,25 @@ impl Drop for SimhSession {
     }
 }
 
-fn build_deposit_batch(base: u16, base_offset: usize, chunk: &[u8]) -> String {
+fn build_deposit_batch(
+    address_radix: AddressRadix,
+    base: u16,
+    base_offset: usize,
+    chunk: &[u8],
+) -> String {
     let mut command = String::from("EXECUTE ");
     for (index, byte) in chunk.iter().copied().enumerate() {
         let absolute = base as usize + base_offset + index;
         if absolute > u16::MAX as usize { break; }
         if index != 0 { command.push(';'); }
-        // Always emit a four-digit address. Bare A/C/etc. are legal register
-        // names in SIMH and can be parsed as registers rather than memory.
         let address = absolute as u16;
-        command.push_str(&format!("DEPOSIT -H {address:04X} {byte:02X}"));
+        let address_text = match address_radix {
+            // Classic ALTAIR cpu_dev.aradix is 8.  The -H switch controls the
+            // deposited DATA radix, not get_range()'s address radix.
+            AddressRadix::Octal => format!("{address:06o}"),
+            AddressRadix::Hex => format!("{address:04X}"),
+        };
+        command.push_str(&format!("DEPOSIT -H {address_text} {byte:02X}"));
     }
     command
 }
@@ -479,11 +544,22 @@ mod tests {
         assert!(matches!(path_cstring(path), Err(SimhSessionError::InteriorNul(_))));
     }
     #[test]
-    fn bulk_deposit_addresses_cannot_alias_register_names() {
-        let command = build_deposit_batch(0, 0, &[0; 16]);
+    fn z80_bulk_deposit_uses_unambiguous_hex_addresses() {
+        let command = build_deposit_batch(AddressRadix::Hex, 0, 0, &[0; 16]);
         assert!(command.contains("DEPOSIT -H 000A 00"));
         assert!(command.contains("DEPOSIT -H 000C 00"));
         assert!(!command.contains("DEPOSIT -H A 00"));
         assert!(!command.contains("DEPOSIT -H C 00"));
+    }
+    #[test]
+    fn classic_bulk_deposit_uses_cpu_octal_address_radix() {
+        let command = build_deposit_batch(AddressRadix::Octal, 0, 0, &[0; 16]);
+        assert!(command.contains("DEPOSIT -H 000012 00"));
+        assert!(command.contains("DEPOSIT -H 000014 00"));
+        assert!(!command.contains("DEPOSIT -H 000A 00"));
+    }
+    #[test]
+    fn live_sample_default_is_not_backend_data() {
+        assert!(!SimhLivePanelSample::default().valid);
     }
 }
