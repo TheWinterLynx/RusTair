@@ -53,7 +53,9 @@ pub use session::{
     SimhLivePanelSample, SimhOperationalState, SimhSession, SimhSessionError,
 };
 #[cfg(feature = "simh-ffi")]
-pub use threaded_worker::SimhThreadedBackend;
+pub use threaded_worker::{
+    SimhConsoleSnapshot, SimhThreadedBackend, active_console_snapshot, submit_active_console,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimhTarget {
@@ -148,7 +150,11 @@ mod tests {
 
     #[test]
     fn launch_config_never_implies_execution() {
-        let config = SimhLaunchConfig::new(SimhTarget::Altair, "altair.exe", "rustair-altair.ini");
+        let config = SimhLaunchConfig::new(
+            SimhTarget::Altair,
+            "altair.exe",
+            "rustair-altair.ini",
+        );
         assert_eq!(config.device_panel_count, 0);
         assert_eq!(config.target.executable_stem(), "altair");
     }
