@@ -1,13 +1,14 @@
 use super::super::{egui, RusTairApp};
 use crate::cpu8080::{FLAG_AC, FLAG_C, FLAG_P, FLAG_S, FLAG_Z};
+use crate::debugger8080::{decode_at, detect_simple_backward_loop, InstructionAt, SimpleLoop};
 use crate::machine::{MAX_MEM_SIZE, MEMORY_BOARD_SIZE};
 
 const BYTES_PER_ROW: usize = 16;
 const ROW_COUNT: usize = MAX_MEM_SIZE / BYTES_PER_ROW;
 const ROW_HEIGHT: f32 = 22.0;
-const SIDEBAR_DEFAULT_WIDTH: f32 = 390.0;
-const SIDEBAR_MIN_WIDTH: f32 = 370.0;
-const SIDEBAR_MAX_WIDTH: f32 = 540.0;
+const SIDEBAR_DEFAULT_WIDTH: f32 = 410.0;
+const SIDEBAR_MIN_WIDTH: f32 = 390.0;
+const SIDEBAR_MAX_WIDTH: f32 = 580.0;
 const CURRENT_INSTRUCTION_LINE_HEIGHT: f32 = 18.0;
 
 #[derive(Clone)]
@@ -21,6 +22,7 @@ struct MemoryViewerUiState {
     edit_value: u8,
     respect_protection: bool,
     last_edit_message: Option<String>,
+    loop_inspector_open: bool,
 }
 
 impl Default for MemoryViewerUiState {
@@ -35,6 +37,7 @@ impl Default for MemoryViewerUiState {
             edit_value: 0,
             respect_protection: true,
             last_edit_message: None,
+            loop_inspector_open: false,
         }
     }
 }
@@ -109,7 +112,11 @@ impl RusTairApp {
     }
 
     fn printable_ascii(byte: u8) -> char {
-        if byte.is_ascii_graphic() || byte == b' ' { byte as char } else { '.' }
+        if byte.is_ascii_graphic() || byte == b' ' {
+            byte as char
+        } else {
+            '.'
+        }
     }
 
     fn ascii_description(byte: u8) -> String {
@@ -144,91 +151,66 @@ impl RusTairApp {
         )
     }
 
-    fn instruction_word(lo: u8, hi: u8) -> u16 {
-        lo as u16 | ((hi as u16) << 8)
+    fn decode_memory_instruction(&mut self, address: u16) -> Option<InstructionAt> {
+        decode_at(|candidate| self.machine.peek_memory(candidate), address)
     }
 
-    fn disassemble_8080(op: u8, b1: u8, b2: u8) -> (String, usize) {
-        const REG: [&str; 8] = ["B", "C", "D", "E", "H", "L", "M", "A"];
-        const RP: [&str; 4] = ["B", "D", "H", "SP"];
-        const RP_PUSH: [&str; 4] = ["B", "D", "H", "PSW"];
-        const COND: [&str; 8] = ["NZ", "Z", "NC", "C", "PO", "PE", "P", "M"];
-        const ALU: [&str; 8] = ["ADD", "ADC", "SUB", "SBB", "ANA", "XRA", "ORA", "CMP"];
-
-        if (0x40..=0x7f).contains(&op) {
-            if op == 0x76 { return ("HLT".into(), 1); }
-            let dst = REG[((op >> 3) & 7) as usize];
-            let src = REG[(op & 7) as usize];
-            return (format!("MOV {dst},{src}"), 1);
-        }
-        if (0x80..=0xbf).contains(&op) {
-            let alu = ALU[((op >> 3) & 7) as usize];
-            let src = REG[(op & 7) as usize];
-            return (format!("{alu} {src}"), 1);
-        }
-        if op & 0xc7 == 0x04 { return (format!("INR {}", REG[((op >> 3) & 7) as usize]), 1); }
-        if op & 0xc7 == 0x05 { return (format!("DCR {}", REG[((op >> 3) & 7) as usize]), 1); }
-        if op & 0xc7 == 0x06 { return (format!("MVI {},${b1:02X}", REG[((op >> 3) & 7) as usize]), 2); }
-        if op & 0xcf == 0x01 {
-            let value = Self::instruction_word(b1, b2);
-            return (format!("LXI {},${value:04X}", RP[((op >> 4) & 3) as usize]), 3);
-        }
-        if op & 0xcf == 0x03 { return (format!("INX {}", RP[((op >> 4) & 3) as usize]), 1); }
-        if op & 0xcf == 0x0b { return (format!("DCX {}", RP[((op >> 4) & 3) as usize]), 1); }
-        if op & 0xcf == 0x09 { return (format!("DAD {}", RP[((op >> 4) & 3) as usize]), 1); }
-        if op & 0xc7 == 0xc0 { return (format!("R{}", COND[((op >> 3) & 7) as usize]), 1); }
-        if op & 0xc7 == 0xc2 {
-            let value = Self::instruction_word(b1, b2);
-            return (format!("J{} ${value:04X}", COND[((op >> 3) & 7) as usize]), 3);
-        }
-        if op & 0xc7 == 0xc4 {
-            let value = Self::instruction_word(b1, b2);
-            return (format!("C{} ${value:04X}", COND[((op >> 3) & 7) as usize]), 3);
-        }
-        if op & 0xcf == 0xc1 { return (format!("POP {}", RP_PUSH[((op >> 4) & 3) as usize]), 1); }
-        if op & 0xcf == 0xc5 { return (format!("PUSH {}", RP_PUSH[((op >> 4) & 3) as usize]), 1); }
-        if op & 0xc7 == 0xc7 { return (format!("RST {}", (op >> 3) & 7), 1); }
-
-        let word = Self::instruction_word(b1, b2);
-        match op {
-            0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 => ("NOP".into(), 1),
-            0x02 => ("STAX B".into(), 1), 0x07 => ("RLC".into(), 1),
-            0x0a => ("LDAX B".into(), 1), 0x0f => ("RRC".into(), 1),
-            0x12 => ("STAX D".into(), 1), 0x17 => ("RAL".into(), 1),
-            0x1a => ("LDAX D".into(), 1), 0x1f => ("RAR".into(), 1),
-            0x22 => (format!("SHLD ${word:04X}"), 3), 0x27 => ("DAA".into(), 1),
-            0x2a => (format!("LHLD ${word:04X}"), 3), 0x2f => ("CMA".into(), 1),
-            0x32 => (format!("STA ${word:04X}"), 3), 0x37 => ("STC".into(), 1),
-            0x3a => (format!("LDA ${word:04X}"), 3), 0x3f => ("CMC".into(), 1),
-            0xc3 | 0xcb => (format!("JMP ${word:04X}"), 3),
-            0xc6 => (format!("ADI ${b1:02X}"), 2), 0xc9 | 0xd9 => ("RET".into(), 1),
-            0xcd | 0xdd | 0xed | 0xfd => (format!("CALL ${word:04X}"), 3),
-            0xce => (format!("ACI ${b1:02X}"), 2), 0xd3 => (format!("OUT ${b1:02X}"), 2),
-            0xd6 => (format!("SUI ${b1:02X}"), 2), 0xdb => (format!("IN ${b1:02X}"), 2),
-            0xde => (format!("SBI ${b1:02X}"), 2), 0xe3 => ("XTHL".into(), 1),
-            0xe6 => (format!("ANI ${b1:02X}"), 2), 0xe9 => ("PCHL".into(), 1),
-            0xeb => ("XCHG".into(), 1), 0xee => (format!("XRI ${b1:02X}"), 2),
-            0xf3 => ("DI".into(), 1), 0xf6 => (format!("ORI ${b1:02X}"), 2),
-            0xf9 => ("SPHL".into(), 1), 0xfb => ("EI".into(), 1),
-            0xfe => (format!("CPI ${b1:02X}"), 2),
-            _ => (format!("DB ${op:02X}"), 1),
-        }
+    fn current_simple_loop(&mut self) -> Option<SimpleLoop> {
+        let cpu = self.machine.intel8080_state();
+        detect_simple_backward_loop(
+            |address| self.machine.peek_memory(address),
+            cpu.pc,
+            cpu.flags,
+        )
     }
 
-    fn current_instruction(&mut self) -> (String, String) {
-        let pc = self.machine.intel8080_state().pc;
-        let Some(op) = self.machine.peek_memory(pc) else {
-            return ("UNMAPPED".into(), "--".into());
+    fn instruction_hover_text(
+        &mut self,
+        address: u16,
+        byte: u8,
+        pc: u16,
+        sp: u16,
+        protected: bool,
+    ) -> String {
+        let mut hover = format!(
+            "{address:04X}h = {byte:02X}h = decimal {byte} = {}",
+            Self::ascii_description(byte)
+        );
+        if address == pc {
+            hover.push_str(" — PC");
+        }
+        if address == sp {
+            hover.push_str(" — SP");
+        }
+        if protected {
+            hover.push_str(" — protected 1 KiB block");
+        }
+
+        hover.push_str("\n\n");
+        let Some(instruction) = self.decode_memory_instruction(address) else {
+            hover.push_str("No complete 8080 instruction can be decoded here because one or more instruction bytes are outside installed RAM.");
+            return hover;
         };
-        let b1 = self.machine.peek_memory(pc.wrapping_add(1)).unwrap_or(0);
-        let b2 = self.machine.peek_memory(pc.wrapping_add(2)).unwrap_or(0);
-        let (text, len) = Self::disassemble_8080(op, b1, b2);
-        let bytes = match len {
-            1 => format!("{op:02X}"),
-            2 => format!("{op:02X} {b1:02X}"),
-            _ => format!("{op:02X} {b1:02X} {b2:02X}"),
-        };
-        (text, bytes)
+
+        if address == pc {
+            hover.push_str("CPU instruction at PC:\n");
+        } else {
+            hover.push_str("Decode only — if execution started at this byte:\n");
+            hover.push_str("This address is not the current PC; it may be code, an operand, text or arbitrary data.\n");
+        }
+        hover.push_str(&format!(
+            "{}  {}\n",
+            instruction.decoded.bytes_text(instruction.bytes),
+            instruction.decoded.text()
+        ));
+        hover.push_str(&format!("Length: {} byte(s) · {}\n", instruction.decoded.length, instruction.decoded.timing.label()));
+        hover.push_str(&format!("Flags affected: {}\n", instruction.decoded.flags.label()));
+        hover.push_str(&format!("Memory: {} · I/O: {}\n", instruction.decoded.memory.label(), instruction.decoded.io.label()));
+        hover.push_str(&format!("Flow: {}", instruction.decoded.flow_label()));
+        if instruction.decoded.undocumented_alias {
+            hover.push_str("\nUndocumented Intel 8080 alias accepted by the RusTair cores.");
+        }
+        hover
     }
 
     fn draw_register_pair_header(ui: &mut egui::Ui, pair: &str, value: u16, description: &str) {
@@ -303,7 +285,7 @@ impl RusTairApp {
         } else if panel.running { "RUNNING" } else { "STOPPED" };
 
         ui.horizontal_wrapped(|ui| {
-            ui.strong("RAM INSPECTOR / CPU REGISTERS");
+            ui.strong("RAM INSPECTOR / 8080 DEBUGGER");
             ui.separator(); ui.label(execution_state); ui.separator();
             ui.small(format!("cycles {}", cpu.total_t_states.unwrap_or(0))); ui.separator();
             ui.small(format!("RAM {} (0000h–{:04X}h)", self.config.machine.ram_size.label(), installed_end));
@@ -330,11 +312,13 @@ impl RusTairApp {
     }
 
     fn draw_memory_help(&self, ui: &mut egui::Ui) {
+        ui.small("• Hover a RAM byte to decode the 8080 instruction that would begin there. Away from PC this is explicitly only a possible decode: RAM may contain operands or data.");
+        ui.small("• The instruction metadata comes from one shared decoder used by debugger analysis, not a second UI-only opcode table.");
         ui.small("• A is the accumulator and F contains the condition flags. PUSH/POP PSW transfers A and F together.");
         ui.small("• B+C, D+E and H+L are the 8080's natural 16-bit register pairs: BC, DE and HL. The first register is the high byte and the second is the low byte.");
         ui.small("• HL is especially important for memory access: register M in 8080 assembly means the byte in memory addressed by HL.");
         ui.small("• PC is the Program Counter (next instruction address). SP is the Stack Pointer.");
-        ui.small("• NEXT is the Intel 8080 instruction currently addressed by PC. Reading it here is non-invasive.");
+        ui.small("• The Loop Inspector only claims simple straight-line loops ending in one direct backward JMP/Jcc; ambiguous/nested control flow is deliberately rejected.");
         ui.small("• The 8080 address space is 0000h–FFFFh. '--' means that no physical RAM is installed at that address.");
         ui.small("• ADDR is the row base; 00–0F are the hexadecimal byte offsets. ASCII is the printable interpretation of the same 16 bytes.");
         ui.small("• PC bytes are highlighted; SP is underlined when it falls on a visible byte.");
@@ -424,11 +408,10 @@ impl RusTairApp {
                                 if address == state.selected_address { text = text.background_color(selected_fill); }
                                 let response = ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(text).sense(egui::Sense::click()));
                                 if response.clicked() { state.follow_pc = false; self.select_memory_address(state, address, false); }
-                                let mut hover = format!("{:04X}h = {:02X}h = decimal {} = {}", address, byte, byte, Self::ascii_description(byte));
-                                if address == pc { hover.push_str(" — PC"); }
-                                if address == sp { hover.push_str(" — SP"); }
-                                if protected { hover.push_str(" — protected 1 KiB block"); }
-                                response.on_hover_text(hover);
+                                if response.hovered() {
+                                    let hover = self.instruction_hover_text(address, byte, pc, sp, protected);
+                                    response.on_hover_text(hover);
+                                }
                             }
                             None => {
                                 ascii.push(' ');
@@ -494,6 +477,14 @@ impl RusTairApp {
             ui.add_sized([28.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if sp_here { "SP" } else { "  " }).strong()));
         });
 
+        if let Some(instruction) = self.decode_memory_instruction(address) {
+            ui.small(if pc_here {
+                format!("Instruction at PC: {}", instruction.decoded.text())
+            } else {
+                format!("Possible decode at selected address: {}", instruction.decoded.text())
+            });
+        }
+
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.label("New hex:");
@@ -529,23 +520,48 @@ impl RusTairApp {
         if self.machine.running() { ui.small("Machine is RUNNING; the CPU may overwrite this byte immediately."); }
     }
 
-    fn draw_current_instruction_side(&mut self, ui: &mut egui::Ui) {
-        let pc = self.machine.intel8080_state().pc;
-        let (instruction, bytes) = self.current_instruction();
+    fn draw_current_instruction_side(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
+        let cpu = self.machine.intel8080_state();
+        let pc = cpu.pc;
+        let Some(instruction) = self.decode_memory_instruction(pc) else {
+            ui.label(egui::RichText::new(format!("${pc:04X}  UNMAPPED")).monospace().strong());
+            return;
+        };
+
         ui.add_sized(
             [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
-            egui::Label::new(egui::RichText::new(format!("${pc:04X}  {instruction}")).monospace().strong()),
+            egui::Label::new(egui::RichText::new(format!("${pc:04X}  {}", instruction.decoded.text())).monospace().strong()),
         );
         ui.add_sized(
             [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
-            egui::Label::new(egui::RichText::new(bytes).monospace().weak()),
+            egui::Label::new(egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak()),
         );
+        ui.small(format!("{} · flags {} · memory {} · I/O {}", instruction.decoded.timing.label(), instruction.decoded.flags.label(), instruction.decoded.memory.label(), instruction.decoded.io.label()));
+        ui.small(format!("Flow: {}", instruction.decoded.flow_label()));
+        if let Some(condition) = instruction.decoded.control_flow.condition() {
+            ui.small(format!("Condition now: {} — {}", condition.description(), if condition.evaluate(cpu.flags) { "TRUE / TAKEN if reached" } else { "FALSE / NOT TAKEN if reached" }));
+        }
+        if instruction.decoded.undocumented_alias {
+            ui.small("Undocumented 8080 opcode alias accepted by the emulated cores.");
+        }
+
+        if let Some(loop_info) = self.current_simple_loop() {
+            ui.separator();
+            ui.strong(format!("SIMPLE LOOP {:04X}h–{:04X}h", loop_info.start, loop_info.back_edge));
+            ui.small(loop_info.exit_description());
+            if let Some(condition) = loop_info.condition {
+                ui.small(format!("Back-edge {}: {}", condition.label(), if loop_info.branch_taken_now { "TAKEN now" } else { "NOT TAKEN now — loop exits" }));
+            }
+            if ui.button("Open Loop Inspector").clicked() {
+                state.loop_inspector_open = true;
+            }
+        }
     }
 
     fn draw_memory_sidebar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         egui::ScrollArea::vertical().id_salt("ram-inspector-sidebar-scroll").auto_shrink([false, false]).show(ui, |ui| {
             ui.strong("CURRENT INSTRUCTION");
-            self.draw_current_instruction_side(ui);
+            self.draw_current_instruction_side(ui, state);
             ui.separator();
             egui::CollapsingHeader::new("Selected byte / editor").default_open(true).show(ui, |ui| self.draw_memory_editor(ui, state));
             ui.separator();
@@ -557,12 +573,76 @@ impl RusTairApp {
         });
     }
 
+    fn draw_loop_inspector(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
+        if !state.loop_inspector_open {
+            return;
+        }
+        let cpu = self.machine.intel8080_state();
+        let loop_info = self.current_simple_loop();
+        let mut open = state.loop_inspector_open;
+
+        egui::Window::new("8080 Loop Inspector")
+            .id(egui::Id::new("rustair-8080-loop-inspector"))
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .default_height(280.0)
+            .show(ctx, |ui| {
+                let Some(loop_info) = loop_info.as_ref() else {
+                    ui.label("The current PC is no longer inside a high-confidence simple backward-branch loop.");
+                    ui.small("RusTair does not guess loop boundaries when control flow is ambiguous.");
+                    return;
+                };
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong(format!("Loop {:04X}h → {:04X}h", loop_info.start, loop_info.back_edge));
+                    ui.separator();
+                    ui.label(format!("{} instructions", loop_info.instructions.len()));
+                });
+                ui.small(loop_info.exit_description());
+                if let Some(condition) = loop_info.condition {
+                    ui.small(format!(
+                        "Back-edge condition {} ({}) is currently {}.",
+                        condition.label(),
+                        condition.description(),
+                        if loop_info.branch_taken_now { "TRUE → TAKEN" } else { "FALSE → NOT TAKEN / EXIT" }
+                    ));
+                } else {
+                    ui.small("Back-edge is an unconditional JMP and is always taken if reached.");
+                }
+                ui.separator();
+
+                egui::ScrollArea::vertical().id_salt("ram-loop-inspector-scroll").show(ui, |ui| {
+                    for instruction in &loop_info.instructions {
+                        let is_pc = instruction.address == cpu.pc;
+                        let is_back_edge = instruction.address == loop_info.back_edge;
+                        let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
+                        let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
+                        if is_pc {
+                            address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
+                            instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_sized([52.0, ROW_HEIGHT], egui::Label::new(address_text));
+                            ui.add_sized([92.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak()));
+                            ui.add_sized([210.0, ROW_HEIGHT], egui::Label::new(instruction_text));
+                            if is_pc { ui.strong("PC"); }
+                            if is_back_edge { ui.small("BACK-EDGE"); }
+                        });
+                    }
+                });
+            });
+
+        state.loop_inspector_open = open;
+    }
+
     fn draw_memory_viewer_window(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
         egui::TopBottomPanel::top("memory-viewer-toolbar").resizable(false).show(ctx, |ui| self.draw_memory_toolbar(ui, state));
         egui::SidePanel::right("memory-viewer-sidebar").resizable(true)
             .default_width(SIDEBAR_DEFAULT_WIDTH).width_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
             .show(ctx, |ui| self.draw_memory_sidebar(ui, state));
         egui::CentralPanel::default().show(ctx, |ui| { self.draw_memory_table(ui, state); });
+        self.draw_loop_inspector(ctx, state);
     }
 
     pub(in crate::app) fn show_memory_viewer_viewport(&mut self, parent_ctx: &egui::Context) {
@@ -572,8 +652,8 @@ impl RusTairApp {
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-memory-viewer"),
             egui::ViewportBuilder::default()
-                .with_title("RusTair — RAM Inspector / CPU Registers")
-                .with_inner_size([1360.0, 780.0])
+                .with_title("RusTair — RAM Inspector / 8080 Debugger")
+                .with_inner_size([1380.0, 800.0])
                 .with_min_inner_size([1190.0, 600.0])
                 .with_resizable(true),
             |memory_ctx, _class| {
