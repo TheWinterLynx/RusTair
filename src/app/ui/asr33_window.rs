@@ -228,6 +228,22 @@ impl RusTairApp {
         }
     }
 
+    /// Draw a right-pointing triangle from actual geometry so its visual center
+    /// is exactly the supplied center. This avoids font baseline/ascender quirks.
+    fn draw_tape_arrow(painter: &egui::Painter, center: Pos2, color: Color32, size: f32) {
+        let half_h = size * 0.5;
+        let half_w = size * 0.5;
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                Pos2::new(center.x - half_w, center.y - half_h),
+                Pos2::new(center.x - half_w, center.y + half_h),
+                Pos2::new(center.x + half_w, center.y),
+            ],
+            color,
+            egui::Stroke::NONE,
+        ));
+    }
+
     /// Compact 8-level paper-tape view. Contemporary DEC ASR-33 drawings show
     /// channels 8..1 from left to right, with the smaller feed/sprocket hole
     /// between channels 4 and 3. The operator can reverse only this drawing;
@@ -250,14 +266,11 @@ impl RusTairApp {
             egui::Stroke::new(1.0_f32, border),
             egui::StrokeKind::Inside,
         );
-        // The glyph's visual center sits slightly above its typographic center;
-        // nudge it down so it lines up with the hole row rather than the font box.
-        painter.text(
-            Pos2::new(rect.left() + 10.0, rect.center().y + 1.0),
-            egui::Align2::CENTER_CENTER,
-            "▶",
-            FontId::proportional(11.0),
+        Self::draw_tape_arrow(
+            painter,
+            Pos2::new(rect.left() + 10.0, rect.center().y),
             arrow,
+            7.0,
         );
 
         let bit_order: [u8; 8] = match order {
@@ -366,12 +379,16 @@ impl RusTairApp {
             self.asr33.tape_bit_order,
         );
         ui.label("Bits:");
-        let order_button = ui.small_button(match self.asr33.tape_bit_order {
-            // Use the same triangle glyph already rendered by the tape itself;
-            // the previous Unicode arrow was missing from some font fallbacks.
-            TapeBitOrder::Historical8To1 => "8▶1 hist.",
-            TapeBitOrder::Reversed1To8 => "1▶8",
-        });
+        let order_button = ui.add(
+            egui::Button::new(
+                egui::RichText::new(match self.asr33.tape_bit_order {
+                    TapeBitOrder::Historical8To1 => "8▶1 hist.",
+                    TapeBitOrder::Reversed1To8 => "1▶8",
+                })
+                .font(FontId::proportional(11.0)),
+            )
+            .small(),
+        );
         if order_button.clicked() {
             self.asr33.tape_bit_order = self.asr33.tape_bit_order.toggle();
         }
