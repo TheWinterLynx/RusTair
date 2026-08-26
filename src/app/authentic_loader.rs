@@ -14,7 +14,13 @@ pub(super) struct BootstrapDefinition {
     pub(super) required_sense: u8,
     pub(super) status_port: u8,
     pub(super) data_port: u8,
+    poll_start: u16,
+    poll_end: u16,
 }
+
+const BASIC32_4K_MIN_RAM: usize = 4 * 1024;
+const CHECKSUM_LOADER_START: u16 = 0x0F00;
+const CHECKSUM_LOADER_END: u16 = 0x0FAD;
 
 const BASIC32_4K_88_SIO: [u8; 20] = [
     0x21, 0xAE, 0x0F, 0x31, 0x12, 0x00, 0xDB, 0x00, 0x0F, 0xD8,
@@ -39,6 +45,9 @@ impl BootstrapDefinition {
                 required_sense: 0x00,
                 status_port: 0x00,
                 data_port: 0x01,
+                // LXI SP at 0003h returns into the status polling loop at 0006h.
+                poll_start: 0x0003,
+                poll_end: 0x0009,
             },
             SerialBoard::TwoSio88 => Self {
                 board,
@@ -49,12 +58,19 @@ impl BootstrapDefinition {
                 required_sense: 0x08,
                 status_port: 0x10,
                 data_port: 0x11,
+                // LXI SP at 000Bh returns into the status polling loop at 000Eh.
+                poll_start: 0x000B,
+                poll_end: 0x0011,
             },
         }
     }
 
     const fn last_address(self) -> u16 {
         self.bytes.len() as u16 - 1
+    }
+
+    const fn pc_is_polling(self, pc: u16) -> bool {
+        pc >= self.poll_start && pc <= self.poll_end
     }
 }
 
@@ -86,10 +102,10 @@ fn install_via_front_panel(
     if machine.running() {
         return Err("STOP the Altair before installing the bootstrap.".into());
     }
-    if machine.installed_ram_bytes() < definition.bytes.len() {
+    if machine.installed_ram_bytes() < BASIC32_4K_MIN_RAM {
         return Err(format!(
-            "The installed RAM is too small for the {}-byte bootstrap.",
-            definition.bytes.len()
+            "Microsoft 4K BASIC 3.2 authentic loading requires at least 4 KiB RAM; the current machine has {} bytes.",
+            machine.installed_ram_bytes()
         ));
     }
 
@@ -132,6 +148,16 @@ impl RusTairApp {
     }
 
     fn arm_authentic_tape_reader(&mut self) -> Result<(), String> {
+        let definition = BootstrapDefinition::for_board(self.config.machine.serial_board);
+        if self.machine.installed_ram_bytes() < BASIC32_4K_MIN_RAM {
+            return Err(format!(
+                "Microsoft 4K BASIC 3.2 requires at least 4 KiB RAM; the current machine has {}.",
+                self.config.machine.ram_size.label()
+            ));
+        }
+        if !bootstrap_matches(&mut self.machine, definition) {
+            return Err("The selected board's BASIC 3.2 bootstrap is not verified at 0000h. Enter it manually or use Install bootstrap first.".into());
+        }
         if self.tty.tape_input_total_len() == 0 {
             return Err("Mount a BASIC 3.2 paper-tape image first.".into());
         }
@@ -143,6 +169,13 @@ impl RusTairApp {
         }
         if !self.machine.powered() {
             return Err("Power ON the Altair before starting the reader.".into());
+        }
+        let sense = (self.machine.switch_register() >> 8) as u8;
+        if sense != definition.required_sense {
+            return Err(format!(
+                "Set sense switches A15..A8 to {:02X}h before starting the BASIC 3.2 reader; current value is {sense:02X}h.",
+                definition.required_sense
+            ));
         }
 
         self.asr33.reader_running = true;
@@ -158,6 +191,8 @@ impl RusTairApp {
         definition: BootstrapDefinition,
         verified: bool,
         tape_position: usize,
+        tape_total: usize,
+        rx_len: usize,
     ) -> String {
         if !verified {
             return "Bootstrap not verified in RAM".into();
@@ -166,11 +201,27 @@ impl RusTairApp {
         if !self.machine.running() {
             return "Bootstrap verified · CPU stopped".into();
         }
+        if definition.pc_is_polling(cpu.pc) {
+            return if rx_len == 0 {
+                format!(
+                    "Bootstrap polling {:02X}h · waiting for next reader byte",
+                    definition.status_port
+                )
+            } else {
+                format!(
+                    "Bootstrap has UART RX pending · next guest IN {:02X}h consumes it",
+                    definition.data_port
+                )
+            };
+        }
         if cpu.pc <= definition.last_address().saturating_add(1) {
             return format!("Bootstrap executing · PC {:04X}h", cpu.pc);
         }
-        if (0x0F00..=0x0FFF).contains(&cpu.pc) {
+        if (CHECKSUM_LOADER_START..=0x0FFF).contains(&cpu.pc) {
             return format!("Checksum loader executing · PC {:04X}h", cpu.pc);
+        }
+        if tape_total > 0 && tape_position >= tape_total {
+            return format!("Paper tape reached end · guest PC {:04X}h", cpu.pc);
         }
         if tape_position > 0 {
             return format!("Tape/program load in progress · PC {:04X}h", cpu.pc);
@@ -194,13 +245,22 @@ impl RusTairApp {
             .show(ctx, |ui| {
                 let panel = self.machine.front_panel_state();
                 let sense = (panel.switches >> 8) as u8;
+                let installed_ram = self.machine.installed_ram_bytes();
+                let ram_ok = installed_ram >= BASIC32_4K_MIN_RAM;
                 let bootstrap_verified = bootstrap_matches(&mut self.machine, definition);
                 let tape_total = self.tty.tape_input_total_len();
                 let tape_position = self.tty.tape_input_position();
                 let asr_port_ok = self.asr_connection() == SerialConnection::Port0;
                 let line_ok = self.tty.mode == TtyMode::Line;
                 let sense_ok = sense == definition.required_sense;
-                let stage = self.authentic_stage_label(definition, bootstrap_verified, tape_position);
+                let rx_len = self.asr_serial_rx_len();
+                let stage = self.authentic_stage_label(
+                    definition,
+                    bootstrap_verified,
+                    tape_position,
+                    tape_total,
+                    rx_len,
+                );
 
                 ui.strong(definition.name);
                 ui.small("Authentic path: the bootstrap executes on the emulated 8080 and consumes the mounted tape through the selected UART. No BASIC bytes are injected directly into RAM.");
@@ -215,6 +275,17 @@ impl RusTairApp {
                             "{} · status {:02X}h / data {:02X}h",
                             definition.board.label(), definition.status_port, definition.data_port
                         ));
+                        ui.end_row();
+
+                        ui.label("Installed RAM");
+                        ui.colored_label(
+                            if ram_ok { Color32::LIGHT_GREEN } else { Color32::LIGHT_RED },
+                            format!(
+                                "{} · {}",
+                                self.config.machine.ram_size.label(),
+                                if ram_ok { "4K BASIC requirement met" } else { "requires at least 4 KiB" }
+                            ),
+                        );
                         ui.end_row();
 
                         ui.label("ASR-33 cable");
@@ -256,6 +327,13 @@ impl RusTairApp {
                         );
                         ui.end_row();
 
+                        ui.label("Checksum-loader destination");
+                        ui.label(format!(
+                            "{:04X}h..{:04X}h · loaded backwards by the bootstrap",
+                            CHECKSUM_LOADER_START, CHECKSUM_LOADER_END
+                        ));
+                        ui.end_row();
+
                         ui.label("Paper tape");
                         if tape_total == 0 {
                             ui.colored_label(Color32::YELLOW, "not mounted");
@@ -265,6 +343,17 @@ impl RusTairApp {
                                 "{tape_position}/{tape_total} bytes ({percent:.1}%) · {}",
                                 self.asr33.reader_speed.label()
                             ));
+                        }
+                        ui.end_row();
+
+                        ui.label("Guest UART RX");
+                        if rx_len == 0 {
+                            ui.label("empty · reader may present the next byte");
+                        } else {
+                            ui.colored_label(
+                                Color32::YELLOW,
+                                format!("{rx_len} byte(s) pending · WAIT GUEST RX until guest IN consumes data"),
+                            );
                         }
                         ui.end_row();
 
@@ -407,7 +496,7 @@ mod tests {
         ] {
             for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
                 let mut machine = BackendHost::from_engine(engine).unwrap();
-                machine.configure_memory(RamSize::K1, RamInit::Zeroed);
+                machine.configure_memory(RamSize::K4, RamInit::Zeroed);
                 machine.configure_serial_board(board);
                 machine.power(true);
                 machine.set_running(false);
@@ -418,6 +507,79 @@ mod tests {
                 assert!(bootstrap_matches(&mut machine, definition));
                 assert_eq!(machine.front_panel_state().address, definition.last_address());
                 assert_eq!(machine.switch_register() & 0x00FF, 0x00);
+            }
+        }
+    }
+
+    #[test]
+    fn assisted_bootstrap_rejects_unsafe_machine_states_and_too_little_ram() {
+        let definition = BootstrapDefinition::for_board(SerialBoard::Sio88);
+        let mut machine = BackendHost::rust_fast();
+        machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+
+        let error = install_via_front_panel(&mut machine, definition).unwrap_err();
+        assert!(error.contains("Power ON"));
+
+        machine.power(true);
+        machine.set_running(true);
+        let error = install_via_front_panel(&mut machine, definition).unwrap_err();
+        assert!(error.contains("STOP"));
+
+        machine.set_running(false);
+        machine.configure_memory(RamSize::K1, RamInit::Zeroed);
+        let error = install_via_front_panel(&mut machine, definition).unwrap_err();
+        assert!(error.contains("at least 4 KiB"));
+    }
+
+    #[test]
+    fn bootstrap_consumes_reader_bytes_with_real_guest_in_on_both_rust_engines() {
+        for engine in [
+            EmulationEngine::RustFast8080,
+            EmulationEngine::RustCycleAccurate8080,
+        ] {
+            for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
+                let mut machine = BackendHost::from_engine(engine).unwrap();
+                machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+                machine.configure_serial_board(board);
+                machine.power(true);
+                machine.set_running(false);
+
+                let definition = BootstrapDefinition::for_board(board);
+                install_via_front_panel(&mut machine, definition).unwrap();
+
+                // Historical run preparation: EXAMINE 0000h, then set only the
+                // upper sense byte. Changing switches after EXAMINE must not
+                // change PC/address until the CPU actually runs.
+                machine.set_switch_register(0x0000);
+                machine.examine(false);
+                machine.set_switch_register(u16::from(definition.required_sense) << 8);
+                assert_eq!(machine.intel8080_state().pc, 0x0000);
+                machine.set_running(true);
+
+                // AEh is BASIC 3.2 leader. The guest must remove it from the
+                // emulated UART via IN; it must not be stored as loader data.
+                machine.serial_receive(BackendSerialPort::Port0, 0xAE);
+                for _ in 0..200 {
+                    machine.run_cycles(64);
+                    if machine.serial_rx_empty(BackendSerialPort::Port0) {
+                        break;
+                    }
+                }
+                assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
+                assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x00));
+
+                // The first non-leader byte is stored backwards at 0FADh. This
+                // proves the byte travelled through the configured MITS UART
+                // and the bootstrap's actual 8080 IN instruction.
+                machine.serial_receive(BackendSerialPort::Port0, 0x42);
+                for _ in 0..400 {
+                    machine.run_cycles(64);
+                    if machine.peek_memory(CHECKSUM_LOADER_END) == Some(0x42) {
+                        break;
+                    }
+                }
+                assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x42));
+                assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
             }
         }
     }
