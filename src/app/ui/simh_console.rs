@@ -1,14 +1,30 @@
+use std::sync::{Mutex, OnceLock};
+
 use super::super::*;
 use crate::backend::simh::{active_console_snapshot, submit_active_console};
 
-const OPEN_ID: &str = "rustair-simh-console-open";
-const INPUT_ID: &str = "rustair-simh-console-input";
+const VIEWPORT_ID: &str = "rustair-simh-console-viewport";
+
+#[derive(Default)]
+struct ConsoleUiState {
+    open: bool,
+    initialized: bool,
+    input: String,
+    local_error: Option<String>,
+}
+
+static CONSOLE_UI: OnceLock<Mutex<ConsoleUiState>> = OnceLock::new();
+
+fn console_ui() -> &'static Mutex<ConsoleUiState> {
+    CONSOLE_UI.get_or_init(|| Mutex::new(ConsoleUiState::default()))
+}
 
 impl RusTairApp {
-    /// Draw a nonblocking console/log window for the currently selected embedded
-    /// Open-SIMH backend. The log works with every RusTair bundle. Interactive
-    /// SCP commands become available when the embedded FrontPanel DLL exports
-    /// the RusTair console extension.
+    /// Show Open-SIMH diagnostics/console in a real child viewport.
+    ///
+    /// This is deliberately a deferred viewport: it owns its repaint cadence
+    /// and therefore does not make the animated Altair panel repaint just
+    /// because console text changed.
     pub(in crate::app) fn draw_simh_console(&mut self, ctx: &egui::Context) {
         let simh_active = matches!(
             self.machine.engine(),
@@ -18,132 +34,163 @@ impl RusTairApp {
             return;
         }
 
-        let open_id = egui::Id::new(OPEN_ID);
-        let mut open = ctx.data_mut(|data| *data.get_temp_mut_or(open_id, true));
+        let open = {
+            let mut state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+            if !state.initialized {
+                state.initialized = true;
+                state.open = true;
+            }
+            state.open
+        };
 
-        // Keep a small reopen affordance independent of the main menu. This is
-        // intentionally always responsive because it only touches egui state.
         if !open {
             egui::Area::new(egui::Id::new("rustair-simh-console-reopen"))
                 .anchor(egui::Align2::RIGHT_TOP, [-12.0, 38.0])
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
                     if ui.button("SIMH CONSOLE").clicked() {
-                        open = true;
+                        let mut state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+                        state.open = true;
                     }
                 });
-        }
-
-        if !open {
-            ctx.data_mut(|data| data.insert_temp(open_id, open));
             return;
         }
 
-        let snapshot = active_console_snapshot();
-        let input_id = egui::Id::new(INPUT_ID);
-        let mut input = ctx.data(|data| data.get_temp::<String>(input_id).unwrap_or_default());
-        let mut submit = false;
-
-        let mut window_open = open;
-        egui::Window::new("Open-SIMH Console")
-            .id(egui::Id::new("rustair-simh-console-window"))
-            .open(&mut window_open)
-            .default_width(720.0)
-            .default_height(430.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                let Some(snapshot) = snapshot.as_ref() else {
-                    ui.label("No active Open-SIMH worker.");
+        ctx.show_viewport_deferred(
+            egui::ViewportId::from_hash_of(VIEWPORT_ID),
+            egui::ViewportBuilder::default()
+                .with_title("Open-SIMH Console")
+                .with_inner_size([760.0, 500.0])
+                .with_min_inner_size([560.0, 340.0]),
+            move |viewport_ctx, class| {
+                if viewport_ctx.input(|i| i.viewport().close_requested()) {
+                    let mut state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+                    state.open = false;
                     return;
-                };
+                }
 
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&snapshot.engine);
-                    ui.separator();
-                    ui.label(if snapshot.powered { "POWER ON" } else { "POWER OFF" });
-                    ui.separator();
-                    ui.label(if snapshot.running { "RUN" } else { "STOP" });
-                    if snapshot.busy {
+                egui::CentralPanel::default().show(viewport_ctx, |ui| {
+                    if class == egui::ViewportClass::EmbeddedWindow {
+                        ui.small("This platform/backend cannot create a native child viewport, so egui is using its fallback embedding mode.");
                         ui.separator();
-                        ui.spinner();
-                        ui.label("worker busy");
+                    }
+
+                    let snapshot = active_console_snapshot();
+                    let Some(snapshot) = snapshot.as_ref() else {
+                        ui.label("No active Open-SIMH worker.");
+                        return;
+                    };
+
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(&snapshot.engine);
+                        ui.separator();
+                        ui.label(if snapshot.powered { "POWER ON" } else { "POWER OFF" });
+                        ui.separator();
+                        ui.label(if snapshot.running { "RUN" } else { "STOP" });
+                        if snapshot.busy {
+                            ui.separator();
+                            ui.spinner();
+                            ui.label("worker busy");
+                        }
+                    });
+
+                    if let Some(error) = snapshot.last_error.as_ref() {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                    {
+                        let state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(error) = state.local_error.as_ref() {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
+                        }
+                    }
+
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("rustair-simh-console-scroll")
+                        .stick_to_bottom(true)
+                        .auto_shrink([false, false])
+                        .max_height(340.0)
+                        .show(ui, |ui| {
+                            if snapshot.lines.is_empty() {
+                                ui.monospace("(no SIMH activity yet)");
+                            } else {
+                                ui.monospace(snapshot.lines.join("\n"));
+                            }
+                        });
+
+                    ui.separator();
+                    let command_enabled = snapshot.powered
+                        && !snapshot.running
+                        && !snapshot.busy
+                        && snapshot.console_available;
+
+                    let mut submit = false;
+                    let mut quick_command: Option<&'static str> = None;
+                    {
+                        let mut state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+                        ui.add_enabled_ui(command_enabled, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.monospace("sim>");
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(&mut state.input)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("SHOW CPU, SHOW DEVICES, HELP, ..."),
+                                );
+                                if response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    submit = true;
+                                }
+                                if ui.button("Send").clicked() {
+                                    submit = true;
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                for command in ["SHOW CPU", "SHOW DEVICES", "SHOW CONFIG", "HELP"] {
+                                    if ui.small_button(command).clicked() {
+                                        quick_command = Some(command);
+                                    }
+                                }
+                            });
+                        });
+
+                        if let Some(command) = quick_command {
+                            state.input = command.to_owned();
+                            submit = true;
+                        }
+                    }
+
+                    if submit {
+                        let command = {
+                            let state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+                            state.input.trim().to_owned()
+                        };
+                        if !command.is_empty() {
+                            let result = submit_active_console(command);
+                            let mut state = console_ui().lock().unwrap_or_else(|p| p.into_inner());
+                            match result {
+                                Ok(()) => {
+                                    state.input.clear();
+                                    state.local_error = None;
+                                }
+                                Err(error) => state.local_error = Some(error),
+                            }
+                        }
+                    }
+
+                    if !snapshot.console_available {
+                        ui.small("The current embedded FrontPanel DLL does not expose the optional RusTair sim> command extension. Worker timing/log output is still available here.");
+                    } else if !snapshot.powered {
+                        ui.small("POWER ON the selected SIMH backend to use the interactive console.");
+                    } else if snapshot.running {
+                        ui.small("Press STOP before issuing interactive SCP commands.");
+                    } else if snapshot.busy {
+                        ui.small("The SIMH worker is completing an operation; this viewport remains independent of the main panel.");
                     }
                 });
 
-                if let Some(error) = snapshot.last_error.as_ref() {
-                    ui.colored_label(egui::Color32::LIGHT_RED, error);
-                }
-
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("rustair-simh-console-scroll")
-                    .stick_to_bottom(true)
-                    .max_height(300.0)
-                    .show(ui, |ui| {
-                        if snapshot.lines.is_empty() {
-                            ui.monospace("(no SIMH activity yet)");
-                        } else {
-                            ui.monospace(snapshot.lines.join("\n"));
-                        }
-                    });
-
-                ui.separator();
-                let command_enabled = snapshot.powered
-                    && !snapshot.running
-                    && !snapshot.busy
-                    && snapshot.console_available;
-
-                ui.add_enabled_ui(command_enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.monospace("sim>");
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut input)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("SHOW CPU, SHOW DEVICES, HELP, ..."),
-                        );
-                        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            submit = true;
-                        }
-                        if ui.button("Send").clicked() {
-                            submit = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        for command in ["SHOW CPU", "SHOW DEVICES", "SHOW CONFIG", "HELP"] {
-                            if ui.small_button(command).clicked() {
-                                input = command.to_owned();
-                                submit = true;
-                            }
-                        }
-                    });
-                });
-
-                if !snapshot.console_available {
-                    ui.small("Interactive SCP commands require the current RusTair FrontPanel DLL extension. The worker log above is already available; rebuild/update the embedded SIMH bundle once to enable the sim> prompt.");
-                } else if !snapshot.powered {
-                    ui.small("POWER ON the selected SIMH backend to use the interactive console.");
-                } else if snapshot.running {
-                    ui.small("Press STOP before issuing SCP commands, matching the real SIMH sim> prompt.");
-                } else if snapshot.busy {
-                    ui.small("The SIMH worker is completing an operation; the UI remains responsive.");
-                }
-            });
-
-        open = window_open;
-        if submit {
-            let command = input.trim().to_owned();
-            if !command.is_empty() {
-                match submit_active_console(command.clone()) {
-                    Ok(()) => input.clear(),
-                    Err(error) => self.status = format!("SIMH console: {error}"),
-                }
-            }
-        }
-
-        ctx.data_mut(|data| {
-            data.insert_temp(open_id, open);
-            data.insert_temp(input_id, input);
-        });
-        ctx.request_repaint_after(Duration::from_millis(50));
+                viewport_ctx.request_repaint_after(Duration::from_millis(100));
+            },
+        );
     }
 }
