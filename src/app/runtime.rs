@@ -69,6 +69,10 @@ impl eframe::App for RusTairApp {
                         self.load_binary_dialog();
                         ui.close();
                     }
+                    if ui.button("Front Panel Operator…").clicked() {
+                        self.open_standalone_front_panel_operator(ctx);
+                        ui.close();
+                    }
                     ui.menu_button("Microsoft 4K BASIC 3.2", |ui| {
                         if ui.button("Quick Load — direct RAM").clicked() {
                             self.load_bundled_basic();
@@ -274,6 +278,7 @@ impl eframe::App for RusTairApp {
                 }
                 if ui.button("RAM VIEWER").clicked() { self.open_memory_viewer(ctx); }
                 if ui.button("I/O INSPECTOR").clicked() { self.open_io_inspector(ctx); }
+                if ui.button("PANEL OPERATOR").clicked() { self.open_standalone_front_panel_operator(ctx); }
                 ui.separator();
                 let mut muted = self.audio.muted();
                 if ui.checkbox(&mut muted, "Mute").changed() { self.audio.set_muted(muted); }
@@ -309,13 +314,31 @@ impl eframe::App for RusTairApp {
             });
         });
 
+        // Manual mouse operation on the main panel already plays the physical
+        // switch click inside front_panel.rs. Capture the register *after* that
+        // panel has been drawn so changes made by native helper viewports can be
+        // detected separately without double-playing manual clicks.
+        let switches_before_helper_viewports = self.machine.switch_register();
+
         self.show_tty_viewport(ctx);
         self.show_terminal_viewport(ctx);
         self.show_external_serial_viewport(ctx);
         self.show_external_com_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
+        self.show_standalone_front_panel_operator_viewport(ctx);
         self.draw_authentic_loader_window(ctx);
+
+        // Config switches in the BASIC bootstrap/operator windows changes the
+        // same real switch register as the main panel. Give that assisted move
+        // the same electromechanical click instead of silently teleporting the
+        // toggle sprites. One composite click represents one assisted switch-set
+        // operation even when several A15..A0 bits change together.
+        let switches_after_helper_viewports = self.machine.switch_register();
+        if switches_after_helper_viewports != switches_before_helper_viewports {
+            self.audio.play_once("assets/click.mp3");
+            ctx.request_repaint();
+        }
 
         super::ui::persist_configuration_if_changed(self);
     }
