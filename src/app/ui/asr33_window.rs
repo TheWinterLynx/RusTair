@@ -3,14 +3,30 @@ use crate::config::TerminalDuplex;
 
 impl RusTairApp {
     pub(in crate::app) fn update_paper_tape(&mut self) {
-        if self.asr33.last_tape_tick.elapsed() < Duration::from_millis(30) {
+        // The reader is part of the ASR-33 LINE path. Never consume physical
+        // media while the teletype is OFF/LOCAL, disconnected, the Altair is
+        // powered down, or the selected UART receive register is still full.
+        if self.tty.mode != TtyMode::Line
+            || !self.asr_connection().is_connected()
+            || !self.machine.powered()
+            || !self.tty.tape_input_pending()
+            || !self.asr_serial_rx_empty()
+        {
             return;
         }
-        self.asr33.last_tape_tick = Instant::now();
-        if self.asr_serial_rx_empty() {
-            if let Some(byte) = self.tty.next_tape_byte() {
-                self.asr_serial_receive(byte);
-            }
+
+        // The Model 33 reader is serialized at the same configured line rate as
+        // the teletype. Accelerated/instant modes deliberately follow the same
+        // user-selected timing policy instead of using a hard-coded host delay.
+        let now = Instant::now();
+        let char_time = self.asr_char_time();
+        if !char_time.is_zero() && now.duration_since(self.asr33.last_tape_tick) < char_time {
+            return;
+        }
+
+        if let Some(byte) = self.tty.next_tape_byte() {
+            self.asr_serial_receive(byte);
+            self.asr33.last_tape_tick = now;
         }
     }
 
