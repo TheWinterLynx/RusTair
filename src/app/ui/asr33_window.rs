@@ -39,6 +39,7 @@ impl RusTairApp {
 
         if let Some(byte) = self.tty.next_tape_byte() {
             self.asr_serial_receive(byte);
+            self.asr33.last_reader_byte = Some(byte);
             self.asr33.last_reader_tick = now;
             if self.asr33.media_sound_due(now) {
                 self.audio.play_once("assets/click.mp3");
@@ -176,6 +177,89 @@ impl RusTairApp {
             && self.machine.running()
     }
 
+    fn reader_state_label(&mut self) -> (&'static str, Color32) {
+        if self.tty.tape_input_total_len() == 0 {
+            return ("NO TAPE", Color32::GRAY);
+        }
+
+        if !self.tty.tape_input_pending() {
+            if !self.asr_serial_rx_empty() {
+                return ("END · RX PENDING", Color32::from_rgb(220, 170, 70));
+            }
+            return ("END", Color32::from_rgb(110, 190, 120));
+        }
+
+        if !self.asr33.reader_running {
+            return if self.tty.tape_input_position() == 0 {
+                ("READY", Color32::from_rgb(110, 190, 120))
+            } else {
+                ("PAUSED", Color32::from_rgb(220, 170, 70))
+            };
+        }
+        if self.tty.mode != TtyMode::Line {
+            return ("WAIT LINE", Color32::from_rgb(220, 170, 70));
+        }
+        if !self.asr_connection().is_connected() {
+            return ("WAIT PORT", Color32::from_rgb(220, 170, 70));
+        }
+        if !self.machine.powered() {
+            return ("WAIT POWER", Color32::from_rgb(220, 170, 70));
+        }
+        if !self.machine.running() {
+            return ("WAIT RUN", Color32::from_rgb(220, 170, 70));
+        }
+        if !self.asr_serial_rx_empty() {
+            return ("WAIT GUEST RX", Color32::from_rgb(235, 145, 65));
+        }
+        ("READING", Color32::from_rgb(110, 190, 120))
+    }
+
+    fn reader_byte_label(byte: Option<u8>) -> String {
+        match byte {
+            Some(byte) => {
+                let ascii = if (0x20..=0x7e).contains(&byte) {
+                    (byte as char).to_string()
+                } else {
+                    "·".to_owned()
+                };
+                format!("{ascii}  0x{byte:02X}  {byte:04o}")
+            }
+            None => "—  0x--  ----".into(),
+        }
+    }
+
+    /// Compact 8-level paper-tape view matching the visual language of the
+    /// original ASR emulator: travel arrow followed by eight data-hole tracks.
+    /// Filled circles are punched bits; outlined circles are unpunched tracks.
+    fn draw_reader_byte_visual(ui: &mut egui::Ui, byte: Option<u8>) {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(150.0, 24.0), Sense::hover());
+        let painter = ui.painter();
+        let paper = Color32::from_rgb(205, 194, 165);
+        let ink = Color32::from_rgb(78, 76, 69);
+        let empty = Color32::from_rgb(165, 156, 134);
+        painter.rect_filled(rect, 1.5, paper);
+        painter.text(
+            Pos2::new(rect.left() + 10.0, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            "▶",
+            FontId::monospace(10.0),
+            ink,
+        );
+
+        let byte = byte.unwrap_or(0);
+        let first_x = rect.left() + 31.0;
+        for (slot, bit) in (0..8).rev().enumerate() {
+            let center = Pos2::new(first_x + slot as f32 * 14.0, rect.center().y);
+            if byte & (1 << bit) != 0 {
+                painter.circle_filled(center, 4.3, ink);
+            } else {
+                painter.circle_stroke(center, 4.3, egui::Stroke::new(1.0, empty));
+            }
+        }
+
+        response.on_hover_text("8-level paper tape, MSB → LSB. Filled circles are punched holes in the last byte offered to the UART.");
+    }
+
     fn draw_tty_reader_controls(&mut self, ui: &mut egui::Ui) {
         ui.strong("READER");
         if ui.button("Put tape…").clicked() {
@@ -211,6 +295,7 @@ impl RusTairApp {
         if ui.add_enabled(mounted, egui::Button::new("Rewind")).clicked() {
             self.asr33.reader_running = false;
             self.tty.rewind_tape_reader();
+            self.asr33.last_reader_byte = None;
             self.asr33.last_reader_tick = Instant::now();
             self.audio.play_once("assets/click.mp3");
             self.status = "ASR-33 paper tape rewound to leader".into();
@@ -218,6 +303,7 @@ impl RusTairApp {
         if ui.add_enabled(mounted, egui::Button::new("Eject")).clicked() {
             self.asr33.reader_running = false;
             self.tty.eject_tape_reader();
+            self.asr33.last_reader_byte = None;
             self.audio.play_once("assets/click.mp3");
             self.status = "ASR-33 paper tape ejected".into();
         }
@@ -229,6 +315,15 @@ impl RusTairApp {
             self.tty.tape_input_position(),
             self.tty.tape_input_total_len()
         ));
+        ui.separator();
+        ui.label("BYTE:");
+        ui.monospace(Self::reader_byte_label(self.asr33.last_reader_byte));
+        Self::draw_reader_byte_visual(ui, self.asr33.last_reader_byte);
+        let (reader_state, state_color) = self.reader_state_label();
+        let state = ui.colored_label(state_color, reader_state);
+        if reader_state == "WAIT GUEST RX" {
+            state.on_hover_text("The reader has already placed the displayed byte in the emulated UART. It cannot advance until the program running on the Altair reads that RX byte from the selected serial port.");
+        }
     }
 
     fn draw_tty_punch_controls(&mut self, ui: &mut egui::Ui) {
@@ -364,7 +459,7 @@ impl RusTairApp {
             } else {
                 self.asr33.duplex.label()
             };
-            let reader = if self.asr33.reader_running { "READ" } else { "STOP" };
+            let (reader, _) = self.reader_state_label();
             let punch = if self.asr33.punch_running { "PUNCH" } else { "STOP" };
             ui.small(format!(
                 "ASR-33 {}  |  {}  |  {}  |  {}  |  RX {}  |  TX {}  |  READER {} {}  |  PUNCH {} {}  |  column {}/{}",
