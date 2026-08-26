@@ -3,12 +3,61 @@ use std::time::{Duration, Instant};
 use crate::config::TerminalDuplex;
 use crate::peripherals::asr33::{Answerback, MechanicsState};
 
+/// Independent paper-tape transport speed. Historical Model 33 media advances
+/// at the same 10 character/s cadence as its 110-baud distributor; accelerated
+/// modes intentionally remove only the mechanical delay, not UART/CPU timing.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum TapeTransportSpeed {
+    #[default]
+    Historical1x,
+    X5,
+    X10,
+    Unlimited,
+}
+
+impl TapeTransportSpeed {
+    pub(super) const ALL: [Self; 4] = [Self::Historical1x, Self::X5, Self::X10, Self::Unlimited];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Historical1x => "1x — 10 cps (historical)",
+            Self::X5 => "5x — 50 cps",
+            Self::X10 => "10x — 100 cps",
+            Self::Unlimited => "Unlimited",
+        }
+    }
+
+    pub(super) const fn short_label(self) -> &'static str {
+        match self {
+            Self::Historical1x => "1x",
+            Self::X5 => "5x",
+            Self::X10 => "10x",
+            Self::Unlimited => "MAX",
+        }
+    }
+
+    pub(super) const fn char_time(self) -> Duration {
+        match self {
+            Self::Historical1x => Duration::from_millis(100),
+            Self::X5 => Duration::from_millis(20),
+            Self::X10 => Duration::from_millis(10),
+            Self::Unlimited => Duration::ZERO,
+        }
+    }
+}
+
 pub(super) struct Asr33State {
     pub(super) window_open: bool,
     pub(super) tx_started: Option<Instant>,
     pub(super) duplex: TerminalDuplex,
     pub(super) answerback: Answerback,
-    pub(super) last_tape_tick: Instant,
+    pub(super) reader_running: bool,
+    pub(super) reader_speed: TapeTransportSpeed,
+    pub(super) last_reader_tick: Instant,
+    pub(super) punch_running: bool,
+    pub(super) punch_speed: TapeTransportSpeed,
+    pub(super) last_punch_tick: Instant,
+    pub(super) last_media_sound: Instant,
     pub(super) power_flash_until: Option<Instant>,
     pub(super) mechanics: MechanicsState,
     pub(super) keyboard: Asr33KeyboardState,
@@ -21,11 +70,27 @@ impl Asr33State {
             tx_started: None,
             duplex: TerminalDuplex::default(),
             answerback: Answerback::default(),
-            last_tape_tick: now,
+            reader_running: false,
+            reader_speed: TapeTransportSpeed::default(),
+            last_reader_tick: now,
+            punch_running: false,
+            punch_speed: TapeTransportSpeed::default(),
+            last_punch_tick: now,
+            last_media_sound: now.checked_sub(Duration::from_secs(1)).unwrap_or(now),
             power_flash_until: None,
             mechanics: MechanicsState::new(),
             keyboard: Asr33KeyboardState::new(now),
         }
+    }
+
+    /// Keep accelerated media from spawning an unbounded number of detached
+    /// sound sinks. Mechanical audio is sampled at at most 20 events/s.
+    pub(super) fn media_sound_due(&mut self, now: Instant) -> bool {
+        if now.duration_since(self.last_media_sound) < Duration::from_millis(50) {
+            return false;
+        }
+        self.last_media_sound = now;
+        true
     }
 }
 
@@ -77,6 +142,14 @@ impl Asr33KeyboardState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tape_transport_speeds_match_requested_character_rates() {
+        assert_eq!(TapeTransportSpeed::Historical1x.char_time(), Duration::from_millis(100));
+        assert_eq!(TapeTransportSpeed::X5.char_time(), Duration::from_millis(20));
+        assert_eq!(TapeTransportSpeed::X10.char_time(), Duration::from_millis(10));
+        assert_eq!(TapeTransportSpeed::Unlimited.char_time(), Duration::ZERO);
+    }
 
     #[test]
     fn keyboard_distributor_enforces_one_character_time() {
