@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use super::{ffi, runtime};
 
-const LIVE_SAMPLE_FREQUENCY: u32 = 128;
-const LIVE_SAMPLE_DEPTH: u32 = 64;
-const LIVE_CALLBACK_INTERVAL_US: c_int = 16_000;
+// 30 Hz is sufficient for a human front panel and keeps the FrontPanel control
+// channel comfortably below the rate at which it can compete with user commands.
+const LIVE_CALLBACK_INTERVAL_US: c_int = 33_333;
 const CONSOLE_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,43 +34,30 @@ struct LivePanelRegisters {
     pc: Box<u32>,
     data: Box<u32>,
     sp: Box<u32>,
-    pc_bits: Box<[c_int; 16]>,
-    data_bits: Box<[c_int; 16]>,
-    data_width: usize,
     data_shift: usize,
 }
 
 impl LivePanelRegisters {
-    fn new(data_width: usize, data_shift: usize) -> Self {
+    fn new(data_shift: usize) -> Self {
         Self {
             pc: Box::new(0),
             data: Box::new(0),
             sp: Box::new(0),
-            pc_bits: Box::new([0; 16]),
-            data_bits: Box::new([0; 16]),
-            data_width,
             data_shift,
         }
     }
 }
 
 /// Context owned by `SimhSession` and passed verbatim to Open-SIMH's callback
-/// thread. All pointed-to register buffers are heap allocations whose addresses
-/// remain stable for the entire session lifetime.
+/// thread. All pointed-to buffers are stable heap allocations.
 struct LivePanelCallbackContext {
     pc: *const u32,
     data: *const u32,
     sp: *const u32,
-    pc_bits: *const c_int,
-    data_bits: *const c_int,
     data_shift: usize,
     latest: Arc<Mutex<SimhLivePanelSample>>,
 }
 
-// The C FrontPanel callback thread is the only foreign thread that dereferences
-// these raw pointers. Their allocations are owned by the containing session and
-// `sim_panel_destroy()` joins the callback thread before the session fields are
-// dropped.
 unsafe impl Send for LivePanelCallbackContext {}
 unsafe impl Sync for LivePanelCallbackContext {}
 
@@ -85,23 +72,21 @@ unsafe extern "C" fn live_panel_callback(
     let context = unsafe { &*(context.cast::<LivePanelCallbackContext>()) };
     let pc = unsafe { *context.pc } as u16;
     let data_raw = unsafe { *context.data };
+    let a = (data_raw >> context.data_shift) as u8;
     let sp = unsafe { *context.sp } as u16;
 
     let mut address_activity = [0.0f32; 16];
     for (bit, dst) in address_activity.iter_mut().enumerate() {
-        let sampled = unsafe { *context.pc_bits.add(bit) };
-        *dst = sampled.clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
+        *dst = if pc & (1u16 << bit) != 0 { 1.0 } else { 0.0 };
     }
-
     let mut data_activity = [0.0f32; 8];
     for (bit, dst) in data_activity.iter_mut().enumerate() {
-        let sampled = unsafe { *context.data_bits.add(context.data_shift + bit) };
-        *dst = sampled.clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
+        *dst = if a & (1u8 << bit) != 0 { 1.0 } else { 0.0 };
     }
 
     let sample = SimhLivePanelSample {
         pc,
-        a: (data_raw >> context.data_shift) as u8,
+        a,
         sp,
         address_activity,
         data_activity,
@@ -182,7 +167,6 @@ impl SimhSession {
             .and_then(|stem| stem.to_str())
             .is_some_and(|stem| stem.eq_ignore_ascii_case("altairz80"));
         let data_register = if is_altairz80 { "AF" } else { "A" };
-        let data_width = if is_altairz80 { 16 } else { 8 };
         let data_shift = if is_altairz80 { 8 } else { 0 };
 
         let frontpanel_path = runtime::frontpanel_dll_path()?;
@@ -201,12 +185,12 @@ impl SimhSession {
         let mut session = Self {
             panel,
             api,
-            live: LivePanelRegisters::new(data_width, data_shift),
+            live: LivePanelRegisters::new(data_shift),
             latest_live,
             callback_context: None,
             _not_send_sync: PhantomData,
         };
-        session.configure_live_panel_sampling(data_register)?;
+        session.configure_live_panel_callback(data_register)?;
         Ok(session)
     }
 
@@ -217,13 +201,16 @@ impl SimhSession {
         if status == 0 { Ok(()) } else { Err(SimhSessionError::Api { operation, detail: last_error_text(&self.api) }) }
     }
 
-    fn configure_live_panel_sampling(&mut self, data_register: &str) -> Result<(), SimhSessionError> {
+    fn configure_live_panel_callback(&mut self, data_register: &str) -> Result<(), SimhSessionError> {
         let pc = CString::new("PC")?;
         let data = CString::new(data_register)?;
         let sp = CString::new("SP")?;
         let device = std::ptr::null();
         let raw = self.raw();
 
+        // Only three ordinary register subscriptions are required. Unlike the
+        // *_bits sampling mode, this does not establish a separate SIMH sample
+        // collector or block startup on rolling-average setup.
         let status = unsafe { self.api.add_register(raw, pc.as_ptr(), device, size_of::<u32>(), (&mut *self.live.pc as *mut u32).cast()) };
         self.check("register live PC", status)?;
         let status = unsafe { self.api.add_register(raw, data.as_ptr(), device, size_of::<u32>(), (&mut *self.live.data as *mut u32).cast()) };
@@ -231,20 +218,10 @@ impl SimhSession {
         let status = unsafe { self.api.add_register(raw, sp.as_ptr(), device, size_of::<u32>(), (&mut *self.live.sp as *mut u32).cast()) };
         self.check("register live SP", status)?;
 
-        // FrontPanel API v12 requires sampling parameters before *_bits.
-        let status = unsafe { self.api.set_sampling_parameters(raw, LIVE_SAMPLE_FREQUENCY, LIVE_SAMPLE_DEPTH) };
-        self.check("configure live register sampling", status)?;
-        let status = unsafe { self.api.add_register_bits(raw, pc.as_ptr(), device, 16, self.live.pc_bits.as_mut_ptr()) };
-        self.check("register live PC bits", status)?;
-        let status = unsafe { self.api.add_register_bits(raw, data.as_ptr(), device, self.live.data_width, self.live.data_bits.as_mut_ptr()) };
-        self.check("register live data bits", status)?;
-
         let mut context = Box::new(LivePanelCallbackContext {
             pc: (&*self.live.pc) as *const u32,
             data: (&*self.live.data) as *const u32,
             sp: (&*self.live.sp) as *const u32,
-            pc_bits: self.live.pc_bits.as_ptr(),
-            data_bits: self.live.data_bits.as_ptr(),
             data_shift: self.live.data_shift,
             latest: Arc::clone(&self.latest_live),
         });
@@ -262,10 +239,7 @@ impl SimhSession {
         Ok(())
     }
 
-    /// Return the most recent complete register set delivered by Open-SIMH's
-    /// own FrontPanel callback thread. This is a local mutex copy only: it never
-    /// sends a command to the simulator and therefore cannot stall the UI or
-    /// the RusTair worker command queue.
+    /// Local copy only. No command is sent to SIMH.
     pub fn live_panel_sample(&self) -> SimhLivePanelSample {
         *self.latest_live.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -349,9 +323,6 @@ impl SimhSession {
 
     pub fn console_available(&self) -> bool { self.api.has_rustair_exec_command() }
 
-    /// Execute one SCP command against the same simulator process controlled by
-    /// this FrontPanel session. The RusTair extension intentionally requires
-    /// the simulator to be halted, matching an interactive SIMH `sim>` prompt.
     pub fn console_command(&mut self, command: &str) -> Result<String, SimhSessionError> {
         if !self.api.has_rustair_exec_command() {
             return Err(SimhSessionError::ConsoleUnavailable);
@@ -377,9 +348,6 @@ impl SimhSession {
 
 impl Drop for SimhSession {
     fn drop(&mut self) {
-        // sim_panel_destroy() first stops/joins the FrontPanel callback thread.
-        // The callback context and heap-backed register buffers therefore remain
-        // alive until the foreign thread can no longer access them.
         unsafe { let _ = self.api.destroy(self.raw()); }
     }
 }
