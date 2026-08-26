@@ -155,7 +155,10 @@ function Assert-PeX64 {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$inject = Join-Path $scriptDir "rustair-frontpanel.cmake"
+# Production builds use the exact compatibility combination validated by
+# check-upstream-compat.ps1: FrontPanel EXAMINE parser fix plus the AltairZ80
+# timer stop guard. No scheduler or M2SIO diagnostic tracing is included.
+$inject = Join-Path $scriptDir "rustair-parser-timer.cmake"
 $simh = (Resolve-Path $SimhSource).Path
 $cmakeExe = Resolve-CMakeExecutable $CMake
 
@@ -176,6 +179,7 @@ Write-Host "Using CMake: $cmakeExe"
 Write-Host "Open-SIMH source: $simh"
 Write-Host "RusTair SIMH platform: x64"
 Write-Host "RusTair SIMH build:    $BuildDir"
+Write-Host "Compatibility patches: FrontPanel parser + AltairZ80 timer stop guard"
 
 # -A x64 selects the target architecture. Do not force a generator toolset
 # (for example -T host=x64) here: changing the toolset after a CMake cache has
