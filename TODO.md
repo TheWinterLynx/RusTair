@@ -6,33 +6,32 @@
 >
 > **Priorities:** `P0` = next/core goal · `P1` = important debt/correctness · `P2` = worthwhile improvement · `P3` = optional/polish · `PARKED` = do not work on it without explicit instruction.
 >
-> **Validation rule:** normal changes are validated locally with `cargo test` and `cargo build --release`. Do **not** run GitHub Actions without explicit permission.
+> **Validation rule:** normal changes are validated locally with `cargo test` and `cargo run --release`. Do **not** run GitHub Actions without explicit permission.
 
 ## Recommended active order
 
-1. **Authentic paper-tape bootstrap/loader path.**
-2. **Didactic RAM viewer + debugger.**
-3. **Runtime/UI scheduling and native-window smoothness.**
-4. **Serial-card/UART fidelity and interrupt path.**
-5. **Architecture, persistence, cleanup, documentation and test hardening.**
+1. **Didactic RAM viewer + debugger.**
+2. **Runtime/UI scheduling and native-window smoothness.**
+3. **Serial-card/UART fidelity and interrupt path.**
+4. **Architecture, persistence, cleanup, documentation and test hardening.**
 
 ---
 
-## P0 — Authentic Altair paper-tape bootstrap / loader
+## Completed — Authentic Altair paper-tape bootstrap / loader
 
-> Active implementation branch: `feature/authentic-paper-tape-bootstrap`. Source implementation currently includes the split Quick/Authentic workflow, manual octal procedure, assisted EXAMINE/DEPOSIT installation, ASR-33/UART guest-paced path, 4 KiB/port/mode/sense validation, loader diagnostics and Fast/Cycle regression tests. These implementation items remain unchecked until local `cargo test` + `cargo build --release` and a real `4K BASIC Ver 3-2.tap` end-to-end run are completed.
+> Completed and validated 2026-08-26 on `feature/authentic-paper-tape-bootstrap`. The normal regression suite passes, and the external `4K BASIC Ver 3-2.tap` end-to-end regression passes for Fast/Cycle Accurate × 88-SIO/88-2SIO. See `docs/AUTHENTIC_BASIC_BOOTSTRAP.md` and `docs/AUTHENTIC_BASIC_VALIDATION.md`.
 
-- [ ] **[P0] Keep Quick Load and Authentic Load as explicitly separate workflows.** Quick Load may continue copying bytes directly to RAM; Authentic Load must use the emulated machine, serial board and ASR-33 reader.
+- [x] ~~**[P0] Keep Quick Load and Authentic Load as explicitly separate workflows.** Quick Load may continue copying bytes directly to RAM; Authentic Load must use the emulated machine, serial board and ASR-33 reader.~~
 - [x] ~~**[P0] Establish and document the historically correct bootstrap loader(s)** for the supported MITS 88-SIO / 88-2SIO configurations, including provenance and exact bytes.~~ See `docs/AUTHENTIC_BASIC_BOOTSTRAP.md`.
-- [ ] **[P0] Support manual front-panel entry of the bootstrap** as the fully authentic path.
-- [ ] **[P0] Add an optional assisted “Install bootstrap” convenience action** that performs the same deposits transparently and shows exactly what was entered; it must not silently bypass the emulated loader.
-- [ ] **[P0] Make Authentic Load consume the mounted ASR-33 paper tape through the selected serial port**, so `WAIT GUEST RX` advances because the bootstrap genuinely executes `IN` instructions.
-- [ ] **[P0] Preserve reader transport controls and 1× / 5× / 10× / Unlimited speed** during authentic loading; acceleration must alter host/media pacing, not the logical byte stream.
-- [ ] **[P0] Add loader progress/status diagnostics**: bootstrap running, waiting for RX, bytes consumed, destination range, end of tape, checksum/validation failure where applicable.
-- [ ] **[P0] Make serial-board/sense-switch requirements visible to the operator.** In particular preserve the BASIC 3.2 88-SIO/88-2SIO sense-switch distinction rather than changing switches behind the user’s back.
-- [ ] **[P0] Verify Authentic Load with both Rust engines** (`RusTair — Fast 8080` and `RusTair — Cycle Accurate 8080`).
-- [ ] **[P0] Regression-test that authentic BASIC loading produces the expected RAM image/state** and reaches the same BASIC entry behavior as Quick Load without direct-RAM shortcuts.
-- [ ] **[P1] Add deterministic tests for bootstrap failure modes**: wrong board, wrong port, ASR OFF/LOCAL, STOP state, RX not consumed, premature end-of-tape, insufficient RAM.
+- [x] ~~**[P0] Support manual front-panel entry of the bootstrap** as the fully authentic path.~~
+- [x] ~~**[P0] Add an optional assisted “Install bootstrap” convenience action** that performs the same deposits transparently and shows exactly what was entered; it must not silently bypass the emulated loader.~~
+- [x] ~~**[P0] Make Authentic Load consume the mounted ASR-33 paper tape through the selected serial port**, so `WAIT GUEST RX` advances because the bootstrap genuinely executes `IN` instructions.~~
+- [x] ~~**[P0] Preserve reader transport controls and 1× / 5× / 10× / Unlimited speed** during authentic loading; acceleration must alter host/media pacing, not the logical byte stream.~~
+- [x] ~~**[P0] Add loader progress/status diagnostics**: bootstrap running, waiting for RX, bytes consumed, destination range, end of tape, checksum/validation failure where applicable.~~
+- [x] ~~**[P0] Make serial-board/sense-switch requirements visible to the operator.** In particular preserve the BASIC 3.2 88-SIO/88-2SIO sense-switch distinction rather than changing switches behind the user’s back.~~
+- [x] ~~**[P0] Verify Authentic Load with both Rust engines** (`RusTair — Fast 8080` and `RusTair — Cycle Accurate 8080`).~~
+- [x] ~~**[P0] Regression-test that authentic BASIC loading produces the expected RAM image/state** and reaches the same BASIC entry behavior as Quick Load without direct-RAM shortcuts.~~ See `tests/authentic_basic_tape.rs`.
+- [x] ~~**[P1] Add deterministic tests for bootstrap failure modes**: wrong board, wrong port, ASR OFF/LOCAL, STOP state, RX not consumed, premature end-of-tape, insufficient RAM.~~ Covered by loader/unit/integration tests plus `tests/authentic_reader_transport_guards.rs`.
 
 ---
 
