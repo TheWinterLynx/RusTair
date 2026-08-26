@@ -6,10 +6,10 @@ description = "Native Rust MITS Altair 8800 emulator"
 license = "BSD-2-Clause"
 
 [features]
-default = []
-# Enables the Rust side of the Open SIMH FrontPanel ABI. The matching C
-# frontpanel objects are intentionally linked in a later step so the default
-# build remains independent of a locally installed SIMH tree.
+# The validated Open-SIMH Windows x64 runtime is embedded in RusTair and its
+# FrontPanel DLL is loaded dynamically at runtime, so enabling this by default
+# no longer requires a local Open-SIMH tree, DLL or import library.
+default = ["simh-ffi"]
 simh-ffi = []
 
 [dependencies]
