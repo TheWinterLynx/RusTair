@@ -71,6 +71,12 @@ fn summary(decoded: &DecodedInstruction) -> String {
         "OUT" => format!("Write accumulator A to I/O port {a}."),
         "DI" => "Disable maskable interrupts.".into(),
         "EI" => "Enable maskable interrupts after the following instruction, matching Intel 8080 EI delay semantics.".into(),
+        // Resolve unconditional opcodes before their conditional mnemonic
+        // families. CALL begins with C and RET/RST begin with R, so prefix
+        // matching first would teach the wrong semantics.
+        "CALL" => format!("Push the return address onto the stack and continue execution at {a}."),
+        "RET" => "Pop a return address from the stack into PC.".into(),
+        "RST" => format!("Push the return address and call restart vector {a}."),
         mnemonic if mnemonic.starts_with('J') => format!("Evaluate the branch condition and, when satisfied, load PC with {a}."),
         mnemonic if mnemonic.starts_with('C') && mnemonic != "CMC" && mnemonic != "CMA" && mnemonic != "CMP" && mnemonic != "CPI" => {
             format!("Evaluate the call condition and, when satisfied, push the return address then continue at {a}.")
@@ -78,9 +84,6 @@ fn summary(decoded: &DecodedInstruction) -> String {
         mnemonic if mnemonic.starts_with('R') && mnemonic != "RLC" && mnemonic != "RRC" && mnemonic != "RAL" && mnemonic != "RAR" => {
             "Evaluate the return condition and, when satisfied, pop the return address from the stack into PC.".into()
         }
-        "CALL" => format!("Push the return address onto the stack and continue execution at {a}."),
-        "RET" => "Pop a return address from the stack into PC.".into(),
-        "RST" => format!("Push the return address and call restart vector {a}."),
         _ => format!("Execute {} using normal Intel 8080 semantics.", decoded.text()),
     }
 }
@@ -224,5 +227,19 @@ mod tests {
         let cpu = Intel8080State { flags: 0, ..Intel8080State::default() };
         let explanation = explain_instruction(&decoded, cpu, None);
         assert!(explanation.flow.contains("TRUE / TAKEN"));
+    }
+
+    #[test]
+    fn unconditional_call_return_and_restart_are_not_described_as_conditional() {
+        let cpu = Intel8080State::default();
+        let call = explain_instruction(&decode_8080(0xcd, 0x34, 0x12), cpu, None);
+        let ret = explain_instruction(&decode_8080(0xc9, 0, 0), cpu, None);
+        let rst = explain_instruction(&decode_8080(0xcf, 0, 0), cpu, None);
+        assert!(!call.summary.contains("condition"));
+        assert!(!ret.summary.contains("condition"));
+        assert!(!rst.summary.contains("condition"));
+        assert!(call.summary.contains("return address"));
+        assert!(ret.summary.contains("Pop a return address"));
+        assert!(rst.summary.contains("restart vector"));
     }
 }
