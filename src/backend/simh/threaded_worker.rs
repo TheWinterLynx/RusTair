@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use super::{
 const MEMORY_BYTES: usize = 64 * 1024;
 const WORKER_TICK: Duration = Duration::from_millis(1);
 const PANEL_TICK: Duration = Duration::from_millis(16);
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const CONSOLE_LINES: usize = 2_000;
 
 fn op_error(operation: &'static str, detail: impl Into<String>) -> BackendError {
     BackendError::Operation { operation, detail: detail.into() }
@@ -34,7 +34,6 @@ fn port_index(port: BackendSerialPort) -> usize {
     }
 }
 
-#[derive(Clone)]
 struct SharedState {
     cpu: CpuState,
     panel: FrontPanelState,
@@ -42,6 +41,10 @@ struct SharedState {
     to_simh: [usize; 2],
     from_simh: [VecDeque<u8>; 2],
     io_trace_enabled: bool,
+    busy: bool,
+    last_error: Option<String>,
+    console_available: bool,
+    console_lines: VecDeque<String>,
 }
 
 impl SharedState {
@@ -53,24 +56,106 @@ impl SharedState {
             to_simh: [0, 0],
             from_simh: [VecDeque::new(), VecDeque::new()],
             io_trace_enabled: false,
+            busy: false,
+            last_error: None,
+            console_available: false,
+            console_lines: VecDeque::new(),
         }
+    }
+
+    fn log(&mut self, line: impl Into<String>) {
+        if self.console_lines.len() >= CONSOLE_LINES {
+            self.console_lines.pop_front();
+        }
+        self.console_lines.push_back(line.into());
+    }
+
+    fn error(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.last_error = Some(message.clone());
+        self.log(format!("ERROR: {message}"));
     }
 }
 
 enum Command {
-    Power(bool, mpsc::Sender<BackendResult<()>>),
-    Running(bool, mpsc::Sender<BackendResult<()>>),
-    Step(mpsc::Sender<BackendResult<()>>),
-    Reset(mpsc::Sender<BackendResult<()>>),
-    Examine(bool, mpsc::Sender<BackendResult<()>>),
-    Deposit(bool, mpsc::Sender<BackendResult<()>>),
-    SetSwitches(u16, mpsc::Sender<BackendResult<()>>),
-    ConfigureSerial(SerialBoard, mpsc::Sender<BackendResult<()>>),
-    Load(u16, Vec<u8>, mpsc::Sender<BackendResult<()>>),
-    Write(u16, u8, mpsc::Sender<BackendResult<bool>>),
+    Power(bool),
+    Running(bool),
+    Step,
+    Reset,
+    Examine(bool),
+    Deposit(bool),
+    SetSwitches(u16),
+    ConfigureSerial(SerialBoard),
+    Load(u16, Vec<u8>),
+    Write(u16, u8),
     SerialRx(BackendSerialPort, u8),
     ClearSerial,
+    Console(String),
     Shutdown,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SimhConsoleSnapshot {
+    pub engine: String,
+    pub powered: bool,
+    pub running: bool,
+    pub busy: bool,
+    pub console_available: bool,
+    pub last_error: Option<String>,
+    pub lines: Vec<String>,
+}
+
+struct ActiveConsoleEndpoint {
+    engine: EmulationEngine,
+    tx: mpsc::Sender<Command>,
+    shared: Weak<Mutex<SharedState>>,
+}
+
+static ACTIVE_CONSOLE: OnceLock<Mutex<Option<ActiveConsoleEndpoint>>> = OnceLock::new();
+
+fn active_console_slot() -> &'static Mutex<Option<ActiveConsoleEndpoint>> {
+    ACTIVE_CONSOLE.get_or_init(|| Mutex::new(None))
+}
+
+fn register_active_console(
+    engine: EmulationEngine,
+    tx: mpsc::Sender<Command>,
+    shared: &Arc<Mutex<SharedState>>,
+) {
+    let mut slot = active_console_slot().lock().unwrap_or_else(|p| p.into_inner());
+    *slot = Some(ActiveConsoleEndpoint {
+        engine,
+        tx,
+        shared: Arc::downgrade(shared),
+    });
+}
+
+pub fn active_console_snapshot() -> Option<SimhConsoleSnapshot> {
+    let slot = active_console_slot().lock().unwrap_or_else(|p| p.into_inner());
+    let endpoint = slot.as_ref()?;
+    let shared = endpoint.shared.upgrade()?;
+    let shared = shared.lock().unwrap_or_else(|p| p.into_inner());
+    Some(SimhConsoleSnapshot {
+        engine: endpoint.engine.label().to_owned(),
+        powered: shared.panel.powered,
+        running: shared.panel.running,
+        busy: shared.busy,
+        console_available: shared.console_available,
+        last_error: shared.last_error.clone(),
+        lines: shared.console_lines.iter().cloned().collect(),
+    })
+}
+
+pub fn submit_active_console(command: impl Into<String>) -> Result<(), String> {
+    let command = command.into();
+    let slot = active_console_slot().lock().unwrap_or_else(|p| p.into_inner());
+    let Some(endpoint) = slot.as_ref() else {
+        return Err("no active Open-SIMH backend".into());
+    };
+    endpoint
+        .tx
+        .send(Command::Console(command))
+        .map_err(|error| format!("SIMH worker is no longer available: {error}"))
 }
 
 pub struct SimhThreadedBackend {
@@ -89,9 +174,14 @@ impl SimhThreadedBackend {
         }
 
         let shared = Arc::new(Mutex::new(SharedState::new()));
+        {
+            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.log(format!("RusTair selected {}", engine.label()));
+            state.log("SIMH runtime preparation happens on the worker thread; the UI never waits for it.");
+        }
         let worker_shared = Arc::clone(&shared);
+        let failure_shared = Arc::clone(&shared);
         let (tx, rx) = mpsc::channel();
-        let (ready_tx, ready_rx) = mpsc::channel();
 
         thread::Builder::new()
             .name(match engine {
@@ -99,31 +189,18 @@ impl SimhThreadedBackend {
                 _ => "rustair-simh-altairz80".into(),
             })
             .spawn(move || match Worker::new(engine, worker_shared) {
-                Ok(mut worker) => {
-                    let _ = ready_tx.send(Ok(()));
-                    worker.run(rx);
-                }
+                Ok(mut worker) => worker.run(rx),
                 Err(error) => {
-                    let _ = ready_tx.send(Err(error));
+                    let mut state = failure_shared.lock().unwrap_or_else(|p| p.into_inner());
+                    state.busy = false;
+                    state.panel.powered = false;
+                    state.error(format!("worker initialization failed: {error}"));
                 }
             })
             .map_err(|error| op_error("spawn SIMH worker", error.to_string()))?;
 
-        ready_rx
-            .recv_timeout(COMMAND_TIMEOUT)
-            .map_err(|error| op_error("start SIMH worker", error.to_string()))??;
-
+        register_active_console(engine, tx.clone(), &shared);
         Ok(Self { engine, tx, shared })
-    }
-
-    fn request<T>(&self, build: impl FnOnce(mpsc::Sender<BackendResult<T>>) -> Command) -> BackendResult<T> {
-        let (reply_tx, reply_rx) = mpsc::channel();
-        self.tx
-            .send(build(reply_tx))
-            .map_err(|error| op_error("send SIMH worker command", error.to_string()))?;
-        reply_rx
-            .recv_timeout(COMMAND_TIMEOUT)
-            .map_err(|error| op_error("wait for SIMH worker command", error.to_string()))?
     }
 
     fn read_shared<T>(&self, read: impl FnOnce(&SharedState) -> T) -> T {
@@ -134,6 +211,15 @@ impl SimhThreadedBackend {
     fn write_shared<T>(&self, write: impl FnOnce(&mut SharedState) -> T) -> T {
         let mut guard = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         write(&mut guard)
+    }
+
+    /// Product controls are deliberately fire-and-forget. If the worker has
+    /// failed, record the transport error in its console instead of converting a
+    /// backend integration problem into an egui/main-thread panic.
+    fn enqueue(&self, command: Command) {
+        if let Err(error) = self.tx.send(command) {
+            self.write_shared(|state| state.error(format!("could not queue command: {error}")));
+        }
     }
 }
 
@@ -149,8 +235,8 @@ impl MachineBackend for SimhThreadedBackend {
 
     fn name(&self) -> &'static str {
         match self.engine {
-            EmulationEngine::SimhAltair => "Open SIMH classic Altair — worker",
-            EmulationEngine::SimhAltairZ80 => "Open SIMH AltairZ80 — worker",
+            EmulationEngine::SimhAltair => "Open SIMH classic Altair — async worker",
+            EmulationEngine::SimhAltairZ80 => "Open SIMH AltairZ80 — async worker",
             _ => "Open SIMH",
         }
     }
@@ -170,38 +256,65 @@ impl MachineBackend for SimhThreadedBackend {
 
     fn execution_model(&self) -> BackendExecutionModel { BackendExecutionModel::ExternalProcess }
 
-    // These are the hot-path UI calls. They never touch FrontPanel/TMXR.
+    // Hot-path UI calls: local memory only.
     fn cpu_state(&mut self) -> BackendResult<CpuState> { Ok(self.read_shared(|s| s.cpu)) }
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.read_shared(|s| s.panel)) }
     fn service_execution(&mut self, _t_state_budget: u32) -> BackendResult<()> { Ok(()) }
     fn commit_panel_activity(&mut self, _dt: Duration) -> BackendResult<()> { Ok(()) }
 
     fn configure_memory(&mut self, _size: RamSize, _init: RamInit) -> BackendResult<()> { Ok(()) }
-    fn power(&mut self, on: bool) -> BackendResult<()> { self.request(|reply| Command::Power(on, reply)) }
+
+    fn power(&mut self, on: bool) -> BackendResult<()> {
+        self.write_shared(|state| {
+            state.panel.powered = on;
+            if !on {
+                state.panel.running = false;
+                state.panel.lamps = PanelLampSnapshot::default();
+                state.console_available = false;
+            }
+            state.busy = on;
+            state.log(if on { "POWER ON requested" } else { "POWER OFF requested" });
+        });
+        self.enqueue(Command::Power(on));
+        Ok(())
+    }
     fn power_with_historical_run_latch(&mut self, on: bool, _historical: bool) -> BackendResult<()> { self.power(on) }
-    fn run(&mut self) -> BackendResult<()> { self.request(|reply| Command::Running(true, reply)) }
-    fn halt(&mut self) -> BackendResult<()> { self.request(|reply| Command::Running(false, reply)) }
-    fn step(&mut self) -> BackendResult<()> { self.request(Command::Step) }
+
+    fn run(&mut self) -> BackendResult<()> {
+        self.write_shared(|state| state.panel.running = true);
+        self.enqueue(Command::Running(true));
+        Ok(())
+    }
+    fn halt(&mut self) -> BackendResult<()> {
+        self.write_shared(|state| state.panel.running = false);
+        self.enqueue(Command::Running(false));
+        Ok(())
+    }
+    fn step(&mut self) -> BackendResult<()> { self.enqueue(Command::Step); Ok(()) }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> { if run { self.run() } else { self.halt() } }
     fn release_run_stop(&mut self, _run: bool) -> BackendResult<()> { Ok(()) }
-    fn assert_reset(&mut self) -> BackendResult<()> { self.request(Command::Reset) }
+    fn assert_reset(&mut self) -> BackendResult<()> { self.enqueue(Command::Reset); Ok(()) }
     fn release_reset(&mut self) -> BackendResult<()> { Ok(()) }
     fn assert_clear(&mut self) -> BackendResult<()> { self.clear_serial() }
     fn release_clear(&mut self) -> BackendResult<()> { Ok(()) }
     fn request_hold(&mut self, _hold: bool) -> BackendResult<()> { Ok(()) }
 
-    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.request(|reply| Command::Examine(next, reply)) }
-    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.request(|reply| Command::Deposit(next, reply)) }
+    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.enqueue(Command::Examine(next)); Ok(()) }
+    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.enqueue(Command::Deposit(next)); Ok(()) }
     fn protect_current_board(&mut self, _protected: bool) -> BackendResult<()> { Ok(()) }
 
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.read_shared(|s| s.panel.switches)) }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
-        self.write_shared(|s| s.panel.switches = value);
-        self.request(|reply| Command::SetSwitches(value, reply))
+        // Physical UI switch position changes immediately. Synchronizing the
+        // SIMH pseudo-register is worker work and may briefly HALT/CONT SIMH.
+        self.write_shared(|state| state.panel.switches = value);
+        self.enqueue(Command::SetSwitches(value));
+        Ok(())
     }
 
     fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
-        self.request(|reply| Command::ConfigureSerial(board, reply))
+        self.enqueue(Command::ConfigureSerial(board));
+        Ok(())
     }
 
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { Ok(SerialBoard::TwoSio88) }
@@ -210,9 +323,8 @@ impl MachineBackend for SimhThreadedBackend {
         if self.engine != EmulationEngine::SimhAltairZ80 { return Ok(()); }
         let index = port_index(port);
         self.write_shared(|s| s.to_simh[index] = s.to_simh[index].saturating_add(1));
-        self.tx
-            .send(Command::SerialRx(port, byte))
-            .map_err(|error| op_error("queue SIMH serial byte", error.to_string()))
+        self.enqueue(Command::SerialRx(port, byte));
+        Ok(())
     }
 
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
@@ -236,7 +348,7 @@ impl MachineBackend for SimhThreadedBackend {
             s.from_simh[0].clear();
             s.from_simh[1].clear();
         });
-        let _ = self.tx.send(Command::ClearSerial);
+        self.enqueue(Command::ClearSerial);
         Ok(())
     }
 
@@ -245,22 +357,22 @@ impl MachineBackend for SimhThreadedBackend {
         Ok(Some(self.read_shared(|s| s.memory[address as usize])))
     }
     fn write_memory(&mut self, address: u16, value: u8, _respect_protection: bool) -> BackendResult<bool> {
-        let written = self.request(|reply| Command::Write(address, value, reply))?;
-        if written { self.write_shared(|s| s.memory[address as usize] = value); }
-        Ok(written)
+        self.write_shared(|s| s.memory[address as usize] = value);
+        self.enqueue(Command::Write(address, value));
+        Ok(true)
     }
     fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> {
-        self.request(|reply| Command::Load(address, bytes.to_vec(), reply))?;
         self.write_shared(|s| {
             for (offset, byte) in bytes.iter().copied().enumerate() {
                 let pos = address as usize + offset;
                 if pos >= s.memory.len() { break; }
                 s.memory[pos] = byte;
             }
+            s.log(format!("queued {} bytes at {:04X}h", bytes.len(), address));
         });
+        self.enqueue(Command::Load(address, bytes.to_vec()));
         Ok(())
     }
-
     fn memory_is_protected(&mut self, _address: u16) -> BackendResult<bool> { Ok(false) }
     fn clear_memory_protection(&mut self) -> BackendResult<()> { Ok(()) }
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> { Ok(()) }
@@ -296,7 +408,7 @@ struct Worker {
     panel_address: u16,
     panel_data: u8,
     pending_memory: BTreeMap<u16, u8>,
-    last_panel_poll: Instant,
+    last_panel_copy: Instant,
     last_running: bool,
     serial_in_glow: f32,
     serial_out_glow: f32,
@@ -304,10 +416,19 @@ struct Worker {
 
 impl Worker {
     fn new(engine: EmulationEngine, shared: Arc<Mutex<SharedState>>) -> BackendResult<Self> {
+        {
+            let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.busy = true;
+            state.log("Preparing embedded Open-SIMH runtime…");
+        }
         match engine {
             EmulationEngine::SimhAltair => {
                 let launch = embedded_altair_launch_config()
                     .map_err(|e| op_error("prepare embedded SIMH Altair", e.to_string()))?;
+                let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+                state.busy = false;
+                state.log("SIMH worker ready (classic Altair). POWER remains operator-controlled.");
+                drop(state);
                 Ok(Self {
                     engine,
                     launch,
@@ -319,7 +440,7 @@ impl Worker {
                     panel_address: 0,
                     panel_data: 0,
                     pending_memory: BTreeMap::new(),
-                    last_panel_poll: Instant::now(),
+                    last_panel_copy: Instant::now(),
                     last_running: false,
                     serial_in_glow: 0.0,
                     serial_out_glow: 0.0,
@@ -334,6 +455,10 @@ impl Worker {
                 let serial_config = SimhM2SioRuntimeConfig::create(launch.simulator_config(), p0, p1)
                     .map_err(|e| op_error("prepare SIMH M2SIO runtime config", e.to_string()))?;
                 launch.simulator_config = serial_config.path().to_path_buf();
+                let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
+                state.busy = false;
+                state.log("SIMH worker ready (AltairZ80 + private 88-2SIO bridge). POWER remains operator-controlled.");
+                drop(state);
                 Ok(Self {
                     engine,
                     launch,
@@ -345,7 +470,7 @@ impl Worker {
                     panel_address: 0,
                     panel_data: 0,
                     pending_memory: BTreeMap::new(),
-                    last_panel_poll: Instant::now(),
+                    last_panel_copy: Instant::now(),
                     last_running: false,
                     serial_in_glow: 0.0,
                     serial_out_glow: 0.0,
@@ -371,34 +496,61 @@ impl Worker {
 
     fn handle(&mut self, command: Command) {
         match command {
-            Command::Power(on, reply) => { let _ = reply.send(self.power(on)); }
-            Command::Running(run, reply) => { let _ = reply.send(self.set_running(run)); }
-            Command::Step(reply) => { let _ = reply.send(self.step()); }
-            Command::Reset(reply) => { let _ = reply.send(self.reset()); }
-            Command::Examine(next, reply) => { let _ = reply.send(self.examine(next)); }
-            Command::Deposit(next, reply) => { let _ = reply.send(self.deposit(next)); }
-            Command::SetSwitches(value, reply) => { let _ = reply.send(self.set_switches(value)); }
-            Command::ConfigureSerial(board, reply) => {
-                let result = if self.engine == EmulationEngine::SimhAltairZ80 && board != SerialBoard::TwoSio88 {
-                    Err(BackendError::Unsupported {
-                        operation: "MITS 88-SIO; embedded AltairZ80 uses 88-2SIO",
-                        engine: self.engine,
-                    })
-                } else { Ok(()) };
-                let _ = reply.send(result);
+            Command::Power(on) => {
+                let result = self.power(on);
+                self.finish(if on { "POWER ON" } else { "POWER OFF" }, result);
             }
-            Command::Load(address, bytes, reply) => { let _ = reply.send(self.load(address, &bytes)); }
-            Command::Write(address, value, reply) => { let _ = reply.send(self.write(address, value)); }
+            Command::Running(run) => {
+                let result = self.set_running(run);
+                self.finish(if run { "RUN" } else { "STOP" }, result);
+            }
+            Command::Step => { let result = self.step(); self.finish("STEP", result); }
+            Command::Reset => { let result = self.reset(); self.finish("RESET", result); }
+            Command::Examine(next) => { let result = self.examine(next); self.finish(if next { "EXAMINE NEXT" } else { "EXAMINE" }, result); }
+            Command::Deposit(next) => { let result = self.deposit(next); self.finish(if next { "DEPOSIT NEXT" } else { "DEPOSIT" }, result); }
+            Command::SetSwitches(value) => { let result = self.set_switches(value); self.finish("sense switches", result); }
+            Command::ConfigureSerial(board) => {
+                if self.engine == EmulationEngine::SimhAltairZ80 && board != SerialBoard::TwoSio88 {
+                    self.record_error("serial configuration", "embedded AltairZ80 is fixed to MITS 88-2SIO");
+                }
+            }
+            Command::Load(address, bytes) => {
+                let result = self.load(address, &bytes);
+                self.finish("memory load", result);
+            }
+            Command::Write(address, value) => {
+                let result = self.write(address, value).map(|_| ());
+                self.finish("memory write", result);
+            }
             Command::SerialRx(port, byte) => self.serial_rx(port, byte),
             Command::ClearSerial => {
                 if let Some(bridge) = self.bridge.as_mut() { bridge.clear_queues(); }
             }
+            Command::Console(command) => self.console(command),
             Command::Shutdown => {}
         }
     }
 
+    fn finish(&mut self, operation: &'static str, result: BackendResult<()>) {
+        if let Err(error) = result {
+            self.record_error(operation, error.to_string());
+        }
+    }
+
+    fn record_error(&mut self, operation: &'static str, detail: impl Into<String>) {
+        let detail = detail.into();
+        let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+        state.busy = false;
+        state.error(format!("{operation}: {detail}"));
+    }
+
     fn power(&mut self, on: bool) -> BackendResult<()> {
         if on && self.session.is_none() {
+            {
+                let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                state.busy = true;
+                state.log("Starting embedded SIMH process and FrontPanel connection…");
+            }
             let mut session = SimhSession::start(
                 self.launch.executable(),
                 self.launch.simulator_config(),
@@ -415,23 +567,41 @@ impl Worker {
             self.session = Some(session);
             self.set_switches(self.switches)?;
             self.refresh_halted()?;
+            let console_available = self.session.as_ref().is_some_and(SimhSession::console_available);
+            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.busy = false;
+            state.panel.powered = true;
+            state.console_available = console_available;
+            state.last_error = None;
+            state.log("POWER ON complete.");
+            if !console_available {
+                state.log("SIMH Console: current DLL has no RusTair command extension; rebuild the embedded bundle to enable interactive SCP commands.");
+            }
             return Ok(());
         }
 
         if !on && self.session.is_some() {
+            {
+                let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                state.busy = true;
+                state.log("Stopping SIMH process…");
+            }
             self.session.take();
             if let Some(bridge) = self.bridge.as_mut() { bridge.disconnect(); }
             self.last_running = false;
-            let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            shared.panel.powered = false;
-            shared.panel.running = false;
-            shared.panel.lamps = PanelLampSnapshot::default();
+            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.busy = false;
+            state.panel.powered = false;
+            state.panel.running = false;
+            state.panel.lamps = PanelLampSnapshot::default();
+            state.console_available = false;
+            state.log("POWER OFF complete.");
         }
         Ok(())
     }
 
     fn set_running(&mut self, running: bool) -> BackendResult<()> {
-        if self.session.is_none() { return Err(op_error("SIMH RUN/STOP", "simulator is powered off")); }
+        if self.session.is_none() { return Err(op_error("SIMH RUN/STOP", "simulator is powered off or still starting")); }
         {
             let session = self.session.as_mut().expect("checked SIMH session");
             if running {
@@ -447,7 +617,7 @@ impl Worker {
     }
 
     fn step(&mut self) -> BackendResult<()> {
-        if self.session.is_none() { return Err(op_error("SIMH STEP", "simulator is powered off")); }
+        if self.session.is_none() { return Err(op_error("SIMH STEP", "simulator is powered off or still starting")); }
         {
             let session = self.session.as_mut().expect("checked SIMH session");
             session.step().map_err(|e| op_error("SIMH STEP", e.to_string()))?;
@@ -472,7 +642,7 @@ impl Worker {
     }
 
     fn examine(&mut self, next: bool) -> BackendResult<()> {
-        if self.session.is_none() { return Err(op_error("SIMH EXAMINE", "simulator is powered off")); }
+        if self.session.is_none() { return Err(op_error("SIMH EXAMINE", "simulator is powered off or still starting")); }
         let address = if next { self.panel_address.wrapping_add(1) } else { self.switches };
         {
             let session = self.session.as_mut().expect("checked SIMH session");
@@ -523,15 +693,31 @@ impl Worker {
     }
 
     fn load(&mut self, base: u16, bytes: &[u8]) -> BackendResult<()> {
+        let was_running = self.session.as_ref().is_some_and(|s| s.state() == SimhOperationalState::Running);
+        if was_running {
+            self.session
+                .as_mut()
+                .expect("checked SIMH session")
+                .halt()
+                .map_err(|e| op_error("SIMH memory load halt", e.to_string()))?;
+            self.last_running = false;
+            self.update_panel_state(false, None);
+        }
+
         if self.session.is_some() {
-            if self.session.as_ref().is_some_and(|s| s.state() == SimhOperationalState::Running) {
-                return Err(op_error("SIMH memory load", "halt the simulator before loading memory"));
+            {
+                let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                state.busy = true;
+                state.log(format!("Loading {} bytes at {:04X}h into SIMH…", bytes.len(), base));
             }
             self.session
                 .as_mut()
                 .expect("checked SIMH session")
                 .load_bytes(base, bytes)
                 .map_err(|e| op_error("SIMH memory load", e.to_string()))?;
+            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.busy = false;
+            state.log(format!("Loaded {} bytes at {:04X}h.", bytes.len(), base));
         } else {
             for (offset, byte) in bytes.iter().copied().enumerate() {
                 let Some(address) = u16::try_from(offset).ok().and_then(|o| base.checked_add(o)) else { break; };
@@ -543,7 +729,9 @@ impl Worker {
 
     fn write(&mut self, address: u16, value: u8) -> BackendResult<bool> {
         if self.session.is_some() {
-            if self.session.as_ref().is_some_and(|s| s.state() == SimhOperationalState::Running) { return Ok(false); }
+            if self.session.as_ref().is_some_and(|s| s.state() == SimhOperationalState::Running) {
+                return Ok(false);
+            }
             self.session
                 .as_mut()
                 .expect("checked SIMH session")
@@ -558,16 +746,45 @@ impl Worker {
     fn serial_rx(&mut self, port: BackendSerialPort, byte: u8) {
         let index = port_index(port);
         if let Some(bridge) = self.bridge.as_mut() {
-            let _ = bridge.queue_to_simh(port, byte);
-            self.serial_in_glow = 1.0;
+            if let Err(error) = bridge.queue_to_simh(port, byte) {
+                self.record_error("serial RX queue", error.to_string());
+            } else {
+                self.serial_in_glow = 1.0;
+            }
         }
         let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         shared.to_simh[index] = shared.to_simh[index].saturating_sub(1);
     }
 
+    fn console(&mut self, command: String) {
+        let command = command.trim().to_owned();
+        if command.is_empty() { return; }
+        {
+            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.log(format!("sim> {command}"));
+        }
+        let Some(session) = self.session.as_mut() else {
+            self.record_error("SIMH console", "simulator is powered off or still starting");
+            return;
+        };
+        match session.console_command(&command) {
+            Ok(response) => {
+                let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                if response.trim().is_empty() {
+                    state.log("(command completed with no output)");
+                } else {
+                    for line in response.lines() { state.log(line.to_owned()); }
+                }
+            }
+            Err(error) => self.record_error("SIMH console", error.to_string()),
+        }
+    }
+
     fn background(&mut self) {
         if let Some(bridge) = self.bridge.as_mut() {
-            let _ = bridge.poll();
+            if let Err(error) = bridge.poll() {
+                self.record_error("M2SIO bridge poll", error.to_string());
+            }
             for port in BackendSerialPort::ALL {
                 while let Some(byte) = bridge.pop_from_simh(port) {
                     let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -578,17 +795,20 @@ impl Worker {
             }
         }
 
-        if self.session.is_none() || self.last_panel_poll.elapsed() < PANEL_TICK { return; }
-        self.last_panel_poll = Instant::now();
+        if self.session.is_none() || self.last_panel_copy.elapsed() < PANEL_TICK { return; }
+        self.last_panel_copy = Instant::now();
 
+        // state() is an in-DLL volatile state read. live_panel_sample() is a
+        // local mutex copy populated by FrontPanel's callback thread. Neither
+        // operation sends a wire command to SIMH.
         let state = self.session.as_ref().map(|s| s.state()).unwrap_or(SimhOperationalState::Halted);
         let running = state == SimhOperationalState::Running;
-        let sample = self.session.as_mut().and_then(|s| s.live_panel_sample().ok());
+        let sample = self.session.as_ref().expect("checked SIMH session").live_panel_sample();
 
-        if let Some(sample) = sample {
-            self.panel_address = sample.pc;
-            self.panel_data = sample.a;
-            let lamps = sampled_lamps(&sample, running, self.serial_in_glow, self.serial_out_glow);
+        self.panel_address = sample.pc;
+        self.panel_data = sample.a;
+        let lamps = sampled_lamps(&sample, running, self.serial_in_glow, self.serial_out_glow);
+        {
             let mut shared = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             match &mut shared.cpu {
                 CpuState::Intel8080(cpu) => {
@@ -696,11 +916,9 @@ fn sampled_lamps(
     lamps.address = sample.address_activity;
     lamps.data = sample.data_activity;
 
-    // Open-SIMH exposes stable architectural registers rather than the exact
-    // physical S-100 status latch. Address/data brightness is genuine sampled
-    // FrontPanel activity. Status lamps are presentation estimates of the
-    // normal 8080 fetch/read mix; serial INP/OUT glow is driven by real bridge
-    // traffic. We deliberately do not claim cycle-accurate status telemetry.
+    // Open-SIMH does not expose the physical S-100 status latch cycle by cycle.
+    // PC/A are genuine asynchronous samples. These status intensities are
+    // explicitly presentation estimates; INP/OUT are driven by real bridge I/O.
     lamps.memr = 0.82;
     lamps.m1 = 0.46;
     lamps.wo = 0.78;
