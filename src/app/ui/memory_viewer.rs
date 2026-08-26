@@ -7,9 +7,8 @@ const BYTES_PER_ROW: usize = 16;
 const ROW_COUNT: usize = MAX_MEM_SIZE / BYTES_PER_ROW;
 const ROW_HEIGHT: f32 = 22.0;
 const SIDEBAR_DEFAULT_WIDTH: f32 = 410.0;
-const SIDEBAR_MIN_WIDTH: f32 = 390.0;
-const SIDEBAR_MAX_WIDTH: f32 = 580.0;
 const CURRENT_INSTRUCTION_LINE_HEIGHT: f32 = 18.0;
+const CURRENT_INSTRUCTION_BLOCK_HEIGHT: f32 = 126.0;
 
 #[derive(Clone)]
 struct MemoryViewerUiState {
@@ -523,39 +522,100 @@ impl RusTairApp {
     fn draw_current_instruction_side(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let cpu = self.machine.intel8080_state();
         let pc = cpu.pc;
-        let Some(instruction) = self.decode_memory_instruction(pc) else {
-            ui.label(egui::RichText::new(format!("${pc:04X}  UNMAPPED")).monospace().strong());
-            return;
-        };
+        let instruction = self.decode_memory_instruction(pc);
+        let loop_info = self.current_simple_loop();
+        let width = ui.available_width();
 
-        ui.add_sized(
-            [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
-            egui::Label::new(egui::RichText::new(format!("${pc:04X}  {}", instruction.decoded.text())).monospace().strong()),
-        );
-        ui.add_sized(
-            [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
-            egui::Label::new(egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak()),
-        );
-        ui.small(format!("{} · flags {} · memory {} · I/O {}", instruction.decoded.timing.label(), instruction.decoded.flags.label(), instruction.decoded.memory.label(), instruction.decoded.io.label()));
-        ui.small(format!("Flow: {}", instruction.decoded.flow_label()));
-        if let Some(condition) = instruction.decoded.control_flow.condition() {
-            ui.small(format!("Condition now: {} — {}", condition.description(), if condition.evaluate(cpu.flags) { "TRUE / TAKEN if reached" } else { "FALSE / NOT TAKEN if reached" }));
-        }
-        if instruction.decoded.undocumented_alias {
-            ui.small("Undocumented 8080 opcode alias accepted by the emulated cores.");
-        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, CURRENT_INSTRUCTION_BLOCK_HEIGHT),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                let add_row = |ui: &mut egui::Ui, text: egui::RichText| {
+                    ui.add_sized(
+                        [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
+                        egui::Label::new(text),
+                    );
+                };
 
-        if let Some(loop_info) = self.current_simple_loop() {
-            ui.separator();
-            ui.strong(format!("SIMPLE LOOP {:04X}h–{:04X}h", loop_info.start, loop_info.back_edge));
-            ui.small(loop_info.exit_description());
-            if let Some(condition) = loop_info.condition {
-                ui.small(format!("Back-edge {}: {}", condition.label(), if loop_info.branch_taken_now { "TAKEN now" } else { "NOT TAKEN now — loop exits" }));
-            }
-            if ui.button("Open Loop Inspector").clicked() {
-                state.loop_inspector_open = true;
-            }
-        }
+                let Some(instruction) = instruction.as_ref() else {
+                    add_row(ui, egui::RichText::new(format!("${pc:04X}  UNMAPPED")).monospace().strong());
+                    add_row(ui, egui::RichText::new("--").monospace().weak());
+                    add_row(ui, egui::RichText::new("Timing: — · flags: —").small());
+                    add_row(ui, egui::RichText::new("Memory: — · I/O: —").small());
+                    add_row(ui, egui::RichText::new("Flow: —").small());
+                    add_row(ui, egui::RichText::new("Loop: —").small());
+                    return;
+                };
+
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [64.0, CURRENT_INSTRUCTION_LINE_HEIGHT],
+                        egui::Label::new(egui::RichText::new(format!("${pc:04X}")).monospace().strong()),
+                    );
+                    ui.add_sized(
+                        [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
+                        egui::Label::new(egui::RichText::new(instruction.decoded.text()).monospace().strong()),
+                    );
+                });
+                add_row(
+                    ui,
+                    egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak(),
+                );
+                add_row(
+                    ui,
+                    egui::RichText::new(format!(
+                        "{} · flags {}{}",
+                        instruction.decoded.timing.label(),
+                        instruction.decoded.flags.label(),
+                        if instruction.decoded.undocumented_alias { " · undocumented alias" } else { "" }
+                    )).small(),
+                );
+                add_row(
+                    ui,
+                    egui::RichText::new(format!(
+                        "Memory: {} · I/O: {}",
+                        instruction.decoded.memory.label(),
+                        instruction.decoded.io.label()
+                    )).small(),
+                );
+                let flow_text = if let Some(condition) = instruction.decoded.control_flow.condition() {
+                    format!(
+                        "Flow: {} · {} → {}",
+                        instruction.decoded.flow_label(),
+                        condition.label(),
+                        if condition.evaluate(cpu.flags) { "TAKEN" } else { "NOT TAKEN" }
+                    )
+                } else {
+                    format!("Flow: {}", instruction.decoded.flow_label())
+                };
+                add_row(ui, egui::RichText::new(flow_text).small());
+
+                ui.horizontal(|ui| {
+                    if let Some(loop_info) = loop_info.as_ref() {
+                        let label_width = (width - 132.0).max(120.0);
+                        ui.add_sized(
+                            [label_width, 22.0],
+                            egui::Label::new(
+                                egui::RichText::new(format!(
+                                    "Loop: {:04X}–{:04X} · {}",
+                                    loop_info.start,
+                                    loop_info.back_edge,
+                                    if loop_info.branch_taken_now { "TAKEN" } else { "EXIT" }
+                                )).small(),
+                            ),
+                        );
+                        if ui.add_sized([124.0, 22.0], egui::Button::new("Loop Inspector")).clicked() {
+                            state.loop_inspector_open = true;
+                        }
+                    } else {
+                        ui.add_sized(
+                            [ui.available_width(), 22.0],
+                            egui::Label::new(egui::RichText::new("Loop: —").small()),
+                        );
+                    }
+                });
+            },
+        );
     }
 
     fn draw_memory_sidebar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
@@ -638,8 +698,9 @@ impl RusTairApp {
 
     fn draw_memory_viewer_window(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
         egui::TopBottomPanel::top("memory-viewer-toolbar").resizable(false).show(ctx, |ui| self.draw_memory_toolbar(ui, state));
-        egui::SidePanel::right("memory-viewer-sidebar").resizable(true)
-            .default_width(SIDEBAR_DEFAULT_WIDTH).width_range(SIDEBAR_MIN_WIDTH..=SIDEBAR_MAX_WIDTH)
+        egui::SidePanel::right("memory-viewer-sidebar")
+            .resizable(false)
+            .exact_width(SIDEBAR_DEFAULT_WIDTH)
             .show(ctx, |ui| self.draw_memory_sidebar(ui, state));
         egui::CentralPanel::default().show(ctx, |ui| { self.draw_memory_table(ui, state); });
         self.draw_loop_inspector(ctx, state);
