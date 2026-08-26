@@ -2,6 +2,7 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -219,6 +220,24 @@ fn write_launch_config(
     stem: &str,
     machine_setup: &str,
 ) -> Result<PathBuf, SimhRuntimeError> {
+    // Open-SIMH Master Remote Console deliberately requires the simulator's
+    // ordinary console to be Telnet or Serial. This is also how the upstream
+    // FrontPanelTest configures a simulator before sim_panel_start_simulator().
+    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|source| SimhRuntimeError::Io {
+        operation: "reserve SIMH console port",
+        path: root.to_path_buf(),
+        source,
+    })?;
+    let console_port = listener
+        .local_addr()
+        .map_err(|source| SimhRuntimeError::Io {
+            operation: "read SIMH console port",
+            path: root.to_path_buf(),
+            source,
+        })?
+        .port();
+    drop(listener);
+
     let sequence = CONFIG_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let config_dir = root.join("configs");
     fs::create_dir_all(&config_dir).map_err(|source| SimhRuntimeError::Io {
@@ -230,11 +249,10 @@ fn write_launch_config(
         "{stem}-{}-{sequence}.ini",
         std::process::id()
     ));
-
-    // FrontPanel appends and owns its REMOTE MASTER control channel. Do not
-    // configure SIMH's ordinary console/Telnet here: that is a separate device
-    // and caused RusTair to create a second, unnecessary console endpoint.
-    fs::write(&path, machine_setup).map_err(|source| SimhRuntimeError::Io {
+    let contents = format!(
+        "{machine_setup}set console telnet=buffered\nset console -u telnet={console_port}\n"
+    );
+    fs::write(&path, contents).map_err(|source| SimhRuntimeError::Io {
         operation: "write SIMH launch config",
         path: path.clone(),
         source,
@@ -259,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_config_leaves_console_control_to_frontpanel() {
+    fn launch_config_provides_console_required_by_frontpanel_master_mode() {
         let root = std::env::temp_dir().join(format!(
             "rustair-simh-runtime-test-{}-{}",
             std::process::id(),
@@ -267,8 +285,9 @@ mod tests {
         ));
         let path = write_launch_config(&root, "test", "set cpu 8080\n").unwrap();
         let contents = fs::read_to_string(&path).unwrap();
-        assert_eq!(contents, "set cpu 8080\n");
-        assert!(!contents.to_ascii_lowercase().contains("set console"));
+        assert!(contents.starts_with("set cpu 8080\n"));
+        assert!(contents.contains("set console telnet=buffered\n"));
+        assert!(contents.contains("set console -u telnet="));
         assert!(!contents.to_ascii_lowercase().contains("set remote"));
         let _ = fs::remove_dir_all(root);
     }
