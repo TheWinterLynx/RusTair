@@ -158,7 +158,10 @@ impl RusTairApp {
         }
     }
 
-    pub(in crate::app) fn save_punched_tape(&mut self) {
+    /// Save a completed punched tape. Return true only when bytes reached disk;
+    /// cancellation/error deliberately leaves the virtual tape intact so the
+    /// operator can retry rather than losing the physical-media equivalent.
+    pub(in crate::app) fn save_punched_tape(&mut self) -> bool {
         let Some(path) = rfd::FileDialog::new()
             .set_file_name("myPaperTape.tap")
             .save_file()
@@ -167,13 +170,21 @@ impl RusTairApp {
                 "Punch save cancelled — {} bytes remain in the virtual tape",
                 self.tty.punched_tape_len()
             );
-            return;
+            return false;
         };
 
         let tape = self.tty.punched_tape();
+        let len = tape.len();
         match std::fs::write(&path, tape) {
-            Ok(_) => self.status = format!("Punched tape saved: {} bytes to {}", tape.len(), path.display()),
-            Err(e) => self.status = format!("Paper tape save failed: {e}"),
+            Ok(_) => {
+                self.status = format!("Punched tape saved: {len} bytes to {}", path.display());
+                self.tty.eject_punched_tape();
+                true
+            }
+            Err(e) => {
+                self.status = format!("Paper tape save failed: {e} — tape retained for retry");
+                false
+            }
         }
     }
 
