@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::app::asr33_state::TapeTransportSpeed;
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
@@ -30,6 +31,8 @@ pub(super) struct SavedSettings {
     pub(super) terminal_duplex: TerminalDuplex,
     pub(super) terminal_uppercase: bool,
     pub(super) tty_mode: TtyMode,
+    pub(super) reader_speed: TapeTransportSpeed,
+    pub(super) punch_speed: TapeTransportSpeed,
     pub(super) led_brightness: f32,
     pub(super) led_aura: f32,
     pub(super) muted: bool,
@@ -50,6 +53,8 @@ impl Default for SavedSettings {
             terminal_duplex: TerminalDuplex::default(),
             terminal_uppercase: true,
             tty_mode: TtyMode::Off,
+            reader_speed: TapeTransportSpeed::Historical1x,
+            punch_speed: TapeTransportSpeed::Historical1x,
             led_brightness: DEFAULT_LED_BRIGHTNESS,
             led_aura: DEFAULT_LED_AURA,
             muted: false,
@@ -162,6 +167,8 @@ impl SavedSettings {
                 "external_com.duplex" => if let Some(v) = parse_duplex(value) { saved.external_com.duplex = v; },
                 "asr33.duplex" => if let Some(v) = parse_duplex(value) { saved.asr_duplex = v; },
                 "asr33.mode" => if let Some(v) = parse_tty_mode(value) { saved.tty_mode = v; },
+                "asr33.reader_speed" => if let Some(v) = parse_tape_transport_speed(value) { saved.reader_speed = v; },
+                "asr33.punch_speed" => if let Some(v) = parse_tape_transport_speed(value) { saved.punch_speed = v; },
                 "terminal.duplex" => if let Some(v) = parse_duplex(value) { saved.terminal_duplex = v; },
                 "terminal.uppercase" => if let Ok(v) = value.parse() { saved.terminal_uppercase = v; },
                 "led.brightness" => if let Ok(v) = value.parse::<f32>() { if v.is_finite() { saved.led_brightness = v.clamp(0.25, 3.0); } },
@@ -210,6 +217,8 @@ impl SavedSettings {
         let _ = writeln!(out, "external_com.duplex={}", duplex_key(self.external_com.duplex));
         let _ = writeln!(out, "asr33.duplex={}", duplex_key(self.asr_duplex));
         let _ = writeln!(out, "asr33.mode={}", tty_mode_key(self.tty_mode));
+        let _ = writeln!(out, "asr33.reader_speed={}", tape_transport_speed_key(self.reader_speed));
+        let _ = writeln!(out, "asr33.punch_speed={}", tape_transport_speed_key(self.punch_speed));
         let _ = writeln!(out, "terminal.duplex={}", duplex_key(self.terminal_duplex));
         let _ = writeln!(out, "terminal.uppercase={}", self.terminal_uppercase);
         let _ = writeln!(out, "led.brightness={:.3}", self.led_brightness);
@@ -284,8 +293,6 @@ impl RusTairApp {
         state.last_save_failure = None;
         state.led_brightness = saved.led_brightness;
         state.led_aura = saved.led_aura;
-        // Window visibility is deliberately transient: it always starts closed
-        // and only opens from Configuration -> LED visuals.
         state.led_controls_open = false;
     }
 
@@ -317,6 +324,8 @@ impl RusTairApp {
         self.external_com.reset_line_timing();
 
         self.asr33.duplex = saved.asr_duplex;
+        self.asr33.reader_speed = saved.reader_speed;
+        self.asr33.punch_speed = saved.punch_speed;
         self.terminal.duplex = saved.terminal_duplex;
         self.terminal.uppercase = saved.terminal_uppercase;
         self.terminal.speed = self.config.peripherals.terminal_speed;
@@ -349,6 +358,8 @@ impl RusTairApp {
             terminal_duplex: self.terminal.duplex,
             terminal_uppercase: self.terminal.uppercase,
             tty_mode: self.tty.mode,
+            reader_speed: self.asr33.reader_speed,
+            punch_speed: self.asr33.punch_speed,
             led_brightness: led_brightness.clamp(0.25, 3.0),
             led_aura: led_aura.clamp(0.0, 3.0),
             muted: self.audio.muted(),
@@ -476,6 +487,8 @@ fn flow_control_key(v: ComFlowControl) -> &'static str { match v { ComFlowContro
 fn parse_flow_control(v: &str) -> Option<ComFlowControl> { Some(match v { "none" => ComFlowControl::None, "software" => ComFlowControl::Software, "hardware" => ComFlowControl::Hardware, _ => return None }) }
 fn tty_mode_key(v: TtyMode) -> &'static str { match v { TtyMode::Off => "off", TtyMode::Line => "line", TtyMode::Local => "local" } }
 fn parse_tty_mode(v: &str) -> Option<TtyMode> { Some(match v { "off" => TtyMode::Off, "line" => TtyMode::Line, "local" => TtyMode::Local, _ => return None }) }
+fn tape_transport_speed_key(v: TapeTransportSpeed) -> &'static str { match v { TapeTransportSpeed::Historical1x => "1x", TapeTransportSpeed::X5 => "5x", TapeTransportSpeed::X10 => "10x", TapeTransportSpeed::Unlimited => "unlimited" } }
+fn parse_tape_transport_speed(v: &str) -> Option<TapeTransportSpeed> { Some(match v { "1x" => TapeTransportSpeed::Historical1x, "5x" => TapeTransportSpeed::X5, "10x" => TapeTransportSpeed::X10, "unlimited" => TapeTransportSpeed::Unlimited, _ => return None }) }
 
 #[cfg(test)]
 mod tests {
@@ -498,6 +511,8 @@ mod tests {
         saved.external_com.baud_rate = 115_200;
         saved.terminal_uppercase = false;
         saved.tty_mode = TtyMode::Line;
+        saved.reader_speed = TapeTransportSpeed::X10;
+        saved.punch_speed = TapeTransportSpeed::X5;
         saved.led_brightness = 1.37;
         saved.led_aura = 2.15;
         saved.muted = true;
@@ -507,10 +522,12 @@ mod tests {
     }
 
     #[test]
-    fn persistent_defaults_match_current_led_calibration() {
+    fn persistent_defaults_match_current_led_and_tape_calibration() {
         let saved = SavedSettings::default();
         assert_eq!(saved.led_brightness, DEFAULT_LED_BRIGHTNESS);
         assert_eq!(saved.led_aura, DEFAULT_LED_AURA);
+        assert_eq!(saved.reader_speed, TapeTransportSpeed::Historical1x);
+        assert_eq!(saved.punch_speed, TapeTransportSpeed::Historical1x);
     }
 
     #[test]
@@ -529,6 +546,8 @@ mod tests {
 
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("machine.ram_size=48k"));
+        assert!(text.contains("asr33.reader_speed=1x"));
+        assert!(text.contains("asr33.punch_speed=1x"));
         assert!(!dir.join(".config.ini.tmp").exists());
         let _ = fs::remove_dir_all(dir);
     }
