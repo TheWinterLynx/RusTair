@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app::asr33_state::TapeTransportSpeed;
+use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::TerminalDuplex;
 
 impl RusTairApp {
@@ -228,36 +228,74 @@ impl RusTairApp {
         }
     }
 
-    /// Compact 8-level paper-tape view matching the visual language of the
-    /// original ASR emulator: travel arrow followed by eight data-hole tracks.
-    /// Filled circles are punched bits; outlined circles are unpunched tracks.
-    fn draw_reader_byte_visual(ui: &mut egui::Ui, byte: Option<u8>) {
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(150.0, 24.0), Sense::hover());
+    /// Compact 8-level paper-tape view. Contemporary DEC ASR-33 drawings show
+    /// channels 8..1 from left to right, with the smaller feed/sprocket hole
+    /// between channels 4 and 3. The operator can reverse only this drawing;
+    /// the byte sent to the emulated UART is never modified.
+    fn draw_reader_byte_visual(ui: &mut egui::Ui, byte: Option<u8>, order: TapeBitOrder) {
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(170.0, 24.0), Sense::hover());
         let painter = ui.painter();
-        let paper = Color32::from_rgb(205, 194, 165);
-        let ink = Color32::from_rgb(78, 76, 69);
-        let empty = Color32::from_rgb(165, 156, 134);
-        painter.rect_filled(rect, 1.5, paper);
+
+        // Keep the tape legible without introducing a bright cream strip into
+        // the otherwise dark ASR window.
+        let paper = Color32::from_rgb(66, 62, 52);
+        let border = Color32::from_rgb(91, 85, 71);
+        let hole = Color32::from_rgb(21, 22, 22);
+        let unpunched = Color32::from_rgb(103, 96, 80);
+        let arrow = Color32::from_rgb(145, 137, 116);
+
+        painter.rect_filled(rect, 2.0, paper);
+        painter.rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.0_f32, border),
+            egui::StrokeKind::Inside,
+        );
         painter.text(
             Pos2::new(rect.left() + 10.0, rect.center().y),
             egui::Align2::CENTER_CENTER,
             "▶",
             FontId::monospace(10.0),
-            ink,
+            arrow,
         );
 
-        let byte = byte.unwrap_or(0);
+        let bit_order: [u8; 8] = match order {
+            TapeBitOrder::Historical8To1 => [7, 6, 5, 4, 3, 2, 1, 0],
+            TapeBitOrder::Reversed1To8 => [0, 1, 2, 3, 4, 5, 6, 7],
+        };
+        let feed_after = match order {
+            TapeBitOrder::Historical8To1 => 5,
+            TapeBitOrder::Reversed1To8 => 3,
+        };
         let first_x = rect.left() + 31.0;
-        for (slot, bit) in (0..8).rev().enumerate() {
-            let center = Pos2::new(first_x + slot as f32 * 14.0, rect.center().y);
-            if byte & (1 << bit) != 0 {
-                painter.circle_filled(center, 4.3, ink);
-            } else {
-                painter.circle_stroke(center, 4.3, egui::Stroke::new(1.0, empty));
+        let pitch = 13.7;
+        let value = byte.unwrap_or(0);
+        let mut slot = 0usize;
+
+        for (index, bit) in bit_order.into_iter().enumerate() {
+            if index == feed_after {
+                let center = Pos2::new(first_x + slot as f32 * pitch, rect.center().y);
+                painter.circle_filled(center, 2.25, hole);
+                slot += 1;
             }
+
+            let center = Pos2::new(first_x + slot as f32 * pitch, rect.center().y);
+            if byte.is_some() && value & (1 << bit) != 0 {
+                painter.circle_filled(center, 4.15, hole);
+            } else {
+                painter.circle_stroke(
+                    center,
+                    4.15,
+                    egui::Stroke::new(1.0_f32, unpunched),
+                );
+            }
+            slot += 1;
         }
 
-        response.on_hover_text("8-level paper tape, MSB → LSB. Filled circles are punched holes in the last byte offered to the UART.");
+        response.on_hover_text(match order {
+            TapeBitOrder::Historical8To1 => "Historical illustrated view: channels 8 → 1 left-to-right; the small hole is the feed/sprocket hole between channels 4 and 3.",
+            TapeBitOrder::Reversed1To8 => "Reversed display only: channels 1 → 8 left-to-right. The underlying byte and paper-tape data are unchanged.",
+        });
     }
 
     fn draw_tty_reader_controls(&mut self, ui: &mut egui::Ui) {
@@ -318,7 +356,23 @@ impl RusTairApp {
         ui.separator();
         ui.label("BYTE:");
         ui.monospace(Self::reader_byte_label(self.asr33.last_reader_byte));
-        Self::draw_reader_byte_visual(ui, self.asr33.last_reader_byte);
+        Self::draw_reader_byte_visual(
+            ui,
+            self.asr33.last_reader_byte,
+            self.asr33.tape_bit_order,
+        );
+        ui.label("Bits:");
+        let order_button = ui.small_button(match self.asr33.tape_bit_order {
+            TapeBitOrder::Historical8To1 => "8→1 hist.",
+            TapeBitOrder::Reversed1To8 => "1→8",
+        });
+        if order_button.clicked() {
+            self.asr33.tape_bit_order = self.asr33.tape_bit_order.toggle();
+        }
+        order_button.on_hover_text(
+            "Toggle only the left-to-right drawing order. 8→1 matches contemporary DEC ASR-33 documentation; 1→8 is a reversed operator view.",
+        );
+
         let (reader_state, state_color) = self.reader_state_label();
         let state = ui.colored_label(state_color, reader_state);
         if reader_state == "WAIT GUEST RX" {
