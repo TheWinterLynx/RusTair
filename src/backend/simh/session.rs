@@ -4,11 +4,14 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr::NonNull;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::{ffi, runtime};
 
 const LIVE_SAMPLE_FREQUENCY: u32 = 128;
 const LIVE_SAMPLE_DEPTH: u32 = 64;
+const LIVE_CALLBACK_INTERVAL_US: c_int = 16_000;
+const CONSOLE_RESPONSE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SimhOperationalState {
@@ -17,7 +20,7 @@ pub enum SimhOperationalState {
     Error,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SimhLivePanelSample {
     pub pc: u16,
     pub a: u8,
@@ -51,6 +54,63 @@ impl LivePanelRegisters {
     }
 }
 
+/// Context owned by `SimhSession` and passed verbatim to Open-SIMH's callback
+/// thread. All pointed-to register buffers are heap allocations whose addresses
+/// remain stable for the entire session lifetime.
+struct LivePanelCallbackContext {
+    pc: *const u32,
+    data: *const u32,
+    sp: *const u32,
+    pc_bits: *const c_int,
+    data_bits: *const c_int,
+    data_shift: usize,
+    latest: Arc<Mutex<SimhLivePanelSample>>,
+}
+
+// The C FrontPanel callback thread is the only foreign thread that dereferences
+// these raw pointers. Their allocations are owned by the containing session and
+// `sim_panel_destroy()` joins the callback thread before the session fields are
+// dropped.
+unsafe impl Send for LivePanelCallbackContext {}
+unsafe impl Sync for LivePanelCallbackContext {}
+
+unsafe extern "C" fn live_panel_callback(
+    _panel: *mut ffi::PANEL,
+    simulation_time: u64,
+    context: *mut c_void,
+) {
+    if context.is_null() {
+        return;
+    }
+    let context = unsafe { &*(context.cast::<LivePanelCallbackContext>()) };
+    let pc = unsafe { *context.pc } as u16;
+    let data_raw = unsafe { *context.data };
+    let sp = unsafe { *context.sp } as u16;
+
+    let mut address_activity = [0.0f32; 16];
+    for (bit, dst) in address_activity.iter_mut().enumerate() {
+        let sampled = unsafe { *context.pc_bits.add(bit) };
+        *dst = sampled.clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
+    }
+
+    let mut data_activity = [0.0f32; 8];
+    for (bit, dst) in data_activity.iter_mut().enumerate() {
+        let sampled = unsafe { *context.data_bits.add(context.data_shift + bit) };
+        *dst = sampled.clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
+    }
+
+    let sample = SimhLivePanelSample {
+        pc,
+        a: (data_raw >> context.data_shift) as u8,
+        sp,
+        address_activity,
+        data_activity,
+        simulation_time,
+    };
+    let mut latest = context.latest.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *latest = sample;
+}
+
 #[derive(Debug)]
 pub enum SimhSessionError {
     InteriorNul(NulError),
@@ -58,6 +118,7 @@ pub enum SimhSessionError {
     FrontPanelLoad(ffi::FrontPanelLoadError),
     StartFailed(String),
     Api { operation: &'static str, detail: String },
+    ConsoleUnavailable,
 }
 
 impl fmt::Display for SimhSessionError {
@@ -68,6 +129,10 @@ impl fmt::Display for SimhSessionError {
             Self::FrontPanelLoad(error) => write!(f, "SIMH FrontPanel load failed: {error}"),
             Self::StartFailed(detail) => write!(f, "failed to start SIMH: {detail}"),
             Self::Api { operation, detail } => write!(f, "SIMH {operation} failed: {detail}"),
+            Self::ConsoleUnavailable => write!(
+                f,
+                "the embedded simh_frontpanel.dll predates RusTair console support; rebuild the SIMH bundle"
+            ),
         }
     }
 }
@@ -92,6 +157,8 @@ pub struct SimhSession {
     panel: NonNull<ffi::PANEL>,
     api: ffi::FrontPanelApi,
     live: LivePanelRegisters,
+    latest_live: Arc<Mutex<SimhLivePanelSample>>,
+    callback_context: Option<Box<LivePanelCallbackContext>>,
     _not_send_sync: PhantomData<Rc<()>>,
 }
 
@@ -130,10 +197,13 @@ impl SimhSession {
             }
         };
         let panel = NonNull::new(raw).ok_or_else(|| SimhSessionError::StartFailed(last_error_text(&api)))?;
+        let latest_live = Arc::new(Mutex::new(SimhLivePanelSample::default()));
         let mut session = Self {
             panel,
             api,
             live: LivePanelRegisters::new(data_width, data_shift),
+            latest_live,
+            callback_context: None,
             _not_send_sync: PhantomData,
         };
         session.configure_live_panel_sampling(data_register)?;
@@ -161,44 +231,43 @@ impl SimhSession {
         let status = unsafe { self.api.add_register(raw, sp.as_ptr(), device, size_of::<u32>(), (&mut *self.live.sp as *mut u32).cast()) };
         self.check("register live SP", status)?;
 
-        // FrontPanel API v12 requires sampling parameters to exist before any
-        // *_bits register is declared; otherwise sim_panel_add_register_bits()
-        // rejects the registration with "must be called first".
+        // FrontPanel API v12 requires sampling parameters before *_bits.
         let status = unsafe { self.api.set_sampling_parameters(raw, LIVE_SAMPLE_FREQUENCY, LIVE_SAMPLE_DEPTH) };
         self.check("configure live register sampling", status)?;
-
         let status = unsafe { self.api.add_register_bits(raw, pc.as_ptr(), device, 16, self.live.pc_bits.as_mut_ptr()) };
         self.check("register live PC bits", status)?;
         let status = unsafe { self.api.add_register_bits(raw, data.as_ptr(), device, self.live.data_width, self.live.data_bits.as_mut_ptr()) };
-        self.check("register live data bits", status)
+        self.check("register live data bits", status)?;
+
+        let mut context = Box::new(LivePanelCallbackContext {
+            pc: (&*self.live.pc) as *const u32,
+            data: (&*self.live.data) as *const u32,
+            sp: (&*self.live.sp) as *const u32,
+            pc_bits: self.live.pc_bits.as_ptr(),
+            data_bits: self.live.data_bits.as_ptr(),
+            data_shift: self.live.data_shift,
+            latest: Arc::clone(&self.latest_live),
+        });
+        let context_ptr = (&mut *context as *mut LivePanelCallbackContext).cast::<c_void>();
+        let status = unsafe {
+            self.api.set_display_callback_interval(
+                raw,
+                Some(live_panel_callback),
+                context_ptr,
+                LIVE_CALLBACK_INTERVAL_US,
+            )
+        };
+        self.check("start live front-panel callback", status)?;
+        self.callback_context = Some(context);
+        Ok(())
     }
 
-    /// Use the FrontPanel API's live register set, designed specifically for
-    /// displays that must observe a simulator while its CPU is executing.
-    pub fn live_panel_sample(&mut self) -> Result<SimhLivePanelSample, SimhSessionError> {
-        let mut simulation_time = 0u64;
-        let status = unsafe { self.api.get_registers(self.raw(), &mut simulation_time) };
-        self.check("get live front-panel registers", status)?;
-
-        let mut address_activity = [0.0f32; 16];
-        for (dst, src) in address_activity.iter_mut().zip(self.live.pc_bits.iter()) {
-            *dst = (*src).clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
-        }
-        let mut data_activity = [0.0f32; 8];
-        for (bit, dst) in data_activity.iter_mut().enumerate() {
-            let src = self.live.data_bits[self.live.data_shift + bit];
-            *dst = src.clamp(0, LIVE_SAMPLE_DEPTH as c_int) as f32 / LIVE_SAMPLE_DEPTH as f32;
-        }
-        let data_value = (*self.live.data >> self.live.data_shift) as u8;
-
-        Ok(SimhLivePanelSample {
-            pc: *self.live.pc as u16,
-            a: data_value,
-            sp: *self.live.sp as u16,
-            address_activity,
-            data_activity,
-            simulation_time,
-        })
+    /// Return the most recent complete register set delivered by Open-SIMH's
+    /// own FrontPanel callback thread. This is a local mutex copy only: it never
+    /// sends a command to the simulator and therefore cannot stall the UI or
+    /// the RusTair worker command queue.
+    pub fn live_panel_sample(&self) -> SimhLivePanelSample {
+        *self.latest_live.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn state(&self) -> SimhOperationalState {
@@ -277,11 +346,42 @@ impl SimhSession {
         let status = unsafe { self.api.dismount(self.raw(), device.as_ptr()) };
         self.check("dismount", status)
     }
+
+    pub fn console_available(&self) -> bool { self.api.has_rustair_exec_command() }
+
+    /// Execute one SCP command against the same simulator process controlled by
+    /// this FrontPanel session. The RusTair extension intentionally requires
+    /// the simulator to be halted, matching an interactive SIMH `sim>` prompt.
+    pub fn console_command(&mut self, command: &str) -> Result<String, SimhSessionError> {
+        if !self.api.has_rustair_exec_command() {
+            return Err(SimhSessionError::ConsoleUnavailable);
+        }
+        let command = CString::new(command)?;
+        let mut response = vec![0 as std::ffi::c_char; CONSOLE_RESPONSE_BYTES];
+        let Some(status) = (unsafe {
+            self.api.rustair_exec_command(
+                self.raw(),
+                command.as_ptr(),
+                response.as_mut_ptr(),
+                response.len(),
+            )
+        }) else {
+            return Err(SimhSessionError::ConsoleUnavailable);
+        };
+        self.check("console command", status)?;
+        Ok(unsafe { CStr::from_ptr(response.as_ptr()) }.to_string_lossy().into_owned())
+    }
+
     pub fn halt_text(&self) -> String { let text = unsafe { self.api.halt_text(self.raw()) }; c_text(text) }
 }
 
 impl Drop for SimhSession {
-    fn drop(&mut self) { unsafe { let _ = self.api.destroy(self.raw()); } }
+    fn drop(&mut self) {
+        // sim_panel_destroy() first stops/joins the FrontPanel callback thread.
+        // The callback context and heap-backed register buffers therefore remain
+        // alive until the foreign thread can no longer access them.
+        unsafe { let _ = self.api.destroy(self.raw()); }
+    }
 }
 
 fn path_cstring(path: &Path) -> Result<CString, SimhSessionError> { Ok(CString::new(path.to_string_lossy().as_bytes())?) }
