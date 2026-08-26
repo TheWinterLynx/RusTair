@@ -10,9 +10,11 @@ impl RusTairApp {
     }
 
     /// Draw the shared loader-error dialog. The diagnostic poller calls this on
-    /// every frame, so failures from the raw binary, BASIC and CP/M diagnostic
-    /// loaders all use the same visible reporting path.
+    /// every frame, so it also provides a stable per-frame hook for the optional
+    /// SIMH console window without adding any FrontPanel work to the UI thread.
     pub(in crate::app) fn draw_load_error_dialog(&mut self, ctx: &egui::Context) {
+        self.draw_simh_console(ctx);
+
         let Some(reason) = self.status.strip_prefix(LOAD_ERROR_PREFIX).map(str::to_owned) else {
             return;
         };
