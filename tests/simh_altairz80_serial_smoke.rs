@@ -148,16 +148,23 @@ fn receiver_program(status_port: u8, data_port: u8, destination: u16) -> Vec<u8>
 
 fn transmitter_program(status_port: u8, data_port: u8, byte: u8) -> Vec<u8> {
     vec![
-        0x3e, 0x03,        // MVI A,03h  - ACIA master reset
-        0xd3, status_port, // OUT status
-        0x3e, 0x14,        // MVI A,14h  - 8N1, RTS low, TX IRQ disabled
-        0xd3, status_port, // OUT status
+        0x3e, 0x03,        // 0100: MVI A,03h  - ACIA master reset
+        0xd3, status_port, // 0102: OUT status
+        0x3e, 0x14,        // 0104: MVI A,14h  - 8N1, RTS low, TX IRQ disabled
+        0xd3, status_port, // 0106: OUT status
         0xdb, status_port, // 0108: IN status
-        0xe6, 0x02,        // ANI 02h    - TDRE
-        0xca, 0x08, 0x01,  // JZ 0108h
-        0x3e, byte,        // MVI A,byte
-        0xd3, data_port,   // OUT data
-        0x76,              // HLT
+        0xe6, 0x02,        // 010A: ANI 02h    - TDRE
+        0xca, 0x08, 0x01,  // 010C: JZ 0108h
+        0x3e, byte,        // 010F: MVI A,byte
+        0xd3, data_port,   // 0111: OUT data; sets the emulated ACIA TX-pending latch
+        // Do not halt immediately after OUT. Open-SIMH moves txp into TMXR from
+        // m2sio_svc(), not synchronously in the OUT handler. Wait for TDRE to
+        // become set again, which means the service routine consumed the byte
+        // and TMXR reports the transmit buffer drained.
+        0xdb, status_port, // 0113: IN status
+        0xe6, 0x02,        // 0115: ANI 02h    - TDRE after transmit
+        0xca, 0x13, 0x01,  // 0117: JZ 0113h
+        0x76,              // 011A: HLT
     ]
 }
 
@@ -225,8 +232,9 @@ fn exercise_guest_to_host(
     set_program_counter(backend, PROGRAM_BASE)?;
 
     backend.run()?;
-    // Host-to-guest ran first for this port, so the persistent M2SIO link is
-    // already established. This program may halt before RUN is observed.
+    // The transmit program deliberately waits for TDRE again after OUT before
+    // halting. That gives m2sio_svc()/TMXR a chance to consume and flush the
+    // ACIA byte instead of stopping the whole simulator with txp still set.
     wait_for_running(backend, false)?;
 
     let deadline = Instant::now() + STATE_TIMEOUT;
@@ -239,8 +247,9 @@ fn exercise_guest_to_host(
             return Ok(());
         }
         if Instant::now() >= deadline {
+            let pc = cpu_pc(backend)?;
             return Err(test_error(format!(
-                "timed out waiting for guest TX byte {byte:02X} through {logical_port:?}"
+                "timed out waiting for guest TX byte {byte:02X} through {logical_port:?}; guest halted at pc={pc:04X}"
             )));
         }
         backend.service_execution(0)?;
