@@ -364,6 +364,12 @@ impl MachineBackend for SimhAltairBackend {
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> { Ok(()) }
     fn arm_basic32_full_memory_probe_guard(&mut self) -> BackendResult<bool> { Ok(false) }
 
+    // CPU diagnostics are implemented by the native Rust cores. The application
+    // polls this result every frame even when no diagnostic is active, so SIMH
+    // must answer the passive query harmlessly instead of inheriting Unsupported.
+    fn cancel_cpu_diagnostic_meter(&mut self) -> BackendResult<()> { Ok(()) }
+    fn take_cpu_diagnostic_result(&mut self) -> BackendResult<Option<crate::machine::CpuDiagnosticResult>> { Ok(None) }
+
     fn peek_io_port(&mut self, _port: u8) -> BackendResult<u8> { Ok(0) }
     fn io_port_activity(&mut self, _port: u8) -> BackendResult<IoPortActivity> { Ok((None, None, 0, 0)) }
     fn io_trace_snapshot(&mut self) -> BackendResult<IoTraceSnapshot> { Ok(Vec::new()) }
