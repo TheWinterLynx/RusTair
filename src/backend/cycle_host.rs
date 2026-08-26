@@ -1,13 +1,23 @@
 use std::time::Duration;
 
 use crate::config::{RamInit, RamSize, SerialBoard};
+use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::machine::CpuDiagnosticResult;
+use crate::trace8080::{CpuSnapshot8080, InstructionTraceBuffer};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
     CpuState, CycleAccurateMachineBackend, EmulationEngine, FrontPanelState,
-    IoPortActivity, IoTraceSnapshot, MachineBackend,
+    InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend,
 };
+
+#[derive(Clone, Debug)]
+struct PendingInstructionTrace {
+    address: u16,
+    bytes: [u8; 3],
+    before: CpuSnapshot8080,
+    start_t_states: u64,
+}
 
 /// Application-host wrapper around the validated cycle-accurate backend.
 ///
@@ -15,11 +25,91 @@ use super::{
 /// backend. Application/UI code talks only to `MachineBackend`/`BackendHost`.
 pub(super) struct CycleHostBackend {
     inner: CycleAccurateMachineBackend,
+    instruction_trace: InstructionTraceBuffer,
+    pending_instruction_trace: Option<PendingInstructionTrace>,
 }
 
 impl Default for CycleHostBackend {
     fn default() -> Self {
-        Self { inner: CycleAccurateMachineBackend::default() }
+        Self {
+            inner: CycleAccurateMachineBackend::default(),
+            instruction_trace: InstructionTraceBuffer::default(),
+            pending_instruction_trace: None,
+        }
+    }
+}
+
+impl CycleHostBackend {
+    fn trace_cpu_snapshot(&self) -> CpuSnapshot8080 {
+        let r = self.inner.cpu().registers();
+        CpuSnapshot8080 {
+            a: r.a,
+            b: r.b,
+            c: r.c,
+            d: r.d,
+            e: r.e,
+            h: r.h,
+            l: r.l,
+            flags: r.f,
+            pc: r.pc,
+            sp: r.sp,
+            inte: self.inner.cpu().interrupts_enabled(),
+            halted: self.inner.cpu().is_halted(),
+        }
+    }
+
+    fn trace_bytes(&self, address: u16) -> [u8; 3] {
+        [
+            self.inner.machine().bus.peek_memory(address).unwrap_or(0),
+            self.inner.machine().bus.peek_memory(address.wrapping_add(1)).unwrap_or(0),
+            self.inner.machine().bus.peek_memory(address.wrapping_add(2)).unwrap_or(0),
+        ]
+    }
+
+    fn begin_instruction_trace_if_needed(&mut self) {
+        if !self.instruction_trace.enabled()
+            || self.pending_instruction_trace.is_some()
+            || self.inner.cpu().is_halted()
+            || self.inner.cpu().machine_cycle() != MachineCycle::InstructionFetch
+            || self.inner.cpu().t_state() != TState::T1
+        {
+            return;
+        }
+
+        let before = self.trace_cpu_snapshot();
+        self.pending_instruction_trace = Some(PendingInstructionTrace {
+            address: before.pc,
+            bytes: self.trace_bytes(before.pc),
+            before,
+            start_t_states: self.inner.cpu().total_t_states(),
+        });
+    }
+
+    fn finish_instruction_trace_if_complete(&mut self) {
+        let Some(pending) = self.pending_instruction_trace.as_ref() else { return; };
+        let at_next_fetch = self.inner.cpu().machine_cycle() == MachineCycle::InstructionFetch
+            && self.inner.cpu().t_state() == TState::T1
+            && self.inner.cpu().total_t_states() > pending.start_t_states;
+        if !at_next_fetch && !self.inner.cpu().is_halted() {
+            return;
+        }
+
+        let pending = self.pending_instruction_trace.take().expect("pending trace exists");
+        let after = self.trace_cpu_snapshot();
+        let delta = self.inner.cpu().total_t_states().saturating_sub(pending.start_t_states) as u32;
+        if delta != 0 {
+            self.instruction_trace.push(
+                pending.address,
+                pending.bytes,
+                pending.before,
+                after,
+                delta,
+            );
+        }
+    }
+
+    fn clear_pending_instruction_trace(&mut self) {
+        self.pending_instruction_trace = None;
     }
 }
 
@@ -46,30 +136,63 @@ impl MachineBackend for CycleHostBackend {
             replacement.machine_mut().configure_serial_board(serial_board);
             self.inner = replacement;
         }
+        self.clear_pending_instruction_trace();
+        self.instruction_trace.clear();
         Ok(())
     }
 
-    fn power(&mut self, on: bool) -> BackendResult<()> { self.inner.power(on) }
+    fn power(&mut self, on: bool) -> BackendResult<()> {
+        self.power_with_historical_run_latch(on, false)
+    }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
-        self.inner.power_with_historical_run_latch(on, historical)
+        self.inner.power_with_historical_run_latch(on, historical)?;
+        self.clear_pending_instruction_trace();
+        self.instruction_trace.clear();
+        Ok(())
     }
     fn run(&mut self) -> BackendResult<()> { self.inner.run() }
     fn halt(&mut self) -> BackendResult<()> { self.inner.halt() }
-    fn step(&mut self) -> BackendResult<()> { self.inner.step() }
+    fn step(&mut self) -> BackendResult<()> {
+        self.begin_instruction_trace_if_needed();
+        self.inner.step()?;
+        self.finish_instruction_trace_if_complete();
+        Ok(())
+    }
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
-        self.inner.service_execution(t_state_budget)
+        if !self.instruction_trace.enabled() {
+            return self.inner.service_execution(t_state_budget);
+        }
+
+        // The cycle core already advances one real T-state per unit of budget.
+        // Keeping this wrapper around each tick lets us snapshot exact guest
+        // instruction boundaries while preserving the inner pin-level model.
+        for _ in 0..t_state_budget {
+            if !self.inner.machine().running {
+                break;
+            }
+            self.begin_instruction_trace_if_needed();
+            self.inner.service_execution(1)?;
+            self.finish_instruction_trace_if_complete();
+        }
+        Ok(())
     }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
         self.inner.commit_panel_activity(dt)
     }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> { self.inner.assert_run_stop(run) }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.inner.release_run_stop(run) }
-    fn assert_reset(&mut self) -> BackendResult<()> { self.inner.assert_reset() }
+    fn assert_reset(&mut self) -> BackendResult<()> {
+        self.clear_pending_instruction_trace();
+        self.inner.assert_reset()
+    }
     fn release_reset(&mut self) -> BackendResult<()> { self.inner.release_reset() }
     fn assert_clear(&mut self) -> BackendResult<()> { self.inner.assert_clear() }
     fn release_clear(&mut self) -> BackendResult<()> { self.inner.release_clear() }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.inner.request_hold(hold) }
-    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.inner.panel_examine(next) }
+    fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
+        self.clear_pending_instruction_trace();
+        self.inner.panel_examine(next)
+    }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.inner.panel_deposit(next) }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
         self.inner.protect_current_board(protected)
@@ -85,6 +208,7 @@ impl MachineBackend for CycleHostBackend {
         let powered = self.inner.machine().powered;
         self.inner.machine_mut().configure_serial_board(board);
         if powered {
+            self.clear_pending_instruction_trace();
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
         }
@@ -183,6 +307,24 @@ impl MachineBackend for CycleHostBackend {
         self.inner.machine_mut().bus.clear_io_trace();
         Ok(())
     }
+    fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> {
+        Ok(self.instruction_trace.snapshot())
+    }
+    fn instruction_trace_enabled(&mut self) -> BackendResult<bool> {
+        Ok(self.instruction_trace.enabled())
+    }
+    fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> {
+        self.instruction_trace.set_enabled(enabled);
+        if !enabled {
+            self.clear_pending_instruction_trace();
+        }
+        Ok(())
+    }
+    fn clear_instruction_trace(&mut self) -> BackendResult<()> {
+        self.instruction_trace.clear();
+        self.clear_pending_instruction_trace();
+        Ok(())
+    }
     fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> {
         Ok(self.inner.machine_mut().bus.debugger_input_port(port))
     }
@@ -242,5 +384,29 @@ mod tests {
         assert_eq!(after.pc, 0);
         assert!(!backend.front_panel_state().unwrap().running);
         assert_eq!(backend.serial_board().unwrap(), SerialBoard::TwoSio88);
+    }
+
+    #[test]
+    fn cycle_history_records_complete_guest_instruction_boundaries() {
+        let mut backend = CycleHostBackend::default();
+        backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x3e, 0x42, 0x3c, 0x76]).unwrap(); // MVI A,42 / INR A / HLT
+        backend.set_instruction_trace_enabled(true).unwrap();
+        backend.run().unwrap();
+        backend.service_execution(128).unwrap();
+
+        let history = backend.instruction_trace_snapshot().unwrap();
+        assert!(history.len() >= 3, "expected MVI, INR and HLT in history: {history:?}");
+        assert_eq!(history[0].address, 0x0000);
+        assert_eq!(history[0].bytes[0], 0x3e);
+        assert_eq!(history[0].before.a, 0x00);
+        assert_eq!(history[0].after.a, 0x42);
+        assert_eq!(history[1].address, 0x0002);
+        assert_eq!(history[1].after.a, 0x43);
+        assert_eq!(history[2].bytes[0], 0x76);
+        assert!(history[2].after.halted);
     }
 }
