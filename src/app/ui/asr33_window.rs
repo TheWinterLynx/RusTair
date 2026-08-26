@@ -236,26 +236,27 @@ impl RusTairApp {
         let (rect, response) = ui.allocate_exact_size(Vec2::new(170.0, 24.0), Sense::hover());
         let painter = ui.painter();
 
-        // Keep the tape legible without introducing a bright cream strip into
-        // the otherwise dark ASR window.
-        let paper = Color32::from_rgb(66, 62, 52);
-        let border = Color32::from_rgb(91, 85, 71);
-        let hole = Color32::from_rgb(21, 22, 22);
-        let unpunched = Color32::from_rgb(103, 96, 80);
-        let arrow = Color32::from_rgb(145, 137, 116);
+        // The mini-tape is part of the dark toolbar, not a separate cream card:
+        // use the panel's own background and describe the tape only by its edge.
+        let background = ui.visuals().panel_fill;
+        let border = ui.visuals().widgets.inactive.bg_stroke.color;
+        let zero_outline = ui.visuals().widgets.noninteractive.fg_stroke.color;
+        let arrow = ui.visuals().text_color();
+        let punched = Color32::WHITE;
 
-        painter.rect_filled(rect, 2.0, paper);
         painter.rect_stroke(
             rect,
             2.0,
             egui::Stroke::new(1.0_f32, border),
             egui::StrokeKind::Inside,
         );
+        // The glyph's visual center sits slightly above its typographic center;
+        // nudge it down so it lines up with the hole row rather than the font box.
         painter.text(
-            Pos2::new(rect.left() + 10.0, rect.center().y),
+            Pos2::new(rect.left() + 10.0, rect.center().y + 1.0),
             egui::Align2::CENTER_CENTER,
             "▶",
-            FontId::monospace(10.0),
+            FontId::proportional(11.0),
             arrow,
         );
 
@@ -275,26 +276,29 @@ impl RusTairApp {
         for (index, bit) in bit_order.into_iter().enumerate() {
             if index == feed_after {
                 let center = Pos2::new(first_x + slot as f32 * pitch, rect.center().y);
-                painter.circle_filled(center, 2.25, hole);
+                // The feed/sprocket hole is permanently present and smaller
+                // than a data hole, so it remains visually unambiguous.
+                painter.circle_filled(center, 2.25, punched);
                 slot += 1;
             }
 
             let center = Pos2::new(first_x + slot as f32 * pitch, rect.center().y);
             if byte.is_some() && value & (1 << bit) != 0 {
-                painter.circle_filled(center, 4.15, hole);
+                painter.circle_filled(center, 4.15, punched);
             } else {
+                painter.circle_filled(center, 4.15, background);
                 painter.circle_stroke(
                     center,
                     4.15,
-                    egui::Stroke::new(1.0_f32, unpunched),
+                    egui::Stroke::new(1.0_f32, zero_outline),
                 );
             }
             slot += 1;
         }
 
         response.on_hover_text(match order {
-            TapeBitOrder::Historical8To1 => "Historical illustrated view: channels 8 → 1 left-to-right; the small hole is the feed/sprocket hole between channels 4 and 3.",
-            TapeBitOrder::Reversed1To8 => "Reversed display only: channels 1 → 8 left-to-right. The underlying byte and paper-tape data are unchanged.",
+            TapeBitOrder::Historical8To1 => "Historical illustrated view: channels 8 to 1 left-to-right; the small hole is the feed/sprocket hole between channels 4 and 3.",
+            TapeBitOrder::Reversed1To8 => "Reversed display only: channels 1 to 8 left-to-right. The underlying byte and paper-tape data are unchanged.",
         });
     }
 
@@ -363,14 +367,16 @@ impl RusTairApp {
         );
         ui.label("Bits:");
         let order_button = ui.small_button(match self.asr33.tape_bit_order {
-            TapeBitOrder::Historical8To1 => "8→1 hist.",
-            TapeBitOrder::Reversed1To8 => "1→8",
+            // Use the same triangle glyph already rendered by the tape itself;
+            // the previous Unicode arrow was missing from some font fallbacks.
+            TapeBitOrder::Historical8To1 => "8▶1 hist.",
+            TapeBitOrder::Reversed1To8 => "1▶8",
         });
         if order_button.clicked() {
             self.asr33.tape_bit_order = self.asr33.tape_bit_order.toggle();
         }
         order_button.on_hover_text(
-            "Toggle only the left-to-right drawing order. 8→1 matches contemporary DEC ASR-33 documentation; 1→8 is a reversed operator view.",
+            "Toggle only the left-to-right drawing order. 8-to-1 matches contemporary DEC ASR-33 documentation; 1-to-8 is a reversed operator view.",
         );
 
         let (reader_state, state_color) = self.reader_state_label();
