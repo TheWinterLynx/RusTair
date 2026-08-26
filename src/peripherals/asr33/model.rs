@@ -293,6 +293,10 @@ impl Teletype {
         self.tape.finish_capture();
     }
 
+    pub fn eject_punched_tape(&mut self) {
+        self.tape.eject_output();
+    }
+
     pub fn punched_tape(&self) -> &[u8] {
         self.tape.output()
     }
@@ -420,5 +424,7 @@ mod tests {
         assert_eq!(tty.step_tape_punch(), Some(0xff));
         tty.finish_tape_punch();
         assert_eq!(tty.punched_tape(), &[0xff]);
+        tty.eject_punched_tape();
+        assert!(tty.punched_tape().is_empty());
     }
 }
