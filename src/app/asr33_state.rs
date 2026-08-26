@@ -59,13 +59,6 @@ pub(super) enum TapeBitOrder {
 }
 
 impl TapeBitOrder {
-    pub(super) const fn label(self) -> &'static str {
-        match self {
-            Self::Historical8To1 => "8→1",
-            Self::Reversed1To8 => "1→8",
-        }
-    }
-
     pub(super) const fn toggle(self) -> Self {
         match self {
             Self::Historical8To1 => Self::Reversed1To8,
