@@ -351,7 +351,11 @@ impl MachineBackend for SimhAltairZ80Backend {
         Ok(())
     }
 
-    fn power_with_historical_run_latch(&mut self, on: bool, _historical: bool) -> BackendResult<()> {
+    fn power_with_historical_run_latch(
+        &mut self,
+        on: bool,
+        _historical: bool,
+    ) -> BackendResult<()> {
         self.power(on)
     }
 
@@ -516,6 +520,12 @@ impl MachineBackend for SimhAltairZ80Backend {
     fn clear_memory_protection(&mut self) -> BackendResult<()> { Ok(()) }
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> { Ok(()) }
     fn arm_basic32_full_memory_probe_guard(&mut self) -> BackendResult<bool> { Ok(false) }
+
+    // The product UI polls diagnostic completion unconditionally. SIMH does not
+    // currently implement RusTair's instruction/T-state meter, so passive poll
+    // and cancellation must be harmless rather than propagating Unsupported.
+    fn cancel_cpu_diagnostic_meter(&mut self) -> BackendResult<()> { Ok(()) }
+    fn take_cpu_diagnostic_result(&mut self) -> BackendResult<Option<crate::machine::CpuDiagnosticResult>> { Ok(None) }
 
     fn peek_io_port(&mut self, _port: u8) -> BackendResult<u8> { Ok(0) }
     fn io_port_activity(&mut self, _port: u8) -> BackendResult<IoPortActivity> { Ok((None, None, 0, 0)) }
