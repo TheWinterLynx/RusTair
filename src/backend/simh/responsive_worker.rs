@@ -35,6 +35,13 @@ fn port_index(port: BackendSerialPort) -> usize {
     }
 }
 
+fn port_name(port: BackendSerialPort) -> &'static str {
+    match port {
+        BackendSerialPort::Port0 => "M2SIO0 (10h/11h)",
+        BackendSerialPort::Port1 => "M2SIO1 (12h/13h)",
+    }
+}
+
 struct SharedState {
     cpu: CpuState,
     panel: FrontPanelState,
@@ -180,6 +187,7 @@ impl SimhThreadedBackend {
             let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
             state.log(format!("RusTair selected {}", engine.label()));
             state.log("Low-latency bridge active: egui never waits for FrontPanel/SCP.");
+            state.log("Panel source: backend-observed SIMH PC/A register samples only. FrontPanel API v12 exposes no exact S-100 MEMR/M1/WO/INP/OUT bus feed, so unsupported status lamps stay dark instead of being synthesized.");
         }
 
         let worker_shared = Arc::clone(&shared);
@@ -198,6 +206,7 @@ impl SimhThreadedBackend {
                     state.busy = false;
                     state.panel.powered = false;
                     state.panel.running = false;
+                    state.panel.lamps = PanelLampSnapshot::default();
                     state.error(format!("worker initialization failed: {error}"));
                 }
             })
@@ -267,16 +276,15 @@ impl MachineBackend for SimhThreadedBackend {
 
     fn power(&mut self, on: bool) -> BackendResult<()> {
         self.write_shared(|state| {
+            // The physical switch moves immediately, but LEDs do not predict
+            // what SIMH will show. They stay dark until a real sample arrives.
             state.panel.powered = on;
             state.panel.running = false;
             state.busy = on;
+            state.panel.lamps = PanelLampSnapshot::default();
             if on {
-                // Give immediate visual feedback. Exact PC/A follows from SIMH's
-                // asynchronous FrontPanel repeat stream as soon as it connects.
-                state.panel.lamps = stopped_lamps(state.panel.address, state.panel.data);
                 state.log("POWER ON requested");
             } else {
-                state.panel.lamps = PanelLampSnapshot::default();
                 state.console_available = false;
                 state.log("POWER OFF requested");
             }
@@ -290,19 +298,15 @@ impl MachineBackend for SimhThreadedBackend {
     }
 
     fn run(&mut self) -> BackendResult<()> {
-        self.write_shared(|state| {
-            state.panel.running = true;
-            state.panel.lamps = running_lamps_from_values(state.panel.address, state.panel.data, 0.0, 0.0);
-        });
+        // RUN/STOP switch feedback may be immediate, but the lamp image remains
+        // the last backend sample until SIMH itself reports new state/data.
+        self.write_shared(|state| state.panel.running = true);
         self.enqueue(Command::Running(true));
         Ok(())
     }
 
     fn halt(&mut self) -> BackendResult<()> {
-        self.write_shared(|state| {
-            state.panel.running = false;
-            state.panel.lamps = stopped_lamps(state.panel.address, state.panel.data);
-        });
+        self.write_shared(|state| state.panel.running = false);
         self.enqueue(Command::Running(false));
         Ok(())
     }
@@ -323,9 +327,8 @@ impl MachineBackend for SimhThreadedBackend {
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.read_shared(|s| s.panel.switches)) }
 
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
-        // Never send one SCP round trip per mouse click. The physical lever is
-        // local and immediate; the worker coalesces a burst and writes only the
-        // final 16-bit value while halted or immediately before RUN.
+        // The physical lever is local and immediate; the worker coalesces a
+        // burst and writes only the final 16-bit value while halted or before RUN.
         self.write_shared(|state| {
             state.panel.switches = value;
             state.switch_generation = state.switch_generation.wrapping_add(1);
@@ -438,8 +441,9 @@ struct Worker {
     switch_sync_due: Option<Instant>,
     last_panel_copy: Instant,
     last_running: bool,
-    serial_in_glow: f32,
-    serial_out_glow: f32,
+    bridge_connected: [bool; 2],
+    first_guest_tx_seen: [bool; 2],
+    first_host_rx_seen: [bool; 2],
 }
 
 impl Worker {
@@ -491,8 +495,9 @@ impl Worker {
             switch_sync_due: None,
             last_panel_copy: Instant::now(),
             last_running: false,
-            serial_in_glow: 0.0,
-            serial_out_glow: 0.0,
+            bridge_connected: [false; 2],
+            first_guest_tx_seen: [false; 2],
+            first_host_rx_seen: [false; 2],
         })
     }
 
@@ -569,6 +574,7 @@ impl Worker {
                 if operation == "POWER ON" {
                     state.panel.powered = false;
                     state.panel.running = false;
+                    state.panel.lamps = PanelLampSnapshot::default();
                     state.console_available = false;
                 }
                 if operation == "RUN" || operation == "STOP" {
@@ -586,27 +592,31 @@ impl Worker {
             {
                 let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
                 state.busy = true;
+                state.panel.lamps = PanelLampSnapshot::default();
                 state.log("Starting SIMH process + FrontPanel remote connection…");
             }
 
-            let connect_started = Instant::now();
             let session = SimhSession::start(
                 self.launch.executable(),
                 self.launch.simulator_config(),
                 self.launch.device_panel_count,
             )
             .map_err(|e| op_error("SIMH power on", e.to_string()))?;
-            let connect_elapsed = connect_started.elapsed();
+            let timings = session.startup_timings();
             self.session = Some(session);
 
             {
                 let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                state.log(format!("FrontPanel connected/registered in {} ms", connect_elapsed.as_millis()));
+                state.log(format!(
+                    "Startup phases: runtime {} ms | DLL load {} ms | sim_panel_start_simulator {} ms | live register/callback setup {} ms | total {} ms",
+                    timings.runtime_ms,
+                    timings.dll_load_ms,
+                    timings.start_api_ms,
+                    timings.live_panel_setup_ms,
+                    timings.total_ms,
+                ));
             }
 
-            // Do not perform the old 13-register + memory EXAMINE sweep here.
-            // The API callback owns PC/A/SP observation in one repeating query.
-            // We only need one switch-register write if the user changed it.
             self.sync_switches_now()?;
 
             if !self.pending_loads.is_empty() {
@@ -617,7 +627,9 @@ impl Worker {
             }
 
             let sample = self.session.as_ref().expect("session just started").live_panel_sample();
-            self.apply_sample(sample, false);
+            if sample.valid {
+                self.apply_sample(sample, false);
+            }
 
             let console_available = self.session.as_ref().is_some_and(SimhSession::console_available);
             let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -643,6 +655,9 @@ impl Worker {
             if let Some(bridge) = self.bridge.as_mut() { bridge.disconnect(); }
             self.last_running = false;
             self.applied_switches = 0;
+            self.bridge_connected = [false; 2];
+            self.first_guest_tx_seen = [false; 2];
+            self.first_host_rx_seen = [false; 2];
             let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             state.busy = false;
             state.panel.powered = false;
@@ -659,7 +674,6 @@ impl Worker {
         }
 
         if running {
-            // One coalesced SR write, only if needed, before CONT.
             self.sync_switches_now()?;
             self.session
                 .as_mut()
@@ -675,8 +689,6 @@ impl Worker {
                 .halt()
                 .map_err(|e| op_error("SIMH HALT", e.to_string()))?;
             self.last_running = false;
-            // No full register sweep. Callback's halted query updates PC/A/SP;
-            // meanwhile the front panel already showed STOP in the same UI frame.
             self.update_running_state(false);
         }
         Ok(())
@@ -693,13 +705,12 @@ impl Worker {
             .step()
             .map_err(|e| op_error("SIMH STEP", e.to_string()))?;
 
-        // A single PC EXAMINE gives immediate address feedback after STEP.
-        // This replaces the old 13-register sweep.
+        // PC is a real backend value. Do not synthesize DATA/status lamps here;
+        // the next live callback will paint a complete observed sample.
         if let Ok(pc) = self.session.as_ref().expect("checked session").examine_register_u32("PC") {
             self.panel_address = pc as u16;
             let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             state.panel.address = self.panel_address;
-            state.panel.lamps = stopped_lamps(self.panel_address, state.panel.data);
             match &mut state.cpu {
                 CpuState::Intel8080(cpu) => cpu.pc = self.panel_address,
                 CpuState::Z80(cpu) => cpu.pc = self.panel_address,
@@ -727,9 +738,6 @@ impl Worker {
         self.panel_address = 0;
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         state.panel.address = 0;
-        if !was_running {
-            state.panel.lamps = stopped_lamps(0, state.panel.data);
-        }
         Ok(())
     }
 
@@ -824,8 +832,10 @@ impl Worker {
         if let Some(error) = queue_error {
             let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             state.error(format!("serial RX queue: {error}"));
-        } else if self.bridge.is_some() {
-            self.serial_in_glow = 1.0;
+        } else if self.bridge.is_some() && !self.first_host_rx_seen[index] {
+            self.first_host_rx_seen[index] = true;
+            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            state.log(format!("{} first RusTair→guest byte: {:02X}h", port_name(port), byte));
         }
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         state.to_simh[index] = state.to_simh[index].saturating_sub(1);
@@ -871,10 +881,9 @@ impl Worker {
         let state = self.session.as_ref().map(|s| s.state()).unwrap_or(SimhOperationalState::Halted);
         let running = state == SimhOperationalState::Running;
         let sample = self.session.as_ref().expect("checked session").live_panel_sample();
-        self.apply_sample(sample, running);
-
-        self.serial_in_glow *= 0.70;
-        self.serial_out_glow *= 0.70;
+        if sample.valid {
+            self.apply_sample(sample, running);
+        }
         self.last_running = running;
     }
 
@@ -886,15 +895,35 @@ impl Worker {
             let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
             state.error(format!("M2SIO bridge poll: {error}"));
         }
+
+        let mut log_lines = Vec::new();
         if let Some(bridge) = self.bridge.as_mut() {
             for port in BackendSerialPort::ALL {
+                let index = port_index(port);
+                let connected = bridge.connected(port);
+                if connected != self.bridge_connected[index] {
+                    self.bridge_connected[index] = connected;
+                    log_lines.push(format!(
+                        "{} bridge {}",
+                        port_name(port),
+                        if connected { "CONNECTED" } else { "DISCONNECTED" }
+                    ));
+                }
+
                 while let Some(byte) = bridge.pop_from_simh(port) {
+                    if !self.first_guest_tx_seen[index] {
+                        self.first_guest_tx_seen[index] = true;
+                        log_lines.push(format!("{} first guest→RusTair byte: {:02X}h", port_name(port), byte));
+                    }
                     let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-                    let queue = &mut state.from_simh[port_index(port)];
+                    let queue = &mut state.from_simh[index];
                     if queue.len() < 64 * 1024 { queue.push_back(byte); }
-                    self.serial_out_glow = 1.0;
                 }
             }
+        }
+        if !log_lines.is_empty() {
+            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+            for line in log_lines { state.log(line); }
         }
     }
 
@@ -950,9 +979,10 @@ impl Worker {
     }
 
     fn apply_sample(&mut self, sample: super::SimhLivePanelSample, running: bool) {
+        if !sample.valid { return; }
         self.panel_address = sample.pc;
         self.panel_data = sample.a;
-        let lamps = sampled_lamps(&sample, running, self.serial_in_glow, self.serial_out_glow);
+        let lamps = observed_sample_lamps(&sample);
         let switches = self.desired_switches();
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         match &mut state.cpu {
@@ -979,11 +1009,8 @@ impl Worker {
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         state.panel.powered = self.session.is_some();
         state.panel.running = running;
-        state.panel.lamps = if running {
-            running_lamps_from_values(state.panel.address, state.panel.data, self.serial_in_glow, self.serial_out_glow)
-        } else {
-            stopped_lamps(state.panel.address, state.panel.data)
-        };
+        // Do not manufacture a new lamp frame for a control acknowledgement.
+        // The callback owns the LED image.
     }
 
     fn set_stopped_panel(&mut self, address: u16, data: u8) {
@@ -992,7 +1019,9 @@ impl Worker {
         state.panel.running = false;
         state.panel.address = address;
         state.panel.data = data;
-        state.panel.lamps = stopped_lamps(address, data);
+        // EXAMINE/DEPOSIT has just produced these actual backend values. Only
+        // ADDRESS/DATA are representable; unsupported S-100 status stays dark.
+        state.panel.lamps = observed_value_lamps(address, data);
         match &mut state.cpu {
             CpuState::Intel8080(cpu) => cpu.pc = address,
             CpuState::Z80(cpu) => cpu.pc = address,
@@ -1000,41 +1029,14 @@ impl Worker {
     }
 }
 
-fn sampled_lamps(
-    sample: &super::SimhLivePanelSample,
-    running: bool,
-    serial_in: f32,
-    serial_out: f32,
-) -> PanelLampSnapshot {
-    if !running { return stopped_lamps(sample.pc, sample.a); }
+fn observed_sample_lamps(sample: &super::SimhLivePanelSample) -> PanelLampSnapshot {
     let mut lamps = PanelLampSnapshot::default();
     lamps.address = sample.address_activity;
     lamps.data = sample.data_activity;
-    lamps.memr = 0.82;
-    lamps.m1 = 0.46;
-    lamps.wo = 0.78;
-    lamps.inp = serial_in.clamp(0.0, 1.0) * 0.8;
-    lamps.out = serial_out.clamp(0.0, 1.0) * 0.8;
     lamps
 }
 
-fn running_lamps_from_values(
-    address: u16,
-    data: u8,
-    serial_in: f32,
-    serial_out: f32,
-) -> PanelLampSnapshot {
-    let mut lamps = stopped_lamps(address, data);
-    lamps.wait = 0.0;
-    lamps.memr = 0.82;
-    lamps.m1 = 0.46;
-    lamps.wo = 0.78;
-    lamps.inp = serial_in.clamp(0.0, 1.0) * 0.8;
-    lamps.out = serial_out.clamp(0.0, 1.0) * 0.8;
-    lamps
-}
-
-fn stopped_lamps(address: u16, data: u8) -> PanelLampSnapshot {
+fn observed_value_lamps(address: u16, data: u8) -> PanelLampSnapshot {
     let mut lamps = PanelLampSnapshot::default();
     for bit in 0..16 {
         lamps.address[bit] = if address & (1u16 << bit) != 0 { 1.0 } else { 0.0 };
@@ -1042,9 +1044,5 @@ fn stopped_lamps(address: u16, data: u8) -> PanelLampSnapshot {
     for bit in 0..8 {
         lamps.data[bit] = if data & (1u8 << bit) != 0 { 1.0 } else { 0.0 };
     }
-    lamps.memr = 1.0;
-    lamps.m1 = 1.0;
-    lamps.wo = 1.0;
-    lamps.wait = 1.0;
     lamps
 }
