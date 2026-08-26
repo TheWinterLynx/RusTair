@@ -7,12 +7,14 @@ use crate::config::{
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write as IoWrite;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const CONFIG_VERSION: u32 = 1;
 const DEFAULT_LED_BRIGHTNESS: f32 = 1.0;
 const DEFAULT_LED_AURA: f32 = 1.0;
+const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SavedSettings {
@@ -59,6 +61,7 @@ impl Default for SavedSettings {
 struct PersistenceRuntime {
     loaded: bool,
     last_saved: SavedSettings,
+    last_save_failure: Option<Instant>,
     led_brightness: f32,
     led_aura: f32,
     led_controls_open: bool,
@@ -70,6 +73,7 @@ impl Default for PersistenceRuntime {
         Self {
             loaded: false,
             last_saved: saved.clone(),
+            last_save_failure: None,
             led_brightness: saved.led_brightness,
             led_aura: saved.led_aura,
             led_controls_open: false,
@@ -215,10 +219,46 @@ impl SavedSettings {
     }
 
     fn save(&self) -> Result<(), String> {
-        let path = config_path();
+        self.save_to_path(&config_path())
+    }
+
+    fn save_to_path(&self, path: &Path) -> Result<(), String> {
         let parent = path.parent().ok_or_else(|| "configuration path has no parent".to_owned())?;
         fs::create_dir_all(parent).map_err(|e| format!("could not create {}: {e}", parent.display()))?;
-        fs::write(&path, self.to_text()).map_err(|e| format!("could not write {}: {e}", path.display()))
+
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| "configuration path has no file name".to_owned())?
+            .to_string_lossy();
+        let temporary = parent.join(format!(".{file_name}.tmp"));
+        let text = self.to_text();
+
+        let result = (|| -> Result<(), String> {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|e| format!("could not open temporary configuration {}: {e}", temporary.display()))?;
+            file.write_all(text.as_bytes())
+                .map_err(|e| format!("could not write temporary configuration {}: {e}", temporary.display()))?;
+            file.sync_all()
+                .map_err(|e| format!("could not flush temporary configuration {}: {e}", temporary.display()))?;
+            drop(file);
+            fs::rename(&temporary, path).map_err(|e| {
+                format!(
+                    "could not atomically replace configuration {} from {}: {e}",
+                    path.display(),
+                    temporary.display()
+                )
+            })?;
+            Ok(())
+        })();
+
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
     }
 }
 
@@ -241,6 +281,7 @@ impl RusTairApp {
         let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         state.loaded = true;
         state.last_saved = normalized;
+        state.last_save_failure = None;
         state.led_brightness = saved.led_brightness;
         state.led_aura = saved.led_aura;
         // Window visibility is deliberately transient: it always starts closed
@@ -320,22 +361,36 @@ impl RusTairApp {
     }
 
     pub(super) fn persist_configuration_if_changed(&mut self) {
-        let (brightness, aura, last_saved) = {
+        let (brightness, aura, last_saved, last_save_failure) = {
             let state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            (state.led_brightness, state.led_aura, state.last_saved.clone())
+            (
+                state.led_brightness,
+                state.led_aura,
+                state.last_saved.clone(),
+                state.last_save_failure,
+            )
         };
         let current = self.capture_persisted_settings_with_leds(brightness, aura);
         if current == last_saved {
             return;
         }
-        if let Err(error) = current.save() {
-            eprintln!("RusTair configuration save failed: {error}");
+        if last_save_failure.is_some_and(|at| at.elapsed() < SAVE_RETRY_DELAY) {
+            return;
         }
-        // Remember the attempted snapshot as well. This avoids hammering the
-        // filesystem every frame if a path is temporarily unwritable; the next
-        // user configuration change will trigger another save attempt.
-        let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.last_saved = current;
+
+        match current.save() {
+            Ok(()) => {
+                let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.last_saved = current;
+                state.last_save_failure = None;
+            }
+            Err(error) => {
+                eprintln!("RusTair configuration save failed: {error}");
+                self.status = format!("Configuration save failed: {error} — will retry");
+                let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.last_save_failure = Some(Instant::now());
+            }
+        }
     }
 }
 
@@ -456,6 +511,26 @@ mod tests {
         let saved = SavedSettings::default();
         assert_eq!(saved.led_brightness, DEFAULT_LED_BRIGHTNESS);
         assert_eq!(saved.led_aura, DEFAULT_LED_AURA);
+    }
+
+    #[test]
+    fn atomic_save_replaces_existing_configuration_without_leaving_temp_file() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rustair-persistence-{}-{nonce}", std::process::id()));
+        let path = dir.join("config.ini");
+
+        let mut saved = SavedSettings::default();
+        saved.save_to_path(&path).unwrap();
+        saved.config.machine.ram_size = RamSize::K48;
+        saved.save_to_path(&path).unwrap();
+
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("machine.ram_size=48k"));
+        assert!(!dir.join(".config.ini.tmp").exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
