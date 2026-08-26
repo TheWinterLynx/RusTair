@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::app::asr33_state::TapeTransportSpeed;
 use crate::config::TerminalDuplex;
 
 impl RusTairApp {
@@ -40,8 +41,6 @@ impl RusTairApp {
             self.asr_serial_receive(byte);
             self.asr33.last_reader_tick = now;
             if self.asr33.media_sound_due(now) {
-                // Dedicated transport feedback using the existing short
-                // mechanical click; accelerated modes are rate-limited above.
                 self.audio.play_once("assets/click.mp3");
             }
         }
@@ -56,10 +55,7 @@ impl RusTairApp {
         if !self.asr33.punch_running || !self.tty.tape_capture_enabled() {
             return;
         }
-        if self.tty.mode == TtyMode::Off {
-            return;
-        }
-        if self.tty.tape_punch_pending_len() == 0 {
+        if self.tty.mode == TtyMode::Off || self.tty.tape_punch_pending_len() == 0 {
             return;
         }
 
@@ -80,9 +76,9 @@ impl RusTairApp {
         if punched > 0 {
             self.asr33.last_punch_tick = now;
             if self.asr33.media_sound_due(now) {
-                // The original imported sound set has no dedicated punch sample;
-                // the printer impact is the closest existing electromechanical
-                // transient and avoids inventing a falsely sourced recording.
+                // No dedicated punch recording is bundled in RusTair today;
+                // use the existing electromechanical impact sample rather than
+                // claiming a synthetic sound is an historical recording.
                 self.audio.play_once("assets/printcharpadded.mp3");
             }
         }
@@ -197,10 +193,7 @@ impl RusTairApp {
                 .checked_sub(self.asr33.reader_speed.char_time())
                 .unwrap_or_else(Instant::now);
             self.audio.play_once("assets/click.mp3");
-            self.status = format!(
-                "ASR-33 reader started — {}",
-                self.asr33.reader_speed.label()
-            );
+            self.status = format!("ASR-33 reader started — {}", self.asr33.reader_speed.label());
         }
         if !can_run {
             read.on_disabled_hover_text(
@@ -241,15 +234,24 @@ impl RusTairApp {
     fn draw_tty_punch_controls(&mut self, ui: &mut egui::Ui) {
         ui.strong("PUNCH");
         let mounted = self.tty.tape_capture_enabled();
-        if ui.add_enabled(!mounted, egui::Button::new("Put blank tape")).clicked() {
+        let finished_unsaved = !mounted && self.tty.punched_tape_len() > 0;
+
+        let put_blank = ui.add_enabled(
+            !mounted && !finished_unsaved,
+            egui::Button::new("Put blank tape"),
+        );
+        if put_blank.clicked() {
             self.tty.prepare_tape_punch();
             self.asr33.punch_running = false;
             self.asr33.last_punch_tick = Instant::now();
             self.audio.play_once("assets/click.mp3");
             self.status = "Blank paper tape mounted in ASR-33 punch".into();
         }
+        if finished_unsaved {
+            put_blank.on_disabled_hover_text("Save the finished tape first; it is being retained so a cancelled Save dialog cannot destroy it.");
+        }
 
-        let can_punch = self.tty.tape_capture_enabled() && self.tty.mode != TtyMode::Off;
+        let can_punch = mounted && self.tty.mode != TtyMode::Off;
         let punch = ui.add_enabled(
             can_punch && !self.asr33.punch_running,
             egui::Button::new(if self.tty.punched_tape_len() == 0 { "Punch" } else { "Resume" }),
@@ -274,11 +276,15 @@ impl RusTairApp {
             self.status = "ASR-33 paper tape punch paused".into();
         }
 
-        if ui.add_enabled(mounted, egui::Button::new("Finish & save…")).clicked() {
-            self.asr33.punch_running = false;
-            self.tty.finish_tape_punch();
-            self.audio.play_once("assets/click.mp3");
-            self.save_punched_tape();
+        let save_label = if mounted { "Finish & save…" } else { "Save tape…" };
+        let can_save = mounted || finished_unsaved;
+        if ui.add_enabled(can_save, egui::Button::new(save_label)).clicked() {
+            if mounted {
+                self.asr33.punch_running = false;
+                self.tty.finish_tape_punch();
+                self.audio.play_once("assets/click.mp3");
+            }
+            let _ = self.save_punched_tape();
         }
 
         ui.label("Rate:");
@@ -294,9 +300,8 @@ impl RusTairApp {
     fn draw_tty_menu(&mut self, ctx: &egui::Context) {
         self.process_tty_keyboard(ctx);
         egui::TopBottomPanel::top("tty-menu").show(ctx, |ui| {
-            // Do not switch layouts at an arbitrary pixel breakpoint. Every row
-            // wraps from its first widget, so resizing can never hide the tail
-            // of a toolbar while waiting to cross a magic width threshold.
+            // No arbitrary breakpoint: each logical row can wrap at any width,
+            // so resizing never hides its tail while waiting for a threshold.
             ui.horizontal_wrapped(|ui| {
                 self.draw_tty_power_controls(ui);
                 ui.separator();
@@ -318,9 +323,26 @@ impl RusTairApp {
         });
     }
 
+    fn request_tape_transport_repaint(&self, ctx: &egui::Context) {
+        let reader = self.asr33.reader_running.then(|| self.asr33.reader_speed.char_time());
+        let punch = (self.asr33.punch_running && self.tty.tape_punch_pending_len() > 0)
+            .then(|| self.asr33.punch_speed.char_time());
+        let wait = match (reader, punch) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) | (None, Some(a)) => a,
+            (None, None) => return,
+        };
+        if wait.is_zero() {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(wait);
+        }
+    }
+
     fn draw_tty_window(&mut self, ctx: &egui::Context) {
         self.update_key_animation(ctx);
         self.draw_tty_menu(ctx);
+        self.request_tape_transport_repaint(ctx);
 
         if self.asr33.power_flash_until.is_some_and(|until| Instant::now() < until) {
             ctx.request_repaint_after(PANEL_FRAME);
