@@ -11,11 +11,17 @@ use crate::backend::BackendSerialPort;
 
 const SOCKET_CHUNK: usize = 4096;
 const QUEUE_LIMIT: usize = 64 * 1024;
-/// TMXR opens a disposable connection while validating `Connect=host:port`.
-/// On Windows the peer FIN may not be observable immediately after `accept()`.
-/// Keep a newly accepted socket in a probationary state long enough to observe
-/// that close before advertising the line as connected or sending guest input.
-const CONNECTION_SETTLE: Duration = Duration::from_millis(75);
+/// Open-SIMH TMXR may open more than one disposable `Connect=host:port`
+/// socket around ATTACH/RUN before the long-lived M2SIO connection is ready.
+/// On Windows a peer FIN is not necessarily observable immediately after
+/// `accept()`. Keep every newly accepted socket probationary long enough to
+/// reject those probes before advertising the line or flushing queued input.
+///
+/// The focused Open-SIMH integration probe reproduced a post-RUN disposable
+/// socket which outlived the previous 75 ms guard but closed inside 150 ms.
+/// Use a deliberately conservative one-time/reconnect guard; this delay is not
+/// applied per character once the persistent connection has been established.
+const CONNECTION_SETTLE: Duration = Duration::from_millis(250);
 
 #[derive(Debug)]
 pub(crate) enum SimhSerialBridgeError {
@@ -104,20 +110,18 @@ impl SimhRawTcpPort {
 
     /// Poll one raw TCP line without treating a peer disconnect as fatal.
     ///
-    /// Open-SIMH TMXR deliberately opens and closes a short-lived validation
-    /// connection while parsing `Connect=host:port`, then establishes the real
-    /// M2SIO connection later from `tmxr_poll_conn()` while the simulator is
-    /// executing. A newly accepted socket is therefore probationary: we probe
-    /// it for EOF for `CONNECTION_SETTLE` before advertising it as connected or
-    /// flushing RusTair-to-SIMH bytes into it.
+    /// Open-SIMH TMXR can create short-lived destination-validation/probe
+    /// sockets before the real M2SIO connection. A newly accepted socket is
+    /// therefore probationary: probe it for EOF for `CONNECTION_SETTLE` before
+    /// advertising it as connected or flushing RusTair-to-SIMH bytes into it.
     fn poll(&mut self) -> Result<(), SimhSerialBridgeError> {
         self.accept_pending()?;
         if self.stream.is_none() {
             return Ok(());
         }
 
-        // Probe/read first so the disposable ATTACH validation connection can
-        // disappear without consuming any queued guest input.
+        // Probe/read first so disposable TMXR connections can disappear without
+        // consuming any queued guest input.
         self.read_from_simh()?;
         if self.stream.is_none() {
             return Ok(());
@@ -415,9 +419,11 @@ mod tests {
             .queue_to_simh(BackendSerialPort::Port0, 0xa5)
             .expect("queue before validation socket is discarded");
 
-        // Keep the disposable peers alive briefly. RusTair must not advertise
-        // them as ready or flush queued bytes merely because accept() succeeded.
-        let probation_deadline = Instant::now() + Duration::from_millis(25);
+        // Reproduce the real Windows/TMXR race observed by the focused
+        // integration test: a disposable post-RUN socket can stay alive well
+        // beyond the old 75 ms guard. RusTair must not advertise it or flush
+        // queued bytes into it.
+        let probation_deadline = Instant::now() + Duration::from_millis(150);
         while Instant::now() < probation_deadline {
             bridge.poll().expect("poll validation socket during probation");
             assert!(!bridge.connected(BackendSerialPort::Port0));
