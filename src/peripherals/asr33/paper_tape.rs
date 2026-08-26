@@ -9,14 +9,18 @@ pub(super) struct PaperTape {
 }
 
 impl PaperTape {
+    /// Load the physical tape image byte-for-byte.
+    ///
+    /// Paper tape is binary media. In particular, Altair loaders and BASIC
+    /// distribution tapes may use all eight hole positions, so neither ASCII
+    /// case conversion nor 7-bit masking belongs in the media layer.
     pub(super) fn load(&mut self, bytes: &[u8]) {
         self.input.clear();
-        self.input
-            .extend(bytes.iter().copied().map(|byte| byte.to_ascii_uppercase()));
+        self.input.extend(bytes.iter().copied());
     }
 
     pub(super) fn next_byte(&mut self) -> Option<u8> {
-        self.input.pop_front().map(|byte| byte & 0x7f)
+        self.input.pop_front()
     }
 
     pub(super) fn input_len(&self) -> usize {
@@ -60,11 +64,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reader_uppercases_and_emits_seven_bit_data() {
+    fn reader_preserves_binary_tape_bytes_exactly() {
         let mut tape = PaperTape::default();
-        tape.load(&[b'a', 0xff]);
-        assert_eq!(tape.next_byte(), Some(b'A'));
-        assert_eq!(tape.next_byte(), Some(0x7f));
+        tape.load(&[b'a', 0x00, 0x80, 0xff]);
+        assert_eq!(tape.next_byte(), Some(b'a'));
+        assert_eq!(tape.next_byte(), Some(0x00));
+        assert_eq!(tape.next_byte(), Some(0x80));
+        assert_eq!(tape.next_byte(), Some(0xff));
         assert_eq!(tape.next_byte(), None);
     }
 
