@@ -9,40 +9,40 @@ use std::path::{Path, PathBuf};
 
 use super::EmulationEngine;
 
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod altair;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod altairz80;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod ffi;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod machine;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod machine_altairz80;
 mod profile;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod runtime;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod serial_bridge;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 mod session;
 
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 pub use altairz80::{AltairZ80CpuMode, AltairZ80Registers, set_altairz80_switch_register_low};
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 pub use machine::SimhAltairBackend;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 pub use machine_altairz80::SimhAltairZ80Backend;
 pub use profile::ClassicAltairProfile;
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 pub use runtime::{
     OPEN_SIMH_UPSTREAM_COMMIT, RUSTAIR_SIMH_BUNDLE_REVISION, SimhRuntimeError,
     SimhRuntimePaths, embedded_altair_launch_config, embedded_altairz80_launch_config,
     prepare_embedded_runtime,
 };
-#[cfg(all(feature = "simh-ffi", windows))]
+#[cfg(feature = "simh-ffi")]
 pub use session::{SimhOperationalState, SimhSession, SimhSessionError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
