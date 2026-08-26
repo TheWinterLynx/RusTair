@@ -85,9 +85,18 @@ impl eframe::App for RusTairApp {
                         ui.separator();
                         ui.small("Quick Load is the emulator convenience path. Authentic Load executes the historical bootstrap and receives BASIC through the emulated serial board.");
                     });
-                    ui.menu_button("CPU diagnostics", |ui| {
-                        self.draw_cpu_diagnostics_menu(ui);
+                    let simh_active = matches!(
+                        self.machine.engine(),
+                        EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80
+                    );
+                    ui.add_enabled_ui(!simh_active, |ui| {
+                        ui.menu_button("CPU diagnostics", |ui| {
+                            self.draw_cpu_diagnostics_menu(ui);
+                        });
                     });
+                    if simh_active {
+                        ui.small("CPU diagnostic metering is currently available on the native Rust backends.");
+                    }
                 });
 
                 ui.menu_button("Configuration", |ui| {
@@ -96,29 +105,46 @@ impl eframe::App for RusTairApp {
                         ui.label(format!("Emulation engine: {}", active_engine.label()));
                         ui.small("Engine changes require POWER OFF. Runtime CPU/RAM/UART state is intentionally not migrated between engines.");
                         ui.separator();
-                        for engine in [
-                            EmulationEngine::RustFast8080,
-                            EmulationEngine::RustCycleAccurate8080,
-                        ] {
-                            if ui.selectable_label(active_engine == engine, engine.label()).clicked() {
+                        for engine in EmulationEngine::ALL {
+                            let enabled = engine.is_available();
+                            let response = ui.add_enabled(
+                                enabled,
+                                egui::Button::new(engine.label()).selected(active_engine == engine),
+                            );
+                            if response.clicked() {
+                                if matches!(engine, EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80) {
+                                    // The embedded/pinned Open-SIMH profiles validated by the
+                                    // regression suite are 64 KiB configurations.
+                                    self.config.machine.ram_size = RamSize::K64;
+                                }
+                                if engine == EmulationEngine::SimhAltairZ80 {
+                                    // RusTair serial routing into AltairZ80 is the validated
+                                    // MITS 88-2SIO path at 10h/11h and 12h/13h.
+                                    self.config.machine.serial_board = SerialBoard::TwoSio88;
+                                    self.serial_router.reset_for_board(SerialBoard::TwoSio88);
+                                }
                                 self.select_emulation_engine(engine);
                                 ui.close();
                             }
                         }
-                        ui.separator();
-                        ui.add_enabled(false, egui::Button::new("Open SIMH — Altair (integration parked)"));
-                        ui.add_enabled(false, egui::Button::new("Open SIMH — AltairZ80 (integration parked)"));
+                        if cfg!(not(windows)) {
+                            ui.small("The bundled Open-SIMH runtime is currently Windows x64 only.");
+                        } else {
+                            ui.small("Open-SIMH is bundled inside RusTair; no external SIMH installation is required.");
+                        }
 
                         let capabilities = self.machine.capabilities();
                         ui.separator();
                         if capabilities.exact_t_state_timing {
                             ui.small("Timing: exact 8080 T-state core; front-panel SINGLE STEP advances one machine cycle.");
+                        } else if matches!(active_engine, EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80) {
+                            ui.small("Timing: execution is owned by the embedded Open-SIMH process; the RusTair front panel observes it through FrontPanel API v12.");
                         } else {
                             ui.small("Timing: fast instruction-level 8080; front-panel SINGLE STEP is an instruction-level approximation.");
                         }
                         ui.small(format!(
                             "S-100 activity: {}",
-                            if capabilities.exact_bus_activity { "exact T-state samples" } else { "machine-cycle samples synthesized by the fast CPU-board adapter" }
+                            if capabilities.exact_bus_activity { "exact T-state samples" } else { "no exact per-T-state bus feed from the selected backend" }
                         ));
 
                         let cpu = self.config.machine.cpu_model;
@@ -137,28 +163,38 @@ impl eframe::App for RusTairApp {
                     }
 
                     ui.menu_button("Memory", |ui| {
+                        let simh_active = matches!(
+                            self.machine.engine(),
+                            EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80
+                        );
                         ui.label(format!("Installed RAM: {}", self.config.machine.ram_size.label()));
                         ui.separator();
-                        for ram_size in RamSize::ALL {
-                            let selected = self.config.machine.ram_size == ram_size;
-                            if ui.selectable_label(selected, ram_size.label()).clicked() {
-                                self.apply_memory_configuration(ram_size, self.config.machine.ram_init);
-                                ui.close();
-                            }
-                        }
-                        ui.separator();
-                        ui.menu_button("Power-on contents", |ui| {
-                            for ram_init in RamInit::ALL {
-                                let selected = self.config.machine.ram_init == ram_init;
-                                if ui.selectable_label(selected, ram_init.label()).clicked() {
-                                    self.apply_memory_configuration(self.config.machine.ram_size, ram_init);
+                        if simh_active {
+                            ui.small("Embedded Open-SIMH profile: fixed 64 KiB RAM.");
+                            ui.small("Change back to a RusTair native engine to select another installed-memory size or power-on fill policy.");
+                        } else {
+                            for ram_size in RamSize::ALL {
+                                let selected = self.config.machine.ram_size == ram_size;
+                                if ui.selectable_label(selected, ram_size.label()).clicked() {
+                                    self.apply_memory_configuration(ram_size, self.config.machine.ram_init);
                                     ui.close();
                                 }
                             }
-                        });
+                            ui.separator();
+                            ui.menu_button("Power-on contents", |ui| {
+                                for ram_init in RamInit::ALL {
+                                    let selected = self.config.machine.ram_init == ram_init;
+                                    if ui.selectable_label(selected, ram_init.label()).clicked() {
+                                        self.apply_memory_configuration(self.config.machine.ram_size, ram_init);
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
                     });
 
                     ui.menu_button("Serial board", |ui| {
+                        let engine = self.machine.engine();
                         let current = self.config.machine.serial_board;
                         ui.label(format!("Installed board: {}", current.label()));
                         match current {
@@ -177,16 +213,26 @@ impl eframe::App for RusTairApp {
                         ui.small(format!("External TCP → {}", Self::serial_connection_label(current, self.external_tcp_connection())));
                         ui.small(format!("External COM → {}", Self::serial_connection_label(current, self.external_com_connection())));
                         ui.separator();
-                        for serial_board in SerialBoard::ALL {
-                            let selected = current == serial_board;
-                            if ui.selectable_label(selected, serial_board.label()).clicked() {
-                                self.apply_serial_board_configuration(serial_board);
-                                ui.close();
+                        match engine {
+                            EmulationEngine::SimhAltairZ80 => {
+                                ui.small("Embedded AltairZ80 serial routing is fixed to MITS 88-2SIO. Both channels are bridged to RusTair over private loopback raw TCP connections.");
+                            }
+                            EmulationEngine::SimhAltair => {
+                                ui.small("Classic Open-SIMH Altair is included for front-panel compatibility; RusTair endpoint routing is not exposed by this backend.");
+                            }
+                            _ => {
+                                for serial_board in SerialBoard::ALL {
+                                    let selected = current == serial_board;
+                                    if ui.selectable_label(selected, serial_board.label()).clicked() {
+                                        self.apply_serial_board_configuration(serial_board);
+                                        ui.close();
+                                    }
+                                }
+                                ui.separator();
+                                ui.small("Each emulated serial port has one attached endpoint/cable. TCP fan-out, when enabled, happens behind the single External TCP endpoint; External COM remains its own independent cable.");
+                                ui.small("Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.");
                             }
                         }
-                        ui.separator();
-                        ui.small("Each emulated serial port has one attached endpoint/cable. TCP fan-out, when enabled, happens behind the single External TCP endpoint; External COM remains its own independent cable.");
-                        ui.small("Bundled BASIC 3.2: use sense 00h for 88-SIO or 08h (A11) for 88-2SIO. Changing the installed board does not alter the front-panel switches.");
                     });
 
                     ui.menu_button("Peripheral speed", |ui| {
