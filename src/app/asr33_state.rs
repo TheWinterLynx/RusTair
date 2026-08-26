@@ -54,6 +54,10 @@ pub(super) struct Asr33State {
     pub(super) reader_running: bool,
     pub(super) reader_speed: TapeTransportSpeed,
     pub(super) last_reader_tick: Instant,
+    /// Last physical tape character advanced past the reader and offered to the
+    /// selected UART. Keeping this in the presentation/controller state lets
+    /// the UI show what is currently waiting in RX without mutating tape media.
+    pub(super) last_reader_byte: Option<u8>,
     pub(super) punch_running: bool,
     pub(super) punch_speed: TapeTransportSpeed,
     pub(super) last_punch_tick: Instant,
@@ -73,6 +77,7 @@ impl Asr33State {
             reader_running: false,
             reader_speed: TapeTransportSpeed::default(),
             last_reader_tick: now,
+            last_reader_byte: None,
             punch_running: false,
             punch_speed: TapeTransportSpeed::default(),
             last_punch_tick: now,
@@ -149,6 +154,12 @@ mod tests {
         assert_eq!(TapeTransportSpeed::X5.char_time(), Duration::from_millis(20));
         assert_eq!(TapeTransportSpeed::X10.char_time(), Duration::from_millis(10));
         assert_eq!(TapeTransportSpeed::Unlimited.char_time(), Duration::ZERO);
+    }
+
+    #[test]
+    fn reader_byte_display_starts_empty() {
+        let state = Asr33State::new(Instant::now());
+        assert_eq!(state.last_reader_byte, None);
     }
 
     #[test]
