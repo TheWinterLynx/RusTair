@@ -2,20 +2,39 @@ use std::time::Duration;
 
 use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
+use crate::trace8080::{CpuSnapshot8080, InstructionTraceBuffer};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
-    EmulationEngine, FrontPanelState, Intel8080State, IoPortActivity, IoTraceSnapshot,
-    MachineBackend,
+    EmulationEngine, FrontPanelState, InstructionTraceSnapshot, Intel8080State, IoPortActivity,
+    IoTraceSnapshot, MachineBackend,
 };
 
-pub struct NativeMachineBackend { machine: AltairMachine }
-impl Default for NativeMachineBackend { fn default() -> Self { Self { machine: AltairMachine::default() } } }
+pub struct NativeMachineBackend {
+    machine: AltairMachine,
+    instruction_trace: InstructionTraceBuffer,
+}
+
+impl Default for NativeMachineBackend {
+    fn default() -> Self {
+        Self {
+            machine: AltairMachine::default(),
+            instruction_trace: InstructionTraceBuffer::default(),
+        }
+    }
+}
+
 impl NativeMachineBackend {
-    pub fn new(machine: AltairMachine) -> Self { Self { machine } }
+    pub fn new(machine: AltairMachine) -> Self {
+        Self {
+            machine,
+            instruction_trace: InstructionTraceBuffer::default(),
+        }
+    }
     pub fn machine(&self) -> &AltairMachine { &self.machine }
     pub fn machine_mut(&mut self) -> &mut AltairMachine { &mut self.machine }
     pub fn into_machine(self) -> AltairMachine { self.machine }
+
     fn snapshot_cpu(&self) -> CpuState {
         let cpu = &self.machine.cpu;
         CpuState::Intel8080(Intel8080State {
@@ -24,6 +43,76 @@ impl NativeMachineBackend {
             halted: Some(cpu.halted), total_t_states: Some(cpu.cycles),
         })
     }
+
+    fn trace_cpu_snapshot(&self) -> CpuSnapshot8080 {
+        let cpu = &self.machine.cpu;
+        CpuSnapshot8080 {
+            a: cpu.a,
+            b: cpu.b,
+            c: cpu.c,
+            d: cpu.d,
+            e: cpu.e,
+            h: cpu.h,
+            l: cpu.l,
+            flags: cpu.f,
+            pc: cpu.pc,
+            sp: cpu.sp,
+            inte: cpu.inte,
+            halted: cpu.halted,
+        }
+    }
+
+    fn trace_bytes(&self, address: u16) -> [u8; 3] {
+        [
+            self.machine.bus.peek_memory(address).unwrap_or(0),
+            self.machine.bus.peek_memory(address.wrapping_add(1)).unwrap_or(0),
+            self.machine.bus.peek_memory(address.wrapping_add(2)).unwrap_or(0),
+        ]
+    }
+
+    fn record_one_stopped_instruction(&mut self) {
+        let before = self.trace_cpu_snapshot();
+        let bytes = self.trace_bytes(before.pc);
+        let start_cycles = self.machine.cpu.cycles;
+        self.machine.step();
+        let after = self.trace_cpu_snapshot();
+        let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
+        if delta != 0 {
+            self.instruction_trace.push(before.pc, bytes, before, after, delta);
+        }
+    }
+
+    fn service_execution_with_trace(&mut self, t_state_budget: u32) {
+        if !self.machine.running || t_state_budget == 0 {
+            return;
+        }
+
+        let mut used = 0u32;
+        while used < t_state_budget && self.machine.running {
+            if self.machine.cpu.halted {
+                self.machine.run_cycles(t_state_budget - used);
+                break;
+            }
+
+            let before = self.trace_cpu_snapshot();
+            let bytes = self.trace_bytes(before.pc);
+            let start_cycles = self.machine.cpu.cycles;
+
+            // The fast core is instruction-level. A budget of one therefore
+            // executes exactly one whole guest instruction, which gives us a
+            // precise before/after boundary without reconstructing state in UI.
+            self.machine.run_cycles(1);
+
+            let after = self.trace_cpu_snapshot();
+            let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
+            if delta == 0 {
+                break;
+            }
+            self.instruction_trace.push(before.pc, bytes, before, after, delta);
+            used = used.saturating_add(delta);
+        }
+    }
+
     fn snapshot_panel(&self) -> FrontPanelState {
         FrontPanelState {
             powered: self.machine.powered, running: self.machine.running,
@@ -48,14 +137,33 @@ impl MachineBackend for NativeMachineBackend {
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         self.machine.configure_memory(size, init);
+        self.instruction_trace.clear();
         Ok(())
     }
-    fn power(&mut self, on: bool) -> BackendResult<()> { self.machine.power(on); Ok(()) }
-    fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> { self.machine.power_with_historical_run_latch(on, historical); Ok(()) }
+    fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
+    fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
+        self.machine.power_with_historical_run_latch(on, historical);
+        self.instruction_trace.clear();
+        Ok(())
+    }
     fn run(&mut self) -> BackendResult<()> { self.machine.set_running(true); Ok(()) }
     fn halt(&mut self) -> BackendResult<()> { self.machine.set_running(false); Ok(()) }
-    fn step(&mut self) -> BackendResult<()> { self.machine.step(); Ok(()) }
-    fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> { if self.machine.running { self.machine.run_cycles(t_state_budget); } Ok(()) }
+    fn step(&mut self) -> BackendResult<()> {
+        if self.instruction_trace.enabled() {
+            self.record_one_stopped_instruction();
+        } else {
+            self.machine.step();
+        }
+        Ok(())
+    }
+    fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
+        if self.instruction_trace.enabled() {
+            self.service_execution_with_trace(t_state_budget);
+        } else if self.machine.running {
+            self.machine.run_cycles(t_state_budget);
+        }
+        Ok(())
+    }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> { self.machine.commit_panel_activity(dt); Ok(()) }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> { self.machine.assert_run_stop(run); Ok(()) }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.machine.release_run_stop(run); Ok(()) }
@@ -111,6 +219,10 @@ impl MachineBackend for NativeMachineBackend {
     fn io_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.machine.bus.io_trace_enabled()) }
     fn set_io_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> { self.machine.bus.set_io_trace_enabled(enabled); Ok(()) }
     fn clear_io_trace(&mut self) -> BackendResult<()> { self.machine.bus.clear_io_trace(); Ok(()) }
+    fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> { Ok(self.instruction_trace.snapshot()) }
+    fn instruction_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.instruction_trace.enabled()) }
+    fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> { self.instruction_trace.set_enabled(enabled); Ok(()) }
+    fn clear_instruction_trace(&mut self) -> BackendResult<()> { self.instruction_trace.clear(); Ok(()) }
     fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.machine.bus.debugger_input_port(port)) }
     fn debugger_output_port(&mut self, port: u8, value: u8) -> BackendResult<()> { self.machine.bus.debugger_output_port(port, value); Ok(()) }
     fn debugger_inject_serial_rx(&mut self, port: u8, byte: u8) -> BackendResult<bool> { Ok(self.machine.bus.debugger_inject_serial_rx(port, byte)) }
