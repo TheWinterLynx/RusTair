@@ -23,13 +23,13 @@ mod machine;
 mod machine_altairz80;
 mod profile;
 #[cfg(feature = "simh-ffi")]
+mod responsive_worker;
+#[cfg(feature = "simh-ffi")]
 mod runtime;
 #[cfg(feature = "simh-ffi")]
 mod serial_bridge;
 #[cfg(feature = "simh-ffi")]
 mod session;
-#[cfg(feature = "simh-ffi")]
-mod threaded_worker;
 
 #[cfg(feature = "simh-ffi")]
 pub use altair::{ClassicAltairRegisters, set_switch_register};
@@ -43,6 +43,10 @@ pub use machine::SimhAltairBackend;
 pub use machine_altairz80::SimhAltairZ80Backend;
 pub use profile::ClassicAltairProfile;
 #[cfg(feature = "simh-ffi")]
+pub use responsive_worker::{
+    SimhConsoleSnapshot, SimhThreadedBackend, active_console_snapshot, submit_active_console,
+};
+#[cfg(feature = "simh-ffi")]
 pub use runtime::{
     OPEN_SIMH_UPSTREAM_COMMIT, RUSTAIR_SIMH_BUNDLE_REVISION, SimhRuntimeError,
     SimhRuntimePaths, embedded_altair_launch_config, embedded_altairz80_launch_config,
@@ -51,10 +55,6 @@ pub use runtime::{
 #[cfg(feature = "simh-ffi")]
 pub use session::{
     SimhLivePanelSample, SimhOperationalState, SimhSession, SimhSessionError,
-};
-#[cfg(feature = "simh-ffi")]
-pub use threaded_worker::{
-    SimhConsoleSnapshot, SimhThreadedBackend, active_console_snapshot, submit_active_console,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
