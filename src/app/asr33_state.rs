@@ -46,6 +46,34 @@ impl TapeTransportSpeed {
     }
 }
 
+/// Left-to-right channel order used only by the mini paper-tape visualization.
+/// DEC's contemporary ASR-33 documentation numbers tape bits right-to-left
+/// 1..8, so a normal illustrated view reads channel 8 down to channel 1 from
+/// left to right. Reversing this never changes the actual byte delivered by the
+/// reader; it is purely an operator display preference.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum TapeBitOrder {
+    #[default]
+    Historical8To1,
+    Reversed1To8,
+}
+
+impl TapeBitOrder {
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Historical8To1 => "8→1",
+            Self::Reversed1To8 => "1→8",
+        }
+    }
+
+    pub(super) const fn toggle(self) -> Self {
+        match self {
+            Self::Historical8To1 => Self::Reversed1To8,
+            Self::Reversed1To8 => Self::Historical8To1,
+        }
+    }
+}
+
 pub(super) struct Asr33State {
     pub(super) window_open: bool,
     pub(super) tx_started: Option<Instant>,
@@ -58,6 +86,7 @@ pub(super) struct Asr33State {
     /// selected UART. Keeping this in the presentation/controller state lets
     /// the UI show what is currently waiting in RX without mutating tape media.
     pub(super) last_reader_byte: Option<u8>,
+    pub(super) tape_bit_order: TapeBitOrder,
     pub(super) punch_running: bool,
     pub(super) punch_speed: TapeTransportSpeed,
     pub(super) last_punch_tick: Instant,
@@ -78,6 +107,7 @@ impl Asr33State {
             reader_speed: TapeTransportSpeed::default(),
             last_reader_tick: now,
             last_reader_byte: None,
+            tape_bit_order: TapeBitOrder::default(),
             punch_running: false,
             punch_speed: TapeTransportSpeed::default(),
             last_punch_tick: now,
@@ -157,9 +187,17 @@ mod tests {
     }
 
     #[test]
-    fn reader_byte_display_starts_empty() {
+    fn reader_byte_display_starts_empty_and_uses_historical_channel_order() {
         let state = Asr33State::new(Instant::now());
         assert_eq!(state.last_reader_byte, None);
+        assert_eq!(state.tape_bit_order, TapeBitOrder::Historical8To1);
+    }
+
+    #[test]
+    fn tape_bit_order_toggle_round_trips() {
+        let historical = TapeBitOrder::Historical8To1;
+        assert_eq!(historical.toggle(), TapeBitOrder::Reversed1To8);
+        assert_eq!(historical.toggle().toggle(), historical);
     }
 
     #[test]
