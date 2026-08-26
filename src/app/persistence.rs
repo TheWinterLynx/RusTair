@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app::asr33_state::TapeTransportSpeed;
+use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
@@ -33,6 +33,7 @@ pub(super) struct SavedSettings {
     pub(super) tty_mode: TtyMode,
     pub(super) reader_speed: TapeTransportSpeed,
     pub(super) punch_speed: TapeTransportSpeed,
+    pub(super) tape_bit_order: TapeBitOrder,
     pub(super) led_brightness: f32,
     pub(super) led_aura: f32,
     pub(super) muted: bool,
@@ -55,6 +56,7 @@ impl Default for SavedSettings {
             tty_mode: TtyMode::Off,
             reader_speed: TapeTransportSpeed::Historical1x,
             punch_speed: TapeTransportSpeed::Historical1x,
+            tape_bit_order: TapeBitOrder::Historical8To1,
             led_brightness: DEFAULT_LED_BRIGHTNESS,
             led_aura: DEFAULT_LED_AURA,
             muted: false,
@@ -169,6 +171,7 @@ impl SavedSettings {
                 "asr33.mode" => if let Some(v) = parse_tty_mode(value) { saved.tty_mode = v; },
                 "asr33.reader_speed" => if let Some(v) = parse_tape_transport_speed(value) { saved.reader_speed = v; },
                 "asr33.punch_speed" => if let Some(v) = parse_tape_transport_speed(value) { saved.punch_speed = v; },
+                "asr33.tape_visual_order" => if let Some(v) = parse_tape_bit_order(value) { saved.tape_bit_order = v; },
                 "terminal.duplex" => if let Some(v) = parse_duplex(value) { saved.terminal_duplex = v; },
                 "terminal.uppercase" => if let Ok(v) = value.parse() { saved.terminal_uppercase = v; },
                 "led.brightness" => if let Ok(v) = value.parse::<f32>() { if v.is_finite() { saved.led_brightness = v.clamp(0.25, 3.0); } },
@@ -219,6 +222,7 @@ impl SavedSettings {
         let _ = writeln!(out, "asr33.mode={}", tty_mode_key(self.tty_mode));
         let _ = writeln!(out, "asr33.reader_speed={}", tape_transport_speed_key(self.reader_speed));
         let _ = writeln!(out, "asr33.punch_speed={}", tape_transport_speed_key(self.punch_speed));
+        let _ = writeln!(out, "asr33.tape_visual_order={}", tape_bit_order_key(self.tape_bit_order));
         let _ = writeln!(out, "terminal.duplex={}", duplex_key(self.terminal_duplex));
         let _ = writeln!(out, "terminal.uppercase={}", self.terminal_uppercase);
         let _ = writeln!(out, "led.brightness={:.3}", self.led_brightness);
@@ -326,6 +330,7 @@ impl RusTairApp {
         self.asr33.duplex = saved.asr_duplex;
         self.asr33.reader_speed = saved.reader_speed;
         self.asr33.punch_speed = saved.punch_speed;
+        self.asr33.tape_bit_order = saved.tape_bit_order;
         self.terminal.duplex = saved.terminal_duplex;
         self.terminal.uppercase = saved.terminal_uppercase;
         self.terminal.speed = self.config.peripherals.terminal_speed;
@@ -360,6 +365,7 @@ impl RusTairApp {
             tty_mode: self.tty.mode,
             reader_speed: self.asr33.reader_speed,
             punch_speed: self.asr33.punch_speed,
+            tape_bit_order: self.asr33.tape_bit_order,
             led_brightness: led_brightness.clamp(0.25, 3.0),
             led_aura: led_aura.clamp(0.0, 3.0),
             muted: self.audio.muted(),
@@ -489,6 +495,8 @@ fn tty_mode_key(v: TtyMode) -> &'static str { match v { TtyMode::Off => "off", T
 fn parse_tty_mode(v: &str) -> Option<TtyMode> { Some(match v { "off" => TtyMode::Off, "line" => TtyMode::Line, "local" => TtyMode::Local, _ => return None }) }
 fn tape_transport_speed_key(v: TapeTransportSpeed) -> &'static str { match v { TapeTransportSpeed::Historical1x => "1x", TapeTransportSpeed::X5 => "5x", TapeTransportSpeed::X10 => "10x", TapeTransportSpeed::Unlimited => "unlimited" } }
 fn parse_tape_transport_speed(v: &str) -> Option<TapeTransportSpeed> { Some(match v { "1x" => TapeTransportSpeed::Historical1x, "5x" => TapeTransportSpeed::X5, "10x" => TapeTransportSpeed::X10, "unlimited" => TapeTransportSpeed::Unlimited, _ => return None }) }
+fn tape_bit_order_key(v: TapeBitOrder) -> &'static str { match v { TapeBitOrder::Historical8To1 => "8to1", TapeBitOrder::Reversed1To8 => "1to8" } }
+fn parse_tape_bit_order(v: &str) -> Option<TapeBitOrder> { Some(match v { "8to1" => TapeBitOrder::Historical8To1, "1to8" => TapeBitOrder::Reversed1To8, _ => return None }) }
 
 #[cfg(test)]
 mod tests {
@@ -513,6 +521,7 @@ mod tests {
         saved.tty_mode = TtyMode::Line;
         saved.reader_speed = TapeTransportSpeed::X10;
         saved.punch_speed = TapeTransportSpeed::X5;
+        saved.tape_bit_order = TapeBitOrder::Reversed1To8;
         saved.led_brightness = 1.37;
         saved.led_aura = 2.15;
         saved.muted = true;
@@ -528,6 +537,7 @@ mod tests {
         assert_eq!(saved.led_aura, DEFAULT_LED_AURA);
         assert_eq!(saved.reader_speed, TapeTransportSpeed::Historical1x);
         assert_eq!(saved.punch_speed, TapeTransportSpeed::Historical1x);
+        assert_eq!(saved.tape_bit_order, TapeBitOrder::Historical8To1);
     }
 
     #[test]
@@ -548,6 +558,7 @@ mod tests {
         assert!(text.contains("machine.ram_size=48k"));
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
+        assert!(text.contains("asr33.tape_visual_order=8to1"));
         assert!(!dir.join(".config.ini.tmp").exists());
         let _ = fs::remove_dir_all(dir);
     }
