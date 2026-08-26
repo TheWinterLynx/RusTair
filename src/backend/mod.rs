@@ -14,7 +14,9 @@ use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 use cycle_host::CycleHostBackend;
 pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
+pub use crate::trace8080::InstructionTraceEntry;
 pub type FastMachineBackend = NativeMachineBackend;
+pub type InstructionTraceSnapshot = Vec<InstructionTraceEntry>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendFamily { Rustair, Simh }
@@ -253,6 +255,18 @@ pub trait MachineBackend {
     fn clear_io_trace(&mut self) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "clear I/O trace", engine: self.engine() })
     }
+    fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> {
+        Err(BackendError::Unsupported { operation: "read instruction trace", engine: self.engine() })
+    }
+    fn instruction_trace_enabled(&mut self) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "query instruction trace", engine: self.engine() })
+    }
+    fn set_instruction_trace_enabled(&mut self, _enabled: bool) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure instruction trace", engine: self.engine() })
+    }
+    fn clear_instruction_trace(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "clear instruction trace", engine: self.engine() })
+    }
     fn debugger_input_port(&mut self, _port: u8) -> BackendResult<u8> {
         Err(BackendError::Unsupported { operation: "debugger IN", engine: self.engine() })
     }
@@ -382,6 +396,10 @@ impl BackendHost {
     pub fn io_trace_enabled(&mut self) -> bool { Self::call(self.backend.io_trace_enabled()) }
     pub fn set_io_trace_enabled(&mut self, enabled: bool) { Self::call(self.backend.set_io_trace_enabled(enabled)); }
     pub fn clear_io_trace(&mut self) { Self::call(self.backend.clear_io_trace()); }
+    pub fn instruction_trace_snapshot(&mut self) -> InstructionTraceSnapshot { Self::call(self.backend.instruction_trace_snapshot()) }
+    pub fn instruction_trace_enabled(&mut self) -> bool { Self::call(self.backend.instruction_trace_enabled()) }
+    pub fn set_instruction_trace_enabled(&mut self, enabled: bool) { Self::call(self.backend.set_instruction_trace_enabled(enabled)); }
+    pub fn clear_instruction_trace(&mut self) { Self::call(self.backend.clear_instruction_trace()); }
     pub fn debugger_input_port(&mut self, port: u8) -> u8 { Self::call(self.backend.debugger_input_port(port)) }
     pub fn debugger_output_port(&mut self, port: u8, value: u8) { Self::call(self.backend.debugger_output_port(port, value)); }
     pub fn debugger_inject_serial_rx(&mut self, port: u8, byte: u8) -> bool { Self::call(self.backend.debugger_inject_serial_rx(port, byte)) }
