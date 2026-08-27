@@ -12,7 +12,7 @@ use crate::trace8080::{
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
     CpuState, CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
-    InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend,
+    InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
 };
 
 #[derive(Clone, Debug)]
@@ -79,8 +79,12 @@ impl CycleHostBackend {
             && self.inner.cpu().t_state() == TState::T1
     }
 
+    fn observing_instruction_effects(&self) -> bool {
+        self.instruction_trace.enabled() || self.debug_control.has_watchpoints()
+    }
+
     fn begin_instruction_trace_if_needed(&mut self) {
-        if !self.instruction_trace.enabled()
+        if !self.observing_instruction_effects()
             || self.pending_instruction_trace.is_some()
             || !self.at_instruction_boundary()
         {
@@ -101,12 +105,14 @@ impl CycleHostBackend {
         });
     }
 
-    fn finish_instruction_trace_if_complete(&mut self) {
-        let Some(pending) = self.pending_instruction_trace.as_ref() else { return; };
+    /// Finalize one observed guest instruction. Returns true when a memory
+    /// watchpoint matched an effect caused by that instruction.
+    fn finish_instruction_trace_if_complete(&mut self) -> bool {
+        let Some(pending) = self.pending_instruction_trace.as_ref() else { return false; };
         let at_next_fetch = self.at_instruction_boundary()
             && self.inner.cpu().total_t_states() > pending.start_t_states;
         if !at_next_fetch && !self.inner.cpu().is_halted() {
-            return;
+            return false;
         }
 
         let mut pending = self.pending_instruction_trace.take().expect("pending trace exists");
@@ -118,7 +124,15 @@ impl CycleHostBackend {
             |address| self.inner.machine().bus.peek_memory(address),
         ));
         let delta = self.inner.cpu().total_t_states().saturating_sub(pending.start_t_states) as u32;
-        if delta != 0 {
+        if delta == 0 {
+            return false;
+        }
+
+        let watch_stop = self
+            .debug_control
+            .stop_after_effects(pending.address, &pending.effects)
+            .is_some();
+        if self.instruction_trace.enabled() {
             self.instruction_trace.push_with_effects(
                 pending.address,
                 pending.bytes,
@@ -128,6 +142,7 @@ impl CycleHostBackend {
                 pending.effects,
             );
         }
+        watch_stop
     }
 
     fn clear_pending_instruction_trace(&mut self) {
@@ -145,16 +160,15 @@ impl CycleHostBackend {
         for _ in 0..16 {
             self.begin_instruction_trace_if_needed();
             self.inner.step()?;
-            self.finish_instruction_trace_if_complete();
+            let watch_stop = self.finish_instruction_trace_if_complete();
 
-            if self.inner.cpu().is_halted() {
+            if watch_stop || self.inner.cpu().is_halted() {
                 break;
             }
             if self.inner.cpu().total_t_states() > start_t_states && self.at_instruction_boundary() {
                 break;
             }
         }
-        self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
         Ok(())
     }
 }
@@ -219,7 +233,8 @@ impl MachineBackend for CycleHostBackend {
         }
 
         // Breakpoints are checked only at InstructionFetch/T1, before the opcode
-        // is consumed. Trace capture remains exact at the same guest boundary.
+        // is consumed. Watchpoints stop immediately after the causing guest
+        // instruction completes, with its resulting CPU state still visible.
         for _ in 0..t_state_budget {
             if !self.inner.machine().running {
                 break;
@@ -233,7 +248,10 @@ impl MachineBackend for CycleHostBackend {
             }
             self.begin_instruction_trace_if_needed();
             self.inner.service_execution(1)?;
-            self.finish_instruction_trace_if_complete();
+            if self.finish_instruction_trace_if_complete() {
+                self.inner.halt()?;
+                break;
+            }
         }
         Ok(())
     }
@@ -386,14 +404,16 @@ impl MachineBackend for CycleHostBackend {
     }
     fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> {
         self.instruction_trace.set_enabled(enabled);
-        if !enabled {
+        if !enabled && !self.debug_control.has_watchpoints() {
             self.clear_pending_instruction_trace();
         }
         Ok(())
     }
     fn clear_instruction_trace(&mut self) -> BackendResult<()> {
         self.instruction_trace.clear();
-        self.clear_pending_instruction_trace();
+        if !self.debug_control.has_watchpoints() {
+            self.clear_pending_instruction_trace();
+        }
         Ok(())
     }
 
@@ -407,6 +427,27 @@ impl MachineBackend for CycleHostBackend {
     }
     fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
         self.debug_control.clear_breakpoints();
+        Ok(())
+    }
+    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> {
+        Ok(self.debug_control.watchpoints())
+    }
+    fn debugger_set_watchpoint(
+        &mut self,
+        address: u16,
+        access: Option<MemoryWatchAccess>,
+    ) -> BackendResult<()> {
+        self.debug_control.set_watchpoint(address, access);
+        if access.is_none() && !self.observing_instruction_effects() {
+            self.clear_pending_instruction_trace();
+        }
+        Ok(())
+    }
+    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
+        self.debug_control.clear_watchpoints();
+        if !self.instruction_trace.enabled() {
+            self.clear_pending_instruction_trace();
+        }
         Ok(())
     }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
