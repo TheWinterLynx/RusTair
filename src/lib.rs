@@ -1,6 +1,7 @@
 pub mod app;
 pub mod audio;
 pub mod backend;
+pub mod callstack8080;
 pub mod config;
 pub mod cpu8080;
 pub mod cpu8080_cycle;
