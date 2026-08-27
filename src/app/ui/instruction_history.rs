@@ -1,11 +1,12 @@
 use super::super::{egui, RusTairApp};
 use crate::backend::{Intel8080State, InstructionTraceEntry};
+use crate::config::SerialBoard;
 use crate::decoder8080::{decode_8080, ControlFlow};
 use crate::explain8080::explain_instruction;
-use crate::trace8080::CpuSnapshot8080;
+use crate::trace8080::{CpuSnapshot8080, InstructionEffect8080};
 
-const HISTORY_LIST_HEIGHT: f32 = 300.0;
-const HISTORY_DETAIL_HEIGHT: f32 = 270.0;
+const HISTORY_LIST_HEIGHT: f32 = 280.0;
+const HISTORY_DETAIL_HEIGHT: f32 = 350.0;
 const HISTORY_VISIBLE_ROWS: usize = 256;
 
 #[derive(Clone)]
@@ -146,7 +147,55 @@ impl RusTairApp {
         }
     }
 
-    fn draw_history_detail(ui: &mut egui::Ui, entry: Option<&InstructionTraceEntry>) {
+    fn io_port_context(&self, port: u8) -> Option<String> {
+        if port == 0xff {
+            return Some("Altair front-panel sense-switch input".into());
+        }
+
+        let board = self.config.machine.serial_board;
+        match board {
+            SerialBoard::Sio88 => {
+                if port == board.status_port() {
+                    Some("MITS 88-SIO status port".into())
+                } else if port == board.data_port() {
+                    Some("MITS 88-SIO data port".into())
+                } else {
+                    None
+                }
+            }
+            SerialBoard::TwoSio88 => {
+                if port == board.status_port() {
+                    Some("MITS 88-2SIO Port 0 status/control".into())
+                } else if port == board.data_port() {
+                    Some("MITS 88-2SIO Port 0 data".into())
+                } else if board.port1_status_port() == Some(port) {
+                    Some("MITS 88-2SIO Port 1 status/control".into())
+                } else if board.port1_data_port() == Some(port) {
+                    Some("MITS 88-2SIO Port 1 data".into())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    fn draw_effect(&self, ui: &mut egui::Ui, effect: InstructionEffect8080) {
+        ui.horizontal_wrapped(|ui| {
+            ui.monospace(effect.label());
+            match effect {
+                InstructionEffect8080::IoRead { port, .. }
+                | InstructionEffect8080::IoWrite { port, .. } => {
+                    if let Some(context) = self.io_port_context(port) {
+                        ui.separator();
+                        ui.small(context);
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+
+    fn draw_history_detail(&mut self, ui: &mut egui::Ui, entry: Option<&InstructionTraceEntry>) {
         ui.allocate_ui_with_layout(
             egui::vec2(ui.available_width(), HISTORY_DETAIL_HEIGHT),
             egui::Layout::top_down(egui::Align::Min),
@@ -159,7 +208,8 @@ impl RusTairApp {
 
                 let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
                 let before_cpu = Self::cpu_state_from_trace(entry.before);
-                let explanation = explain_instruction(&decoded, before_cpu, None);
+                let memory_at_hl = self.machine.peek_memory(entry.before.hl());
+                let explanation = explain_instruction(&decoded, before_cpu, memory_at_hl);
 
                 ui.horizontal_wrapped(|ui| {
                     ui.strong(format!("#{:06}", entry.sequence));
@@ -184,6 +234,16 @@ impl RusTairApp {
                             ui.separator();
                         }
                     });
+                }
+
+                ui.add_space(4.0);
+                ui.strong("Memory / I/O effects");
+                if entry.effects.is_empty() {
+                    ui.small("No guest-visible data-memory, stack or I/O transfer for this instruction.");
+                } else {
+                    for effect in entry.effects.iter().copied() {
+                        self.draw_effect(ui, effect);
+                    }
                 }
 
                 ui.add_space(4.0);
@@ -246,8 +306,10 @@ impl RusTairApp {
                     for entry in &history[start..] {
                         let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
                         let selected = state.selected_sequence == Some(entry.sequence);
+                        let effect_marker = if entry.effects.is_empty() { " " } else { "*" };
                         let text = format!(
-                            "#{:06}  {:04X}  {:<8}  {:<18}  {:>2}T",
+                            "{} #{:06}  {:04X}  {:<8}  {:<18}  {:>2}T",
+                            effect_marker,
                             entry.sequence,
                             entry.address,
                             entry.bytes_text(),
@@ -265,7 +327,7 @@ impl RusTairApp {
             ui.strong("WHAT JUST HAPPENED?");
             let selected = state.selected_sequence
                 .and_then(|sequence| history.iter().find(|entry| entry.sequence == sequence));
-            Self::draw_history_detail(ui, selected);
+            self.draw_history_detail(ui, selected);
         });
     }
 
@@ -279,8 +341,8 @@ impl RusTairApp {
             egui::ViewportId::from_hash_of("rustair-8080-execution-history-viewport"),
             egui::ViewportBuilder::default()
                 .with_title("RusTair - 8080 Execution History")
-                .with_inner_size([860.0, 720.0])
-                .with_min_inner_size([680.0, 520.0])
+                .with_inner_size([900.0, 800.0])
+                .with_min_inner_size([720.0, 600.0])
                 .with_resizable(true),
             |history_ctx, _class| {
                 self.draw_instruction_history_viewport_contents(history_ctx, &mut state);
