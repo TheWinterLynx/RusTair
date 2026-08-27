@@ -62,10 +62,6 @@ impl CycleHostBackend {
         }
     }
 
-    fn trace_cpu_snapshot(&self) -> CpuSnapshot8080 {
-        Self::trace_cpu_snapshot_from(&self.inner)
-    }
-
     fn trace_bytes_from(inner: &CycleAccurateMachineBackend, address: u16) -> [u8; 3] {
         [
             inner.machine().bus.preview_guest_memory(address),
