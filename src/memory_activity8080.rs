@@ -25,7 +25,7 @@ impl MemoryActivity8080 {
             .saturating_add(self.write_count)
     }
 
-    pub const fn last_sequence(self) -> Option<u64> {
+    pub fn last_sequence(self) -> Option<u64> {
         let mut latest = self.last_execute_sequence;
         if let Some(sequence) = self.last_read_sequence {
             latest = Some(match latest { Some(current) => current.max(sequence), None => sequence });
