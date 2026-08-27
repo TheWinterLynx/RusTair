@@ -3,6 +3,7 @@ use super::*;
 mod asr33;
 mod asr33_window;
 pub(super) mod assets;
+mod debugger_controls;
 mod front_panel;
 mod front_panel_assets;
 mod front_panel_operator;
