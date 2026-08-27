@@ -306,6 +306,9 @@ pub trait MachineBackend {
     fn debugger_run_to(&mut self, _address: u16) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "debugger run to", engine: self.engine() })
     }
+    fn debugger_run_to_with_sp(&mut self, address: u16, _required_sp: u16) -> BackendResult<()> {
+        self.debugger_run_to(address)
+    }
     fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "cancel debugger run to", engine: self.engine() })
     }
@@ -457,6 +460,7 @@ impl BackendHost {
     pub fn debugger_set_watchpoint(&mut self, address: u16, access: Option<MemoryWatchAccess>) { Self::call(self.backend.debugger_set_watchpoint(address, access)); }
     pub fn debugger_clear_watchpoints(&mut self) { Self::call(self.backend.debugger_clear_watchpoints()); }
     pub fn debugger_run_to(&mut self, address: u16) { Self::call(self.backend.debugger_run_to(address)); }
+    pub fn debugger_run_to_with_sp(&mut self, address: u16, required_sp: u16) { Self::call(self.backend.debugger_run_to_with_sp(address, required_sp)); }
     pub fn debugger_cancel_run_to(&mut self) { Self::call(self.backend.debugger_cancel_run_to()); }
     pub fn debugger_run_to_target(&mut self) -> Option<u16> { Self::call(self.backend.debugger_run_to_target()) }
     pub fn debugger_stop_reason(&mut self) -> Option<DebugStopReason> { Self::call(self.backend.debugger_stop_reason()) }
