@@ -102,29 +102,35 @@ fn exercise_run_to_from_breakpoint(engine: EmulationEngine) {
 }
 
 fn exercise_stack_guarded_run_to(engine: EmulationEngine) {
-    // CALL pushes return 0003h. The callee deliberately visits 0003h once
-    // while SP is still two bytes deeper, then RET restores SP and reaches
-    // 0003h a second time. A PC-only temporary breakpoint would stop too early.
+    // Put the stack inside installed RAM first. CALL at 0003 pushes return 0006h.
+    // The callee deliberately visits 0006h once while SP is still two bytes
+    // deeper, then RET restores SP and reaches 0006h a second time. A PC-only
+    // temporary breakpoint would stop on the first, false visit.
     let mut host = prepared_host(
         engine,
         &[
-            0xcd, 0x06, 0x00, // 0000 CALL 0006
-            0xc3, 0x09, 0x00, // 0003 JMP 0009 (false early visit path)
-            0xc3, 0x03, 0x00, // 0006 JMP 0003
-            0xc9,             // 0009 RET -> real return to 0003
-            0x76,             // 000A HLT
+            0x31, 0xf0, 0x03, // 0000 LXI SP,03F0
+            0xcd, 0x09, 0x00, // 0003 CALL 0009
+            0xc3, 0x0c, 0x00, // 0006 JMP 000C (false early visit path)
+            0xc3, 0x06, 0x00, // 0009 JMP 0006
+            0xc9,             // 000C RET -> real return to 0006
+            0x76,             // 000D HLT
         ],
     );
-    let initial_sp = host.intel8080_state().sp;
 
-    host.debugger_run_to_with_sp(0x0003, initial_sp);
+    host.debugger_step_instruction(); // execute LXI SP,03F0
+    let before_call = host.intel8080_state();
+    assert_eq!(before_call.pc, 0x0003, "{engine:?}");
+    assert_eq!(before_call.sp, 0x03f0, "{engine:?}");
+
+    host.debugger_run_to_with_sp(0x0006, before_call.sp);
     host.run_cycles(512);
 
     let cpu = host.intel8080_state();
-    assert_eq!(cpu.pc, 0x0003, "{engine:?}: guarded target PC");
-    assert_eq!(cpu.sp, initial_sp, "{engine:?}: target must wait for caller stack depth");
+    assert_eq!(cpu.pc, 0x0006, "{engine:?}: guarded target PC");
+    assert_eq!(cpu.sp, before_call.sp, "{engine:?}: target must wait for caller stack depth");
     assert!(!host.running(), "{engine:?}: guarded run-to must stop execution");
-    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0003)), "{engine:?}");
+    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0006)), "{engine:?}");
 }
 
 fn exercise_debugger_instruction_step(engine: EmulationEngine) {
@@ -169,6 +175,33 @@ fn exercise_halted_debugger_step_is_noop(engine: EmulationEngine) {
         history_before.len(),
         "{engine:?}: HLT dwell must not invent a history entry",
     );
+}
+
+fn exercise_hold_blocks_debugger_execution(engine: EmulationEngine) {
+    let mut host = prepared_host(engine, &[0x00, 0x76]); // NOP / HLT
+    host.set_instruction_trace_enabled(true);
+    host.request_hold(true);
+
+    let before = host.intel8080_state();
+    host.debugger_step_instruction();
+    let after_step = host.intel8080_state();
+    assert_eq!(after_step.pc, before.pc, "{engine:?}: debugger step must not execute while HOLD is asserted");
+    assert_eq!(after_step.total_t_states, before.total_t_states, "{engine:?}: stopped debugger step must not consume T-states during HOLD");
+    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: HOLD must not fabricate a completed instruction");
+
+    host.set_running(true);
+    host.run_cycles(64);
+    assert_eq!(host.intel8080_state().pc, 0x0000, "{engine:?}: RUN must not advance guest PC while HOLD owns the bus");
+    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: running HOLD dwell must not fabricate history");
+
+    host.request_hold(false);
+    host.run_cycles(128);
+    let resumed = host.intel8080_state();
+    assert!(resumed.halted.unwrap_or(false), "{engine:?}: execution must resume after HOLD release");
+    let history = host.instruction_trace_snapshot();
+    assert!(history.len() >= 2, "{engine:?}: NOP and HLT should be captured after HOLD release: {history:?}");
+    assert_eq!(history[0].address, 0x0000, "{engine:?}");
+    assert_eq!(history[1].address, 0x0001, "{engine:?}");
 }
 
 fn exercise_memory_read_watchpoint_without_history(engine: EmulationEngine) {
@@ -316,6 +349,7 @@ fn exercise_debugger_suite(engine: EmulationEngine) {
     exercise_stack_guarded_run_to(engine);
     exercise_debugger_instruction_step(engine);
     exercise_halted_debugger_step_is_noop(engine);
+    exercise_hold_blocks_debugger_execution(engine);
     exercise_memory_read_watchpoint_without_history(engine);
     exercise_memory_write_watchpoint_without_history(engine);
     exercise_uninstalled_memory_read_watchpoint(engine);
