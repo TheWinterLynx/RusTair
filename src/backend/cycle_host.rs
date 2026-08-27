@@ -6,7 +6,7 @@ use crate::debugger_control::DebugExecutionControl;
 use crate::machine::CpuDiagnosticResult;
 use crate::trace8080::{
     collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
-    InstructionEffect8080, InstructionTraceBuffer,
+    InstructionEffect8080, InstructionTraceBuffer, InstructionTraceMetadata,
 };
 
 use super::{
@@ -24,10 +24,6 @@ struct PendingInstructionTrace {
     effects: Vec<InstructionEffect8080>,
 }
 
-/// Application-host wrapper around the validated cycle-accurate backend.
-///
-/// The shared Altair/S-100 chassis remains an implementation detail of this
-/// backend. Application/UI code talks only to `MachineBackend`/`BackendHost`.
 pub(super) struct CycleHostBackend {
     inner: CycleAccurateMachineBackend,
     instruction_trace: InstructionTraceBuffer,
@@ -67,9 +63,9 @@ impl CycleHostBackend {
 
     fn trace_bytes(&self, address: u16) -> [u8; 3] {
         [
-            self.inner.machine().bus.peek_memory(address).unwrap_or(0),
-            self.inner.machine().bus.peek_memory(address.wrapping_add(1)).unwrap_or(0),
-            self.inner.machine().bus.peek_memory(address.wrapping_add(2)).unwrap_or(0),
+            self.inner.machine().bus.preview_guest_memory(address),
+            self.inner.machine().bus.preview_guest_memory(address.wrapping_add(1)),
+            self.inner.machine().bus.preview_guest_memory(address.wrapping_add(2)),
         ]
     }
 
@@ -94,7 +90,7 @@ impl CycleHostBackend {
         let before = self.trace_cpu_snapshot();
         let bytes = self.trace_bytes(before.pc);
         let effects = collect_pre_instruction_effects(bytes, before, |address| {
-            self.inner.machine().bus.peek_memory(address)
+            self.inner.machine().bus.preview_guest_memory(address)
         });
         self.pending_instruction_trace = Some(PendingInstructionTrace {
             address: before.pc,
@@ -105,8 +101,6 @@ impl CycleHostBackend {
         });
     }
 
-    /// Finalize one observed guest instruction. Returns true when a memory
-    /// watchpoint matched an effect caused by that instruction.
     fn finish_instruction_trace_if_complete(&mut self) -> bool {
         let Some(pending) = self.pending_instruction_trace.as_ref() else { return false; };
         let at_next_fetch = self.at_instruction_boundary()
@@ -117,12 +111,13 @@ impl CycleHostBackend {
 
         let mut pending = self.pending_instruction_trace.take().expect("pending trace exists");
         let after = self.trace_cpu_snapshot();
-        pending.effects.extend(collect_post_instruction_effects(
+        let post = collect_post_instruction_effects(
             pending.bytes,
             pending.before,
             after,
-            |address| self.inner.machine().bus.peek_memory(address),
-        ));
+            &pending.effects,
+        );
+        pending.effects.extend(post);
         let delta = self.inner.cpu().total_t_states().saturating_sub(pending.start_t_states) as u32;
         if delta == 0 {
             return false;
@@ -154,9 +149,8 @@ impl CycleHostBackend {
             return Ok(());
         }
 
+        self.debug_control.prepare_manual_step();
         let start_t_states = self.inner.cpu().total_t_states();
-        // An 8080 instruction uses only a handful of machine cycles. Keep a
-        // generous hard bound so a malformed core state cannot hang the UI.
         for _ in 0..16 {
             self.begin_instruction_trace_if_needed();
             self.inner.step()?;
@@ -221,7 +215,7 @@ impl MachineBackend for CycleHostBackend {
         self.inner.halt()
     }
     fn step(&mut self) -> BackendResult<()> {
-        // Physical/front-panel SINGLE STEP remains one real machine cycle.
+        self.debug_control.prepare_manual_step();
         self.begin_instruction_trace_if_needed();
         self.inner.step()?;
         self.finish_instruction_trace_if_complete();
@@ -232,9 +226,6 @@ impl MachineBackend for CycleHostBackend {
             return self.inner.service_execution(t_state_budget);
         }
 
-        // Breakpoints are checked only at InstructionFetch/T1, before the opcode
-        // is consumed. Watchpoints stop immediately after the causing guest
-        // instruction completes, with its resulting CPU state still visible.
         for _ in 0..t_state_budget {
             if !self.inner.machine().running {
                 break;
@@ -402,6 +393,9 @@ impl MachineBackend for CycleHostBackend {
     fn instruction_trace_enabled(&mut self) -> BackendResult<bool> {
         Ok(self.instruction_trace.enabled())
     }
+    fn instruction_trace_metadata(&mut self) -> BackendResult<InstructionTraceMetadata> {
+        Ok(self.instruction_trace.metadata())
+    }
     fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> {
         self.instruction_trace.set_enabled(enabled);
         if !enabled && !self.debug_control.has_watchpoints() {
@@ -530,11 +524,8 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0x3e, 0x42, 0x3c, 0x76]).unwrap(); // MVI A,42 / INR A / HLT
+        backend.load_bytes(0, &[0x3e, 0x42, 0x3c, 0x76]).unwrap();
 
-        // RESET guarantees the execution entry point, but the 8080 general
-        // registers are not a contractual zero-filled debugger state. Capture
-        // the actual pre-execution CPU state and require the trace to preserve it.
         let CpuState::Intel8080(initial) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(initial.pc, 0x0000);
 
