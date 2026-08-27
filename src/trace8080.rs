@@ -30,9 +30,7 @@ impl CpuSnapshot8080 {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InstructionTraceMetadata {
-    /// Changes whenever the retained history is explicitly cleared/reset.
     pub generation: u64,
-    /// Number of entries evicted by the bounded ring since the current generation began.
     pub dropped_entries: u64,
     pub capacity: usize,
 }
@@ -139,7 +137,6 @@ fn pushed_pair(snapshot: CpuSnapshot8080, operand: &str) -> Option<u16> {
         "D" => Some(snapshot.de()),
         "H" => Some(snapshot.hl()),
         "PSW" => {
-            // 8080 stack representation fixes bit 1 high and masks unused flag bits.
             let flags = (snapshot.flags & 0xd5) | FLAG_1;
             Some(((snapshot.a as u16) << 8) | u16::from(flags))
         }
@@ -147,10 +144,18 @@ fn pushed_pair(snapshot: CpuSnapshot8080, operand: &str) -> Option<u16> {
     }
 }
 
+fn pre_memory_read(effects: &[InstructionEffect8080], address: u16) -> Option<u8> {
+    effects.iter().find_map(|effect| match *effect {
+        InstructionEffect8080::MemoryRead { address: candidate, value } if candidate == address => {
+            Some(value)
+        }
+        _ => None,
+    })
+}
+
 /// Collect guest-visible data reads before execution mutates state/memory.
 /// Instruction/operand fetches are intentionally excluded. `guest_read` must be
-/// a non-destructive preview of the byte that the emulated CPU would receive;
-/// unlike a physical-RAM peek it must return the open-bus/uninstalled value too.
+/// a non-destructive preview of the byte that the emulated CPU would receive.
 pub fn collect_pre_instruction_effects<F>(
     bytes: [u8; 3],
     before: CpuSnapshot8080,
@@ -206,12 +211,13 @@ where
 
 /// Collect guest-visible writes and I/O after the instruction completes. Write
 /// values are derived from 8080 semantics rather than re-reading RAM afterwards,
-/// so an attempted write is still reported when write protection or uninstalled
-/// address space prevents physical RAM from changing.
+/// so an attempted write remains visible when protection/uninstalled memory
+/// prevents the physical cell from changing.
 pub fn collect_post_instruction_effects(
     bytes: [u8; 3],
     before: CpuSnapshot8080,
     after: CpuSnapshot8080,
+    pre_effects: &[InstructionEffect8080],
 ) -> Vec<InstructionEffect8080> {
     let decoded = decode_8080(bytes[0], bytes[1], bytes[2]);
     let mut effects = Vec::new();
@@ -229,14 +235,14 @@ pub fn collect_post_instruction_effects(
                 memory_write(&mut effects, before.hl(), value);
             }
         }
-        "INR" if op0 == Some("M") => {
-            if let Some(value) = after_memory_result(&effects, before, true) {
-                memory_write(&mut effects, before.hl(), value);
-            }
-        }
-        "DCR" if op0 == Some("M") => {
-            if let Some(value) = after_memory_result(&effects, before, false) {
-                memory_write(&mut effects, before.hl(), value);
+        "INR" | "DCR" if op0 == Some("M") => {
+            if let Some(value) = pre_memory_read(pre_effects, before.hl()) {
+                let written = if decoded.mnemonic == "INR" {
+                    value.wrapping_add(1)
+                } else {
+                    value.wrapping_sub(1)
+                };
+                memory_write(&mut effects, before.hl(), written);
             }
         }
         "STAX" => {
@@ -267,31 +273,19 @@ pub fn collect_post_instruction_effects(
         "RST" => {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
             stack_write(&mut effects, after.sp, return_address as u8);
-            stack_write(
-                &mut effects,
-                after.sp.wrapping_add(1),
-                (return_address >> 8) as u8,
-            );
+            stack_write(&mut effects, after.sp.wrapping_add(1), (return_address >> 8) as u8);
         }
         "CALL" if branch_taken(&decoded, before) => {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
             stack_write(&mut effects, after.sp, return_address as u8);
-            stack_write(
-                &mut effects,
-                after.sp.wrapping_add(1),
-                (return_address >> 8) as u8,
-            );
+            stack_write(&mut effects, after.sp.wrapping_add(1), (return_address >> 8) as u8);
         }
         _ if matches!(decoded.control_flow, ControlFlow::Call { condition: Some(_), .. })
             && branch_taken(&decoded, before) =>
         {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
             stack_write(&mut effects, after.sp, return_address as u8);
-            stack_write(
-                &mut effects,
-                after.sp.wrapping_add(1),
-                (return_address >> 8) as u8,
-            );
+            stack_write(&mut effects, after.sp.wrapping_add(1), (return_address >> 8) as u8);
         }
         _ => {}
     }
@@ -311,49 +305,6 @@ pub fn collect_post_instruction_effects(
     }
 
     effects
-}
-
-/// INR/DCR M need the value read before execution to derive the attempted write.
-/// The pre-read is intentionally not passed into the post collector, so callers
-/// should merge both vectors and then repair this pair with `complete_memory_rmw`.
-/// Keeping that repair explicit prevents post-execution physical RAM from being
-/// mistaken for the bus value when protection blocks a write.
-fn after_memory_result(
-    _post_effects: &[InstructionEffect8080],
-    _before: CpuSnapshot8080,
-    _increment: bool,
-) -> Option<u8> {
-    None
-}
-
-pub fn complete_memory_rmw(
-    bytes: [u8; 3],
-    effects: &mut Vec<InstructionEffect8080>,
-) {
-    let decoded = decode_8080(bytes[0], bytes[1], bytes[2]);
-    if !matches!(decoded.mnemonic, "INR" | "DCR")
-        || decoded.operands.first().map(String::as_str) != Some("M")
-    {
-        return;
-    }
-    if effects.iter().any(|effect| matches!(effect, InstructionEffect8080::MemoryWrite { .. })) {
-        return;
-    }
-    let Some((address, value)) = effects.iter().find_map(|effect| match *effect {
-        InstructionEffect8080::MemoryRead { address, value } => Some((address, value)),
-        _ => None,
-    }) else {
-        return;
-    };
-    let written = if decoded.mnemonic == "INR" {
-        value.wrapping_add(1)
-    } else {
-        value.wrapping_sub(1)
-    };
-    effects.push(InstructionEffect8080::MemoryWrite {
-        address,
-        value: written,
-    });
 }
 
 #[derive(Debug)]
@@ -497,28 +448,28 @@ mod tests {
         });
         assert_eq!(pre, vec![InstructionEffect8080::MemoryRead { address: 0x1234, value: 0x66 }]);
 
-        let post = collect_post_instruction_effects([0x77, 0, 0], before, after);
+        let post = collect_post_instruction_effects([0x77, 0, 0], before, after, &[]);
         assert_eq!(post, vec![InstructionEffect8080::MemoryWrite { address: 0x1234, value: 0x55 }]);
 
-        let input = collect_post_instruction_effects([0xdb, 0x10, 0], before, after);
+        let input = collect_post_instruction_effects([0xdb, 0x10, 0], before, after, &[]);
         assert_eq!(input, vec![InstructionEffect8080::IoRead { port: 0x10, value: 0x66 }]);
-        let output = collect_post_instruction_effects([0xd3, 0x11, 0], before, after);
+        let output = collect_post_instruction_effects([0xd3, 0x11, 0], before, after, &[]);
         assert_eq!(output, vec![InstructionEffect8080::IoWrite { port: 0x11, value: 0x55 }]);
     }
 
     #[test]
     fn protected_or_uninstalled_write_value_does_not_depend_on_post_ram() {
         let before = CpuSnapshot8080 { h: 0x20, l: 0x00, a: 0xa5, ..CpuSnapshot8080::default() };
-        let post = collect_post_instruction_effects([0x77, 0, 0], before, before);
+        let post = collect_post_instruction_effects([0x77, 0, 0], before, before, &[]);
         assert_eq!(post, vec![InstructionEffect8080::MemoryWrite { address: 0x2000, value: 0xa5 }]);
     }
 
     #[test]
     fn inr_m_reports_read_and_attempted_write() {
         let before = CpuSnapshot8080 { h: 0x01, l: 0x00, ..CpuSnapshot8080::default() };
-        let mut effects = collect_pre_instruction_effects([0x34, 0, 0], before, |_| 0xff);
-        effects.extend(collect_post_instruction_effects([0x34, 0, 0], before, before));
-        complete_memory_rmw([0x34, 0, 0], &mut effects);
+        let pre = collect_pre_instruction_effects([0x34, 0, 0], before, |_| 0xff);
+        let mut effects = pre.clone();
+        effects.extend(collect_post_instruction_effects([0x34, 0, 0], before, before, &pre));
         assert_eq!(effects, vec![
             InstructionEffect8080::MemoryRead { address: 0x0100, value: 0xff },
             InstructionEffect8080::MemoryWrite { address: 0x0100, value: 0x00 },
