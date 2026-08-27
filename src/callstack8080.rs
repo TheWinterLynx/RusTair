@@ -1,5 +1,5 @@
 use crate::decoder8080::{decode_8080, ControlFlow};
-use crate::trace8080::{InstructionTraceEntry, DEFAULT_INSTRUCTION_HISTORY_LIMIT};
+use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallKind8080 {
@@ -20,23 +20,27 @@ pub struct InferredCallFrame8080 {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct InferredCallStack8080 {
     pub frames: Vec<InferredCallFrame8080>,
-    /// True when execution before the retained trace may contain older frames,
-    /// or when a sequence gap/mismatched return makes the lower stack uncertain.
+    /// A known loss/mismatch occurred inside the retained observation window.
+    /// Even when false, callers predating capture are deliberately not claimed.
     pub incomplete: bool,
     pub last_sequence: Option<u64>,
     pub diagnostic: Option<String>,
 }
 
-pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallStack8080 {
+pub fn infer_call_stack_8080(
+    history: &[InstructionTraceEntry],
+    metadata: InstructionTraceMetadata,
+) -> InferredCallStack8080 {
     let mut result = InferredCallStack8080::default();
     let Some(first) = history.first() else { return result; };
 
-    // Sequence numbers intentionally survive Clear. Therefore first.sequence > 1
-    // alone does not prove truncation. A full bounded buffer whose first entry is
-    // no longer #1 does prove that older execution was evicted.
-    if history.len() >= DEFAULT_INSTRUCTION_HISTORY_LIMIT && first.sequence > 1 {
+    if metadata.dropped_entries != 0 {
         result.incomplete = true;
-        result.diagnostic = Some("older execution was evicted from the bounded history".into());
+        result.diagnostic = Some(format!(
+            "{} older trace entr{} evicted from the bounded history",
+            metadata.dropped_entries,
+            if metadata.dropped_entries == 1 { "y was" } else { "ies were" },
+        ));
     }
 
     let mut expected_sequence = first.sequence;
@@ -55,8 +59,11 @@ pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallS
         let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
         let sequential = entry.address.wrapping_add(u16::from(decoded.length));
         match decoded.control_flow {
-            ControlFlow::Call { target, .. } => {
-                if entry.after.pc == target {
+            ControlFlow::Call { target, condition } => {
+                let taken = condition
+                    .map(|condition| condition.evaluate(entry.before.flags))
+                    .unwrap_or(true);
+                if taken {
                     result.frames.push(InferredCallFrame8080 {
                         kind: CallKind8080::Call,
                         call_site: entry.address,
@@ -68,19 +75,19 @@ pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallS
                 }
             }
             ControlFlow::Restart { vector } => {
-                if entry.after.pc == vector {
-                    result.frames.push(InferredCallFrame8080 {
-                        kind: CallKind8080::Restart,
-                        call_site: entry.address,
-                        target: vector,
-                        return_address: sequential,
-                        stack_pointer_after_push: entry.after.sp,
-                        sequence: entry.sequence,
-                    });
-                }
+                result.frames.push(InferredCallFrame8080 {
+                    kind: CallKind8080::Restart,
+                    call_site: entry.address,
+                    target: vector,
+                    return_address: sequential,
+                    stack_pointer_after_push: entry.after.sp,
+                    sequence: entry.sequence,
+                });
             }
             ControlFlow::Return { condition } => {
-                let taken = condition.is_none() || entry.after.pc != sequential;
+                let taken = condition
+                    .map(|condition| condition.evaluate(entry.before.flags))
+                    .unwrap_or(true);
                 if !taken {
                     continue;
                 }
@@ -106,12 +113,14 @@ pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cpu8080::FLAG_Z;
     use crate::trace8080::CpuSnapshot8080;
 
-    fn entry(
+    fn entry_with_flags(
         sequence: u64,
         address: u16,
         bytes: [u8; 3],
+        flags: u8,
         before_sp: u16,
         after_pc: u16,
         after_sp: u16,
@@ -123,9 +132,38 @@ mod tests {
             bytes,
             length: decoded.length,
             t_states: decoded.timing.base_t_states.into(),
-            before: CpuSnapshot8080 { pc: address, sp: before_sp, ..CpuSnapshot8080::default() },
-            after: CpuSnapshot8080 { pc: after_pc, sp: after_sp, ..CpuSnapshot8080::default() },
+            before: CpuSnapshot8080 {
+                pc: address,
+                sp: before_sp,
+                flags,
+                ..CpuSnapshot8080::default()
+            },
+            after: CpuSnapshot8080 {
+                pc: after_pc,
+                sp: after_sp,
+                flags,
+                ..CpuSnapshot8080::default()
+            },
             effects: Vec::new(),
+        }
+    }
+
+    fn entry(
+        sequence: u64,
+        address: u16,
+        bytes: [u8; 3],
+        before_sp: u16,
+        after_pc: u16,
+        after_sp: u16,
+    ) -> InstructionTraceEntry {
+        entry_with_flags(sequence, address, bytes, 0, before_sp, after_pc, after_sp)
+    }
+
+    fn metadata() -> InstructionTraceMetadata {
+        InstructionTraceMetadata {
+            generation: 1,
+            dropped_entries: 0,
+            capacity: 4096,
         }
     }
 
@@ -135,7 +173,7 @@ mod tests {
             entry(1, 0x0100, [0xcd, 0x00, 0x02], 0x1000, 0x0200, 0x0ffe),
             entry(2, 0x0200, [0xc9, 0, 0], 0x0ffe, 0x0103, 0x1000),
         ];
-        let stack = infer_call_stack_8080(&history);
+        let stack = infer_call_stack_8080(&history, metadata());
         assert!(stack.frames.is_empty());
         assert!(!stack.incomplete);
     }
@@ -146,7 +184,7 @@ mod tests {
             entry(1, 0x0100, [0xcd, 0x00, 0x02], 0x1000, 0x0200, 0x0ffe),
             entry(2, 0x0200, [0xcd, 0x00, 0x03], 0x0ffe, 0x0300, 0x0ffc),
         ];
-        let stack = infer_call_stack_8080(&history);
+        let stack = infer_call_stack_8080(&history, metadata());
         assert_eq!(stack.frames.len(), 2);
         assert_eq!(stack.frames[0].return_address, 0x0103);
         assert_eq!(stack.frames[1].return_address, 0x0203);
@@ -154,25 +192,39 @@ mod tests {
     }
 
     #[test]
-    fn conditional_call_not_taken_does_not_create_frame() {
-        let history = vec![entry(1, 0x0100, [0xcc, 0x00, 0x02], 0x1000, 0x0103, 0x1000)];
-        assert!(infer_call_stack_8080(&history).frames.is_empty());
+    fn conditional_call_uses_before_flags_even_when_target_equals_sequential_pc() {
+        // CNZ $0103 at $0100. Z=1 means NOT TAKEN, even though target equals
+        // the sequential PC and therefore PC comparison alone is ambiguous.
+        let history = vec![entry_with_flags(
+            1,
+            0x0100,
+            [0xc4, 0x03, 0x01],
+            FLAG_Z,
+            0x1000,
+            0x0103,
+            0x1000,
+        )];
+        assert!(infer_call_stack_8080(&history, metadata()).frames.is_empty());
     }
 
     #[test]
-    fn clear_baseline_with_high_sequence_is_not_mistaken_for_truncation() {
-        let history = vec![entry(42, 0x0200, [0x00, 0, 0], 0x1000, 0x0201, 0x1000)];
-        assert!(!infer_call_stack_8080(&history).incomplete);
+    fn conditional_return_uses_flags_even_when_return_equals_sequential_pc() {
+        // CALL creates return $0103. RZ at $0200 is taken with Z=1, and the
+        // stacked return is deliberately $0201 (the sequential PC of RZ).
+        let history = vec![
+            entry(1, 0x0100, [0xcd, 0x00, 0x02], 0x1000, 0x0200, 0x0ffe),
+            entry_with_flags(2, 0x0200, [0xc8, 0, 0], FLAG_Z, 0x0ffe, 0x0103, 0x1000),
+        ];
+        let stack = infer_call_stack_8080(&history, metadata());
+        assert!(stack.frames.is_empty());
+        assert!(!stack.incomplete);
     }
 
     #[test]
-    fn full_shifted_history_is_marked_truncated() {
-        let history: Vec<_> = (0..DEFAULT_INSTRUCTION_HISTORY_LIMIT)
-            .map(|index| {
-                let sequence = index as u64 + 42;
-                entry(sequence, index as u16, [0x00, 0, 0], 0x1000, index as u16 + 1, 0x1000)
-            })
-            .collect();
-        assert!(infer_call_stack_8080(&history).incomplete);
+    fn explicit_eviction_marks_retained_stack_incomplete() {
+        let mut meta = metadata();
+        meta.dropped_entries = 7;
+        let stack = infer_call_stack_8080(&[entry(42, 0x0200, [0x00, 0, 0], 0x1000, 0x0201, 0x1000)], meta);
+        assert!(stack.incomplete);
     }
 }
