@@ -48,7 +48,6 @@ impl RusTairApp {
     pub(in crate::app) fn open_memory_activity(&mut self, ctx: &egui::Context) {
         let mut state = Self::memory_activity_state(ctx);
         state.window_open = true;
-        self.machine.set_instruction_trace_enabled(true);
         Self::store_memory_activity_state(ctx, state);
     }
 
@@ -58,7 +57,8 @@ impl RusTairApp {
         state: &mut MemoryActivityUiState,
     ) {
         let history = self.machine.instruction_trace_snapshot();
-        let activity = summarize_memory_activity_8080(&history);
+        let metadata = self.machine.instruction_trace_metadata();
+        let activity = summarize_memory_activity_8080(&history, metadata);
         let cpu = self.machine.intel8080_state();
 
         let mut rows: Vec<_> = activity.iter().collect();
@@ -82,9 +82,17 @@ impl RusTairApp {
                 ui.separator();
                 ui.monospace(format!("PC=${:04X} HL=${:04X} SP=${:04X}", cpu.pc, cpu.hl(), cpu.sp));
             });
-            ui.small("EXECUTE counts instruction starts; READ/WRITE count guest data-memory and stack transfers. Opcode/operand fetches are intentionally not counted as data reads.");
-            if activity.history_gap {
-                ui.small("The retained trace is incomplete or has a gap; counts are lower bounds for activity before the retained window.");
+            ui.small("EXECUTE counts instruction starts; READ/WRITE count guest data-memory and stack bus transfers. Opcode/operand fetches are intentionally excluded.");
+            ui.small("WRITE means the 8080 attempted the write transfer; front-panel protection or uninstalled RAM may prevent the physical cell from changing.");
+            if activity.dropped_entries != 0 {
+                ui.small(format!(
+                    "{} older trace entr{} were evicted; displayed activity counts are lower bounds for the current capture generation.",
+                    activity.dropped_entries,
+                    if activity.dropped_entries == 1 { "y" } else { "ies" },
+                ));
+            }
+            if activity.sequence_gap {
+                ui.small("A sequence gap exists inside the retained trace; displayed activity counts are incomplete.");
             }
 
             ui.separator();
@@ -103,7 +111,7 @@ impl RusTairApp {
                 ui.checkbox(&mut state.descending, "Descending");
                 if ui.button("Clear trace").clicked() {
                     self.machine.clear_instruction_trace();
-                    state.message = Some("Instruction trace/activity counters cleared.".into());
+                    state.message = Some("Instruction trace/activity counters cleared; this starts a new capture generation.".into());
                 }
             });
 
@@ -158,10 +166,6 @@ impl RusTairApp {
             return;
         }
 
-        if !self.machine.instruction_trace_enabled() {
-            self.machine.set_instruction_trace_enabled(true);
-        }
-
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-8080-memory-activity-viewport"),
             egui::ViewportBuilder::default()
@@ -179,4 +183,8 @@ impl RusTairApp {
 
         Self::store_memory_activity_state(parent_ctx, state);
     }
+}
+
+pub(super) fn trace_requested(ctx: &egui::Context) -> bool {
+    RusTairApp::memory_activity_state(ctx).window_open
 }
