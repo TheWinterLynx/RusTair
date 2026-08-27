@@ -277,6 +277,7 @@ impl eframe::App for RusTairApp {
                     if self.external_com.available_ports.is_empty() { self.refresh_external_com_ports(); }
                 }
                 if ui.button("RAM VIEWER").clicked() { self.open_memory_viewer(ctx); }
+                if ui.button("DEBUGGER").clicked() { self.open_debugger_controls(ctx); }
                 if ui.button("EXEC HISTORY").clicked() { self.open_instruction_history(ctx); }
                 if ui.button("I/O INSPECTOR").clicked() { self.open_io_inspector(ctx); }
                 if ui.button("PANEL OPERATOR").clicked() { self.open_standalone_front_panel_operator(ctx); }
@@ -326,6 +327,7 @@ impl eframe::App for RusTairApp {
         self.show_external_serial_viewport(ctx);
         self.show_external_com_viewport(ctx);
         self.show_memory_viewer_viewport(ctx);
+        self.show_debugger_controls_viewport(ctx);
         self.show_instruction_history_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
         self.show_standalone_front_panel_operator_viewport(ctx);
