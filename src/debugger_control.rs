@@ -58,11 +58,29 @@ impl DebugStopReason {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RunToTarget {
+    address: u16,
+    required_sp: Option<u16>,
+}
+
+impl RunToTarget {
+    const fn matches(self, pc: u16, sp: Option<u16>) -> bool {
+        if self.address != pc {
+            return false;
+        }
+        match self.required_sp {
+            Some(required) => matches!(sp, Some(actual) if actual == required),
+            None => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DebugExecutionControl {
     breakpoints: BTreeSet<u16>,
     watchpoints: BTreeMap<u16, MemoryWatchAccess>,
-    run_to: Option<u16>,
+    run_to: Option<RunToTarget>,
     resume_skip_once: Option<u16>,
     stop_reason: Option<DebugStopReason>,
 }
@@ -126,7 +144,21 @@ impl DebugExecutionControl {
         // This is required when Run to / Step over starts while stopped on an
         // execute breakpoint at the current PC: that opcode must be allowed to
         // execute once rather than immediately re-triggering the breakpoint.
-        self.run_to = Some(address);
+        self.run_to = Some(RunToTarget {
+            address,
+            required_sp: None,
+        });
+    }
+
+    /// Arm a temporary run target that is satisfied only when both PC and SP
+    /// match. This makes Step over/out robust when the same code address is
+    /// encountered at a deeper call depth before the original stack level is
+    /// restored. Manual "Run to address" intentionally remains PC-only.
+    pub fn set_run_to_with_sp(&mut self, address: u16, required_sp: u16) {
+        self.run_to = Some(RunToTarget {
+            address,
+            required_sp: Some(required_sp),
+        });
     }
 
     pub fn cancel_run_to(&mut self) {
@@ -134,7 +166,11 @@ impl DebugExecutionControl {
     }
 
     pub fn run_to(&self) -> Option<u16> {
-        self.run_to
+        self.run_to.map(|target| target.address)
+    }
+
+    pub fn run_to_required_sp(&self) -> Option<u16> {
+        self.run_to.and_then(|target| target.required_sp)
     }
 
     pub fn stop_reason(&self) -> Option<DebugStopReason> {
@@ -155,31 +191,36 @@ impl DebugExecutionControl {
         self.stop_reason = None;
     }
 
-    /// Resuming after an execute breakpoint must execute that instruction once
-    /// instead of immediately re-triggering. Merely having a breakpoint at the
-    /// current PC is not enough: a fresh RUN must still stop before that opcode.
-    /// If the breakpoint was removed while stopped, there is nothing to skip.
-    /// An explicit run-to at this exact PC has higher priority and must stop
-    /// immediately rather than being consumed by the breakpoint resume skip.
-    pub fn prepare_resume(&mut self, pc: u16) {
+    fn prepare_resume_internal(&mut self, pc: u16, sp: Option<u16>) {
+        let run_to_matches_now = self
+            .run_to
+            .is_some_and(|target| target.matches(pc, sp));
         let stopped_on_active_breakpoint = matches!(
             self.stop_reason,
             Some(DebugStopReason::ExecuteBreakpoint(address)) if address == pc
         ) && self.breakpoints.contains(&pc)
-            && self.run_to != Some(pc);
+            && !run_to_matches_now;
         self.resume_skip_once = stopped_on_active_breakpoint.then_some(pc);
         self.stop_reason = None;
     }
 
-    /// Called only at a true instruction boundary, before fetching the next
-    /// guest opcode. Returns the reason when execution must stop at this PC.
-    pub fn stop_before(&mut self, pc: u16) -> Option<DebugStopReason> {
+    /// Compatibility path for address-only callers/tests. Built-in backends use
+    /// `prepare_resume_with_sp` so guarded stepping can distinguish call depth.
+    pub fn prepare_resume(&mut self, pc: u16) {
+        self.prepare_resume_internal(pc, None);
+    }
+
+    pub fn prepare_resume_with_sp(&mut self, pc: u16, sp: u16) {
+        self.prepare_resume_internal(pc, Some(sp));
+    }
+
+    fn stop_before_internal(&mut self, pc: u16, sp: Option<u16>) -> Option<DebugStopReason> {
         if self.resume_skip_once == Some(pc) {
             self.resume_skip_once = None;
             return None;
         }
 
-        if self.run_to == Some(pc) {
+        if self.run_to.is_some_and(|target| target.matches(pc, sp)) {
             self.run_to = None;
             let reason = DebugStopReason::RunTo(pc);
             self.stop_reason = Some(reason);
@@ -193,6 +234,16 @@ impl DebugExecutionControl {
         }
 
         None
+    }
+
+    /// Address-only compatibility path. Built-in CPU backends use
+    /// `stop_before_with_sp` at real instruction boundaries.
+    pub fn stop_before(&mut self, pc: u16) -> Option<DebugStopReason> {
+        self.stop_before_internal(pc, None)
+    }
+
+    pub fn stop_before_with_sp(&mut self, pc: u16, sp: u16) -> Option<DebugStopReason> {
+        self.stop_before_internal(pc, Some(sp))
     }
 
     /// Called after one guest instruction has completed. Memory watchpoints are
@@ -270,6 +321,21 @@ mod tests {
         control.set_run_to(0x1234);
         control.prepare_resume(0x1234);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::RunTo(0x1234)));
+        assert_eq!(control.run_to(), None);
+    }
+
+    #[test]
+    fn guarded_run_to_waits_for_required_stack_level() {
+        let mut control = DebugExecutionControl::default();
+        control.set_run_to_with_sp(0x2000, 0x4000);
+        assert_eq!(control.run_to(), Some(0x2000));
+        assert_eq!(control.run_to_required_sp(), Some(0x4000));
+        assert_eq!(control.stop_before_with_sp(0x2000, 0x3ffe), None);
+        assert_eq!(control.run_to(), Some(0x2000));
+        assert_eq!(
+            control.stop_before_with_sp(0x2000, 0x4000),
+            Some(DebugStopReason::RunTo(0x2000))
+        );
         assert_eq!(control.run_to(), None);
     }
 
