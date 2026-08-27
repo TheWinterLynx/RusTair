@@ -11,6 +11,11 @@ impl InstructionAt {
     pub fn next_address(&self) -> Option<u16> {
         self.address.checked_add(u16::from(self.decoded.length))
     }
+
+    pub fn contains_address(&self, address: u16) -> bool {
+        let end = self.address.saturating_add(u16::from(self.decoded.length));
+        address >= self.address && address < end
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,20 +66,24 @@ fn verify_loop_from<F>(
     read: &mut F,
     start: u16,
     back_edge: u16,
-    pc: u16,
+    observed_pc: u16,
     flags: u8,
 ) -> Option<SimpleLoop>
 where
     F: FnMut(u16) -> Option<u8>,
 {
     let mut cursor = start;
-    let mut pc_is_instruction_boundary = false;
+    // Cycle Accurate can expose the architectural PC after an opcode/operand
+    // byte has already been consumed. The loop proof remains instruction-
+    // aligned; only containment of the live PC is tolerant of those operand
+    // positions so the UI does not flicker between Some/None mid-instruction.
+    let mut pc_is_inside_proven_instruction = false;
     let mut instructions = Vec::new();
 
     for _ in 0..256 {
         let instruction = decode_at(&mut *read, cursor)?;
-        if cursor == pc {
-            pc_is_instruction_boundary = true;
+        if instruction.contains_address(observed_pc) {
+            pc_is_inside_proven_instruction = true;
         }
 
         if cursor == back_edge {
@@ -85,7 +94,7 @@ where
             debug_assert_eq!(target, start);
             let branch_taken_now = condition.map_or(true, |condition| condition.evaluate(flags));
             instructions.push(instruction);
-            return pc_is_instruction_boundary.then_some(SimpleLoop {
+            return pc_is_inside_proven_instruction.then_some(SimpleLoop {
                 start,
                 back_edge,
                 condition,
@@ -113,12 +122,15 @@ where
     None
 }
 
-/// Detect a high-confidence simple loop containing the current PC.
+/// Detect a high-confidence simple loop containing the current execution
+/// position.
 ///
-/// The detector searches forward for a direct backward JMP/Jcc whose target is
-/// at or before PC, then proves that decoding linearly from that target lands
-/// exactly on the branch and that PC is an instruction boundary in that block.
-/// This avoids treating arbitrary operand/data bytes as loop branches.
+/// The detector searches for a direct backward JMP/Jcc and then proves that
+/// decoding linearly from its target lands exactly on that branch. The observed
+/// PC may be either the opcode address or one of the at-most-two operand bytes
+/// of a proven instruction. That distinction matters on the cycle-accurate core,
+/// whose architectural PC advances during the instruction; accepting operand
+/// positions prevents UI flicker without accepting arbitrary data as code.
 pub fn detect_simple_backward_loop<F>(
     mut read: F,
     pc: u16,
@@ -128,10 +140,12 @@ where
     F: FnMut(u16) -> Option<u8>,
 {
     const FORWARD_SEARCH_BYTES: u16 = 0x0100;
+    const MAX_OPERAND_BYTES: u16 = 2;
+    let search_start = pc.saturating_sub(MAX_OPERAND_BYTES);
     let search_end = pc.saturating_add(FORWARD_SEARCH_BYTES);
     let mut best: Option<SimpleLoop> = None;
 
-    let mut candidate = pc;
+    let mut candidate = search_start;
     loop {
         if let Some(instruction) = decode_at(&mut read, candidate) {
             if let ControlFlow::Jump { target, .. } = instruction.decoded.control_flow {
@@ -184,6 +198,31 @@ mod tests {
 
         let exiting = detect_simple_backward_loop(reader(&memory), 0x0003, FLAG_Z).unwrap();
         assert!(!exiting.branch_taken_now);
+    }
+
+    #[test]
+    fn cycle_operand_pc_positions_remain_inside_same_proven_loop() {
+        // During the JNZ operand reads Cycle Accurate can expose PC=0004/0005.
+        // Those are not opcode boundaries, but they are bytes of the already
+        // proven back-edge instruction and must not make Loop Inspector vanish.
+        let memory = [0x06, 0x03, 0x05, 0xc2, 0x02, 0x00, 0x76];
+        for pc in [0x0003, 0x0004, 0x0005] {
+            let found = detect_simple_backward_loop(reader(&memory), pc, 0)
+                .unwrap_or_else(|| panic!("loop disappeared for in-flight PC {pc:04X}"));
+            assert_eq!(found.start, 0x0002);
+            assert_eq!(found.back_edge, 0x0003);
+        }
+    }
+
+    #[test]
+    fn cycle_operand_pc_inside_linear_body_remains_in_loop() {
+        // 0000: MVI B,03 (two bytes)
+        // 0002: DCR B
+        // 0003: JNZ 0000
+        let memory = [0x06, 0x03, 0x05, 0xc2, 0x00, 0x00];
+        let found = detect_simple_backward_loop(reader(&memory), 0x0001, 0).unwrap();
+        assert_eq!(found.start, 0x0000);
+        assert_eq!(found.back_edge, 0x0003);
     }
 
     #[test]
