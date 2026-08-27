@@ -3,7 +3,10 @@ use std::time::Duration;
 use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::machine::CpuDiagnosticResult;
-use crate::trace8080::{CpuSnapshot8080, InstructionTraceBuffer};
+use crate::trace8080::{
+    collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
+    InstructionEffect8080, InstructionTraceBuffer,
+};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
@@ -17,6 +20,7 @@ struct PendingInstructionTrace {
     bytes: [u8; 3],
     before: CpuSnapshot8080,
     start_t_states: u64,
+    effects: Vec<InstructionEffect8080>,
 }
 
 /// Application-host wrapper around the validated cycle-accurate backend.
@@ -77,11 +81,16 @@ impl CycleHostBackend {
         }
 
         let before = self.trace_cpu_snapshot();
+        let bytes = self.trace_bytes(before.pc);
+        let effects = collect_pre_instruction_effects(bytes, before, |address| {
+            self.inner.machine().bus.peek_memory(address)
+        });
         self.pending_instruction_trace = Some(PendingInstructionTrace {
             address: before.pc,
-            bytes: self.trace_bytes(before.pc),
+            bytes,
             before,
             start_t_states: self.inner.cpu().total_t_states(),
+            effects,
         });
     }
 
@@ -94,16 +103,23 @@ impl CycleHostBackend {
             return;
         }
 
-        let pending = self.pending_instruction_trace.take().expect("pending trace exists");
+        let mut pending = self.pending_instruction_trace.take().expect("pending trace exists");
         let after = self.trace_cpu_snapshot();
+        pending.effects.extend(collect_post_instruction_effects(
+            pending.bytes,
+            pending.before,
+            after,
+            |address| self.inner.machine().bus.peek_memory(address),
+        ));
         let delta = self.inner.cpu().total_t_states().saturating_sub(pending.start_t_states) as u32;
         if delta != 0 {
-            self.instruction_trace.push(
+            self.instruction_trace.push_with_effects(
                 pending.address,
                 pending.bytes,
                 pending.before,
                 after,
                 delta,
+                pending.effects,
             );
         }
     }
