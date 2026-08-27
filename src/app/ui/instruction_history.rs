@@ -1,7 +1,7 @@
 use super::super::{egui, RusTairApp};
 use crate::backend::{Intel8080State, InstructionTraceEntry};
 use crate::config::SerialBoard;
-use crate::debugger8080::{detect_simple_backward_loop, SimpleLoop};
+use crate::debugger8080::detect_simple_backward_loop;
 use crate::decoder8080::{decode_8080, ControlFlow};
 use crate::explain8080::explain_instruction;
 use crate::trace8080::{CpuSnapshot8080, InstructionEffect8080};
@@ -16,12 +16,6 @@ struct InstructionHistoryUiState {
     capture: bool,
     follow_latest: bool,
     selected_sequence: Option<u64>,
-    loop_inspector_open: bool,
-    loop_snapshot: Option<SimpleLoop>,
-    loop_iterations: u64,
-    loop_last_sequence: u64,
-    loop_trace_gap: bool,
-    loop_exited: bool,
 }
 
 impl Default for InstructionHistoryUiState {
@@ -31,12 +25,6 @@ impl Default for InstructionHistoryUiState {
             capture: true,
             follow_latest: true,
             selected_sequence: None,
-            loop_inspector_open: false,
-            loop_snapshot: None,
-            loop_iterations: 0,
-            loop_last_sequence: 0,
-            loop_trace_gap: false,
-            loop_exited: false,
         }
     }
 }
@@ -60,7 +48,6 @@ impl RusTairApp {
         state.window_open = true;
         state.capture = true;
         state.follow_latest = true;
-        self.machine.set_instruction_trace_enabled(true);
         Self::store_instruction_history_state(ctx, state);
     }
 
@@ -118,45 +105,54 @@ impl RusTairApp {
 
     fn observed_flow(entry: &InstructionTraceEntry) -> String {
         let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
-        let sequential = entry.address.wrapping_add(decoded.length as u16);
+        let sequential = entry.address.wrapping_add(u16::from(decoded.length));
         match decoded.control_flow {
             ControlFlow::Jump { target, condition } => {
-                let taken = entry.after.pc == target;
+                let taken = condition
+                    .map(|condition| condition.evaluate(entry.before.flags))
+                    .unwrap_or(true);
                 match condition {
                     Some(condition) => format!(
-                        "Observed branch: {} was {} -> {}",
+                        "Observed branch: {} was {} -> PC=${:04X}",
                         condition.label(),
                         if taken { "TAKEN" } else { "NOT TAKEN" },
-                        if taken { format!("PC=${target:04X}") } else { format!("PC=${sequential:04X}") }
+                        entry.after.pc,
                     ),
                     None => format!("Observed JMP -> PC=${:04X}", entry.after.pc),
                 }
             }
-            ControlFlow::Call { target, condition } => {
-                let taken = entry.after.pc == target;
+            ControlFlow::Call { condition, .. } => {
+                let taken = condition
+                    .map(|condition| condition.evaluate(entry.before.flags))
+                    .unwrap_or(true);
                 match condition {
                     Some(condition) => format!(
                         "Observed call: {} was {} -> PC=${:04X}",
                         condition.label(),
                         if taken { "TAKEN" } else { "NOT TAKEN" },
-                        entry.after.pc
+                        entry.after.pc,
                     ),
                     None => format!("Observed CALL -> PC=${:04X}, SP=${:04X}", entry.after.pc, entry.after.sp),
                 }
             }
-            ControlFlow::Return { condition } => match condition {
-                Some(condition) => format!(
-                    "Observed return: {} was {} -> PC=${:04X}",
-                    condition.label(),
-                    if entry.after.pc != sequential { "TAKEN" } else { "NOT TAKEN" },
-                    entry.after.pc
-                ),
-                None => format!("Observed RET -> PC=${:04X}, SP=${:04X}", entry.after.pc, entry.after.sp),
-            },
+            ControlFlow::Return { condition } => {
+                let taken = condition
+                    .map(|condition| condition.evaluate(entry.before.flags))
+                    .unwrap_or(true);
+                match condition {
+                    Some(condition) => format!(
+                        "Observed return: {} was {} -> PC=${:04X}",
+                        condition.label(),
+                        if taken { "TAKEN" } else { "NOT TAKEN" },
+                        entry.after.pc,
+                    ),
+                    None => format!("Observed RET -> PC=${:04X}, SP=${:04X}", entry.after.pc, entry.after.sp),
+                }
+            }
             ControlFlow::Restart { vector } => format!("Observed RST -> PC=${vector:04X}, SP=${:04X}", entry.after.sp),
             ControlFlow::IndirectJump => format!("Observed PCHL -> PC=${:04X}", entry.after.pc),
             ControlFlow::Halt => format!("Observed HLT -> HALT={}", u8::from(entry.after.halted)),
-            ControlFlow::Linear => format!("Observed linear flow -> PC=${:04X}", entry.after.pc),
+            ControlFlow::Linear => format!("Observed linear flow -> PC=${:04X} (sequential ${sequential:04X})", entry.after.pc),
         }
     }
 
@@ -166,30 +162,31 @@ impl RusTairApp {
         }
 
         let board = self.config.machine.serial_board;
-        match board {
+        let mapped = match board {
             SerialBoard::Sio88 => {
                 if port == board.status_port() {
-                    Some("MITS 88-SIO status port".into())
+                    Some("MITS 88-SIO status port")
                 } else if port == board.data_port() {
-                    Some("MITS 88-SIO data port".into())
+                    Some("MITS 88-SIO data port")
                 } else {
                     None
                 }
             }
             SerialBoard::TwoSio88 => {
                 if port == board.status_port() {
-                    Some("MITS 88-2SIO Port 0 status/control".into())
+                    Some("MITS 88-2SIO Port 0 status/control")
                 } else if port == board.data_port() {
-                    Some("MITS 88-2SIO Port 0 data".into())
+                    Some("MITS 88-2SIO Port 0 data")
                 } else if board.port1_status_port() == Some(port) {
-                    Some("MITS 88-2SIO Port 1 status/control".into())
+                    Some("MITS 88-2SIO Port 1 status/control")
                 } else if board.port1_data_port() == Some(port) {
-                    Some("MITS 88-2SIO Port 1 data".into())
+                    Some("MITS 88-2SIO Port 1 data")
                 } else {
                     None
                 }
             }
-        }
+        };
+        mapped.map(|label| format!("Current board mapping: {label}"))
     }
 
     fn draw_effect(&self, ui: &mut egui::Ui, effect: InstructionEffect8080) {
@@ -203,73 +200,20 @@ impl RusTairApp {
                         ui.small(context);
                     }
                 }
+                InstructionEffect8080::MemoryWrite { .. }
+                | InstructionEffect8080::StackWrite { .. } => {
+                    ui.separator();
+                    ui.small("guest write transfer/attempt");
+                }
                 _ => {}
             }
         });
-    }
-
-    fn loop_for_entry(&mut self, entry: &InstructionTraceEntry) -> Option<SimpleLoop> {
-        detect_simple_backward_loop(
-            |address| self.machine.peek_memory(address),
-            entry.after.pc,
-            entry.after.flags,
-        )
-    }
-
-    fn open_traced_loop_inspector(
-        &mut self,
-        state: &mut InstructionHistoryUiState,
-        loop_info: SimpleLoop,
-        latest_sequence: u64,
-    ) {
-        state.loop_snapshot = Some(loop_info);
-        state.loop_inspector_open = true;
-        state.loop_iterations = 0;
-        state.loop_last_sequence = latest_sequence;
-        state.loop_trace_gap = false;
-        state.loop_exited = false;
-        self.machine.set_instruction_trace_enabled(true);
-    }
-
-    fn update_loop_iteration_counter(
-        state: &mut InstructionHistoryUiState,
-        history: &[InstructionTraceEntry],
-    ) {
-        let Some(loop_info) = state.loop_snapshot.as_ref() else { return; };
-        let Some(last) = history.last() else { return; };
-        if last.sequence <= state.loop_last_sequence {
-            return;
-        }
-
-        let mut new_entries = history
-            .iter()
-            .filter(|entry| entry.sequence > state.loop_last_sequence);
-        if let Some(first) = new_entries.next() {
-            if state.loop_last_sequence != 0
-                && first.sequence > state.loop_last_sequence.saturating_add(1)
-            {
-                state.loop_trace_gap = true;
-            }
-
-            for entry in std::iter::once(first).chain(new_entries) {
-                if entry.address == loop_info.back_edge {
-                    if entry.after.pc == loop_info.start {
-                        state.loop_iterations = state.loop_iterations.saturating_add(1);
-                        state.loop_exited = false;
-                    } else {
-                        state.loop_exited = true;
-                    }
-                }
-            }
-        }
-        state.loop_last_sequence = last.sequence;
     }
 
     fn draw_history_detail(
         &mut self,
         ui: &mut egui::Ui,
         entry: Option<&InstructionTraceEntry>,
-        state: &mut InstructionHistoryUiState,
         latest_sequence: u64,
     ) {
         ui.allocate_ui_with_layout(
@@ -290,7 +234,6 @@ impl RusTairApp {
                     _ => None,
                 });
                 let explanation = explain_instruction(&decoded, before_cpu, historical_m);
-                let loop_candidate = self.loop_for_entry(entry);
 
                 ui.horizontal_wrapped(|ui| {
                     ui.strong(format!("#{:06}", entry.sequence));
@@ -302,10 +245,22 @@ impl RusTairApp {
                 });
                 ui.label(explanation.summary);
                 ui.small(Self::observed_flow(entry));
-                if let Some(loop_info) = loop_candidate {
-                    if ui.button("Open independent Loop Inspector").clicked() {
-                        self.open_traced_loop_inspector(state, loop_info, latest_sequence);
+
+                if entry.sequence == latest_sequence {
+                    let live_cpu = self.machine.intel8080_state();
+                    if live_cpu.pc == entry.after.pc {
+                        if let Some(loop_info) = detect_simple_backward_loop(
+                            |address| self.machine.peek_memory(address),
+                            live_cpu.pc,
+                            live_cpu.flags,
+                        ) {
+                            if ui.button("Open independent Loop Inspector").clicked() {
+                                self.open_loop_inspector(ui.ctx(), loop_info);
+                            }
+                        }
                     }
+                } else {
+                    ui.small("Historical loop reconstruction is not attempted because RAM snapshots are not retained per instruction.");
                 }
                 ui.separator();
 
@@ -355,17 +310,8 @@ impl RusTairApp {
         state: &mut InstructionHistoryUiState,
     ) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            let desired_backend_capture = state.capture || state.loop_inspector_open;
-            let backend_capture = self.machine.instruction_trace_enabled();
-            if backend_capture != desired_backend_capture {
-                self.machine.set_instruction_trace_enabled(desired_backend_capture);
-            }
-
             ui.horizontal_wrapped(|ui| {
-                if ui.checkbox(&mut state.capture, "Capture").changed() {
-                    self.machine
-                        .set_instruction_trace_enabled(state.capture || state.loop_inspector_open);
-                }
+                ui.checkbox(&mut state.capture, "Capture");
                 ui.checkbox(&mut state.follow_latest, "Follow latest")
                     .on_hover_text("Following the newest entry is independent from Capture. Turn Follow off to inspect older entries while capture continues.");
                 if ui.button("Clear").clicked() {
@@ -377,11 +323,16 @@ impl RusTairApp {
             });
 
             let history = self.machine.instruction_trace_snapshot();
-            Self::update_loop_iteration_counter(state, &history);
+            let metadata = self.machine.instruction_trace_metadata();
             if state.follow_latest {
                 state.selected_sequence = history.last().map(|entry| entry.sequence);
             }
-            ui.small(format!("Captured: {} entries{}", history.len(), if state.capture { " | LIVE" } else { " | PAUSED" }));
+            ui.small(format!(
+                "Captured: {} entries{} | dropped this generation: {}",
+                history.len(),
+                if state.capture { " | LIVE" } else { " | PAUSED" },
+                metadata.dropped_entries,
+            ));
             ui.separator();
 
             ui.strong("Completed instructions");
@@ -417,135 +368,37 @@ impl RusTairApp {
             let selected = state.selected_sequence
                 .and_then(|sequence| history.iter().find(|entry| entry.sequence == sequence));
             let latest_sequence = history.last().map(|entry| entry.sequence).unwrap_or(0);
-            self.draw_history_detail(ui, selected, state, latest_sequence);
+            self.draw_history_detail(ui, selected, latest_sequence);
         });
-    }
-
-    fn draw_loop_inspector_contents(
-        &mut self,
-        ctx: &egui::Context,
-        state: &mut InstructionHistoryUiState,
-    ) {
-        let history = self.machine.instruction_trace_snapshot();
-        Self::update_loop_iteration_counter(state, &history);
-        let cpu = self.machine.intel8080_state();
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let Some(loop_info) = state.loop_snapshot.as_ref() else {
-                ui.label("No high-confidence loop snapshot is available.");
-                return;
-            };
-
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(format!("Loop {:04X}h -> {:04X}h", loop_info.start, loop_info.back_edge));
-                ui.separator();
-                ui.label(format!("{} instructions", loop_info.instructions.len()));
-                ui.separator();
-                ui.strong(format!("Iterations since opened: {}", state.loop_iterations));
-            });
-            if state.loop_trace_gap {
-                ui.small("Trace buffer gap detected: iteration count is a lower bound because execution outran the retained 4096-instruction history.");
-            } else {
-                ui.small("Iteration count is exact for all trace entries observed since this inspector was opened.");
-            }
-            if state.loop_exited {
-                ui.small("Last observed back-edge was NOT TAKEN: the loop exited.");
-            }
-            ui.separator();
-            ui.small(format!("Entry: ${:04X} | back-edge: ${:04X} | branch target: ${:04X}", loop_info.start, loop_info.back_edge, loop_info.start));
-            ui.small(loop_info.exit_description());
-            if let Some(condition) = loop_info.condition {
-                ui.small(format!(
-                    "Current {}: {} ({})",
-                    condition.label(),
-                    if condition.evaluate(cpu.flags) { "TRUE -> TAKEN if back-edge executes now" } else { "FALSE -> EXIT if back-edge executes now" },
-                    condition.description(),
-                ));
-            } else {
-                ui.small("Back-edge is unconditional; structural loop has no conditional exit.");
-            }
-            ui.separator();
-
-            egui::ScrollArea::vertical()
-                .id_salt("independent-loop-inspector-scroll")
-                .show(ui, |ui| {
-                    for instruction in &loop_info.instructions {
-                        let is_pc = instruction.address == cpu.pc;
-                        let is_back_edge = instruction.address == loop_info.back_edge;
-                        let is_entry = instruction.address == loop_info.start;
-                        let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
-                        let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
-                        if is_pc {
-                            address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
-                            instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
-                        }
-                        ui.horizontal(|ui| {
-                            ui.add_sized([56.0, 22.0], egui::Label::new(address_text));
-                            ui.add_sized([96.0, 22.0], egui::Label::new(egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak()));
-                            ui.add_sized([230.0, 22.0], egui::Label::new(instruction_text));
-                            if is_entry { ui.small("ENTRY"); }
-                            if is_back_edge { ui.small("BACK-EDGE"); }
-                            if is_pc { ui.strong("PC"); }
-                        });
-                    }
-                });
-        });
-    }
-
-    fn show_loop_inspector_viewport(
-        &mut self,
-        parent_ctx: &egui::Context,
-        state: &mut InstructionHistoryUiState,
-    ) {
-        if !state.loop_inspector_open {
-            return;
-        }
-
-        parent_ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("rustair-8080-loop-inspector-viewport"),
-            egui::ViewportBuilder::default()
-                .with_title("RusTair - 8080 Loop Inspector")
-                .with_inner_size([720.0, 520.0])
-                .with_min_inner_size([560.0, 360.0])
-                .with_resizable(true),
-            |loop_ctx, _class| {
-                self.draw_loop_inspector_contents(loop_ctx, state);
-                if loop_ctx.input(|input| input.viewport().close_requested()) {
-                    state.loop_inspector_open = false;
-                    state.loop_snapshot = None;
-                    if !state.window_open || !state.capture {
-                        self.machine.set_instruction_trace_enabled(state.window_open && state.capture);
-                    }
-                }
-            },
-        );
     }
 
     pub(in crate::app) fn show_instruction_history_viewport(&mut self, parent_ctx: &egui::Context) {
         let mut state = Self::instruction_history_state(parent_ctx);
-
-        if state.window_open {
-            parent_ctx.show_viewport_immediate(
-                egui::ViewportId::from_hash_of("rustair-8080-execution-history-viewport"),
-                egui::ViewportBuilder::default()
-                    .with_title("RusTair - 8080 Execution History")
-                    .with_inner_size([900.0, 820.0])
-                    .with_min_inner_size([720.0, 600.0])
-                    .with_resizable(true),
-                |history_ctx, _class| {
-                    self.draw_instruction_history_viewport_contents(history_ctx, &mut state);
-                    if history_ctx.input(|input| input.viewport().close_requested()) {
-                        state.window_open = false;
-                        state.capture = false;
-                        if !state.loop_inspector_open {
-                            self.machine.set_instruction_trace_enabled(false);
-                        }
-                    }
-                },
-            );
+        if !state.window_open {
+            return;
         }
 
-        self.show_loop_inspector_viewport(parent_ctx, &mut state);
+        parent_ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("rustair-8080-execution-history-viewport"),
+            egui::ViewportBuilder::default()
+                .with_title("RusTair - 8080 Execution History")
+                .with_inner_size([900.0, 820.0])
+                .with_min_inner_size([720.0, 600.0])
+                .with_resizable(true),
+            |history_ctx, _class| {
+                self.draw_instruction_history_viewport_contents(history_ctx, &mut state);
+                if history_ctx.input(|input| input.viewport().close_requested()) {
+                    state.window_open = false;
+                    state.capture = false;
+                }
+            },
+        );
+
         Self::store_instruction_history_state(parent_ctx, state);
     }
+}
+
+pub(super) fn trace_requested(ctx: &egui::Context) -> bool {
+    let state = RusTairApp::instruction_history_state(ctx);
+    state.window_open && state.capture
 }
