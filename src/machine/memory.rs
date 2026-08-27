@@ -55,21 +55,12 @@ impl Memory {
         }
     }
 
-    /// Force random contents in the installed RAM without changing the chosen
-    /// power-on initialization mode.
     pub(super) fn randomize(&mut self) {
         self.clear_transient_guards();
         self.bytes.fill(0);
         rand::rng().fill_bytes(&mut self.bytes[..self.installed_size]);
     }
 
-    /// Altair BASIC 3.2 probes for the first non-writable address when the user
-    /// presses RETURN at `MEMORY SIZE?`. On a completely writable 64 KiB address
-    /// space its 16-bit pointer wraps from FFFFh to 0000h and the probe destroys
-    /// BASIC itself. Arm a one-shot sentinel at FFFFh only for that bundled
-    /// legacy BASIC startup. The first probe write is rejected and its matching
-    /// read returns a different value, after which the guard automatically
-    /// disappears and FFFFh becomes ordinary RAM again.
     pub(super) fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
         self.clear_transient_guards();
         if self.installed_size != MAX_MEM_SIZE {
@@ -84,8 +75,6 @@ impl Memory {
         self.basic32_probe_write = None;
     }
 
-    /// Programmatic image loading intentionally bypasses front-panel write
-    /// protection, matching the previous AltairBus behavior.
     pub(super) fn load(&mut self, address: u16, data: &[u8]) {
         let start = address as usize;
         if start >= self.installed_size {
@@ -95,22 +84,29 @@ impl Memory {
         self.bytes[start..start + len].copy_from_slice(&data[..len]);
     }
 
-    /// Inspect a physical RAM byte without triggering any guest-visible read
-    /// side effects. This is intentionally separate from `read`: debugger and
-    /// visualizer tools must not consume transient compatibility guards such as
-    /// the BASIC 3.2 FFFFh probe sentinel.
+    /// Inspect a physical RAM byte without triggering guest-visible read side
+    /// effects. `None` means no RAM is physically installed at that address.
     pub(super) fn peek(&self, address: u16) -> Option<u8> {
         let index = address as usize;
         (index < self.installed_size).then_some(self.bytes[index])
     }
 
-    /// Debugger/editor write to the physical RAM backing store.
-    ///
-    /// This never writes into uninstalled address space and intentionally does
-    /// not participate in guest-visible compatibility guards. When
-    /// `respect_protection` is true it also honors RusTair's current 1 KiB
-    /// front-panel protection granularity; false is an explicit debugger
-    /// override.
+    /// Preview exactly the byte a guest memory read would receive without
+    /// consuming any transient hardware/compatibility state. This differs from
+    /// `peek`: uninstalled RAM reads as 00h and the BASIC 3.2 FFFFh sentinel is
+    /// represented exactly as the next real guest read would see it.
+    pub(super) fn preview_read(&self, address: u16) -> u8 {
+        if address as usize >= self.installed_size {
+            return 0;
+        }
+        if address == u16::MAX && self.basic32_probe_guard {
+            if let Some(written) = self.basic32_probe_write {
+                return written ^ 0xff;
+            }
+        }
+        self.bytes[address as usize]
+    }
+
     pub(super) fn debugger_write(
         &mut self,
         address: u16,
@@ -185,15 +181,14 @@ impl Memory {
 }
 
 impl super::AltairBus {
-    /// Non-invasive debugger read. `None` means that address is outside the
-    /// physically installed RAM rather than a stored zero byte.
     pub fn peek_memory(&self, address: u16) -> Option<u8> {
         self.memory.peek(address)
     }
 
-    /// Edit installed RAM from the debugger. This bypasses guest-visible memory
-    /// side effects; callers choose whether the current protection latch is
-    /// honored or deliberately overridden.
+    pub(crate) fn preview_guest_memory(&self, address: u16) -> u8 {
+        self.memory.preview_read(address)
+    }
+
     pub fn debugger_write_memory(
         &mut self,
         address: u16,
@@ -204,11 +199,6 @@ impl super::AltairBus {
             .debugger_write(address, value, respect_protection)
     }
 
-    // Raw accessors used only by the T-state CPU backend. Unlike the legacy
-    // `Bus` trait implementation these perform the functional RAM/I/O action
-    // without synthesizing an aggregate S-100 machine cycle. The caller drives
-    // the actual per-T-state electrical sample separately through
-    // `cycle_drive_s100_t_state`, preventing duplicate panel activity.
     pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 {
         self.memory.read(address)
     }
@@ -272,17 +262,21 @@ mod tests {
         memory.configure(RamSize::Bytes256, RamInit::Zeroed);
         assert_eq!(memory.peek(0x00ff), Some(0));
         assert_eq!(memory.peek(0x0100), None);
+        assert_eq!(memory.preview_read(0x0100), 0x00);
     }
 
     #[test]
-    fn peek_does_not_consume_basic32_probe_guard() {
+    fn preview_does_not_consume_basic32_probe_guard() {
         let mut memory = Memory::default();
         memory.configure(RamSize::K64, RamInit::Zeroed);
         assert!(memory.arm_basic32_full_memory_probe_guard());
 
         memory.write(0xffff, 0x37);
         assert_eq!(memory.peek(0xffff), Some(0));
-        assert_ne!(memory.read(0xffff), 0x37);
+        assert_eq!(memory.preview_read(0xffff), 0xc8);
+        assert_eq!(memory.preview_read(0xffff), 0xc8);
+        assert_eq!(memory.read(0xffff), 0xc8);
+        assert_eq!(memory.read(0xffff), 0x00);
     }
 
     #[test]
