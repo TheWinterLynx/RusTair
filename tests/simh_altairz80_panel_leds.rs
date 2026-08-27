@@ -5,7 +5,7 @@ use std::io::{Error as IoError, ErrorKind};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustair::backend::simh::SimhThreadedBackend;
+use rustair::backend::simh::{SimhThreadedBackend, active_console_snapshot};
 use rustair::backend::{CpuState, EmulationEngine, FrontPanelState, MachineBackend};
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -83,6 +83,10 @@ fn assert_panel_pattern(panel: &FrontPanelState, address: u16, data: u8) {
     assert_status_lamps_dark(panel);
 }
 
+fn worker_error() -> Option<String> {
+    active_console_snapshot().and_then(|snapshot| snapshot.last_error)
+}
+
 fn wait_for(
     backend: &mut SimhThreadedBackend,
     description: &str,
@@ -90,14 +94,25 @@ fn wait_for(
 ) -> Result<FrontPanelState, Box<dyn Error>> {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
+        if let Some(error) = worker_error() {
+            return Err(test_error(format!(
+                "worker failed while waiting for {description}: {error}"
+            )));
+        }
+
         let panel = backend.front_panel_state()?;
         if predicate(&panel) {
             return Ok(panel);
         }
         if Instant::now() >= deadline {
+            let worker = active_console_snapshot();
             return Err(test_error(format!(
-                "timed out waiting for {description}; last panel: powered={} running={} address={:04X} data={:02X}",
-                panel.powered, panel.running, panel.address, panel.data
+                "timed out waiting for {description}; last panel: powered={} running={} address={:04X} data={:02X}; worker busy={}",
+                panel.powered,
+                panel.running,
+                panel.address,
+                panel.data,
+                worker.as_ref().is_some_and(|snapshot| snapshot.busy)
             )));
         }
         thread::sleep(POLL_INTERVAL);
@@ -105,7 +120,34 @@ fn wait_for(
 }
 
 fn wait_power_ready(backend: &mut SimhThreadedBackend) -> Result<FrontPanelState, Box<dyn Error>> {
-    wait_for(backend, "SIMH POWER ON completion", |panel| panel.powered && !panel.running)
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        if let Some(error) = worker_error() {
+            return Err(test_error(format!("SIMH POWER ON failed: {error}")));
+        }
+
+        let panel = backend.front_panel_state()?;
+        let worker = active_console_snapshot();
+        let ready = worker.as_ref().is_some_and(|snapshot| {
+            !snapshot.busy
+                && snapshot.powered
+                && snapshot
+                    .lines
+                    .iter()
+                    .any(|line| line.starts_with("POWER ON complete"))
+        });
+        if ready && panel.powered && !panel.running {
+            return Ok(panel);
+        }
+
+        if Instant::now() >= deadline {
+            return Err(test_error(format!(
+                "timed out waiting for SIMH POWER ON completion; panel powered={} running={}; worker={worker:?}",
+                panel.powered, panel.running
+            )));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
 }
 
 fn examine_pattern(
