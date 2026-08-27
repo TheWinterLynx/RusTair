@@ -13,10 +13,14 @@ use super::{ffi, runtime};
 // is active. The FrontPanel callback thread itself is not polled by egui.
 const LIVE_CALLBACK_INTERVAL_US: c_int = 33_333;
 const CONSOLE_RESPONSE_BYTES: usize = 64 * 1024;
-// Remote Console processes commands in a 4*CBUFSIZE (~4096 byte) work buffer.
-// 180 deposits stay comfortably below that limit even with six-digit octal
-// classic-Altair addresses, reducing a 4 KiB image from ~86 to ~23 round trips.
-const BULK_DEPOSIT_CHUNK: usize = 180;
+// On the pinned Windows build PATH_MAX is 512, therefore CBUFSIZE is 640 and
+// Remote Console's command work buffer (4*CBUFSIZE) is 2560 bytes.  A classic
+// Altair DEPOSIT with its six-digit octal address is the longest form we emit;
+// 110 of them produce a 2317-byte EXECUTE line.  Keep a deliberate margin for
+// the Remote Console parser instead of relying on FrontPanel's larger private
+// formatting buffer.
+const BULK_DEPOSIT_CHUNK: usize = 110;
+const BULK_DEPOSIT_SAFE_COMMAND_BYTES: usize = 2_400;
 const LEGACY_DEPOSIT_LIMIT: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -393,8 +397,11 @@ impl SimhSession {
     ///
     /// With RusTair's FrontPanel extension, arbitrary bytes are grouped inside
     /// `EXECUTE` commands, the same batching facility used internally by
-    /// FrontPanel register queries. Commands stay below Remote Console's ~4 KiB
-    /// work buffer, so a 4 KiB image needs only about 23 round trips.
+    /// FrontPanel register queries.  On the pinned Windows build the simulator
+    /// Remote Console accepts a 4*CBUFSIZE = 2560-byte command line, so batches
+    /// are capped at 110 deposits (<=2317 bytes even for classic octal addresses).
+    /// A 4 KiB image therefore needs about 38 command round trips instead of
+    /// thousands of individual DEPOSIT requests.
     ///
     /// An older DLL is permitted to use individual DEPOSITs only for tiny
     /// writes. Large images fail immediately instead of occupying the worker
@@ -431,6 +438,15 @@ impl SimhSession {
             let base_offset = chunk_index * BULK_DEPOSIT_CHUNK;
             let command = build_deposit_batch(self.address_radix, base, base_offset, chunk);
             if command != "EXECUTE " {
+                if command.len() > BULK_DEPOSIT_SAFE_COMMAND_BYTES {
+                    return Err(SimhSessionError::Api {
+                        operation: "bulk binary load",
+                        detail: format!(
+                            "generated SIMH deposit batch is unexpectedly {} bytes (safe limit {}); refusing to risk Remote Console truncation",
+                            command.len(), BULK_DEPOSIT_SAFE_COMMAND_BYTES
+                        ),
+                    });
+                }
                 self.console_command(&command)?;
             }
         }
@@ -557,6 +573,16 @@ mod tests {
         assert!(command.contains("DEPOSIT -H 000012 00"));
         assert!(command.contains("DEPOSIT -H 000014 00"));
         assert!(!command.contains("DEPOSIT -H 000A 00"));
+    }
+    #[test]
+    fn largest_classic_batch_stays_inside_remote_console_margin() {
+        let command = build_deposit_batch(
+            AddressRadix::Octal,
+            0,
+            0,
+            &vec![0xff; BULK_DEPOSIT_CHUNK],
+        );
+        assert!(command.len() <= BULK_DEPOSIT_SAFE_COMMAND_BYTES, "{}", command.len());
     }
     #[test]
     fn live_sample_default_is_not_backend_data() {
