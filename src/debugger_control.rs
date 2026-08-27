@@ -159,11 +159,14 @@ impl DebugExecutionControl {
     /// instead of immediately re-triggering. Merely having a breakpoint at the
     /// current PC is not enough: a fresh RUN must still stop before that opcode.
     /// If the breakpoint was removed while stopped, there is nothing to skip.
+    /// An explicit run-to at this exact PC has higher priority and must stop
+    /// immediately rather than being consumed by the breakpoint resume skip.
     pub fn prepare_resume(&mut self, pc: u16) {
         let stopped_on_active_breakpoint = matches!(
             self.stop_reason,
             Some(DebugStopReason::ExecuteBreakpoint(address)) if address == pc
-        ) && self.breakpoints.contains(&pc);
+        ) && self.breakpoints.contains(&pc)
+            && self.run_to != Some(pc);
         self.resume_skip_once = stopped_on_active_breakpoint.then_some(pc);
         self.stop_reason = None;
     }
@@ -257,6 +260,17 @@ mod tests {
         assert!(control.active(), "armed resume skip is transient debugger state");
         assert_eq!(control.stop_before(0x1234), None);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+    }
+
+    #[test]
+    fn explicit_run_to_current_breakpoint_is_not_swallowed_by_resume_skip() {
+        let mut control = DebugExecutionControl::default();
+        control.set_breakpoint(0x1234, true);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        control.set_run_to(0x1234);
+        control.prepare_resume(0x1234);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::RunTo(0x1234)));
+        assert_eq!(control.run_to(), None);
     }
 
     #[test]
