@@ -1,4 +1,6 @@
-use rustair::backend::{BackendHost, DebugStopReason, EmulationEngine};
+use rustair::backend::{
+    BackendHost, DebugStopReason, EmulationEngine, MemoryWatchAccess,
+};
 use rustair::config::{RamInit, RamSize};
 
 fn prepared_host(engine: EmulationEngine, program: &[u8]) -> BackendHost {
@@ -26,8 +28,6 @@ fn exercise_breakpoint(engine: EmulationEngine) {
         "{engine:?}",
     );
 
-    // RUN from a triggered breakpoint executes that instruction exactly once
-    // instead of re-triggering forever at the same PC.
     host.set_running(true);
     host.run_cycles(128);
     let after_resume = host.intel8080_state();
@@ -87,6 +87,62 @@ fn exercise_debugger_instruction_step(engine: EmulationEngine) {
     assert_eq!(history[0].after.pc, 0x0002, "{engine:?}");
 }
 
+fn exercise_memory_read_watchpoint_without_history(engine: EmulationEngine) {
+    // LXI H,0080 / MOV A,M / HLT
+    let mut host = prepared_host(engine, &[0x21, 0x80, 0x00, 0x7e, 0x76]);
+    host.load_bytes(0x0080, &[0xa5]);
+    host.set_instruction_trace_enabled(false);
+    host.debugger_set_watchpoint(0x0080, Some(MemoryWatchAccess::Read));
+    assert_eq!(
+        host.debugger_watchpoints(),
+        vec![(0x0080, MemoryWatchAccess::Read)],
+        "{engine:?}",
+    );
+
+    host.set_running(true);
+    host.run_cycles(256);
+
+    let cpu = host.intel8080_state();
+    assert!(!host.running(), "{engine:?}: read watchpoint must stop execution");
+    assert_eq!(cpu.a, 0xa5, "{engine:?}: watched read must have completed");
+    assert_eq!(cpu.pc, 0x0004, "{engine:?}: stop must be after MOV A,M");
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::MemoryReadWatchpoint {
+            instruction_pc: 0x0003,
+            address: 0x0080,
+            value: 0xa5,
+        }),
+        "{engine:?}",
+    );
+    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: watchpoints must not force history retention");
+}
+
+fn exercise_memory_write_watchpoint_without_history(engine: EmulationEngine) {
+    // LXI H,0080 / MVI M,5A / HLT
+    let mut host = prepared_host(engine, &[0x21, 0x80, 0x00, 0x36, 0x5a, 0x76]);
+    host.set_instruction_trace_enabled(false);
+    host.debugger_set_watchpoint(0x0080, Some(MemoryWatchAccess::Write));
+
+    host.set_running(true);
+    host.run_cycles(256);
+
+    let cpu = host.intel8080_state();
+    assert!(!host.running(), "{engine:?}: write watchpoint must stop execution");
+    assert_eq!(host.peek_memory(0x0080), Some(0x5a), "{engine:?}: watched write must have completed");
+    assert_eq!(cpu.pc, 0x0005, "{engine:?}: stop must be after MVI M,5A");
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::MemoryWriteWatchpoint {
+            instruction_pc: 0x0003,
+            address: 0x0080,
+            value: 0x5a,
+        }),
+        "{engine:?}",
+    );
+    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: watchpoints must not force history retention");
+}
+
 #[test]
 fn fast_debugger_execution_control() {
     exercise_breakpoint(EmulationEngine::RustFast8080);
@@ -94,6 +150,8 @@ fn fast_debugger_execution_control() {
     exercise_run_to(EmulationEngine::RustFast8080);
     exercise_run_to_from_breakpoint(EmulationEngine::RustFast8080);
     exercise_debugger_instruction_step(EmulationEngine::RustFast8080);
+    exercise_memory_read_watchpoint_without_history(EmulationEngine::RustFast8080);
+    exercise_memory_write_watchpoint_without_history(EmulationEngine::RustFast8080);
 }
 
 #[test]
@@ -103,4 +161,6 @@ fn cycle_debugger_execution_control() {
     exercise_run_to(EmulationEngine::RustCycleAccurate8080);
     exercise_run_to_from_breakpoint(EmulationEngine::RustCycleAccurate8080);
     exercise_debugger_instruction_step(EmulationEngine::RustCycleAccurate8080);
+    exercise_memory_read_watchpoint_without_history(EmulationEngine::RustCycleAccurate8080);
+    exercise_memory_write_watchpoint_without_history(EmulationEngine::RustCycleAccurate8080);
 }
