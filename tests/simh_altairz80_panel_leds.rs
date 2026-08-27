@@ -10,6 +10,7 @@ use rustair::backend::{CpuState, EmulationEngine, FrontPanelState, MachineBacken
 
 const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+const DATA_PROBE_ADDRESS: u16 = 0x0200;
 
 fn test_error(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(IoError::new(ErrorKind::Other, message.into()))
@@ -29,11 +30,7 @@ fn bits8(value: u8) -> String {
         .collect()
 }
 
-fn assert_binary_lamps<const N: usize>(
-    label: &str,
-    lamps: &[f32; N],
-    expected: u64,
-) {
+fn assert_binary_lamps<const N: usize>(label: &str, lamps: &[f32; N], expected: u64) {
     for (bit, intensity) in lamps.iter().copied().enumerate() {
         let should_be_on = expected & (1u64 << bit) != 0;
         if should_be_on {
@@ -73,18 +70,16 @@ fn assert_status_lamps_dark(panel: &FrontPanelState) {
     }
 }
 
-fn assert_panel_pattern(panel: &FrontPanelState, address: u16, data: u8) {
-    assert!(panel.powered, "panel unexpectedly reports POWER OFF");
-    assert!(!panel.running, "deterministic LED checks require STOP");
-    assert_eq!(panel.address, address, "wrong panel ADDRESS value");
-    assert_eq!(panel.data, data, "wrong panel DATA value");
-    assert_binary_lamps("ADDRESS", &panel.lamps.address, u64::from(address));
-    assert_binary_lamps("DATA", &panel.lamps.data, u64::from(data));
-    assert_status_lamps_dark(panel);
-}
-
 fn worker_error() -> Option<String> {
     active_console_snapshot().and_then(|snapshot| snapshot.last_error)
+}
+
+fn worker_tail() -> String {
+    let Some(snapshot) = active_console_snapshot() else {
+        return "<no active worker console>".into();
+    };
+    let start = snapshot.lines.len().saturating_sub(16);
+    snapshot.lines[start..].join("\n")
 }
 
 fn wait_for(
@@ -96,7 +91,8 @@ fn wait_for(
     loop {
         if let Some(error) = worker_error() {
             return Err(test_error(format!(
-                "worker failed while waiting for {description}: {error}"
+                "worker failed while waiting for {description}: {error}\n--- worker tail ---\n{}",
+                worker_tail()
             )));
         }
 
@@ -107,12 +103,13 @@ fn wait_for(
         if Instant::now() >= deadline {
             let worker = active_console_snapshot();
             return Err(test_error(format!(
-                "timed out waiting for {description}; last panel: powered={} running={} address={:04X} data={:02X}; worker busy={}",
+                "timed out waiting for {description}; last panel: powered={} running={} address={:04X} data={:02X}; worker busy={}\n--- worker tail ---\n{}",
                 panel.powered,
                 panel.running,
                 panel.address,
                 panel.data,
-                worker.as_ref().is_some_and(|snapshot| snapshot.busy)
+                worker.as_ref().is_some_and(|snapshot| snapshot.busy),
+                worker_tail()
             )));
         }
         thread::sleep(POLL_INTERVAL);
@@ -123,7 +120,10 @@ fn wait_power_ready(backend: &mut SimhThreadedBackend) -> Result<FrontPanelState
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
         if let Some(error) = worker_error() {
-            return Err(test_error(format!("SIMH POWER ON failed: {error}")));
+            return Err(test_error(format!(
+                "SIMH POWER ON failed: {error}\n--- worker tail ---\n{}",
+                worker_tail()
+            )));
         }
 
         let panel = backend.front_panel_state()?;
@@ -131,10 +131,7 @@ fn wait_power_ready(backend: &mut SimhThreadedBackend) -> Result<FrontPanelState
         let ready = worker.as_ref().is_some_and(|snapshot| {
             !snapshot.busy
                 && snapshot.powered
-                && snapshot
-                    .lines
-                    .iter()
-                    .any(|line| line.starts_with("POWER ON complete"))
+                && snapshot.lines.iter().any(|line| line.starts_with("POWER ON complete"))
         });
         if ready && panel.powered && !panel.running {
             return Ok(panel);
@@ -142,33 +139,74 @@ fn wait_power_ready(backend: &mut SimhThreadedBackend) -> Result<FrontPanelState
 
         if Instant::now() >= deadline {
             return Err(test_error(format!(
-                "timed out waiting for SIMH POWER ON completion; panel powered={} running={}; worker={worker:?}",
-                panel.powered, panel.running
+                "timed out waiting for SIMH POWER ON completion; panel powered={} running={}; worker={worker:?}\n--- worker tail ---\n{}",
+                panel.powered,
+                panel.running,
+                worker_tail()
             )));
         }
         thread::sleep(POLL_INTERVAL);
     }
 }
 
-fn examine_pattern(
+fn probe_data(
     backend: &mut SimhThreadedBackend,
-    address: u16,
     data: u8,
     name: &str,
 ) -> Result<(), Box<dyn Error>> {
-    assert!(backend.write_memory(address, data, false)?);
-    backend.set_switch_register(address)?;
+    assert!(backend.write_memory(DATA_PROBE_ADDRESS, data, false)?);
+    backend.set_switch_register(DATA_PROBE_ADDRESS)?;
     backend.panel_examine(false)?;
+
     let panel = wait_for(backend, name, |panel| {
-        panel.powered && !panel.running && panel.address == address && panel.data == data
+        panel.powered
+            && !panel.running
+            && panel.address == DATA_PROBE_ADDRESS
+            && panel.data == data
     })?;
-    assert_panel_pattern(&panel, address, data);
+
+    assert_eq!(panel.address, DATA_PROBE_ADDRESS);
+    assert_eq!(panel.data, data);
+    assert_binary_lamps("DATA", &panel.lamps.data, u64::from(data));
+    assert_status_lamps_dark(&panel);
     println!(
-        "PASS {name:<18} ADDRESS {} ({address:04X}h)  DATA {} ({data:02X}h)",
-        bits16(address),
+        "PASS DATA {name:<12} @0200h = {} ({data:02X}h)",
         bits8(data)
     );
     Ok(())
+}
+
+fn probe_address(
+    backend: &mut SimhThreadedBackend,
+    address: u16,
+    name: &str,
+) -> Result<(), Box<dyn Error>> {
+    backend.set_switch_register(address)?;
+    backend.panel_examine(false)?;
+
+    let panel = wait_for(backend, name, |panel| {
+        panel.powered && !panel.running && panel.address == address
+    })?;
+
+    assert_eq!(panel.address, address);
+    assert_binary_lamps("ADDRESS", &panel.lamps.address, u64::from(address));
+    assert_status_lamps_dark(&panel);
+    println!(
+        "PASS ADDRESS {name:<9} = {} ({address:04X}h)  examined DATA={:02X}h",
+        bits16(address),
+        panel.data
+    );
+    Ok(())
+}
+
+fn assert_panel_pattern(panel: &FrontPanelState, address: u16, data: u8) {
+    assert!(panel.powered, "panel unexpectedly reports POWER OFF");
+    assert!(!panel.running, "deterministic LED checks require STOP");
+    assert_eq!(panel.address, address, "wrong panel ADDRESS value");
+    assert_eq!(panel.data, data, "wrong panel DATA value");
+    assert_binary_lamps("ADDRESS", &panel.lamps.address, u64::from(address));
+    assert_binary_lamps("DATA", &panel.lamps.data, u64::from(data));
+    assert_status_lamps_dark(panel);
 }
 
 fn wait_live_cpu_pattern(
@@ -208,31 +246,40 @@ fn wait_live_cpu_pattern(
 #[test]
 #[ignore = "starts the embedded Open-SIMH AltairZ80 process; run explicitly with --ignored --nocapture"]
 fn altairz80_product_panel_leds_are_deterministic() -> Result<(), Box<dyn Error>> {
+    println!("SIMH deterministic LED harness v2 — ADDRESS and DATA are probed independently");
+
     let mut backend = SimhThreadedBackend::new(EmulationEngine::SimhAltairZ80)?;
     backend.power(true)?;
     let power_on = wait_power_ready(&mut backend)?;
     println!(
-        "POWER READY           ADDRESS {} ({:04X}h)  DATA {} ({:02X}h)",
+        "POWER READY            ADDRESS {} ({:04X}h)  DATA {} ({:02X}h)",
         bits16(power_on.address),
         power_on.address,
         bits8(power_on.data),
         power_on.data
     );
 
-    // Pure stopped-panel checks. These do not depend on BASIC, serial, M2SIO,
-    // timing or instruction execution. They prove the exact bit ordering from
-    // FrontPanel values through the product worker to FrontPanelState.lamps.
-    examine_pattern(&mut backend, 0x0000, 0x00, "all off")?;
-    examine_pattern(&mut backend, 0xffff, 0xff, "all on")?;
-    examine_pattern(&mut backend, 0xaaaa, 0x55, "alternating A")?;
-    examine_pattern(&mut backend, 0x5555, 0xaa, "alternating B")?;
+    // DATA path first, always at a known-safe RAM address already exercised by
+    // the older AltairZ80 smoke test. This isolates memory deposit/examine,
+    // stopped-panel latch ownership, and DATA bit ordering from ADDRESS tests.
+    probe_data(&mut backend, 0x00, "all off")?;
+    probe_data(&mut backend, 0xff, "all on")?;
+    probe_data(&mut backend, 0x55, "alternating")?;
+    probe_data(&mut backend, 0xaa, "inverse alt")?;
 
-    // Real 8080 execution through the same AltairZ80 backend used by the GUI:
+    // ADDRESS path independently. The DATA read at these locations is printed
+    // but deliberately not asserted; an edge location such as FFFFh must not be
+    // allowed to hide an ADDRESS wiring/bit-order bug.
+    probe_address(&mut backend, 0x0000, "all off")?;
+    probe_address(&mut backend, 0xffff, "all on")?;
+    probe_address(&mut backend, 0xaaaa, "alternating")?;
+    probe_address(&mut backend, 0x5555, "inverse")?;
+
+    // Real 8080 execution through the exact product backend used by the GUI:
     //   4000: MVI A,A5h   -> PC=4002, A=A5
     //   4002: MVI A,5Ah   -> PC=4004, A=5A
     //   4004: HLT
-    // Write one byte at a time so this diagnostic is independent of the bulk
-    // Quick Load path currently being debugged.
+    // One-byte writes keep this independent of the bulk Quick Load path.
     for (address, value) in [
         (0x4000, 0x3e),
         (0x4001, 0xa5),
