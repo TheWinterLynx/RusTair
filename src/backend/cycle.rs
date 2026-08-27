@@ -12,6 +12,12 @@ use super::{
     EmulationEngine, FrontPanelState, Intel8080State, MachineBackend,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CycleExecutionEvent {
+    BeforeInstruction,
+    InstructionComplete,
+}
+
 /// Host-driven machine backend around the validated T-state Intel 8080 core.
 ///
 /// RAM/I/O side effects are performed through a raw machine path that does not
@@ -262,6 +268,67 @@ impl CycleAccurateMachineBackend {
 
     fn tick_once(&mut self, ready: bool) -> TickTrace {
         self.tick_once_with_front_panel_data(ready, None, true)
+    }
+
+    fn at_instruction_boundary(&self) -> bool {
+        !self.cpu.is_halted()
+            && !self.cpu.is_holding()
+            && self.cpu.machine_cycle() == MachineCycle::InstructionFetch
+            && self.cpu.t_state() == TState::T1
+    }
+
+    /// Execute a host T-state budget while exposing only semantic instruction
+    /// boundaries to a caller. The real T-state loop deliberately remains in
+    /// this backend, avoiding one dynamic-dispatch/service call per T-state in
+    /// debugger/trace mode while preserving exact cycle-core timing and S-100
+    /// samples. Returning true from the observer requests an immediate debugger
+    /// stop at that semantic boundary.
+    pub(super) fn service_execution_with_observer<F>(
+        &mut self,
+        t_state_budget: u32,
+        mut observer: F,
+    ) -> BackendResult<()>
+    where
+        F: FnMut(&mut Self, CycleExecutionEvent) -> bool,
+    {
+        let lines = self.machine.bus.cpu_control_lines();
+        if t_state_budget == 0
+            || !self.machine.powered
+            || !self.machine.running
+            || lines.reset
+        {
+            return Ok(());
+        }
+
+        for _ in 0..t_state_budget {
+            if !self.machine.running {
+                break;
+            }
+
+            if self.at_instruction_boundary() {
+                if observer(self, CycleExecutionEvent::BeforeInstruction) {
+                    self.machine.set_running(false);
+                    break;
+                }
+                if !self.machine.running {
+                    break;
+                }
+            }
+
+            let ready = self.machine.bus.cpu_control_lines().ready;
+            let trace = self.tick_once(ready);
+            if trace.fault.is_some() {
+                break;
+            }
+
+            if trace.instruction_complete
+                && observer(self, CycleExecutionEvent::InstructionComplete)
+            {
+                self.machine.set_running(false);
+                break;
+            }
+        }
+        Ok(())
     }
 
     fn machine_cycle_finished_since(
@@ -640,6 +707,57 @@ mod tests {
         assert_eq!(after_operand.a, 0x5a);
         assert_eq!(after_operand.total_t_states, Some(7));
         assert!(backend.machine().wait_led());
+    }
+
+    #[test]
+    fn observed_execution_reports_semantic_boundaries_inside_cycle_backend() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00, 0x00, 0x76]).unwrap();
+        backend.run().unwrap();
+
+        let mut before_count = 0usize;
+        let mut complete_count = 0usize;
+        backend
+            .service_execution_with_observer(64, |_backend, event| {
+                match event {
+                    CycleExecutionEvent::BeforeInstruction => before_count += 1,
+                    CycleExecutionEvent::InstructionComplete => complete_count += 1,
+                }
+                false
+            })
+            .unwrap();
+
+        assert_eq!(before_count, 3);
+        assert_eq!(complete_count, 3);
+    }
+
+    #[test]
+    fn observed_execution_can_stop_before_next_opcode_without_consuming_it() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00, 0x00, 0x76]).unwrap();
+        backend.run().unwrap();
+
+        let mut starts = 0usize;
+        backend
+            .service_execution_with_observer(64, |_backend, event| {
+                if event == CycleExecutionEvent::BeforeInstruction {
+                    starts += 1;
+                    return starts == 2;
+                }
+                false
+            })
+            .unwrap();
+
+        assert_eq!(backend.cpu().registers().pc, 0x0001);
+        assert!(!backend.machine().running);
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.cpu().t_state(), TState::T1);
     }
 
     #[test]
