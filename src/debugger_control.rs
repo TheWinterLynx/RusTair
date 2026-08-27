@@ -69,7 +69,10 @@ pub struct DebugExecutionControl {
 
 impl DebugExecutionControl {
     pub fn active(&self) -> bool {
-        !self.breakpoints.is_empty() || !self.watchpoints.is_empty() || self.run_to.is_some()
+        !self.breakpoints.is_empty()
+            || !self.watchpoints.is_empty()
+            || self.run_to.is_some()
+            || self.resume_skip_once.is_some()
     }
 
     pub fn breakpoints(&self) -> Vec<u16> {
@@ -81,11 +84,15 @@ impl DebugExecutionControl {
             self.breakpoints.insert(address);
         } else {
             self.breakpoints.remove(&address);
+            if self.resume_skip_once == Some(address) {
+                self.resume_skip_once = None;
+            }
         }
     }
 
     pub fn clear_breakpoints(&mut self) {
         self.breakpoints.clear();
+        self.resume_skip_once = None;
     }
 
     pub fn watchpoints(&self) -> Vec<(u16, MemoryWatchAccess)> {
@@ -151,12 +158,13 @@ impl DebugExecutionControl {
     /// Resuming after an execute breakpoint must execute that instruction once
     /// instead of immediately re-triggering. Merely having a breakpoint at the
     /// current PC is not enough: a fresh RUN must still stop before that opcode.
+    /// If the breakpoint was removed while stopped, there is nothing to skip.
     pub fn prepare_resume(&mut self, pc: u16) {
-        self.resume_skip_once = matches!(
+        let stopped_on_active_breakpoint = matches!(
             self.stop_reason,
             Some(DebugStopReason::ExecuteBreakpoint(address)) if address == pc
-        )
-        .then_some(pc);
+        ) && self.breakpoints.contains(&pc);
+        self.resume_skip_once = stopped_on_active_breakpoint.then_some(pc);
         self.stop_reason = None;
     }
 
@@ -246,7 +254,24 @@ mod tests {
         control.set_breakpoint(0x1234, true);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
         control.prepare_resume(0x1234);
+        assert!(control.active(), "armed resume skip is transient debugger state");
         assert_eq!(control.stop_before(0x1234), None);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+    }
+
+    #[test]
+    fn removing_triggered_breakpoint_does_not_leave_a_future_skip() {
+        let mut control = DebugExecutionControl::default();
+        control.set_breakpoint(0x1234, true);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        control.set_breakpoint(0x1234, false);
+        control.prepare_resume(0x1234);
+        assert!(!control.active());
+        assert_eq!(control.stop_before(0x1234), None);
+
+        // Re-arming the same address later must behave like a fresh breakpoint,
+        // not consume an old skip from the previous stop.
+        control.set_breakpoint(0x1234, true);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
     }
 
