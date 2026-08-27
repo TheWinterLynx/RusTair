@@ -1,6 +1,9 @@
 use super::super::{egui, RusTairApp};
+use super::execution_position::current_instruction_address;
 use crate::backend::MemoryWatchAccess;
 use crate::memory_activity8080::summarize_memory_activity_8080;
+
+const ACTIVITY_STATUS_LINE_HEIGHT: f32 = 20.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ActivitySort {
@@ -24,8 +27,10 @@ impl Default for MemoryActivityUiState {
     fn default() -> Self {
         Self {
             window_open: false,
-            sort: ActivitySort::Recent,
-            descending: true,
+            // Stable by default: live CPU activity changes counters, not row
+            // positions. Users can opt into Recent/Total sorting explicitly.
+            sort: ActivitySort::Address,
+            descending: false,
             message: None,
         }
     }
@@ -60,6 +65,7 @@ impl RusTairApp {
         let metadata = self.machine.instruction_trace_metadata();
         let activity = summarize_memory_activity_8080(&history, metadata);
         let cpu = self.machine.intel8080_state();
+        let execution_address = current_instruction_address(self);
 
         let mut rows: Vec<_> = activity.iter().collect();
         rows.sort_by(|(address_a, a), (address_b, b)| {
@@ -75,28 +81,43 @@ impl RusTairApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.strong("8080 MEMORY ACTIVITY");
                 ui.separator();
                 ui.label(format!("{} active address(es)", activity.active_addresses()));
                 ui.separator();
-                ui.monospace(format!("PC=${:04X} HL=${:04X} SP=${:04X}", cpu.pc, cpu.hl(), cpu.sp));
+                ui.monospace(format!(
+                    "PC=${:04X} EXEC=${execution_address:04X} HL=${:04X} SP=${:04X}",
+                    cpu.pc,
+                    cpu.hl(),
+                    cpu.sp
+                ));
             });
             ui.small("EXECUTE counts instruction starts; READ/WRITE count guest data-memory and stack bus transfers. Opcode/operand fetches are intentionally excluded.");
             ui.small("WRITE means the 8080 attempted the write transfer; front-panel protection or uninstalled RAM may prevent the physical cell from changing.");
-            if activity.dropped_entries != 0 {
-                ui.small(format!(
-                    "{} older trace entr{} were evicted; displayed activity counts are lower bounds for the current capture generation.",
-                    activity.dropped_entries,
-                    if activity.dropped_entries == 1 { "y" } else { "ies" },
-                ));
-            }
-            if activity.sequence_gap {
-                ui.small("A sequence gap exists inside the retained trace; displayed activity counts are incomplete.");
-            }
+            ui.add_sized(
+                [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(if activity.dropped_entries != 0 {
+                    format!(
+                        "{} older trace entr{} were evicted; displayed activity counts are lower bounds for the current capture generation.",
+                        activity.dropped_entries,
+                        if activity.dropped_entries == 1 { "y" } else { "ies" },
+                    )
+                } else {
+                    String::new()
+                }).small()),
+            );
+            ui.add_sized(
+                [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(if activity.sequence_gap {
+                    "A sequence gap exists inside the retained trace; displayed activity counts are incomplete."
+                } else {
+                    ""
+                }).small()),
+            );
 
             ui.separator();
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.label("Sort:");
                 for (value, label) in [
                     (ActivitySort::Recent, "Recent"),
@@ -122,7 +143,8 @@ impl RusTairApp {
                 ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("READ").monospace().strong()));
                 ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("WRITE").monospace().strong()));
                 ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new("LAST #").monospace().strong()));
-                ui.label("MARKERS / ACTIONS");
+                ui.add_sized([138.0, 20.0], egui::Label::new(egui::RichText::new("MARKERS").strong()));
+                ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new("ACTIONS").strong()));
             });
 
             egui::ScrollArea::vertical()
@@ -130,6 +152,13 @@ impl RusTairApp {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     for (address, counters) in rows {
+                        let markers = format!(
+                            "{} {} {} {}",
+                            if address == execution_address { "EXEC" } else { "    " },
+                            if address == cpu.pc { "PC" } else { "  " },
+                            if address == cpu.hl() { "HL/M" } else { "    " },
+                            if address == cpu.sp { "SP" } else { "  " },
+                        );
                         ui.horizontal(|ui| {
                             ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
                             ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.execute_count)).monospace()));
@@ -138,14 +167,12 @@ impl RusTairApp {
                             ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(
                                 counters.last_sequence().map(|value| value.to_string()).unwrap_or_else(|| "-".into())
                             ).monospace()));
-                            if address == cpu.pc { ui.strong("PC"); }
-                            if address == cpu.hl() { ui.strong("HL/M"); }
-                            if address == cpu.sp { ui.strong("SP"); }
-                            if ui.small_button("R/W watch").clicked() {
+                            ui.add_sized([138.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
+                            if ui.add_sized([82.0, 20.0], egui::Button::new("R/W watch")).clicked() {
                                 self.machine.debugger_set_watchpoint(address, Some(MemoryWatchAccess::ReadWrite));
                                 state.message = Some(format!("READ/WRITE watchpoint armed at ${address:04X}."));
                             }
-                            if ui.small_button("Run to").clicked() {
+                            if ui.add_sized([62.0, 20.0], egui::Button::new("Run to")).clicked() {
                                 self.machine.debugger_run_to(address);
                                 state.message = Some(format!("Running to ${address:04X}."));
                             }
@@ -153,10 +180,11 @@ impl RusTairApp {
                     }
                 });
 
-            if let Some(message) = state.message.as_ref() {
-                ui.separator();
-                ui.small(message);
-            }
+            ui.separator();
+            ui.add_sized(
+                [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(state.message.as_deref().unwrap_or("")).small()),
+            );
         });
     }
 
@@ -170,8 +198,8 @@ impl RusTairApp {
             egui::ViewportId::from_hash_of("rustair-8080-memory-activity-viewport"),
             egui::ViewportBuilder::default()
                 .with_title("RusTair - 8080 Memory Activity")
-                .with_inner_size([920.0, 660.0])
-                .with_min_inner_size([720.0, 480.0])
+                .with_inner_size([980.0, 660.0])
+                .with_min_inner_size([820.0, 480.0])
                 .with_resizable(true),
             |activity_ctx, _class| {
                 self.draw_memory_activity_contents(activity_ctx, &mut state);
