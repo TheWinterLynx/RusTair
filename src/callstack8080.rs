@@ -1,5 +1,5 @@
 use crate::decoder8080::{decode_8080, ControlFlow};
-use crate::trace8080::InstructionTraceEntry;
+use crate::trace8080::{InstructionTraceEntry, DEFAULT_INSTRUCTION_HISTORY_LIMIT};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CallKind8080 {
@@ -31,11 +31,12 @@ pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallS
     let mut result = InferredCallStack8080::default();
     let Some(first) = history.first() else { return result; };
 
-    // A bounded trace commonly starts after sequence 1. Frames created before
-    // the retained window cannot be reconstructed and must never be invented.
-    if first.sequence > 1 {
+    // Sequence numbers intentionally survive Clear. Therefore first.sequence > 1
+    // alone does not prove truncation. A full bounded buffer whose first entry is
+    // no longer #1 does prove that older execution was evicted.
+    if history.len() >= DEFAULT_INSTRUCTION_HISTORY_LIMIT && first.sequence > 1 {
         result.incomplete = true;
-        result.diagnostic = Some("retained history begins after execution already started".into());
+        result.diagnostic = Some("older execution was evicted from the bounded history".into());
     }
 
     let mut expected_sequence = first.sequence;
@@ -55,8 +56,6 @@ pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallS
         let sequential = entry.address.wrapping_add(u16::from(decoded.length));
         match decoded.control_flow {
             ControlFlow::Call { target, .. } => {
-                // Conditional CALL is taken exactly when execution entered the
-                // encoded target rather than continuing sequentially.
                 if entry.after.pc == target {
                     result.frames.push(InferredCallFrame8080 {
                         kind: CallKind8080::Call,
@@ -89,8 +88,6 @@ pub fn infer_call_stack_8080(history: &[InstructionTraceEntry]) -> InferredCallS
                 if result.frames.last().map(|frame| frame.return_address) == Some(entry.after.pc) {
                     result.frames.pop();
                 } else {
-                    // This may simply be a return to a caller that predates the
-                    // retained buffer. Do not fabricate or search for a frame.
                     result.frames.clear();
                     result.incomplete = true;
                     result.diagnostic = Some(format!(
@@ -158,14 +155,24 @@ mod tests {
 
     #[test]
     fn conditional_call_not_taken_does_not_create_frame() {
-        // CZ $0200, observed sequential PC=$0103 => not taken.
         let history = vec![entry(1, 0x0100, [0xcc, 0x00, 0x02], 0x1000, 0x0103, 0x1000)];
         assert!(infer_call_stack_8080(&history).frames.is_empty());
     }
 
     #[test]
-    fn retained_history_prefix_is_marked_incomplete() {
+    fn clear_baseline_with_high_sequence_is_not_mistaken_for_truncation() {
         let history = vec![entry(42, 0x0200, [0x00, 0, 0], 0x1000, 0x0201, 0x1000)];
+        assert!(!infer_call_stack_8080(&history).incomplete);
+    }
+
+    #[test]
+    fn full_shifted_history_is_marked_truncated() {
+        let history: Vec<_> = (0..DEFAULT_INSTRUCTION_HISTORY_LIMIT)
+            .map(|index| {
+                let sequence = index as u64 + 42;
+                entry(sequence, index as u16, [0x00, 0, 0], 0x1000, index as u16 + 1, 0x1000)
+            })
+            .collect();
         assert!(infer_call_stack_8080(&history).incomplete);
     }
 }
