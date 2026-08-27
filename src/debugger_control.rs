@@ -45,8 +45,11 @@ impl DebugExecutionControl {
     }
 
     pub fn set_run_to(&mut self, address: u16) {
+        // Keep the previous stop reason until prepare_resume() consumes it.
+        // This is required when Run to / Step over starts while stopped on an
+        // execute breakpoint at the current PC: that opcode must be allowed to
+        // execute once rather than immediately re-triggering the breakpoint.
         self.run_to = Some(address);
-        self.stop_reason = None;
     }
 
     pub fn cancel_run_to(&mut self) {
@@ -124,6 +127,17 @@ mod tests {
         control.prepare_resume(0x1234);
         assert_eq!(control.stop_before(0x1234), None);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+    }
+
+    #[test]
+    fn run_to_from_triggered_breakpoint_can_resume_past_current_pc() {
+        let mut control = DebugExecutionControl::default();
+        control.set_breakpoint(0x1000, true);
+        assert_eq!(control.stop_before(0x1000), Some(DebugStopReason::ExecuteBreakpoint(0x1000)));
+        control.set_run_to(0x1002);
+        control.prepare_resume(0x1000);
+        assert_eq!(control.stop_before(0x1000), None);
+        assert_eq!(control.stop_before(0x1002), Some(DebugStopReason::RunTo(0x1002)));
     }
 
     #[test]
