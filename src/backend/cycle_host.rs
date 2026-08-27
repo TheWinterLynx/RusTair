@@ -9,6 +9,7 @@ use crate::trace8080::{
     InstructionEffect8080, InstructionTraceBuffer, InstructionTraceMetadata,
 };
 
+use super::cycle::CycleExecutionEvent;
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
     CpuState, CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
@@ -43,8 +44,8 @@ impl Default for CycleHostBackend {
 }
 
 impl CycleHostBackend {
-    fn trace_cpu_snapshot(&self) -> CpuSnapshot8080 {
-        let r = self.inner.cpu().registers();
+    fn trace_cpu_snapshot_from(inner: &CycleAccurateMachineBackend) -> CpuSnapshot8080 {
+        let r = inner.cpu().registers();
         CpuSnapshot8080 {
             a: r.a,
             b: r.b,
@@ -56,21 +57,32 @@ impl CycleHostBackend {
             flags: r.f,
             pc: r.pc,
             sp: r.sp,
-            inte: self.inner.cpu().interrupts_enabled(),
-            halted: self.inner.cpu().is_halted(),
+            inte: inner.cpu().interrupts_enabled(),
+            halted: inner.cpu().is_halted(),
         }
     }
 
-    fn trace_bytes(&self, address: u16) -> [u8; 3] {
+    fn trace_cpu_snapshot(&self) -> CpuSnapshot8080 {
+        Self::trace_cpu_snapshot_from(&self.inner)
+    }
+
+    fn trace_bytes_from(inner: &CycleAccurateMachineBackend, address: u16) -> [u8; 3] {
         [
-            self.inner.machine().bus.preview_guest_memory(address),
-            self.inner.machine().bus.preview_guest_memory(address.wrapping_add(1)),
-            self.inner.machine().bus.preview_guest_memory(address.wrapping_add(2)),
+            inner.machine().bus.preview_guest_memory(address),
+            inner
+                .machine()
+                .bus
+                .preview_guest_memory(address.wrapping_add(1)),
+            inner
+                .machine()
+                .bus
+                .preview_guest_memory(address.wrapping_add(2)),
         ]
     }
 
     fn at_instruction_boundary(&self) -> bool {
         !self.inner.cpu().is_halted()
+            && !self.inner.cpu().is_holding()
             && self.inner.cpu().machine_cycle() == MachineCycle::InstructionFetch
             && self.inner.cpu().t_state() == TState::T1
     }
@@ -79,65 +91,91 @@ impl CycleHostBackend {
         self.instruction_trace.enabled() || self.debug_control.has_watchpoints()
     }
 
-    fn begin_instruction_trace_if_needed(&mut self) {
-        if !self.observing_instruction_effects()
-            || self.pending_instruction_trace.is_some()
-            || !self.at_instruction_boundary()
-        {
+    fn begin_pending_trace(
+        inner: &CycleAccurateMachineBackend,
+        pending: &mut Option<PendingInstructionTrace>,
+    ) {
+        if pending.is_some() {
             return;
         }
-
-        let before = self.trace_cpu_snapshot();
-        let bytes = self.trace_bytes(before.pc);
+        let before = Self::trace_cpu_snapshot_from(inner);
+        let bytes = Self::trace_bytes_from(inner, before.pc);
         let effects = collect_pre_instruction_effects(bytes, before, |address| {
-            self.inner.machine().bus.preview_guest_memory(address)
+            inner.machine().bus.preview_guest_memory(address)
         });
-        self.pending_instruction_trace = Some(PendingInstructionTrace {
+        *pending = Some(PendingInstructionTrace {
             address: before.pc,
             bytes,
             before,
-            start_t_states: self.inner.cpu().total_t_states(),
+            start_t_states: inner.cpu().total_t_states(),
             effects,
         });
     }
 
+    fn finalize_pending_trace(
+        inner: &CycleAccurateMachineBackend,
+        pending: &mut Option<PendingInstructionTrace>,
+        instruction_trace: &mut InstructionTraceBuffer,
+        debug_control: &mut DebugExecutionControl,
+    ) -> bool {
+        let Some(mut pending_trace) = pending.take() else {
+            return false;
+        };
+        let after = Self::trace_cpu_snapshot_from(inner);
+        let post = collect_post_instruction_effects(
+            pending_trace.bytes,
+            pending_trace.before,
+            after,
+            &pending_trace.effects,
+        );
+        pending_trace.effects.extend(post);
+        let delta = inner
+            .cpu()
+            .total_t_states()
+            .saturating_sub(pending_trace.start_t_states) as u32;
+        if delta == 0 {
+            return false;
+        }
+
+        let watch_stop = debug_control
+            .stop_after_effects(pending_trace.address, &pending_trace.effects)
+            .is_some();
+        if instruction_trace.enabled() {
+            instruction_trace.push_with_effects(
+                pending_trace.address,
+                pending_trace.bytes,
+                pending_trace.before,
+                after,
+                delta,
+                pending_trace.effects,
+            );
+        }
+        watch_stop
+    }
+
+    fn begin_instruction_trace_if_needed(&mut self) {
+        if !self.observing_instruction_effects() || !self.at_instruction_boundary() {
+            return;
+        }
+        Self::begin_pending_trace(&self.inner, &mut self.pending_instruction_trace);
+    }
+
     fn finish_instruction_trace_if_complete(&mut self) -> bool {
-        let Some(pending) = self.pending_instruction_trace.as_ref() else { return false; };
+        let Some(pending) = self.pending_instruction_trace.as_ref() else {
+            return false;
+        };
         let at_next_fetch = self.at_instruction_boundary()
             && self.inner.cpu().total_t_states() > pending.start_t_states;
         if !at_next_fetch && !self.inner.cpu().is_halted() {
             return false;
         }
 
-        let mut pending = self.pending_instruction_trace.take().expect("pending trace exists");
-        let after = self.trace_cpu_snapshot();
-        let post = collect_post_instruction_effects(
-            pending.bytes,
-            pending.before,
-            after,
-            &pending.effects,
-        );
-        pending.effects.extend(post);
-        let delta = self.inner.cpu().total_t_states().saturating_sub(pending.start_t_states) as u32;
-        if delta == 0 {
-            return false;
-        }
-
-        let watch_stop = self
-            .debug_control
-            .stop_after_effects(pending.address, &pending.effects)
-            .is_some();
-        if self.instruction_trace.enabled() {
-            self.instruction_trace.push_with_effects(
-                pending.address,
-                pending.bytes,
-                pending.before,
-                after,
-                delta,
-                pending.effects,
-            );
-        }
-        watch_stop
+        Self::finalize_pending_trace(
+            &self.inner,
+            &mut self.pending_instruction_trace,
+            &mut self.instruction_trace,
+            &mut self.debug_control,
+        )
     }
 
     fn clear_pending_instruction_trace(&mut self) {
@@ -226,25 +264,30 @@ impl MachineBackend for CycleHostBackend {
             return self.inner.service_execution(t_state_budget);
         }
 
-        for _ in 0..t_state_budget {
-            if !self.inner.machine().running {
-                break;
-            }
-            if self.at_instruction_boundary() {
-                let pc = self.inner.cpu().registers().pc;
-                if self.debug_control.stop_before(pc).is_some() {
-                    self.inner.halt()?;
-                    break;
+        let observing_effects = self.observing_instruction_effects();
+        let pending = &mut self.pending_instruction_trace;
+        let instruction_trace = &mut self.instruction_trace;
+        let debug_control = &mut self.debug_control;
+
+        self.inner
+            .service_execution_with_observer(t_state_budget, |inner, event| match event {
+                CycleExecutionEvent::BeforeInstruction => {
+                    let pc = inner.cpu().registers().pc;
+                    if debug_control.stop_before(pc).is_some() {
+                        return true;
+                    }
+                    if observing_effects {
+                        Self::begin_pending_trace(inner, pending);
+                    }
+                    false
                 }
-            }
-            self.begin_instruction_trace_if_needed();
-            self.inner.service_execution(1)?;
-            if self.finish_instruction_trace_if_complete() {
-                self.inner.halt()?;
-                break;
-            }
-        }
-        Ok(())
+                CycleExecutionEvent::InstructionComplete => Self::finalize_pending_trace(
+                    inner,
+                    pending,
+                    instruction_trace,
+                    debug_control,
+                ),
+            })
     }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
         self.inner.commit_panel_activity(dt)
