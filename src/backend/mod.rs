@@ -12,7 +12,7 @@ use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
-pub use crate::debugger_control::DebugStopReason;
+pub use crate::debugger_control::{DebugStopReason, MemoryWatchAccess};
 pub use crate::trace8080::InstructionTraceEntry;
 pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
@@ -139,9 +139,16 @@ pub struct FrontPanelState {
 }
 impl Default for FrontPanelState {
     fn default() -> Self {
-        Self { powered: false, running: false, switches: 0, address: 0, data: 0,
-            lamps: PanelLampSnapshot::default(), current_board_protected: false,
-            ext_clear_asserted: false }
+        Self {
+            powered: false,
+            running: false,
+            switches: 0,
+            address: 0,
+            data: 0,
+            lamps: PanelLampSnapshot::default(),
+            current_board_protected: false,
+            ext_clear_asserted: false,
+        }
     }
 }
 
@@ -279,6 +286,19 @@ pub trait MachineBackend {
     }
     fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "clear debugger breakpoints", engine: self.engine() })
+    }
+    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> {
+        Err(BackendError::Unsupported { operation: "read debugger watchpoints", engine: self.engine() })
+    }
+    fn debugger_set_watchpoint(
+        &mut self,
+        _address: u16,
+        _access: Option<MemoryWatchAccess>,
+    ) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "set debugger watchpoint", engine: self.engine() })
+    }
+    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "clear debugger watchpoints", engine: self.engine() })
     }
     fn debugger_run_to(&mut self, _address: u16) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "debugger run to", engine: self.engine() })
@@ -429,6 +449,9 @@ impl BackendHost {
     pub fn debugger_breakpoints(&mut self) -> Vec<u16> { Self::call(self.backend.debugger_breakpoints()) }
     pub fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) { Self::call(self.backend.debugger_set_breakpoint(address, enabled)); }
     pub fn debugger_clear_breakpoints(&mut self) { Self::call(self.backend.debugger_clear_breakpoints()); }
+    pub fn debugger_watchpoints(&mut self) -> Vec<(u16, MemoryWatchAccess)> { Self::call(self.backend.debugger_watchpoints()) }
+    pub fn debugger_set_watchpoint(&mut self, address: u16, access: Option<MemoryWatchAccess>) { Self::call(self.backend.debugger_set_watchpoint(address, access)); }
+    pub fn debugger_clear_watchpoints(&mut self) { Self::call(self.backend.debugger_clear_watchpoints()); }
     pub fn debugger_run_to(&mut self, address: u16) { Self::call(self.backend.debugger_run_to(address)); }
     pub fn debugger_cancel_run_to(&mut self) { Self::call(self.backend.debugger_cancel_run_to()); }
     pub fn debugger_run_to_target(&mut self) -> Option<u16> { Self::call(self.backend.debugger_run_to_target()) }
