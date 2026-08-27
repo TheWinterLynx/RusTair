@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::trace8080::{InstructionEffect8080, InstructionTraceEntry};
+use crate::trace8080::{
+    InstructionEffect8080, InstructionTraceEntry, DEFAULT_INSTRUCTION_HISTORY_LIMIT,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MemoryActivity8080 {
@@ -62,7 +64,7 @@ pub fn summarize_memory_activity_8080(history: &[InstructionTraceEntry]) -> Memo
     let Some(first) = history.first() else { return result; };
     result.first_sequence = Some(first.sequence);
     result.last_sequence = history.last().map(|entry| entry.sequence);
-    result.history_gap = first.sequence > 1;
+    result.history_gap = history.len() >= DEFAULT_INSTRUCTION_HISTORY_LIMIT && first.sequence > 1;
 
     let mut expected = first.sequence;
     for entry in history {
@@ -136,13 +138,25 @@ mod tests {
     }
 
     #[test]
-    fn bounded_prefix_and_sequence_holes_are_reported() {
-        let prefix = summarize_memory_activity_8080(&[trace(8, 0, Vec::new())]);
-        assert!(prefix.history_gap);
+    fn clear_baseline_with_high_sequence_is_not_a_gap() {
+        let fresh_after_clear = summarize_memory_activity_8080(&[trace(8, 0, Vec::new())]);
+        assert!(!fresh_after_clear.history_gap);
+    }
+
+    #[test]
+    fn sequence_holes_are_reported() {
         let hole = summarize_memory_activity_8080(&[
             trace(1, 0, Vec::new()),
             trace(3, 1, Vec::new()),
         ]);
         assert!(hole.history_gap);
+    }
+
+    #[test]
+    fn full_shifted_buffer_is_reported_as_truncated() {
+        let history: Vec<_> = (0..DEFAULT_INSTRUCTION_HISTORY_LIMIT)
+            .map(|index| trace(index as u64 + 8, index as u16, Vec::new()))
+            .collect();
+        assert!(summarize_memory_activity_8080(&history).history_gap);
     }
 }
