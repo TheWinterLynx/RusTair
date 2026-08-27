@@ -79,6 +79,32 @@ fn exercise_run_to_from_breakpoint(engine: EmulationEngine) {
     assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0002)), "{engine:?}");
 }
 
+fn exercise_stack_guarded_run_to(engine: EmulationEngine) {
+    // CALL pushes return 0003h. The callee deliberately visits 0003h once
+    // while SP is still two bytes deeper, then RET restores SP and reaches
+    // 0003h a second time. A PC-only temporary breakpoint would stop too early.
+    let mut host = prepared_host(
+        engine,
+        &[
+            0xcd, 0x06, 0x00, // 0000 CALL 0006
+            0xc3, 0x09, 0x00, // 0003 JMP 0009 (false early visit path)
+            0xc3, 0x03, 0x00, // 0006 JMP 0003
+            0xc9,             // 0009 RET -> real return to 0003
+            0x76,             // 000A HLT
+        ],
+    );
+    let initial_sp = host.intel8080_state().sp;
+
+    host.debugger_run_to_with_sp(0x0003, initial_sp);
+    host.run_cycles(512);
+
+    let cpu = host.intel8080_state();
+    assert_eq!(cpu.pc, 0x0003, "{engine:?}: guarded target PC");
+    assert_eq!(cpu.sp, initial_sp, "{engine:?}: target must wait for caller stack depth");
+    assert!(!host.running(), "{engine:?}: guarded run-to must stop execution");
+    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0003)), "{engine:?}");
+}
+
 fn exercise_debugger_instruction_step(engine: EmulationEngine) {
     let mut host = prepared_host(engine, &[0x3e, 0x42, 0x76]); // MVI A,42 / HLT
     host.set_instruction_trace_enabled(true);
@@ -93,6 +119,34 @@ fn exercise_debugger_instruction_step(engine: EmulationEngine) {
     assert_eq!(history.len(), 1, "{engine:?}: debugger step should produce one history entry");
     assert_eq!(history[0].address, 0x0000, "{engine:?}");
     assert_eq!(history[0].after.pc, 0x0002, "{engine:?}");
+}
+
+fn exercise_halted_debugger_step_is_noop(engine: EmulationEngine) {
+    let mut host = prepared_host(engine, &[0x76, 0x00]); // HLT / NOP
+    host.set_instruction_trace_enabled(true);
+    host.set_running(true);
+    host.run_cycles(64);
+
+    let halted = host.intel8080_state();
+    assert!(halted.halted.unwrap_or(false), "{engine:?}: program must enter HLT");
+    assert_eq!(halted.pc, 0x0001, "{engine:?}");
+    host.set_running(false);
+
+    let history_before = host.instruction_trace_snapshot();
+    assert_eq!(history_before.len(), 1, "{engine:?}: only HLT should be captured");
+    let t_states_before = host.intel8080_state().total_t_states;
+
+    host.debugger_step_instruction();
+
+    let after = host.intel8080_state();
+    assert!(after.halted.unwrap_or(false), "{engine:?}");
+    assert_eq!(after.pc, 0x0001, "{engine:?}: debugger step must not execute post-HLT byte");
+    assert_eq!(after.total_t_states, t_states_before, "{engine:?}: debugger step while HLT must be a no-op");
+    assert_eq!(
+        host.instruction_trace_snapshot().len(),
+        history_before.len(),
+        "{engine:?}: HLT dwell must not invent a history entry",
+    );
 }
 
 fn exercise_memory_read_watchpoint_without_history(engine: EmulationEngine) {
@@ -236,7 +290,9 @@ fn exercise_debugger_suite(engine: EmulationEngine) {
     exercise_fresh_breakpoint_at_current_pc(engine);
     exercise_run_to(engine);
     exercise_run_to_from_breakpoint(engine);
+    exercise_stack_guarded_run_to(engine);
     exercise_debugger_instruction_step(engine);
+    exercise_halted_debugger_step_is_noop(engine);
     exercise_memory_read_watchpoint_without_history(engine);
     exercise_memory_write_watchpoint_without_history(engine);
     exercise_uninstalled_memory_read_watchpoint(engine);
