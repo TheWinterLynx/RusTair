@@ -1,9 +1,46 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::trace8080::InstructionEffect8080;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryWatchAccess {
+    Read,
+    Write,
+    ReadWrite,
+}
+
+impl MemoryWatchAccess {
+    pub const fn reads(self) -> bool {
+        matches!(self, Self::Read | Self::ReadWrite)
+    }
+
+    pub const fn writes(self) -> bool {
+        matches!(self, Self::Write | Self::ReadWrite)
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Read => "READ",
+            Self::Write => "WRITE",
+            Self::ReadWrite => "READ/WRITE",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DebugStopReason {
     ExecuteBreakpoint(u16),
     RunTo(u16),
+    MemoryReadWatchpoint {
+        instruction_pc: u16,
+        address: u16,
+        value: u8,
+    },
+    MemoryWriteWatchpoint {
+        instruction_pc: u16,
+        address: u16,
+        value: u8,
+    },
 }
 
 impl DebugStopReason {
@@ -11,6 +48,12 @@ impl DebugStopReason {
         match self {
             Self::ExecuteBreakpoint(address) => format!("execute breakpoint at ${address:04X}"),
             Self::RunTo(address) => format!("run-to target reached at ${address:04X}"),
+            Self::MemoryReadWatchpoint { instruction_pc, address, value } => format!(
+                "memory READ watchpoint at ${address:04X}: ${value:02X} read by instruction at ${instruction_pc:04X}"
+            ),
+            Self::MemoryWriteWatchpoint { instruction_pc, address, value } => format!(
+                "memory WRITE watchpoint at ${address:04X}: ${value:02X} written by instruction at ${instruction_pc:04X}"
+            ),
         }
     }
 }
@@ -18,6 +61,7 @@ impl DebugStopReason {
 #[derive(Clone, Debug, Default)]
 pub struct DebugExecutionControl {
     breakpoints: BTreeSet<u16>,
+    watchpoints: BTreeMap<u16, MemoryWatchAccess>,
     run_to: Option<u16>,
     resume_skip_once: Option<u16>,
     stop_reason: Option<DebugStopReason>,
@@ -25,7 +69,7 @@ pub struct DebugExecutionControl {
 
 impl DebugExecutionControl {
     pub fn active(&self) -> bool {
-        !self.breakpoints.is_empty() || self.run_to.is_some()
+        !self.breakpoints.is_empty() || !self.watchpoints.is_empty() || self.run_to.is_some()
     }
 
     pub fn breakpoints(&self) -> Vec<u16> {
@@ -42,6 +86,32 @@ impl DebugExecutionControl {
 
     pub fn clear_breakpoints(&mut self) {
         self.breakpoints.clear();
+    }
+
+    pub fn watchpoints(&self) -> Vec<(u16, MemoryWatchAccess)> {
+        self.watchpoints
+            .iter()
+            .map(|(&address, &access)| (address, access))
+            .collect()
+    }
+
+    pub fn set_watchpoint(&mut self, address: u16, access: Option<MemoryWatchAccess>) {
+        match access {
+            Some(access) => {
+                self.watchpoints.insert(address, access);
+            }
+            None => {
+                self.watchpoints.remove(&address);
+            }
+        }
+    }
+
+    pub fn clear_watchpoints(&mut self) {
+        self.watchpoints.clear();
+    }
+
+    pub fn has_watchpoints(&self) -> bool {
+        !self.watchpoints.is_empty()
     }
 
     pub fn set_run_to(&mut self, address: u16) {
@@ -105,6 +175,49 @@ impl DebugExecutionControl {
 
         None
     }
+
+    /// Called after one guest instruction has completed. Memory watchpoints are
+    /// deliberately post-instruction stops: the trace tells us the exact access
+    /// caused by that instruction, while the resulting CPU state remains intact
+    /// for inspection in the debugger.
+    pub fn stop_after_effects(
+        &mut self,
+        instruction_pc: u16,
+        effects: &[InstructionEffect8080],
+    ) -> Option<DebugStopReason> {
+        for effect in effects {
+            let reason = match *effect {
+                InstructionEffect8080::MemoryRead { address, value }
+                | InstructionEffect8080::StackRead { address, value }
+                    if self.watchpoints.get(&address).is_some_and(|access| access.reads()) =>
+                {
+                    Some(DebugStopReason::MemoryReadWatchpoint {
+                        instruction_pc,
+                        address,
+                        value,
+                    })
+                }
+                InstructionEffect8080::MemoryWrite { address, value }
+                | InstructionEffect8080::StackWrite { address, value }
+                    if self.watchpoints.get(&address).is_some_and(|access| access.writes()) =>
+                {
+                    Some(DebugStopReason::MemoryWriteWatchpoint {
+                        instruction_pc,
+                        address,
+                        value,
+                    })
+                }
+                _ => None,
+            };
+
+            if let Some(reason) = reason {
+                self.stop_reason = Some(reason);
+                self.run_to = None;
+                return Some(reason);
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -151,5 +264,47 @@ mod tests {
         // breakpoint at the same address remains armed on the next RUN.
         control.prepare_resume(0x2000);
         assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::ExecuteBreakpoint(0x2000)));
+    }
+
+    #[test]
+    fn read_write_watchpoints_match_data_and_stack_effects() {
+        let mut control = DebugExecutionControl::default();
+        control.set_watchpoint(0x3456, Some(MemoryWatchAccess::ReadWrite));
+        assert!(control.active());
+        assert_eq!(control.watchpoints(), vec![(0x3456, MemoryWatchAccess::ReadWrite)]);
+
+        let read = [InstructionEffect8080::MemoryRead { address: 0x3456, value: 0xaa }];
+        assert_eq!(
+            control.stop_after_effects(0x0100, &read),
+            Some(DebugStopReason::MemoryReadWatchpoint {
+                instruction_pc: 0x0100,
+                address: 0x3456,
+                value: 0xaa,
+            })
+        );
+
+        control.prepare_resume(0x0101);
+        let write = [InstructionEffect8080::StackWrite { address: 0x3456, value: 0x55 }];
+        assert_eq!(
+            control.stop_after_effects(0x0200, &write),
+            Some(DebugStopReason::MemoryWriteWatchpoint {
+                instruction_pc: 0x0200,
+                address: 0x3456,
+                value: 0x55,
+            })
+        );
+    }
+
+    #[test]
+    fn access_direction_is_respected() {
+        let mut control = DebugExecutionControl::default();
+        control.set_watchpoint(0x2222, Some(MemoryWatchAccess::Write));
+        let read = [InstructionEffect8080::MemoryRead { address: 0x2222, value: 1 }];
+        assert_eq!(control.stop_after_effects(0x1000, &read), None);
+        let write = [InstructionEffect8080::MemoryWrite { address: 0x2222, value: 2 }];
+        assert!(matches!(
+            control.stop_after_effects(0x1001, &write),
+            Some(DebugStopReason::MemoryWriteWatchpoint { .. })
+        ));
     }
 }
