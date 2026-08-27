@@ -13,7 +13,7 @@ use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
 pub use crate::debugger_control::{DebugStopReason, MemoryWatchAccess};
-pub use crate::trace8080::InstructionTraceEntry;
+pub use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
 pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
 pub type FastMachineBackend = NativeMachineBackend;
@@ -269,6 +269,9 @@ pub trait MachineBackend {
     fn instruction_trace_enabled(&mut self) -> BackendResult<bool> {
         Err(BackendError::Unsupported { operation: "query instruction trace", engine: self.engine() })
     }
+    fn instruction_trace_metadata(&mut self) -> BackendResult<InstructionTraceMetadata> {
+        Err(BackendError::Unsupported { operation: "query instruction trace metadata", engine: self.engine() })
+    }
     fn set_instruction_trace_enabled(&mut self, _enabled: bool) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "configure instruction trace", engine: self.engine() })
     }
@@ -443,6 +446,7 @@ impl BackendHost {
     pub fn clear_io_trace(&mut self) { Self::call(self.backend.clear_io_trace()); }
     pub fn instruction_trace_snapshot(&mut self) -> InstructionTraceSnapshot { Self::call(self.backend.instruction_trace_snapshot()) }
     pub fn instruction_trace_enabled(&mut self) -> bool { Self::call(self.backend.instruction_trace_enabled()) }
+    pub fn instruction_trace_metadata(&mut self) -> InstructionTraceMetadata { Self::call(self.backend.instruction_trace_metadata()) }
     pub fn set_instruction_trace_enabled(&mut self, enabled: bool) { Self::call(self.backend.set_instruction_trace_enabled(enabled)); }
     pub fn clear_instruction_trace(&mut self) { Self::call(self.backend.clear_instruction_trace()); }
     pub fn debugger_step_instruction(&mut self) { Self::call(self.backend.debugger_step_instruction()); }
