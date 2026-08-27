@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
-use crate::trace8080::{CpuSnapshot8080, InstructionTraceBuffer};
+use crate::trace8080::{
+    collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
+    InstructionTraceBuffer,
+};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
@@ -73,12 +76,19 @@ impl NativeMachineBackend {
     fn record_one_stopped_instruction(&mut self) {
         let before = self.trace_cpu_snapshot();
         let bytes = self.trace_bytes(before.pc);
+        let mut effects = collect_pre_instruction_effects(bytes, before, |address| {
+            self.machine.bus.peek_memory(address)
+        });
         let start_cycles = self.machine.cpu.cycles;
         self.machine.step();
         let after = self.trace_cpu_snapshot();
+        effects.extend(collect_post_instruction_effects(bytes, before, after, |address| {
+            self.machine.bus.peek_memory(address)
+        }));
         let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
         if delta != 0 {
-            self.instruction_trace.push(before.pc, bytes, before, after, delta);
+            self.instruction_trace
+                .push_with_effects(before.pc, bytes, before, after, delta, effects);
         }
     }
 
@@ -96,6 +106,9 @@ impl NativeMachineBackend {
 
             let before = self.trace_cpu_snapshot();
             let bytes = self.trace_bytes(before.pc);
+            let mut effects = collect_pre_instruction_effects(bytes, before, |address| {
+                self.machine.bus.peek_memory(address)
+            });
             let start_cycles = self.machine.cpu.cycles;
 
             // The fast core is instruction-level. A budget of one therefore
@@ -104,11 +117,15 @@ impl NativeMachineBackend {
             self.machine.run_cycles(1);
 
             let after = self.trace_cpu_snapshot();
+            effects.extend(collect_post_instruction_effects(bytes, before, after, |address| {
+                self.machine.bus.peek_memory(address)
+            }));
             let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
             if delta == 0 {
                 break;
             }
-            self.instruction_trace.push(before.pc, bytes, before, after, delta);
+            self.instruction_trace
+                .push_with_effects(before.pc, bytes, before, after, delta, effects);
             used = used.saturating_add(delta);
         }
     }
