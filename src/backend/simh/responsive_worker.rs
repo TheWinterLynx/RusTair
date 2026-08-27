@@ -441,6 +441,7 @@ struct Worker {
     switch_sync_due: Option<Instant>,
     last_panel_copy: Instant,
     last_running: bool,
+    load_faulted: bool,
     bridge_connected: [bool; 2],
     first_guest_tx_seen: [bool; 2],
     first_host_rx_seen: [bool; 2],
@@ -495,6 +496,7 @@ impl Worker {
             switch_sync_due: None,
             last_panel_copy: Instant::now(),
             last_running: false,
+            load_faulted: false,
             bridge_connected: [false; 2],
             first_guest_tx_seen: [false; 2],
             first_host_rx_seen: [false; 2],
@@ -546,7 +548,11 @@ impl Worker {
                 };
                 ("serial configuration", result)
             }
-            Command::Load(address, bytes) => ("memory load", self.load(address, &bytes)),
+            Command::Load(address, bytes) => {
+                let result = self.load(address, &bytes);
+                self.load_faulted = result.is_err();
+                ("memory load", result)
+            }
             Command::Write(address, value) => ("memory write", self.write(address, value).map(|_| ())),
             Command::SerialRx(port, byte) => {
                 self.serial_rx(port, byte);
@@ -569,7 +575,12 @@ impl Worker {
         let elapsed = started.elapsed();
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         match result {
-            Ok(()) => state.log(format!("{operation}: {} ms", elapsed.as_millis())),
+            Ok(()) => {
+                if operation == "memory load" {
+                    state.last_error = None;
+                }
+                state.log(format!("{operation}: {} ms", elapsed.as_millis()));
+            }
             Err(error) => {
                 if operation == "POWER ON" {
                     state.panel.powered = false;
@@ -604,6 +615,7 @@ impl Worker {
             .map_err(|e| op_error("SIMH power on", e.to_string()))?;
             let timings = session.startup_timings();
             self.session = Some(session);
+            self.load_faulted = false;
 
             {
                 let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -626,8 +638,19 @@ impl Worker {
                 }
             }
 
-            let sample = self.session.as_ref().expect("session just started").live_panel_sample();
+            let sample = self.session
+                .as_mut()
+                .expect("session just started")
+                .refresh_live_panel_now()
+                .map_err(|e| op_error("initial SIMH panel refresh", e.to_string()))?;
             if sample.valid {
+                {
+                    let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
+                    state.log(format!(
+                        "Initial halted SIMH registers: PC={:04X}h A={:02X}h SP={:04X}h",
+                        sample.pc, sample.a, sample.sp
+                    ));
+                }
                 self.apply_sample(sample, false);
             }
 
@@ -654,6 +677,7 @@ impl Worker {
             self.session.take();
             if let Some(bridge) = self.bridge.as_mut() { bridge.disconnect(); }
             self.last_running = false;
+            self.load_faulted = false;
             self.applied_switches = 0;
             self.bridge_connected = [false; 2];
             self.first_guest_tx_seen = [false; 2];
@@ -674,6 +698,12 @@ impl Worker {
         }
 
         if running {
+            if self.load_faulted {
+                return Err(op_error(
+                    "SIMH RUN",
+                    "blocked because the previous memory load failed; perform a successful load or power-cycle before RUN",
+                ));
+            }
             self.sync_switches_now()?;
             self.session
                 .as_mut()
