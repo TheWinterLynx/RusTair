@@ -1,4 +1,5 @@
 use rustair::backend::{BackendHost, EmulationEngine};
+use rustair::callstack8080::infer_call_stack_8080;
 use rustair::config::{RamInit, RamSize, SerialBoard};
 use rustair::trace8080::InstructionEffect8080;
 
@@ -109,6 +110,54 @@ fn exercise_effects(engine: EmulationEngine) {
     }
 }
 
+fn exercise_reset_starts_new_debugger_trace_epoch(engine: EmulationEngine) {
+    let mut host = BackendHost::from_engine(engine).expect("built-in Rust backend");
+    host.configure_memory(RamSize::K1, RamInit::Zeroed);
+    host.power(true);
+    host.front_panel_reset();
+    // 0000 CALL 0006 / 0003 HLT / 0006 HLT. Execution stops in the callee,
+    // leaving one provable live CALL frame in the retained instruction history.
+    host.load_bytes(0, &[0xcd, 0x06, 0x00, 0x76, 0x00, 0x00, 0x76]);
+    host.set_instruction_trace_enabled(true);
+    host.set_running(true);
+    host.run_cycles(128);
+
+    let before_history = host.instruction_trace_snapshot();
+    let before_metadata = host.instruction_trace_metadata();
+    assert!(before_history.len() >= 2, "{engine:?}: expected CALL + HLT history");
+    let before_stack = infer_call_stack_8080(&before_history, before_metadata);
+    assert_eq!(before_stack.frames.len(), 1, "{engine:?}: CALL frame should be live before RESET");
+
+    host.set_running(false);
+    host.front_panel_reset();
+
+    let after_history = host.instruction_trace_snapshot();
+    let after_metadata = host.instruction_trace_metadata();
+    assert!(after_history.is_empty(), "{engine:?}: RESET must discard the previous execution epoch");
+    assert_ne!(after_metadata.generation, before_metadata.generation, "{engine:?}: RESET must advance trace generation");
+    let after_stack = infer_call_stack_8080(&after_history, after_metadata);
+    assert!(after_stack.frames.is_empty(), "{engine:?}: pre-RESET CALL frame must never survive RESET");
+}
+
+fn exercise_external_program_load_starts_new_trace_epoch(engine: EmulationEngine) {
+    let mut host = BackendHost::from_engine(engine).expect("built-in Rust backend");
+    host.configure_memory(RamSize::K1, RamInit::Zeroed);
+    host.power(true);
+    host.front_panel_reset();
+    host.load_bytes(0, &[0x00, 0x76]);
+    host.set_instruction_trace_enabled(true);
+    host.set_running(true);
+    host.run_cycles(64);
+    assert!(!host.instruction_trace_snapshot().is_empty(), "{engine:?}");
+    let before = host.instruction_trace_metadata();
+
+    host.set_running(false);
+    host.load_bytes(0x0020, &[0x00, 0x76]);
+    let after = host.instruction_trace_metadata();
+    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: bulk load must start a fresh debugger epoch");
+    assert_ne!(after.generation, before.generation, "{engine:?}");
+}
+
 #[test]
 fn fast_core_records_instruction_history() {
     exercise_history(EmulationEngine::RustFast8080);
@@ -127,4 +176,24 @@ fn fast_core_records_memory_and_io_effects() {
 #[test]
 fn cycle_core_records_memory_and_io_effects() {
     exercise_effects(EmulationEngine::RustCycleAccurate8080);
+}
+
+#[test]
+fn fast_reset_starts_new_debugger_trace_epoch() {
+    exercise_reset_starts_new_debugger_trace_epoch(EmulationEngine::RustFast8080);
+}
+
+#[test]
+fn cycle_reset_starts_new_debugger_trace_epoch() {
+    exercise_reset_starts_new_debugger_trace_epoch(EmulationEngine::RustCycleAccurate8080);
+}
+
+#[test]
+fn fast_external_program_load_starts_new_trace_epoch() {
+    exercise_external_program_load_starts_new_trace_epoch(EmulationEngine::RustFast8080);
+}
+
+#[test]
+fn cycle_external_program_load_starts_new_trace_epoch() {
+    exercise_external_program_load_starts_new_trace_epoch(EmulationEngine::RustCycleAccurate8080);
 }
