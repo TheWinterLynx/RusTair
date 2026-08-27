@@ -204,7 +204,7 @@ impl RusTairApp {
         ));
         hover.push_str(&format!("Length: {} byte(s) | {}\n", instruction.decoded.length, instruction.decoded.timing.label()));
         hover.push_str(&format!("Flags affected: {}\n", instruction.decoded.flags.label()));
-        hover.push_str(&format!("Memory: {} | I/O: {}\n", instruction.decoded.memory.label(), instruction.decoded.io.label()));
+        hover.push_str(&format!("Memory: {} | I/O: {}\n", instruction.decoded.memory_label(), instruction.decoded.io.label()));
         hover.push_str(&format!("Flow: {}", instruction.decoded.flow_label()));
         if instruction.decoded.undocumented_alias {
             hover.push_str("\nUndocumented Intel 8080 alias accepted by the RusTair cores.");
@@ -632,7 +632,7 @@ impl RusTairApp {
                     ui,
                     egui::RichText::new(format!(
                         "Memory: {} | I/O: {}",
-                        instruction.decoded.memory.label(),
+                        instruction.decoded.memory_label(),
                         instruction.decoded.io.label()
                     )).small(),
                 );
