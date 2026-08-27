@@ -52,6 +52,28 @@ fn exercise_fresh_breakpoint_at_current_pc(engine: EmulationEngine) {
     assert!(!host.running(), "{engine:?}");
 }
 
+fn exercise_breakpoint_waits_until_reset_is_released(engine: EmulationEngine) {
+    let mut host = prepared_host(engine, &[0x00, 0x76]); // NOP / HLT
+    host.set_running(true);
+    host.assert_front_panel_reset(); // physical RESET preserves the RUN latch
+    assert!(host.running(), "{engine:?}: RESET must preserve RUN latch");
+    host.debugger_set_breakpoint(0x0000, true);
+
+    host.run_cycles(64);
+    assert!(host.running(), "{engine:?}: debugger must not consume RUN while RESET is held");
+    assert_eq!(host.debugger_stop_reason(), None, "{engine:?}: RESET is not an instruction boundary");
+
+    host.release_front_panel_reset();
+    host.run_cycles(64);
+    assert!(!host.running(), "{engine:?}: breakpoint should trigger after RESET release");
+    assert_eq!(host.intel8080_state().pc, 0x0000, "{engine:?}");
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::ExecuteBreakpoint(0x0000)),
+        "{engine:?}",
+    );
+}
+
 fn exercise_run_to(engine: EmulationEngine) {
     let mut host = prepared_host(engine, &[0x00, 0x00, 0x76]);
     host.debugger_run_to(0x0002);
@@ -288,6 +310,7 @@ fn exercise_protected_memory_write_watchpoint(engine: EmulationEngine) {
 fn exercise_debugger_suite(engine: EmulationEngine) {
     exercise_breakpoint(engine);
     exercise_fresh_breakpoint_at_current_pc(engine);
+    exercise_breakpoint_waits_until_reset_is_released(engine);
     exercise_run_to(engine);
     exercise_run_to_from_breakpoint(engine);
     exercise_stack_guarded_run_to(engine);
