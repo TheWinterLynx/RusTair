@@ -67,10 +67,15 @@ impl DebugExecutionControl {
         self.stop_reason = None;
     }
 
-    /// Resuming while stopped exactly on a persistent breakpoint must execute
-    /// that instruction once rather than immediately re-triggering forever.
+    /// Resuming after an execute breakpoint must execute that instruction once
+    /// instead of immediately re-triggering. Merely having a breakpoint at the
+    /// current PC is not enough: a fresh RUN must still stop before that opcode.
     pub fn prepare_resume(&mut self, pc: u16) {
-        self.resume_skip_once = self.breakpoints.contains(&pc).then_some(pc);
+        self.resume_skip_once = matches!(
+            self.stop_reason,
+            Some(DebugStopReason::ExecuteBreakpoint(address)) if address == pc
+        )
+        .then_some(pc);
         self.stop_reason = None;
     }
 
@@ -104,7 +109,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persistent_breakpoint_skips_once_when_resuming_from_it() {
+    fn fresh_run_still_stops_on_breakpoint_at_current_pc() {
+        let mut control = DebugExecutionControl::default();
+        control.set_breakpoint(0x1234, true);
+        control.prepare_resume(0x1234);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+    }
+
+    #[test]
+    fn persistent_breakpoint_skips_once_when_resuming_from_triggered_stop() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1234, true);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
@@ -120,7 +133,9 @@ mod tests {
         control.set_run_to(0x2000);
         assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::RunTo(0x2000)));
         assert_eq!(control.run_to(), None);
+        // A run-to stop is not an execute-breakpoint stop, so the persistent
+        // breakpoint at the same address remains armed on the next RUN.
         control.prepare_resume(0x2000);
-        assert_eq!(control.stop_before(0x2000), None);
+        assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::ExecuteBreakpoint(0x2000)));
     }
 }
