@@ -264,6 +264,28 @@ impl DecodedInstruction {
         }
     }
 
+    /// Concise debugger-facing memory description. Conditional CALL/RET carry
+    /// stack metadata because the taken path does touch SP, but the UI must not
+    /// imply that transfer happens on the not-taken path.
+    pub fn memory_label(&self) -> String {
+        match (self.memory, self.control_flow) {
+            (
+                MemoryAccess::StackWrite,
+                ControlFlow::Call {
+                    condition: Some(_),
+                    ..
+                },
+            ) => "stack write if taken".into(),
+            (
+                MemoryAccess::StackRead,
+                ControlFlow::Return {
+                    condition: Some(_),
+                },
+            ) => "stack read if taken".into(),
+            _ => self.memory.label().into(),
+        }
+    }
+
     pub fn flow_label(&self) -> String {
         match self.control_flow {
             ControlFlow::Linear => "continues to the next instruction".into(),
@@ -736,7 +758,7 @@ pub fn decode_8080(opcode: u8, b1: u8, b2: u8) -> DecodedInstruction {
         0xe3 => decoded(opcode, "XTHL", vec![], 1, None, None, None, FlagEffects::NONE, Timing::fixed(18), MemoryAccess::StackReadWrite, IoAccess::None, ControlFlow::Linear, false),
         0xe6 => decoded(opcode, "ANI", vec![format!("${b1:02X}")], 2, Some(b1), None, None, FlagEffects::SZP_AC_C, Timing::fixed(7), MemoryAccess::None, IoAccess::None, ControlFlow::Linear, false),
         0xe9 => decoded(opcode, "PCHL", vec![], 1, None, None, None, FlagEffects::NONE, Timing::fixed(5), MemoryAccess::None, IoAccess::None, ControlFlow::IndirectJump, false),
-        0xeb => decoded(opcode, "XCHG", vec![], 1, None, None, None, FlagEffects::NONE, Timing::fixed(5), MemoryAccess::None, IoAccess::None, ControlFlow::Linear, false),
+        0xeb => decoded(opcode, "XCHG", vec![], 1, None, None, None, FlagEffects::NONE, Timing::fixed(4), MemoryAccess::None, IoAccess::None, ControlFlow::Linear, false),
         0xee => decoded(opcode, "XRI", vec![format!("${b1:02X}")], 2, Some(b1), None, None, FlagEffects::SZP_AC_C, Timing::fixed(7), MemoryAccess::None, IoAccess::None, ControlFlow::Linear, false),
         0xf3 => decoded(opcode, "DI", vec![], 1, None, None, None, FlagEffects::NONE, Timing::fixed(4), MemoryAccess::None, IoAccess::None, ControlFlow::Linear, false),
         0xf6 => decoded(opcode, "ORI", vec![format!("${b1:02X}")], 2, Some(b1), None, None, FlagEffects::SZP_AC_C, Timing::fixed(7), MemoryAccess::None, IoAccess::None, ControlFlow::Linear, false),
@@ -810,6 +832,24 @@ mod tests {
         assert_eq!(pop_h.flags, FlagEffects::NONE);
         assert_eq!(pop_psw.text(), "POP PSW");
         assert_eq!(pop_psw.flags, FlagEffects::SZP_AC_C);
+    }
+
+    #[test]
+    fn conditional_stack_metadata_does_not_imply_an_unconditional_transfer() {
+        let call = decode_8080(0xc4, 0x00, 0x20);
+        let ret = decode_8080(0xc0, 0, 0);
+        assert_eq!(call.memory, MemoryAccess::StackWrite);
+        assert_eq!(call.memory_label(), "stack write if taken");
+        assert_eq!(ret.memory, MemoryAccess::StackRead);
+        assert_eq!(ret.memory_label(), "stack read if taken");
+    }
+
+    #[test]
+    fn special_transfer_timings_match_the_8080_cores() {
+        assert_eq!(decode_8080(0xeb, 0, 0).timing, Timing::fixed(4)); // XCHG
+        assert_eq!(decode_8080(0xe3, 0, 0).timing, Timing::fixed(18)); // XTHL
+        assert_eq!(decode_8080(0xe9, 0, 0).timing, Timing::fixed(5)); // PCHL
+        assert_eq!(decode_8080(0xf9, 0, 0).timing, Timing::fixed(5)); // SPHL
     }
 
     #[test]
