@@ -3,7 +3,7 @@ use crate::backend::{Intel8080State, InstructionTraceEntry};
 use crate::config::SerialBoard;
 use crate::debugger8080::detect_simple_backward_loop;
 use crate::decoder8080::{decode_8080, ControlFlow};
-use crate::explain8080::explain_instruction;
+use crate::explain8080::{explain_instruction, MemoryValue8080};
 use crate::trace8080::{CpuSnapshot8080, InstructionEffect8080};
 
 const HISTORY_LIST_HEIGHT: f32 = 260.0;
@@ -107,7 +107,7 @@ impl RusTairApp {
         let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
         let sequential = entry.address.wrapping_add(u16::from(decoded.length));
         match decoded.control_flow {
-            ControlFlow::Jump { target, condition } => {
+            ControlFlow::Jump { condition, .. } => {
                 let taken = condition
                     .map(|condition| condition.evaluate(entry.before.flags))
                     .unwrap_or(true);
@@ -228,12 +228,17 @@ impl RusTairApp {
 
                 let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
                 let before_cpu = Self::cpu_state_from_trace(entry.before);
-                let historical_m = entry.effects.iter().find_map(|effect| match effect {
-                    InstructionEffect8080::MemoryRead { address, value }
-                        if *address == entry.before.hl() => Some(*value),
-                    _ => None,
-                });
-                let explanation = explain_instruction(&decoded, before_cpu, historical_m);
+                let memory_context = entry
+                    .effects
+                    .iter()
+                    .find_map(|effect| match effect {
+                        InstructionEffect8080::MemoryRead { address, value }
+                            if *address == entry.before.hl() => Some(*value),
+                        _ => None,
+                    })
+                    .map(MemoryValue8080::Known)
+                    .unwrap_or(MemoryValue8080::Unknown);
+                let explanation = explain_instruction(&decoded, before_cpu, memory_context);
 
                 ui.horizontal_wrapped(|ui| {
                     ui.strong(format!("#{:06}", entry.sequence));
