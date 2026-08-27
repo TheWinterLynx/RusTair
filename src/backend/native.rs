@@ -5,7 +5,7 @@ use crate::debugger_control::DebugExecutionControl;
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
 use crate::trace8080::{
     collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
-    InstructionTraceBuffer,
+    InstructionTraceBuffer, InstructionTraceMetadata,
 };
 
 use super::{
@@ -71,9 +71,9 @@ impl NativeMachineBackend {
 
     fn trace_bytes(&self, address: u16) -> [u8; 3] {
         [
-            self.machine.bus.peek_memory(address).unwrap_or(0),
-            self.machine.bus.peek_memory(address.wrapping_add(1)).unwrap_or(0),
-            self.machine.bus.peek_memory(address.wrapping_add(2)).unwrap_or(0),
+            self.machine.bus.preview_guest_memory(address),
+            self.machine.bus.preview_guest_memory(address.wrapping_add(1)),
+            self.machine.bus.preview_guest_memory(address.wrapping_add(2)),
         ]
     }
 
@@ -81,14 +81,13 @@ impl NativeMachineBackend {
         let before = self.trace_cpu_snapshot();
         let bytes = self.trace_bytes(before.pc);
         let mut effects = collect_pre_instruction_effects(bytes, before, |address| {
-            self.machine.bus.peek_memory(address)
+            self.machine.bus.preview_guest_memory(address)
         });
         let start_cycles = self.machine.cpu.cycles;
         self.machine.step();
         let after = self.trace_cpu_snapshot();
-        effects.extend(collect_post_instruction_effects(bytes, before, after, |address| {
-            self.machine.bus.peek_memory(address)
-        }));
+        let post = collect_post_instruction_effects(bytes, before, after, &effects);
+        effects.extend(post);
         let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
         if delta != 0 {
             self.debug_control.stop_after_effects(before.pc, &effects);
@@ -108,22 +107,19 @@ impl NativeMachineBackend {
             (Some(snapshot), Some(opcodes)) => collect_pre_instruction_effects(
                 opcodes,
                 snapshot,
-                |address| self.machine.bus.peek_memory(address),
+                |address| self.machine.bus.preview_guest_memory(address),
             ),
             _ => Vec::new(),
         };
         let start_cycles = self.machine.cpu.cycles;
 
-        // Fast core is instruction-level. A one-unit host budget completes one
-        // guest instruction, so breakpoint checks can happen at the next true PC.
         self.machine.run_cycles(1);
 
         let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
         if let (Some(before), Some(bytes)) = (before, bytes) {
             let after = self.trace_cpu_snapshot();
-            effects.extend(collect_post_instruction_effects(bytes, before, after, |address| {
-                self.machine.bus.peek_memory(address)
-            }));
+            let post = collect_post_instruction_effects(bytes, before, after, &effects);
+            effects.extend(post);
             if delta != 0 {
                 let watch_stop = self.debug_control.stop_after_effects(before.pc, &effects).is_some();
                 if tracing {
@@ -210,6 +206,7 @@ impl MachineBackend for NativeMachineBackend {
         Ok(())
     }
     fn step(&mut self) -> BackendResult<()> {
+        self.debug_control.prepare_manual_step();
         if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
             self.record_one_stopped_instruction();
         } else {
@@ -245,7 +242,11 @@ impl MachineBackend for NativeMachineBackend {
     fn assert_clear(&mut self) -> BackendResult<()> { self.machine.assert_front_panel_clear(); Ok(()) }
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.machine.request_hold(hold); Ok(()) }
-    fn panel_examine(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_examine_via_cpu_board(next); Ok(()) }
+    fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
+        self.debug_control.clear_transient();
+        self.machine.fast_front_panel_examine_via_cpu_board(next);
+        Ok(())
+    }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_deposit_via_cpu_board(next); Ok(()) }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.front_panel_set_memory_protection_via_s100(protected); Ok(()) }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
@@ -294,11 +295,13 @@ impl MachineBackend for NativeMachineBackend {
     fn clear_io_trace(&mut self) -> BackendResult<()> { self.machine.bus.clear_io_trace(); Ok(()) }
     fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> { Ok(self.instruction_trace.snapshot()) }
     fn instruction_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.instruction_trace.enabled()) }
+    fn instruction_trace_metadata(&mut self) -> BackendResult<InstructionTraceMetadata> { Ok(self.instruction_trace.metadata()) }
     fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> { self.instruction_trace.set_enabled(enabled); Ok(()) }
     fn clear_instruction_trace(&mut self) -> BackendResult<()> { self.instruction_trace.clear(); Ok(()) }
 
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
         if self.machine.powered && !self.machine.running {
+            self.debug_control.prepare_manual_step();
             if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
                 self.record_one_stopped_instruction();
             } else {
