@@ -30,6 +30,11 @@ impl eframe::App for RusTairApp {
             self.external_com.port.set_trace_enabled(io_capture_active);
         }
 
+        // Instruction history is a shared backend resource consumed by several
+        // debugger windows. Only this one runtime point owns the enable flag;
+        // individual windows merely publish demand through their egui state.
+        super::ui::sync_instruction_trace_capture(self, ctx);
+
         let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
         self.last_tick = now;
 
@@ -329,6 +334,7 @@ impl eframe::App for RusTairApp {
         self.show_memory_viewer_viewport(ctx);
         self.show_debugger_controls_viewport(ctx);
         self.show_instruction_history_viewport(ctx);
+        self.show_loop_inspector_viewport(ctx);
         self.show_io_inspector_viewport(ctx);
         self.show_standalone_front_panel_operator_viewport(ctx);
         self.draw_authentic_loader_window(ctx);
