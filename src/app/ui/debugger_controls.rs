@@ -213,6 +213,10 @@ impl RusTairApp {
                     self.machine.set_instruction_trace_enabled(true);
                     state.message = Some("Call-stack inference enabled instruction capture.".into());
                 }
+                if ui.button("Memory activity").clicked() {
+                    self.open_memory_activity(ui.ctx());
+                    state.message = Some("Memory activity opened in an independent window.".into());
+                }
             });
             ui.small("Debugger Step instruction is not the Altair front-panel SINGLE STEP. On Cycle Accurate, the debugger completes one whole instruction; the physical panel switch still advances one machine cycle.");
 
@@ -480,6 +484,7 @@ impl RusTairApp {
         }
 
         self.show_call_stack_viewport(parent_ctx, &mut state);
+        self.show_memory_activity_viewport(parent_ctx);
         Self::store_debugger_controls_state(parent_ctx, state);
     }
 }
