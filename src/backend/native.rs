@@ -77,6 +77,15 @@ impl NativeMachineBackend {
         ]
     }
 
+    /// RESET, front-panel address injection and external program replacement
+    /// create a new execution context. Retaining the previous ring would let
+    /// inferred structures such as Call Stack claim frames that are no longer
+    /// live, so make those operations explicit trace-generation boundaries.
+    fn reset_debugger_epoch(&mut self) {
+        self.instruction_trace.clear();
+        self.debug_control.clear_transient();
+    }
+
     fn record_one_stopped_instruction(&mut self) {
         let before = self.trace_cpu_snapshot();
         let bytes = self.trace_bytes(before.pc);
@@ -184,15 +193,13 @@ impl MachineBackend for NativeMachineBackend {
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         self.machine.configure_memory(size, init);
-        self.instruction_trace.clear();
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         Ok(())
     }
     fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.machine.power_with_historical_run_latch(on, historical);
-        self.instruction_trace.clear();
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         Ok(())
     }
     fn run(&mut self) -> BackendResult<()> {
@@ -234,7 +241,7 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.machine.release_run_stop(run); Ok(()) }
     fn assert_reset(&mut self) -> BackendResult<()> {
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         self.machine.assert_front_panel_reset();
         Ok(())
     }
@@ -243,11 +250,17 @@ impl MachineBackend for NativeMachineBackend {
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.machine.request_hold(hold); Ok(()) }
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         self.machine.fast_front_panel_examine_via_cpu_board(next);
         Ok(())
     }
-    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.machine.fast_front_panel_deposit_via_cpu_board(next); Ok(()) }
+    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
+        if next {
+            self.reset_debugger_epoch();
+        }
+        self.machine.fast_front_panel_deposit_via_cpu_board(next);
+        Ok(())
+    }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.front_panel_set_memory_protection_via_s100(protected); Ok(()) }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
@@ -255,7 +268,13 @@ impl MachineBackend for NativeMachineBackend {
         for bit in 0..16 { if changed & (1u16 << bit) != 0 { self.machine.toggle_sense_switch(bit); } }
         Ok(())
     }
-    fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> { self.machine.configure_serial_board(board); Ok(()) }
+    fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
+        if self.machine.serial_board() != board {
+            self.machine.configure_serial_board(board);
+            self.reset_debugger_epoch();
+        }
+        Ok(())
+    }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { Ok(self.machine.serial_board()) }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
         match port { BackendSerialPort::Port0 => self.machine.bus.serial_receive(byte), BackendSerialPort::Port1 => self.machine.bus.serial_port1_receive(byte) }; Ok(())
@@ -269,7 +288,11 @@ impl MachineBackend for NativeMachineBackend {
     fn installed_ram_bytes(&mut self) -> BackendResult<usize> { Ok(self.machine.installed_ram_bytes()) }
     fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> { Ok(self.machine.bus.peek_memory(address)) }
     fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> BackendResult<bool> { Ok(self.machine.bus.debugger_write_memory(address, value, respect_protection)) }
-    fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> { self.machine.bus.load(address, bytes); Ok(()) }
+    fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> {
+        self.machine.bus.load(address, bytes);
+        self.reset_debugger_epoch();
+        Ok(())
+    }
     fn memory_is_protected(&mut self, address: u16) -> BackendResult<bool> { Ok(self.machine.bus.is_protected(address)) }
     fn clear_memory_protection(&mut self) -> BackendResult<()> { self.machine.bus.clear_protection(); Ok(()) }
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> { self.machine.bus.clear_transient_memory_guards(); Ok(()) }
