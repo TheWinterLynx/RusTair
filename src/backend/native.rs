@@ -11,7 +11,7 @@ use crate::trace8080::{
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
     DebugStopReason, EmulationEngine, FrontPanelState, InstructionTraceSnapshot, Intel8080State,
-    IoPortActivity, IoTraceSnapshot, MachineBackend,
+    IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
 };
 
 pub struct NativeMachineBackend {
@@ -91,14 +91,18 @@ impl NativeMachineBackend {
         }));
         let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
         if delta != 0 {
-            self.instruction_trace
-                .push_with_effects(before.pc, bytes, before, after, delta, effects);
+            self.debug_control.stop_after_effects(before.pc, &effects);
+            if self.instruction_trace.enabled() {
+                self.instruction_trace
+                    .push_with_effects(before.pc, bytes, before, after, delta, effects);
+            }
         }
     }
 
     fn execute_one_running_instruction(&mut self) -> u32 {
         let tracing = self.instruction_trace.enabled();
-        let before = tracing.then(|| self.trace_cpu_snapshot());
+        let observing_effects = tracing || self.debug_control.has_watchpoints();
+        let before = observing_effects.then(|| self.trace_cpu_snapshot());
         let bytes = before.map(|snapshot| self.trace_bytes(snapshot.pc));
         let mut effects = match (before, bytes) {
             (Some(snapshot), Some(opcodes)) => collect_pre_instruction_effects(
@@ -121,8 +125,14 @@ impl NativeMachineBackend {
                 self.machine.bus.peek_memory(address)
             }));
             if delta != 0 {
-                self.instruction_trace
-                    .push_with_effects(before.pc, bytes, before, after, delta, effects);
+                let watch_stop = self.debug_control.stop_after_effects(before.pc, &effects).is_some();
+                if tracing {
+                    self.instruction_trace
+                        .push_with_effects(before.pc, bytes, before, after, delta, effects);
+                }
+                if watch_stop {
+                    self.machine.set_running(false);
+                }
             }
         }
         delta
@@ -200,7 +210,7 @@ impl MachineBackend for NativeMachineBackend {
         Ok(())
     }
     fn step(&mut self) -> BackendResult<()> {
-        if self.instruction_trace.enabled() {
+        if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
             self.record_one_stopped_instruction();
         } else {
             self.machine.step();
@@ -289,7 +299,7 @@ impl MachineBackend for NativeMachineBackend {
 
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
         if self.machine.powered && !self.machine.running {
-            if self.instruction_trace.enabled() {
+            if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
                 self.record_one_stopped_instruction();
             } else {
                 self.machine.step();
@@ -304,6 +314,21 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
         self.debug_control.clear_breakpoints();
+        Ok(())
+    }
+    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> {
+        Ok(self.debug_control.watchpoints())
+    }
+    fn debugger_set_watchpoint(
+        &mut self,
+        address: u16,
+        access: Option<MemoryWatchAccess>,
+    ) -> BackendResult<()> {
+        self.debug_control.set_watchpoint(address, access);
+        Ok(())
+    }
+    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
+        self.debug_control.clear_watchpoints();
         Ok(())
     }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
