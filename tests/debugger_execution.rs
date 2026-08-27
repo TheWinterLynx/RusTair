@@ -57,6 +57,20 @@ fn exercise_run_to(engine: EmulationEngine) {
     assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0002)), "{engine:?}");
 }
 
+fn exercise_run_to_from_breakpoint(engine: EmulationEngine) {
+    let mut host = prepared_host(engine, &[0x00, 0x00, 0x76]);
+    host.debugger_set_breakpoint(0x0000, true);
+    host.set_running(true);
+    host.run_cycles(64);
+    assert_eq!(host.intel8080_state().pc, 0x0000, "{engine:?}");
+    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::ExecuteBreakpoint(0x0000)), "{engine:?}");
+
+    host.debugger_run_to(0x0002);
+    host.run_cycles(128);
+    assert_eq!(host.intel8080_state().pc, 0x0002, "{engine:?}: run-to must resume past the triggered breakpoint");
+    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0002)), "{engine:?}");
+}
+
 fn exercise_debugger_instruction_step(engine: EmulationEngine) {
     let mut host = prepared_host(engine, &[0x3e, 0x42, 0x76]); // MVI A,42 / HLT
     host.set_instruction_trace_enabled(true);
@@ -78,6 +92,7 @@ fn fast_debugger_execution_control() {
     exercise_breakpoint(EmulationEngine::RustFast8080);
     exercise_fresh_breakpoint_at_current_pc(EmulationEngine::RustFast8080);
     exercise_run_to(EmulationEngine::RustFast8080);
+    exercise_run_to_from_breakpoint(EmulationEngine::RustFast8080);
     exercise_debugger_instruction_step(EmulationEngine::RustFast8080);
 }
 
@@ -86,5 +101,6 @@ fn cycle_debugger_execution_control() {
     exercise_breakpoint(EmulationEngine::RustCycleAccurate8080);
     exercise_fresh_breakpoint_at_current_pc(EmulationEngine::RustCycleAccurate8080);
     exercise_run_to(EmulationEngine::RustCycleAccurate8080);
+    exercise_run_to_from_breakpoint(EmulationEngine::RustCycleAccurate8080);
     exercise_debugger_instruction_step(EmulationEngine::RustCycleAccurate8080);
 }
