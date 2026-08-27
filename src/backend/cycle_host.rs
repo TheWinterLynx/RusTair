@@ -182,6 +182,26 @@ impl CycleHostBackend {
         self.pending_instruction_trace = None;
     }
 
+    /// A trace generation represents one continuous execution context. RESET,
+    /// front-panel PC injection, serial-board reset and bulk program replacement
+    /// break that continuity. Clearing here prevents Call Stack / Loop Inspector
+    /// from treating pre-discontinuity observations as live state afterwards.
+    fn reset_debugger_epoch(&mut self) {
+        self.clear_pending_instruction_trace();
+        self.instruction_trace.clear();
+        self.debug_control.clear_transient();
+    }
+
+    /// Cycle Accurate can be stopped between machine cycles. If debugger RAM is
+    /// patched after an instruction has already been snapshotted, its operands
+    /// and predicted data reads may no longer describe what the CPU will really
+    /// consume. Drop that partial observation rather than publish a false trace.
+    fn invalidate_partial_trace_for_external_memory_change(&mut self) {
+        if self.pending_instruction_trace.is_some() {
+            self.reset_debugger_epoch();
+        }
+    }
+
     fn debugger_step_one_instruction(&mut self) -> BackendResult<()> {
         if !self.inner.machine().powered || self.inner.machine().running {
             return Ok(());
@@ -228,9 +248,7 @@ impl MachineBackend for CycleHostBackend {
             replacement.machine_mut().configure_serial_board(serial_board);
             self.inner = replacement;
         }
-        self.clear_pending_instruction_trace();
-        self.instruction_trace.clear();
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         Ok(())
     }
 
@@ -239,9 +257,7 @@ impl MachineBackend for CycleHostBackend {
     }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.inner.power_with_historical_run_latch(on, historical)?;
-        self.clear_pending_instruction_trace();
-        self.instruction_trace.clear();
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         Ok(())
     }
     fn run(&mut self) -> BackendResult<()> {
@@ -302,8 +318,7 @@ impl MachineBackend for CycleHostBackend {
     }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.inner.release_run_stop(run) }
     fn assert_reset(&mut self) -> BackendResult<()> {
-        self.clear_pending_instruction_trace();
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         self.inner.assert_reset()
     }
     fn release_reset(&mut self) -> BackendResult<()> { self.inner.release_reset() }
@@ -311,11 +326,15 @@ impl MachineBackend for CycleHostBackend {
     fn release_clear(&mut self) -> BackendResult<()> { self.inner.release_clear() }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.inner.request_hold(hold) }
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
-        self.clear_pending_instruction_trace();
-        self.debug_control.clear_transient();
+        self.reset_debugger_epoch();
         self.inner.panel_examine(next)
     }
-    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.inner.panel_deposit(next) }
+    fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
+        if next {
+            self.reset_debugger_epoch();
+        }
+        self.inner.panel_deposit(next)
+    }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
         self.inner.protect_current_board(protected)
     }
@@ -328,10 +347,9 @@ impl MachineBackend for CycleHostBackend {
             return Ok(());
         }
         let powered = self.inner.machine().powered;
+        self.reset_debugger_epoch();
         self.inner.machine_mut().configure_serial_board(board);
         if powered {
-            self.clear_pending_instruction_trace();
-            self.debug_control.clear_transient();
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
         }
@@ -367,10 +385,13 @@ impl MachineBackend for CycleHostBackend {
         value: u8,
         respect_protection: bool,
     ) -> BackendResult<bool> {
+        self.invalidate_partial_trace_for_external_memory_change();
         self.inner.write_memory(address, value, respect_protection)
     }
     fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> {
-        self.inner.load_bytes(address, bytes)
+        self.inner.load_bytes(address, bytes)?;
+        self.reset_debugger_epoch();
+        Ok(())
     }
     fn memory_is_protected(&mut self, address: u16) -> BackendResult<bool> {
         Ok(self.inner.machine().bus.is_protected(address))
@@ -380,10 +401,12 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> {
+        self.invalidate_partial_trace_for_external_memory_change();
         self.inner.machine_mut().bus.clear_transient_memory_guards();
         Ok(())
     }
     fn arm_basic32_full_memory_probe_guard(&mut self) -> BackendResult<bool> {
+        self.invalidate_partial_trace_for_external_memory_change();
         Ok(self.inner.machine_mut().arm_basic32_full_memory_probe_guard())
     }
     fn begin_cpu_diagnostic_meter(
@@ -587,5 +610,32 @@ mod tests {
         assert_eq!(history[1].after.a, 0x43);
         assert_eq!(history[2].bytes[0], 0x76);
         assert!(history[2].after.halted);
+    }
+
+    #[test]
+    fn debugger_memory_patch_between_machine_cycles_drops_stale_partial_trace() {
+        let mut backend = CycleHostBackend::default();
+        backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x3e, 0x11, 0x00]).unwrap(); // MVI A,11h / NOP
+        backend.set_instruction_trace_enabled(true).unwrap();
+
+        backend.step().unwrap(); // physical SINGLE STEP: fetch M1 only
+        let generation = backend.instruction_trace_metadata().unwrap().generation;
+        assert!(backend.instruction_trace_snapshot().unwrap().is_empty());
+
+        assert!(backend.write_memory(0x0001, 0x22, true).unwrap());
+        assert_ne!(backend.instruction_trace_metadata().unwrap().generation, generation);
+        backend.step().unwrap(); // operand M2 completes MVI, but stale partial trace is gone
+        assert!(backend.instruction_trace_snapshot().unwrap().is_empty());
+
+        backend.step().unwrap(); // next NOP is captured normally
+        let history = backend.instruction_trace_snapshot().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].address, 0x0002);
+        let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(cpu.a, 0x22);
     }
 }
