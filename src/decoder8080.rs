@@ -632,15 +632,20 @@ pub fn decode_8080(opcode: u8, b1: u8, b2: u8) -> DecodedInstruction {
     }
 
     if opcode & 0xcf == 0xc1 {
+        let pair = (opcode >> 4) & 3;
         return decoded(
             opcode,
             "POP",
-            vec![operand_push_pair((opcode >> 4) & 3)],
+            vec![operand_push_pair(pair)],
             1,
             None,
             None,
             None,
-            FlagEffects::NONE,
+            if pair == 3 {
+                FlagEffects::SZP_AC_C
+            } else {
+                FlagEffects::NONE
+            },
             Timing::fixed(10),
             MemoryAccess::StackRead,
             IoAccess::None,
@@ -796,6 +801,15 @@ mod tests {
         );
         assert!(Condition::NotZero.evaluate(0));
         assert!(!Condition::NotZero.evaluate(FLAG_Z));
+    }
+
+    #[test]
+    fn pop_psw_reports_restored_condition_flags() {
+        let pop_h = decode_8080(0xe1, 0, 0);
+        let pop_psw = decode_8080(0xf1, 0, 0);
+        assert_eq!(pop_h.flags, FlagEffects::NONE);
+        assert_eq!(pop_psw.text(), "POP PSW");
+        assert_eq!(pop_psw.flags, FlagEffects::SZP_AC_C);
     }
 
     #[test]
