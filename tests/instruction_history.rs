@@ -7,6 +7,14 @@ fn exercise_history(engine: EmulationEngine) {
     host.power(true);
     host.front_panel_reset();
     host.load_bytes(0, &[0x3e, 0x42, 0x3c, 0x76]); // MVI A,42 / INR A / HLT
+
+    // RESET establishes the execution entry point, but the Intel 8080 general
+    // registers are not specified to become zero. Preserve the actual state
+    // presented by each backend and require the trace to capture that exact
+    // pre-instruction snapshot rather than inventing a debugger-friendly one.
+    let initial = host.intel8080_state();
+    assert_eq!(initial.pc, 0x0000, "{engine:?}");
+
     host.clear_instruction_trace();
     host.set_instruction_trace_enabled(true);
     host.set_running(true);
@@ -19,8 +27,18 @@ fn exercise_history(engine: EmulationEngine) {
     assert_eq!(mvi.address, 0x0000, "{engine:?}");
     assert_eq!(&mvi.bytes[..2], &[0x3e, 0x42], "{engine:?}");
     assert_eq!(mvi.length, 2, "{engine:?}");
-    assert_eq!(mvi.before.pc, 0x0000, "{engine:?}");
-    assert_eq!(mvi.before.a, 0x00, "{engine:?}");
+    assert_eq!(mvi.before.pc, initial.pc, "{engine:?}");
+    assert_eq!(mvi.before.a, initial.a, "{engine:?}");
+    assert_eq!(mvi.before.b, initial.b, "{engine:?}");
+    assert_eq!(mvi.before.c, initial.c, "{engine:?}");
+    assert_eq!(mvi.before.d, initial.d, "{engine:?}");
+    assert_eq!(mvi.before.e, initial.e, "{engine:?}");
+    assert_eq!(mvi.before.h, initial.h, "{engine:?}");
+    assert_eq!(mvi.before.l, initial.l, "{engine:?}");
+    assert_eq!(mvi.before.flags, initial.flags, "{engine:?}");
+    assert_eq!(mvi.before.sp, initial.sp, "{engine:?}");
+    assert_eq!(mvi.before.inte, initial.inte, "{engine:?}");
+    assert_eq!(mvi.before.halted, initial.halted.unwrap_or(false), "{engine:?}");
     assert_eq!(mvi.after.a, 0x42, "{engine:?}");
     assert_eq!(mvi.after.pc, 0x0002, "{engine:?}");
 
