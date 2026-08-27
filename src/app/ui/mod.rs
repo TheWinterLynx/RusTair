@@ -34,7 +34,6 @@ fn instruction_trace_requested(ctx: &egui::Context) -> bool {
     instruction_history::trace_requested(ctx)
         || debugger_controls::trace_requested(ctx)
         || memory_activity::trace_requested(ctx)
-        || memory_viewer::trace_requested(ctx)
         || loop_inspector::trace_requested(ctx)
 }
 
