@@ -316,10 +316,14 @@ impl RusTairApp {
     ) {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut state.capture, "Capture");
+                ui.checkbox(&mut state.capture, "Capture")
+                    .on_hover_text("Request instruction capture for this window. The shared trace can remain active if Call Stack, Memory Activity or Loop Inspector still needs it.");
                 ui.checkbox(&mut state.follow_latest, "Follow latest")
                     .on_hover_text("Following the newest entry is independent from Capture. Turn Follow off to inspect older entries while capture continues.");
-                if ui.button("Clear").clicked() {
+                if ui.button("Clear shared history")
+                    .on_hover_text("Clears the shared instruction ring and starts a new trace generation for Execution History, Call Stack, Memory Activity and Loop Inspector.")
+                    .clicked()
+                {
                     self.machine.clear_instruction_trace();
                     state.selected_sequence = None;
                 }
@@ -329,13 +333,21 @@ impl RusTairApp {
 
             let history = self.machine.instruction_trace_snapshot();
             let metadata = self.machine.instruction_trace_metadata();
+            let backend_capture_active = self.machine.instruction_trace_enabled();
             if state.follow_latest {
                 state.selected_sequence = history.last().map(|entry| entry.sequence);
             }
+            let capture_status = if state.capture {
+                "LIVE · requested by Execution History"
+            } else if backend_capture_active {
+                "LIVE · required by another debugger view"
+            } else {
+                "PAUSED"
+            };
             ui.small(format!(
-                "Captured: {} entries{} | dropped this generation: {}",
+                "Captured: {} entries | {} | dropped this generation: {}",
                 history.len(),
-                if state.capture { " | LIVE" } else { " | PAUSED" },
+                capture_status,
                 metadata.dropped_entries,
             ));
             ui.separator();
