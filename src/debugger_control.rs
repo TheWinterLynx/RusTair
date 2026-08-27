@@ -140,6 +140,14 @@ impl DebugExecutionControl {
         self.stop_reason = None;
     }
 
+    /// A manual debugger single-step is not a RUN resume. Clear stale stop/run
+    /// state without arming a future breakpoint skip at the old PC.
+    pub fn prepare_manual_step(&mut self) {
+        self.run_to = None;
+        self.resume_skip_once = None;
+        self.stop_reason = None;
+    }
+
     /// Resuming after an execute breakpoint must execute that instruction once
     /// instead of immediately re-triggering. Merely having a breakpoint at the
     /// current PC is not enough: a fresh RUN must still stop before that opcode.
@@ -243,6 +251,16 @@ mod tests {
     }
 
     #[test]
+    fn manual_step_does_not_leave_future_breakpoint_skip_armed() {
+        let mut control = DebugExecutionControl::default();
+        control.set_breakpoint(0x1234, true);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        control.prepare_manual_step();
+        assert_eq!(control.stop_reason(), None);
+        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+    }
+
+    #[test]
     fn run_to_from_triggered_breakpoint_can_resume_past_current_pc() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1000, true);
@@ -260,8 +278,6 @@ mod tests {
         control.set_run_to(0x2000);
         assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::RunTo(0x2000)));
         assert_eq!(control.run_to(), None);
-        // A run-to stop is not an execute-breakpoint stop, so the persistent
-        // breakpoint at the same address remains armed on the next RUN.
         control.prepare_resume(0x2000);
         assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::ExecuteBreakpoint(0x2000)));
     }
