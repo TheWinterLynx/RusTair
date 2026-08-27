@@ -95,11 +95,14 @@ impl RusTairApp {
         let Some((pc, _, decoded)) = self.current_debug_instruction() else {
             return "Cannot decode the current instruction from installed RAM.".into();
         };
+        let start_sp = self.machine.intel8080_state().sp;
         let return_address = pc.wrapping_add(u16::from(decoded.length));
         match decoded.control_flow {
             ControlFlow::Call { .. } | ControlFlow::Restart { .. } => {
-                self.machine.debugger_run_to(return_address);
-                format!("Step over: running to return address ${return_address:04X}.")
+                self.machine.debugger_run_to_with_sp(return_address, start_sp);
+                format!(
+                    "Step over: running to ${return_address:04X} only after SP returns to ${start_sp:04X}."
+                )
             }
             _ => {
                 self.machine.debugger_step_instruction();
@@ -113,8 +116,11 @@ impl RusTairApp {
         let Some(target) = self.candidate_return_address() else {
             return format!("Cannot read a two-byte return candidate from stack at SP=${sp:04X}.");
         };
-        self.machine.debugger_run_to(target);
-        format!("Step out: running to stack return candidate ${target:04X} read from [SP=${sp:04X}].")
+        let caller_sp = sp.wrapping_add(2);
+        self.machine.debugger_run_to_with_sp(target, caller_sp);
+        format!(
+            "Step out: running to candidate ${target:04X} only after SP advances from ${sp:04X} to ${caller_sp:04X}."
+        )
     }
 
     fn draw_debug_stop_reason(
@@ -175,7 +181,7 @@ impl RusTairApp {
 
             self.draw_debug_stop_reason(ui, running, cpu.pc);
             if let Some(target) = self.machine.debugger_run_to_target() {
-                ui.label(format!("Active run-to target: ${target:04X}."));
+                ui.label(format!("Active run-to/step target: ${target:04X}."));
             }
 
             ui.separator();
@@ -207,7 +213,7 @@ impl RusTairApp {
                     state.message = Some("Memory activity opened in an independent window.".into());
                 }
             });
-            ui.small("Debugger Step instruction advances to the next 8080 instruction boundary. On Cycle Accurate, if the physical SINGLE STEP left the CPU mid-instruction, it first completes that instruction; the physical panel switch itself still advances one machine cycle.");
+            ui.small("Debugger Step instruction advances to the next 8080 instruction boundary. Step over/out also require the expected stack depth, so revisiting the same PC inside a deeper call does not stop early. On Cycle Accurate, if the physical SINGLE STEP left the CPU mid-instruction, debugger Step first completes that instruction; the physical panel switch itself still advances one machine cycle.");
 
             if let Some(candidate) = self.candidate_return_address() {
                 ui.small(format!("Stack top candidate return: [SP=${:04X}] -> ${candidate:04X}. This is a conservative candidate, not a guaranteed call frame.", cpu.sp));
