@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::trace8080::{
-    InstructionEffect8080, InstructionTraceEntry, DEFAULT_INSTRUCTION_HISTORY_LIMIT,
-};
+use crate::trace8080::{InstructionEffect8080, InstructionTraceEntry, InstructionTraceMetadata};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MemoryActivity8080 {
@@ -42,7 +40,8 @@ pub struct MemoryActivityMap8080 {
     by_address: BTreeMap<u16, MemoryActivity8080>,
     pub first_sequence: Option<u64>,
     pub last_sequence: Option<u64>,
-    pub history_gap: bool,
+    pub dropped_entries: u64,
+    pub sequence_gap: bool,
 }
 
 impl MemoryActivityMap8080 {
@@ -57,19 +56,28 @@ impl MemoryActivityMap8080 {
     pub fn active_addresses(&self) -> usize {
         self.by_address.len()
     }
+
+    pub const fn incomplete(&self) -> bool {
+        self.dropped_entries != 0 || self.sequence_gap
+    }
 }
 
-pub fn summarize_memory_activity_8080(history: &[InstructionTraceEntry]) -> MemoryActivityMap8080 {
-    let mut result = MemoryActivityMap8080::default();
+pub fn summarize_memory_activity_8080(
+    history: &[InstructionTraceEntry],
+    metadata: InstructionTraceMetadata,
+) -> MemoryActivityMap8080 {
+    let mut result = MemoryActivityMap8080 {
+        dropped_entries: metadata.dropped_entries,
+        ..MemoryActivityMap8080::default()
+    };
     let Some(first) = history.first() else { return result; };
     result.first_sequence = Some(first.sequence);
     result.last_sequence = history.last().map(|entry| entry.sequence);
-    result.history_gap = history.len() >= DEFAULT_INSTRUCTION_HISTORY_LIMIT && first.sequence > 1;
 
     let mut expected = first.sequence;
     for entry in history {
         if entry.sequence != expected {
-            result.history_gap = true;
+            result.sequence_gap = true;
         }
         expected = entry.sequence.wrapping_add(1);
 
@@ -118,6 +126,14 @@ mod tests {
         }
     }
 
+    fn metadata(dropped_entries: u64) -> InstructionTraceMetadata {
+        InstructionTraceMetadata {
+            generation: 1,
+            dropped_entries,
+            capacity: 4096,
+        }
+    }
+
     #[test]
     fn separates_execute_read_and_write_activity() {
         let history = vec![
@@ -125,7 +141,7 @@ mod tests {
             trace(2, 0x0101, vec![InstructionEffect8080::MemoryWrite { address: 0x0200, value: 0x22 }]),
             trace(3, 0x0100, vec![InstructionEffect8080::StackWrite { address: 0x0ffe, value: 0x01 }]),
         ];
-        let map = summarize_memory_activity_8080(&history);
+        let map = summarize_memory_activity_8080(&history, metadata(0));
         let code = map.get(0x0100);
         assert_eq!(code.execute_count, 2);
         assert_eq!(code.last_execute_sequence, Some(3));
@@ -134,29 +150,34 @@ mod tests {
         assert_eq!(data.write_count, 1);
         assert_eq!(data.last_sequence(), Some(2));
         assert_eq!(map.get(0x0ffe).write_count, 1);
-        assert!(!map.history_gap);
+        assert!(!map.incomplete());
     }
 
     #[test]
-    fn clear_baseline_with_high_sequence_is_not_a_gap() {
-        let fresh_after_clear = summarize_memory_activity_8080(&[trace(8, 0, Vec::new())]);
-        assert!(!fresh_after_clear.history_gap);
+    fn high_sequence_after_clear_is_not_loss_without_metadata() {
+        let fresh_after_clear = summarize_memory_activity_8080(
+            &[trace(8, 0, Vec::new())],
+            metadata(0),
+        );
+        assert!(!fresh_after_clear.incomplete());
     }
 
     #[test]
     fn sequence_holes_are_reported() {
-        let hole = summarize_memory_activity_8080(&[
-            trace(1, 0, Vec::new()),
-            trace(3, 1, Vec::new()),
-        ]);
-        assert!(hole.history_gap);
+        let hole = summarize_memory_activity_8080(
+            &[trace(1, 0, Vec::new()), trace(3, 1, Vec::new())],
+            metadata(0),
+        );
+        assert!(hole.sequence_gap);
     }
 
     #[test]
-    fn full_shifted_buffer_is_reported_as_truncated() {
-        let history: Vec<_> = (0..DEFAULT_INSTRUCTION_HISTORY_LIMIT)
-            .map(|index| trace(index as u64 + 8, index as u16, Vec::new()))
-            .collect();
-        assert!(summarize_memory_activity_8080(&history).history_gap);
+    fn explicit_ring_eviction_is_reported() {
+        let truncated = summarize_memory_activity_8080(
+            &[trace(42, 0, Vec::new())],
+            metadata(17),
+        );
+        assert_eq!(truncated.dropped_entries, 17);
+        assert!(truncated.incomplete());
     }
 }
