@@ -10,6 +10,7 @@ mod front_panel_operator;
 mod front_panel_switches;
 mod instruction_history;
 mod io_inspector;
+mod memory_activity;
 mod memory_viewer;
 #[path = "../persistence.rs"]
 pub(super) mod persistence;
