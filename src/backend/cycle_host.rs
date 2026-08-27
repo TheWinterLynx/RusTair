@@ -203,7 +203,14 @@ impl CycleHostBackend {
     }
 
     fn debugger_step_one_instruction(&mut self) -> BackendResult<()> {
-        if !self.inner.machine().powered || self.inner.machine().running {
+        let lines = self.inner.machine().bus.cpu_control_lines();
+        if !self.inner.machine().powered
+            || self.inner.machine().running
+            || lines.reset
+            || lines.hold
+            || self.inner.cpu().is_halted()
+            || self.inner.cpu().is_holding()
+        {
             return Ok(());
         }
 
@@ -214,7 +221,7 @@ impl CycleHostBackend {
             self.inner.step()?;
             let watch_stop = self.finish_instruction_trace_if_complete();
 
-            if watch_stop || self.inner.cpu().is_halted() {
+            if watch_stop || self.inner.cpu().is_halted() || self.inner.cpu().is_holding() {
                 break;
             }
             if self.inner.cpu().total_t_states() > start_t_states && self.at_instruction_boundary() {
@@ -261,7 +268,8 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn run(&mut self) -> BackendResult<()> {
-        self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+        let r = self.inner.cpu().registers();
+        self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
         self.inner.run()
     }
     fn halt(&mut self) -> BackendResult<()> {
@@ -288,8 +296,8 @@ impl MachineBackend for CycleHostBackend {
         self.inner
             .service_execution_with_observer(t_state_budget, |inner, event| match event {
                 CycleExecutionEvent::BeforeInstruction => {
-                    let pc = inner.cpu().registers().pc;
-                    if debug_control.stop_before(pc).is_some() {
+                    let r = inner.cpu().registers();
+                    if debug_control.stop_before_with_sp(r.pc, r.sp).is_some() {
                         return true;
                     }
                     if observing_effects {
@@ -310,7 +318,8 @@ impl MachineBackend for CycleHostBackend {
     }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
         if run {
-            self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+            let r = self.inner.cpu().registers();
+            self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
         } else {
             self.debug_control.cancel_run_to();
         }
@@ -332,6 +341,8 @@ impl MachineBackend for CycleHostBackend {
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
         if next {
             self.reset_debugger_epoch();
+        } else {
+            self.invalidate_partial_trace_for_external_memory_change();
         }
         self.inner.panel_deposit(next)
     }
@@ -512,7 +523,14 @@ impl MachineBackend for CycleHostBackend {
     }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
         self.debug_control.set_run_to(address);
-        self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+        let r = self.inner.cpu().registers();
+        self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
+        self.inner.run()
+    }
+    fn debugger_run_to_with_sp(&mut self, address: u16, required_sp: u16) -> BackendResult<()> {
+        self.debug_control.set_run_to_with_sp(address, required_sp);
+        let r = self.inner.cpu().registers();
+        self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
         self.inner.run()
     }
     fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
@@ -637,5 +655,24 @@ mod tests {
         assert_eq!(history[0].address, 0x0002);
         let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(cpu.a, 0x22);
+    }
+
+    #[test]
+    fn front_panel_deposit_between_machine_cycles_drops_stale_partial_trace() {
+        let mut backend = CycleHostBackend::default();
+        backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x3e, 0x11, 0x00]).unwrap();
+        backend.set_instruction_trace_enabled(true).unwrap();
+
+        backend.step().unwrap(); // MVI fetch complete, operand cycle pending
+        let generation = backend.instruction_trace_metadata().unwrap().generation;
+        assert!(backend.pending_instruction_trace.is_some());
+
+        backend.panel_deposit(false).unwrap();
+        assert_ne!(backend.instruction_trace_metadata().unwrap().generation, generation);
+        assert!(backend.pending_instruction_trace.is_none());
     }
 }
