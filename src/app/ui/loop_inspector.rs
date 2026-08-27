@@ -7,7 +7,6 @@ struct LoopInspectorUiState {
     window_open: bool,
     snapshot: Option<SimpleLoop>,
     baseline_generation: u64,
-    baseline_dropped: u64,
     last_sequence: u64,
     iterations: u64,
     trace_gap: bool,
@@ -45,7 +44,6 @@ impl RusTairApp {
             window_open: true,
             snapshot: Some(loop_info),
             baseline_generation: metadata.generation,
-            baseline_dropped: metadata.dropped_entries,
             last_sequence: latest_sequence,
             iterations: 0,
             trace_gap: false,
@@ -64,18 +62,12 @@ impl RusTairApp {
 
         if metadata.generation != state.baseline_generation {
             state.baseline_generation = metadata.generation;
-            state.baseline_dropped = metadata.dropped_entries;
             state.last_sequence = history.last().map(|entry| entry.sequence).unwrap_or(0);
             state.iterations = 0;
             state.trace_reset = true;
             state.trace_gap = false;
             state.exited = false;
             return;
-        }
-
-        if metadata.dropped_entries > state.baseline_dropped {
-            state.trace_gap = true;
-            state.baseline_dropped = metadata.dropped_entries;
         }
 
         let Some(last) = history.last() else { return; };
@@ -85,6 +77,11 @@ impl RusTairApp {
 
         let mut new_entries = history.iter().filter(|entry| entry.sequence > state.last_sequence);
         if let Some(first) = new_entries.next() {
+            // Ring eviction by itself does not imply that this inspector lost
+            // anything: when the buffer is full, every new instruction evicts
+            // one old entry. We only lose countable execution when the oldest
+            // newly retained sequence has jumped past the sequence we last
+            // processed.
             if state.last_sequence != 0
                 && first.sequence > state.last_sequence.saturating_add(1)
             {
@@ -134,9 +131,9 @@ impl RusTairApp {
             if state.trace_reset {
                 ui.small("Instruction history was cleared/reset while this inspector was open; the iteration counter restarted from zero.");
             } else if state.trace_gap {
-                ui.small("Trace entries were lost before this window observed them; the iteration count is therefore a lower bound.");
+                ui.small("Execution outran the retained trace between two observations; the iteration count is therefore a lower bound.");
             } else {
-                ui.small("Iteration count is exact for the retained trace observed since this inspector was opened.");
+                ui.small("Iteration count is exact for all trace sequences observed since this inspector was opened.");
             }
             if state.exited {
                 ui.small("Last observed execution of the back-edge did not return to the loop entry: the loop exited.");
