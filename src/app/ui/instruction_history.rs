@@ -203,79 +203,70 @@ impl RusTairApp {
         );
     }
 
-    fn draw_instruction_history_window(&mut self, ctx: &egui::Context, state: &mut InstructionHistoryUiState) {
-        let mut open = state.window_open;
-        egui::Window::new("8080 Execution History")
-            .id(egui::Id::new("rustair-8080-execution-history"))
-            .open(&mut open)
-            .default_width(760.0)
-            .default_height(700.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                let backend_capture = self.machine.instruction_trace_enabled();
-                if backend_capture != state.capture {
+    fn draw_instruction_history_viewport_contents(
+        &mut self,
+        ctx: &egui::Context,
+        state: &mut InstructionHistoryUiState,
+    ) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let backend_capture = self.machine.instruction_trace_enabled();
+            if backend_capture != state.capture {
+                self.machine.set_instruction_trace_enabled(state.capture);
+            }
+
+            ui.horizontal_wrapped(|ui| {
+                if ui.checkbox(&mut state.capture, "Capture").changed() {
                     self.machine.set_instruction_trace_enabled(state.capture);
                 }
-
-                ui.horizontal_wrapped(|ui| {
-                    if ui.checkbox(&mut state.capture, "Capture").changed() {
-                        self.machine.set_instruction_trace_enabled(state.capture);
-                    }
-                    ui.checkbox(&mut state.follow_latest, "Follow latest")
-                        .on_hover_text("Following the newest entry is independent from Capture. Turn Follow off to inspect older entries while capture continues.");
-                    if ui.button("Clear").clicked() {
-                        self.machine.clear_instruction_trace();
-                        state.selected_sequence = None;
-                    }
-                    ui.separator();
-                    ui.small("Bounded history: last 4096 completed guest instructions.");
-                });
-
-                let history = self.machine.instruction_trace_snapshot();
-                if state.follow_latest {
-                    state.selected_sequence = history.last().map(|entry| entry.sequence);
+                ui.checkbox(&mut state.follow_latest, "Follow latest")
+                    .on_hover_text("Following the newest entry is independent from Capture. Turn Follow off to inspect older entries while capture continues.");
+                if ui.button("Clear").clicked() {
+                    self.machine.clear_instruction_trace();
+                    state.selected_sequence = None;
                 }
-                ui.small(format!("Captured: {} entries{}", history.len(), if state.capture { " | LIVE" } else { " | PAUSED" }));
                 ui.separator();
-
-                ui.strong("Completed instructions");
-                egui::ScrollArea::vertical()
-                    .id_salt("instruction-history-list")
-                    .max_height(HISTORY_LIST_HEIGHT)
-                    .auto_shrink([false, false])
-                    .stick_to_bottom(state.follow_latest)
-                    .show(ui, |ui| {
-                        let start = history.len().saturating_sub(HISTORY_VISIBLE_ROWS);
-                        for entry in &history[start..] {
-                            let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
-                            let selected = state.selected_sequence == Some(entry.sequence);
-                            let text = format!(
-                                "#{:06}  {:04X}  {:<8}  {:<18}  {:>2}T",
-                                entry.sequence,
-                                entry.address,
-                                entry.bytes_text(),
-                                decoded.text(),
-                                entry.t_states,
-                            );
-                            if ui.selectable_label(selected, egui::RichText::new(text).monospace()).clicked() {
-                                state.selected_sequence = Some(entry.sequence);
-                                state.follow_latest = false;
-                            }
-                        }
-                    });
-
-                ui.separator();
-                ui.strong("WHAT JUST HAPPENED?");
-                let selected = state.selected_sequence
-                    .and_then(|sequence| history.iter().find(|entry| entry.sequence == sequence));
-                Self::draw_history_detail(ui, selected);
+                ui.small("Bounded history: last 4096 completed guest instructions.");
             });
 
-        state.window_open = open;
-        if !open {
-            state.capture = false;
-            self.machine.set_instruction_trace_enabled(false);
-        }
+            let history = self.machine.instruction_trace_snapshot();
+            if state.follow_latest {
+                state.selected_sequence = history.last().map(|entry| entry.sequence);
+            }
+            ui.small(format!("Captured: {} entries{}", history.len(), if state.capture { " | LIVE" } else { " | PAUSED" }));
+            ui.separator();
+
+            ui.strong("Completed instructions");
+            egui::ScrollArea::vertical()
+                .id_salt("instruction-history-list")
+                .max_height(HISTORY_LIST_HEIGHT)
+                .auto_shrink([false, false])
+                .stick_to_bottom(state.follow_latest)
+                .show(ui, |ui| {
+                    let start = history.len().saturating_sub(HISTORY_VISIBLE_ROWS);
+                    for entry in &history[start..] {
+                        let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
+                        let selected = state.selected_sequence == Some(entry.sequence);
+                        let text = format!(
+                            "#{:06}  {:04X}  {:<8}  {:<18}  {:>2}T",
+                            entry.sequence,
+                            entry.address,
+                            entry.bytes_text(),
+                            decoded.text(),
+                            entry.t_states,
+                        );
+                        if ui.selectable_label(selected, egui::RichText::new(text).monospace()).clicked() {
+                            state.selected_sequence = Some(entry.sequence);
+                            state.follow_latest = false;
+                        }
+                    }
+                });
+
+            ui.separator();
+            ui.strong("WHAT JUST HAPPENED?");
+            let selected = state.selected_sequence
+                .and_then(|sequence| history.iter().find(|entry| entry.sequence == sequence));
+            Self::draw_history_detail(ui, selected);
+        });
     }
 
     pub(in crate::app) fn show_instruction_history_viewport(&mut self, parent_ctx: &egui::Context) {
@@ -283,7 +274,24 @@ impl RusTairApp {
         if !state.window_open {
             return;
         }
-        self.draw_instruction_history_window(parent_ctx, &mut state);
+
+        parent_ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("rustair-8080-execution-history-viewport"),
+            egui::ViewportBuilder::default()
+                .with_title("RusTair - 8080 Execution History")
+                .with_inner_size([860.0, 720.0])
+                .with_min_inner_size([680.0, 520.0])
+                .with_resizable(true),
+            |history_ctx, _class| {
+                self.draw_instruction_history_viewport_contents(history_ctx, &mut state);
+                if history_ctx.input(|input| input.viewport().close_requested()) {
+                    state.window_open = false;
+                    state.capture = false;
+                    self.machine.set_instruction_trace_enabled(false);
+                }
+            },
+        );
+
         Self::store_instruction_history_state(parent_ctx, state);
     }
 }
