@@ -1,7 +1,11 @@
 use super::super::{egui, RusTairApp};
+use super::execution_position::current_instruction_address;
 use crate::backend::{DebugStopReason, MemoryWatchAccess};
 use crate::callstack8080::{infer_call_stack_8080, CallKind8080};
 use crate::decoder8080::{decode_8080, ControlFlow};
+
+const DEBUG_STATUS_LINE_HEIGHT: f32 = 20.0;
+const DEBUG_LIST_HEIGHT: f32 = 105.0;
 
 #[derive(Clone)]
 struct DebuggerControlsUiState {
@@ -46,8 +50,9 @@ impl RusTairApp {
         let mut state = Self::debugger_controls_state(ctx);
         state.window_open = true;
         let cpu = self.machine.intel8080_state();
-        state.run_to_input = format!("{:04X}", cpu.pc);
-        state.breakpoint_input = format!("{:04X}", cpu.pc);
+        let execution_address = current_instruction_address(self);
+        state.run_to_input = format!("{execution_address:04X}");
+        state.breakpoint_input = format!("{execution_address:04X}");
         state.watchpoint_input = format!("{:04X}", cpu.hl());
         Self::store_debugger_controls_state(ctx, state);
     }
@@ -76,12 +81,12 @@ impl RusTairApp {
     }
 
     fn current_debug_instruction(&mut self) -> Option<(u16, [u8; 3], crate::decoder8080::DecodedInstruction)> {
-        let pc = self.machine.intel8080_state().pc;
-        let b0 = self.machine.peek_memory(pc)?;
-        let b1 = self.machine.peek_memory(pc.wrapping_add(1)).unwrap_or(0);
-        let b2 = self.machine.peek_memory(pc.wrapping_add(2)).unwrap_or(0);
+        let address = current_instruction_address(self);
+        let b0 = self.machine.peek_memory(address)?;
+        let b1 = self.machine.peek_memory(address.wrapping_add(1)).unwrap_or(0);
+        let b2 = self.machine.peek_memory(address.wrapping_add(2)).unwrap_or(0);
         let decoded = decode_8080(b0, b1, b2);
-        Some((pc, [b0, b1, b2], decoded))
+        Some((address, [b0, b1, b2], decoded))
     }
 
     fn candidate_return_address(&mut self) -> Option<u16> {
@@ -123,24 +128,28 @@ impl RusTairApp {
         )
     }
 
-    fn draw_debug_stop_reason(
+    fn debug_stop_reason_text(
         &mut self,
-        ui: &mut egui::Ui,
         running: bool,
-        current_pc: u16,
-    ) {
-        let Some(reason) = self.machine.debugger_stop_reason() else { return; };
+        execution_address: u16,
+    ) -> String {
         if running {
-            return;
+            return String::new();
         }
-
+        let Some(reason) = self.machine.debugger_stop_reason() else {
+            return String::new();
+        };
         let relevant = match reason {
-            DebugStopReason::ExecuteBreakpoint(address) | DebugStopReason::RunTo(address) => current_pc == address,
+            DebugStopReason::ExecuteBreakpoint(address) | DebugStopReason::RunTo(address) => {
+                execution_address == address
+            }
             DebugStopReason::MemoryReadWatchpoint { .. }
             | DebugStopReason::MemoryWriteWatchpoint { .. } => true,
         };
         if relevant {
-            ui.label(format!("Stopped by debugger: {}.", reason.label()));
+            format!("Stopped by debugger: {}.", reason.label())
+        } else {
+            String::new()
         }
     }
 
@@ -151,41 +160,63 @@ impl RusTairApp {
     ) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let cpu = self.machine.intel8080_state();
+            let execution_address = current_instruction_address(self);
             let panel = self.machine.front_panel_state();
             let powered = panel.powered;
             let running = panel.running;
             let halted = cpu.halted.unwrap_or(false);
             let stopped_for_step = powered && !running && !halted;
 
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.strong("8080 DEBUGGER");
                 ui.separator();
                 ui.label(format!("Core: {}", self.machine.engine().label()));
                 ui.separator();
-                ui.monospace(format!("PC=${:04X}  SP=${:04X}", cpu.pc, cpu.sp));
+                ui.monospace(format!(
+                    "PC(reg)=${:04X}  EXEC=${execution_address:04X}  SP=${:04X}",
+                    cpu.pc, cpu.sp
+                ));
                 ui.separator();
                 ui.label(if !powered { "POWER OFF" } else if halted { "HALTED" } else if running { "RUNNING" } else { "STOPPED" });
             });
 
-            if let Some((pc, bytes, decoded)) = self.current_debug_instruction() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.monospace(format!("${pc:04X}"));
-                    ui.monospace(decoded.bytes_text(bytes));
-                    ui.monospace(decoded.text());
-                    ui.separator();
-                    ui.small(decoded.flow_label());
-                });
-            } else {
-                ui.small("Current PC is outside installed RAM.");
-            }
+            let width = ui.available_width();
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 44.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if let Some((pc, bytes, decoded)) = self.current_debug_instruction() {
+                        ui.horizontal(|ui| {
+                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("${pc:04X}")).monospace()));
+                            ui.add_sized([92.0, 20.0], egui::Label::new(egui::RichText::new(decoded.bytes_text(bytes)).monospace()));
+                            ui.add_sized([260.0, 20.0], egui::Label::new(egui::RichText::new(decoded.text()).monospace()));
+                            ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new(decoded.flow_label()).small()));
+                        });
+                    } else {
+                        ui.add_sized([width, 20.0], egui::Label::new("Current execution address is outside installed RAM."));
+                    }
+                    ui.add_sized(
+                        [width, DEBUG_STATUS_LINE_HEIGHT],
+                        egui::Label::new(egui::RichText::new(if execution_address != cpu.pc {
+                            format!("Cycle state: PC register is ${:04X}; current instruction began at EXEC=${execution_address:04X}.", cpu.pc)
+                        } else {
+                            String::new()
+                        }).small()),
+                    );
+                },
+            );
 
-            self.draw_debug_stop_reason(ui, running, cpu.pc);
-            if let Some(target) = self.machine.debugger_run_to_target() {
-                ui.label(format!("Active run-to/step target: ${target:04X}."));
-            }
+            let stop_text = self.debug_stop_reason_text(running, execution_address);
+            ui.add_sized([width, DEBUG_STATUS_LINE_HEIGHT], egui::Label::new(stop_text));
+            let run_to_text = self
+                .machine
+                .debugger_run_to_target()
+                .map(|target| format!("Active run-to/step target: ${target:04X}."))
+                .unwrap_or_default();
+            ui.add_sized([width, DEBUG_STATUS_LINE_HEIGHT], egui::Label::new(run_to_text));
 
             ui.separator();
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 if ui.add_enabled(powered && !running && !halted, egui::Button::new("Continue")).clicked() {
                     self.machine.set_running(true);
                     state.message = Some("Execution resumed.".into());
@@ -213,11 +244,12 @@ impl RusTairApp {
                     state.message = Some("Memory activity opened in an independent window.".into());
                 }
             });
-            ui.small("Debugger Step instruction advances to the next 8080 instruction boundary. Step over/out also require the expected stack depth, so revisiting the same PC inside a deeper call does not stop early. On Cycle Accurate, if the physical SINGLE STEP left the CPU mid-instruction, debugger Step first completes that instruction; the physical panel switch itself still advances one machine cycle.");
+            ui.small("Debugger Step instruction advances to the next 8080 instruction boundary. Step over/out also require the expected stack depth, so revisiting the same PC inside a deeper call does not stop early. On Cycle Accurate, the architectural PC may move during an instruction; EXEC remains the stable opcode boundary used by debugger controls.");
 
-            if let Some(candidate) = self.candidate_return_address() {
-                ui.small(format!("Stack top candidate return: [SP=${:04X}] -> ${candidate:04X}. This is a conservative candidate, not a guaranteed call frame.", cpu.sp));
-            }
+            let candidate_text = self.candidate_return_address()
+                .map(|candidate| format!("Stack top candidate return: [SP=${:04X}] -> ${candidate:04X}. This is a conservative candidate, not a guaranteed call frame.", cpu.sp))
+                .unwrap_or_else(|| format!("Stack top candidate return: [SP=${:04X}] -> -- (outside installed RAM).", cpu.sp));
+            ui.add_sized([width, DEBUG_STATUS_LINE_HEIGHT], egui::Label::new(egui::RichText::new(candidate_text).small()));
 
             ui.separator();
             ui.strong("Run to address");
@@ -234,7 +266,7 @@ impl RusTairApp {
                     self.machine.debugger_cancel_run_to();
                     state.message = Some("Run-to target cancelled; current RUN/STOP state was not changed.".into());
                 }
-                if ui.small_button("Use PC").clicked() { state.run_to_input = format!("{:04X}", cpu.pc); }
+                if ui.small_button("Use instruction").clicked() { state.run_to_input = format!("{execution_address:04X}"); }
             });
 
             ui.separator();
@@ -245,13 +277,13 @@ impl RusTairApp {
                 if ui.button("Add").clicked() {
                     if let Some(address) = Self::parse_debug_address(&state.breakpoint_input) {
                         self.machine.debugger_set_breakpoint(address, true);
-                        state.message = Some(format!("Execute breakpoint armed at ${address:04X}."));
+                        state.message = Some(format!("Execute breakpoint armed at ${address:04X}. Breakpoints trigger only when that address is an opcode-fetch boundary."));
                     } else { state.message = Some("Invalid breakpoint address.".into()); }
                 }
-                if ui.button("Break at PC").clicked() {
-                    self.machine.debugger_set_breakpoint(cpu.pc, true);
-                    state.breakpoint_input = format!("{:04X}", cpu.pc);
-                    state.message = Some(format!("Execute breakpoint armed at current PC ${:04X}.", cpu.pc));
+                if ui.button("Break at instruction").clicked() {
+                    self.machine.debugger_set_breakpoint(execution_address, true);
+                    state.breakpoint_input = format!("{execution_address:04X}");
+                    state.message = Some(format!("Execute breakpoint armed at current instruction boundary ${execution_address:04X}."));
                 }
                 if ui.button("Clear all").clicked() {
                     self.machine.debugger_clear_breakpoints();
@@ -260,24 +292,38 @@ impl RusTairApp {
             });
 
             let breakpoints = self.machine.debugger_breakpoints();
-            if breakpoints.is_empty() {
-                ui.small("No execute breakpoints.");
-            } else {
-                egui::ScrollArea::vertical().id_salt("debugger-breakpoint-list").max_height(105.0).show(ui, |ui| {
-                    for address in breakpoints {
-                        ui.horizontal(|ui| {
-                            ui.monospace(format!("${address:04X}"));
-                            if address == cpu.pc { ui.small("PC"); }
-                            if ui.small_button("Remove").clicked() { self.machine.debugger_set_breakpoint(address, false); }
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, DEBUG_LIST_HEIGHT),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if breakpoints.is_empty() {
+                        ui.small("No execute breakpoints.");
+                    } else {
+                        egui::ScrollArea::vertical().id_salt("debugger-breakpoint-list").auto_shrink([false, false]).show(ui, |ui| {
+                            for address in breakpoints {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([72.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
+                                    let marker = match (address == execution_address, address == cpu.pc) {
+                                        (true, true) => "EXEC/PC",
+                                        (true, false) => "EXEC",
+                                        (false, true) => "PC(reg)",
+                                        (false, false) => "",
+                                    };
+                                    ui.add_sized([68.0, 20.0], egui::Label::new(egui::RichText::new(marker).small()));
+                                    if ui.add_sized([66.0, 20.0], egui::Button::new("Remove")).clicked() {
+                                        self.machine.debugger_set_breakpoint(address, false);
+                                    }
+                                });
+                            }
                         });
                     }
-                });
-            }
-            ui.small("Execute breakpoints stop at the true instruction boundary before fetching the opcode.");
+                },
+            );
+            ui.small("Execute breakpoints stop at the true instruction boundary before fetching the opcode. In Cycle Accurate, PC(reg) can temporarily point inside the current instruction; EXEC is the stable opcode address.");
 
             ui.separator();
             ui.strong("Memory watchpoints");
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 let response = ui.add_sized([90.0, 24.0], egui::TextEdit::singleline(&mut state.watchpoint_input).font(egui::TextStyle::Monospace).char_limit(6));
                 if response.changed() { Self::sanitize_debug_address_input(&mut state.watchpoint_input); }
                 for (access, label) in [
@@ -302,27 +348,40 @@ impl RusTairApp {
             });
 
             let watchpoints = self.machine.debugger_watchpoints();
-            if watchpoints.is_empty() {
-                ui.small("No memory watchpoints.");
-            } else {
-                egui::ScrollArea::vertical().id_salt("debugger-watchpoint-list").max_height(105.0).show(ui, |ui| {
-                    for (address, access) in watchpoints {
-                        ui.horizontal(|ui| {
-                            ui.monospace(format!("${address:04X}"));
-                            ui.strong(access.label());
-                            if address == cpu.hl() { ui.small("HL/M"); }
-                            if address == cpu.sp { ui.small("SP"); }
-                            if ui.small_button("Remove").clicked() { self.machine.debugger_set_watchpoint(address, None); }
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, DEBUG_LIST_HEIGHT),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    if watchpoints.is_empty() {
+                        ui.small("No memory watchpoints.");
+                    } else {
+                        egui::ScrollArea::vertical().id_salt("debugger-watchpoint-list").auto_shrink([false, false]).show(ui, |ui| {
+                            for (address, access) in watchpoints {
+                                ui.horizontal(|ui| {
+                                    ui.add_sized([72.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
+                                    ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(access.label()).strong()));
+                                    let markers = format!(
+                                        "{}{}",
+                                        if address == cpu.hl() { "HL/M " } else { "     " },
+                                        if address == cpu.sp { "SP" } else { "  " },
+                                    );
+                                    ui.add_sized([72.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
+                                    if ui.add_sized([66.0, 20.0], egui::Button::new("Remove")).clicked() {
+                                        self.machine.debugger_set_watchpoint(address, None);
+                                    }
+                                });
+                            }
                         });
                     }
-                });
-            }
+                },
+            );
             ui.small("Watchpoints cover guest data-memory and stack accesses, not opcode/operand fetches. WRITE watchpoints observe the attempted bus transfer even if protection or missing RAM prevents a cell change. They stop after the causing instruction.");
 
-            if let Some(message) = state.message.as_ref() {
-                ui.separator();
-                ui.small(message);
-            }
+            ui.separator();
+            ui.add_sized(
+                [width, DEBUG_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(state.message.as_deref().unwrap_or("")).small()),
+            );
         });
     }
 
@@ -331,21 +390,30 @@ impl RusTairApp {
         let metadata = self.machine.instruction_trace_metadata();
         let inferred = infer_call_stack_8080(&history, metadata);
         let cpu = self.machine.intel8080_state();
+        let execution_address = current_instruction_address(self);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.strong("INFERRED 8080 CALL STACK");
                 ui.separator();
-                ui.monospace(format!("PC=${:04X}  SP=${:04X}", cpu.pc, cpu.sp));
+                ui.monospace(format!("PC=${:04X} EXEC=${execution_address:04X} SP=${:04X}", cpu.pc, cpu.sp));
                 ui.separator();
                 ui.label(format!("{} retained frame(s)", inferred.frames.len()));
             });
             ui.small("Frames are reconstructed only from observed CALL/RST/RET instructions in the retained capture window. No symbols or speculative frames are invented; callers that predate capture are never claimed as known.");
             ui.small("Asynchronous interrupt entry is not yet reconstructed as a call frame; a later unmatched RET will conservatively mark the inference incomplete.");
-            if inferred.incomplete {
-                ui.label("INCOMPLETE: a known trace loss or unmatched return prevents a complete reconstruction of the retained window.");
-            }
-            if let Some(diagnostic) = inferred.diagnostic.as_ref() { ui.small(format!("Reason: {diagnostic}.")); }
+            ui.add_sized(
+                [ui.available_width(), DEBUG_STATUS_LINE_HEIGHT],
+                egui::Label::new(if inferred.incomplete {
+                    "INCOMPLETE: a known trace loss or unmatched return prevents a complete reconstruction of the retained window."
+                } else {
+                    ""
+                }),
+            );
+            ui.add_sized(
+                [ui.available_width(), DEBUG_STATUS_LINE_HEIGHT],
+                egui::Label::new(inferred.diagnostic.as_ref().map(|diagnostic| format!("Reason: {diagnostic}." )).unwrap_or_default()),
+            );
             ui.separator();
 
             if inferred.frames.is_empty() {
@@ -354,16 +422,13 @@ impl RusTairApp {
                 egui::ScrollArea::vertical().id_salt("debugger-inferred-call-stack").show(ui, |ui| {
                     for (depth, frame) in inferred.frames.iter().enumerate().rev() {
                         let kind = match frame.kind { CallKind8080::Call => "CALL", CallKind8080::Restart => "RST" };
-                        ui.horizontal_wrapped(|ui| {
-                            ui.monospace(format!("#{depth:02}"));
-                            ui.strong(kind);
-                            ui.monospace(format!("${:04X} -> ${:04X}", frame.call_site, frame.target));
-                            ui.separator();
-                            ui.monospace(format!("return ${:04X}", frame.return_address));
-                            ui.separator();
-                            ui.monospace(format!("SP after push ${:04X}", frame.stack_pointer_after_push));
-                            ui.separator();
-                            ui.small(format!("trace #{}", frame.sequence));
+                        ui.horizontal(|ui| {
+                            ui.add_sized([42.0, 20.0], egui::Label::new(egui::RichText::new(format!("#{depth:02}")).monospace()));
+                            ui.add_sized([44.0, 20.0], egui::Label::new(egui::RichText::new(kind).strong()));
+                            ui.add_sized([132.0, 20.0], egui::Label::new(egui::RichText::new(format!("${:04X} -> ${:04X}", frame.call_site, frame.target)).monospace()));
+                            ui.add_sized([112.0, 20.0], egui::Label::new(egui::RichText::new(format!("return ${:04X}", frame.return_address)).monospace()));
+                            ui.add_sized([142.0, 20.0], egui::Label::new(egui::RichText::new(format!("SP after ${:04X}", frame.stack_pointer_after_push)).monospace()));
+                            ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new(format!("trace #{}", frame.sequence)).small()));
                         });
                     }
                 });
@@ -405,8 +470,8 @@ impl RusTairApp {
                 egui::ViewportId::from_hash_of("rustair-8080-debugger-controls-viewport"),
                 egui::ViewportBuilder::default()
                     .with_title("RusTair - Intel 8080 Debugger")
-                    .with_inner_size([820.0, 760.0])
-                    .with_min_inner_size([660.0, 560.0])
+                    .with_inner_size([900.0, 780.0])
+                    .with_min_inner_size([760.0, 620.0])
                     .with_resizable(true),
                 |debugger_ctx, _class| {
                     self.draw_debugger_controls_viewport_contents(debugger_ctx, &mut state);
@@ -422,5 +487,6 @@ impl RusTairApp {
 }
 
 pub(super) fn trace_requested(ctx: &egui::Context) -> bool {
-    RusTairApp::debugger_controls_state(ctx).call_stack_open
+    let state = RusTairApp::debugger_controls_state(ctx);
+    state.window_open || state.call_stack_open
 }
