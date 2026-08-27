@@ -187,7 +187,7 @@ impl SimhThreadedBackend {
             let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
             state.log(format!("RusTair selected {}", engine.label()));
             state.log("Low-latency bridge active: egui never waits for FrontPanel/SCP.");
-            state.log("Panel source: backend-observed SIMH PC/A register samples only. FrontPanel API v12 exposes no exact S-100 MEMR/M1/WO/INP/OUT bus feed, so unsupported status lamps stay dark instead of being synthesized.");
+            state.log("Panel source: during RUN, backend-observed SIMH PC/A samples; during STOP, exact binary PC/A or the operator EXAMINE/DEPOSIT latch. FrontPanel API v12 exposes no exact S-100 MEMR/M1/WO/INP/OUT bus feed, so unsupported status lamps stay dark instead of being synthesized.");
         }
 
         let worker_shared = Arc::clone(&shared);
@@ -435,6 +435,7 @@ struct Worker {
     shared: Arc<Mutex<SharedState>>,
     panel_address: u16,
     panel_data: u8,
+    operator_panel_latched: bool,
     pending_loads: Vec<PendingLoad>,
     applied_switches: u16,
     observed_switch_generation: u64,
@@ -490,6 +491,7 @@ impl Worker {
             shared,
             panel_address: 0,
             panel_data: 0,
+            operator_panel_latched: false,
             pending_loads: Vec::new(),
             applied_switches: 0,
             observed_switch_generation: 0,
@@ -599,6 +601,7 @@ impl Worker {
 
     fn power(&mut self, on: bool) -> BackendResult<()> {
         if on && self.session.is_none() {
+            self.operator_panel_latched = false;
             let power_started = Instant::now();
             {
                 let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
@@ -678,6 +681,7 @@ impl Worker {
             if let Some(bridge) = self.bridge.as_mut() { bridge.disconnect(); }
             self.last_running = false;
             self.load_faulted = false;
+            self.operator_panel_latched = false;
             self.applied_switches = 0;
             self.bridge_connected = [false; 2];
             self.first_guest_tx_seen = [false; 2];
@@ -697,6 +701,7 @@ impl Worker {
             return Err(op_error("SIMH RUN/STOP", "simulator is powered off or still starting"));
         }
 
+        self.operator_panel_latched = false;
         if running {
             if self.load_faulted {
                 return Err(op_error(
@@ -728,6 +733,7 @@ impl Worker {
         if self.session.is_none() {
             return Err(op_error("SIMH STEP", "simulator is powered off or still starting"));
         }
+        self.operator_panel_latched = false;
         self.sync_switches_now()?;
         self.session
             .as_mut()
@@ -735,21 +741,23 @@ impl Worker {
             .step()
             .map_err(|e| op_error("SIMH STEP", e.to_string()))?;
 
-        // PC is a real backend value. Do not synthesize DATA/status lamps here;
-        // the next live callback will paint a complete observed sample.
-        if let Ok(pc) = self.session.as_ref().expect("checked session").examine_register_u32("PC") {
-            self.panel_address = pc as u16;
-            let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
-            state.panel.address = self.panel_address;
-            match &mut state.cpu {
-                CpuState::Intel8080(cpu) => cpu.pc = self.panel_address,
-                CpuState::Z80(cpu) => cpu.pc = self.panel_address,
-            }
+        // STEP is an explicit operator action, so an immediate halted sample is
+        // appropriate here. Unlike the periodic RUN sampling path, a halted
+        // sample is rendered as exact binary PC/A values, not historical duty
+        // cycle accumulated before STOP.
+        let sample = self.session
+            .as_mut()
+            .expect("checked session")
+            .refresh_live_panel_now()
+            .map_err(|e| op_error("SIMH STEP panel refresh", e.to_string()))?;
+        if sample.valid {
+            self.apply_sample(sample, false);
         }
         Ok(())
     }
 
     fn reset(&mut self) -> BackendResult<()> {
+        self.operator_panel_latched = false;
         self.panel_address = 0;
         if self.session.is_none() { return Ok(()); }
         let was_running = self.session.as_ref().is_some_and(|s| s.state() == SimhOperationalState::Running);
@@ -1010,10 +1018,16 @@ impl Worker {
 
     fn apply_sample(&mut self, sample: super::SimhLivePanelSample, running: bool) {
         if !sample.valid { return; }
-        self.panel_address = sample.pc;
-        self.panel_data = sample.a;
-        let lamps = observed_sample_lamps(&sample);
+
+        // CPU register telemetry is always allowed to advance, even while an
+        // operator EXAMINE/DEPOSIT latch owns the stopped front-panel display.
         let switches = self.desired_switches();
+        let show_sample_on_panel = running || !self.operator_panel_latched;
+        if show_sample_on_panel {
+            self.panel_address = sample.pc;
+            self.panel_data = sample.a;
+        }
+
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         match &mut state.cpu {
             CpuState::Intel8080(cpu) => {
@@ -1030,9 +1044,19 @@ impl Worker {
         state.panel.powered = self.session.is_some();
         state.panel.running = running;
         state.panel.switches = switches;
-        state.panel.address = sample.pc;
-        state.panel.data = sample.a;
-        state.panel.lamps = lamps;
+
+        if show_sample_on_panel {
+            state.panel.address = sample.pc;
+            state.panel.data = sample.a;
+            // While RUNning, accumulated PC/A bit activity provides a useful
+            // backend-observed motion proxy. Once halted, history is invalid as
+            // a static LED state: show the exact current binary register values.
+            state.panel.lamps = if running {
+                observed_sample_lamps(&sample)
+            } else {
+                observed_value_lamps(sample.pc, sample.a)
+            };
+        }
     }
 
     fn update_running_state(&mut self, running: bool) {
@@ -1044,6 +1068,7 @@ impl Worker {
     }
 
     fn set_stopped_panel(&mut self, address: u16, data: u8) {
+        self.operator_panel_latched = true;
         let mut state = self.shared.lock().unwrap_or_else(|p| p.into_inner());
         state.panel.powered = self.session.is_some();
         state.panel.running = false;
