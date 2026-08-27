@@ -5,6 +5,7 @@ pub mod config;
 pub mod cpu8080;
 pub mod cpu8080_cycle;
 pub mod debugger8080;
+pub mod debugger_control;
 pub mod decoder8080;
 pub mod explain8080;
 pub mod io;
