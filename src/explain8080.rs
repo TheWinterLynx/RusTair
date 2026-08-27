@@ -1,6 +1,13 @@
 use crate::backend::Intel8080State;
 use crate::decoder8080::{ControlFlow, DecodedInstruction, IoAccess, MemoryAccess};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryValue8080 {
+    Known(u8),
+    Unmapped,
+    Unknown,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstructionExplanation {
     pub summary: String,
@@ -129,14 +136,27 @@ fn register_effects(decoded: &DecodedInstruction) -> (String, String) {
 }
 
 fn memory_text(decoded: &DecodedInstruction) -> String {
-    match decoded.memory {
-        MemoryAccess::None => "No data-memory access beyond instruction fetch.".into(),
-        MemoryAccess::Read => "Reads data memory.".into(),
-        MemoryAccess::Write => "Writes data memory.".into(),
-        MemoryAccess::ReadWrite => "Reads and then writes data memory.".into(),
-        MemoryAccess::StackRead => "Reads the stack through SP.".into(),
-        MemoryAccess::StackWrite => "Writes the stack through SP.".into(),
-        MemoryAccess::StackReadWrite => "Reads and writes the stack through SP.".into(),
+    match (decoded.memory, decoded.control_flow) {
+        (
+            MemoryAccess::StackWrite,
+            ControlFlow::Call {
+                condition: Some(_),
+                ..
+            },
+        ) => "Writes the stack through SP only when the call condition is taken.".into(),
+        (
+            MemoryAccess::StackRead,
+            ControlFlow::Return {
+                condition: Some(_),
+            },
+        ) => "Reads the stack through SP only when the return condition is taken.".into(),
+        (MemoryAccess::None, _) => "No data-memory access beyond instruction fetch.".into(),
+        (MemoryAccess::Read, _) => "Reads data memory.".into(),
+        (MemoryAccess::Write, _) => "Writes data memory.".into(),
+        (MemoryAccess::ReadWrite, _) => "Reads and then writes data memory.".into(),
+        (MemoryAccess::StackRead, _) => "Reads the stack through SP.".into(),
+        (MemoryAccess::StackWrite, _) => "Writes the stack through SP.".into(),
+        (MemoryAccess::StackReadWrite, _) => "Reads and writes the stack through SP.".into(),
     }
 }
 
@@ -165,7 +185,7 @@ fn flow_text(decoded: &DecodedInstruction, flags: u8) -> String {
 pub fn explain_instruction(
     decoded: &DecodedInstruction,
     cpu: Intel8080State,
-    memory_at_hl: Option<u8>,
+    memory_at_hl: MemoryValue8080,
 ) -> InstructionExplanation {
     let (reads, writes) = register_effects(decoded);
     let mut context = Vec::new();
@@ -173,11 +193,14 @@ pub fn explain_instruction(
     if decoded.operands.iter().any(|operand| operand == "M") {
         let hl = cpu.hl();
         context.push(match memory_at_hl {
-            Some(value) => format!(
-                "M is not a register: M means memory[HL]. Current HL=${hl:04X}, so M=[${hl:04X}]=${value:02X}."
+            MemoryValue8080::Known(value) => format!(
+                "M is not a register: M means memory[HL]. HL=${hl:04X}, so M=[${hl:04X}]=${value:02X}."
             ),
-            None => format!(
-                "M is not a register: M means memory[HL]. Current HL=${hl:04X}, but that address is outside installed RAM."
+            MemoryValue8080::Unmapped => format!(
+                "M is not a register: M means memory[HL]. HL=${hl:04X}; no physical RAM is installed there, so an ordinary guest memory read returns $00."
+            ),
+            MemoryValue8080::Unknown => format!(
+                "M is not a register: M means memory[HL]. HL=${hl:04X}; the byte that was at [HL] is not known in this explanation context."
             ),
         });
     }
@@ -215,26 +238,66 @@ mod tests {
     fn explains_m_as_memory_at_live_hl() {
         let decoded = decode_8080(0x7e, 0, 0); // MOV A,M
         let cpu = Intel8080State { h: 0x12, l: 0x34, ..Intel8080State::default() };
-        let explanation = explain_instruction(&decoded, cpu, Some(0x5a));
+        let explanation = explain_instruction(&decoded, cpu, MemoryValue8080::Known(0x5a));
         assert!(explanation.summary.contains("Copy M into A"));
         assert!(explanation.context.iter().any(|line| line.contains("HL=$1234")));
         assert!(explanation.context.iter().any(|line| line.contains("$5A")));
     }
 
     #[test]
+    fn unknown_historical_m_is_not_described_as_uninstalled_ram() {
+        let decoded = decode_8080(0x7e, 0, 0);
+        let cpu = Intel8080State { h: 0x12, l: 0x34, ..Intel8080State::default() };
+        let unknown = explain_instruction(&decoded, cpu, MemoryValue8080::Unknown);
+        let unmapped = explain_instruction(&decoded, cpu, MemoryValue8080::Unmapped);
+        assert!(unknown.context.iter().any(|line| line.contains("not known")));
+        assert!(!unknown.context.iter().any(|line| line.contains("no physical RAM")));
+        assert!(unmapped.context.iter().any(|line| line.contains("no physical RAM")));
+    }
+
+    #[test]
     fn conditional_flow_uses_live_flags() {
         let decoded = decode_8080(0xc2, 0x34, 0x12); // JNZ 1234h
         let cpu = Intel8080State { flags: 0, ..Intel8080State::default() };
-        let explanation = explain_instruction(&decoded, cpu, None);
+        let explanation = explain_instruction(&decoded, cpu, MemoryValue8080::Unknown);
         assert!(explanation.flow.contains("TRUE / TAKEN"));
+    }
+
+    #[test]
+    fn conditional_stack_access_is_described_as_conditional() {
+        let cpu = Intel8080State::default();
+        let call = explain_instruction(
+            &decode_8080(0xc4, 0x34, 0x12),
+            cpu,
+            MemoryValue8080::Unknown,
+        );
+        let ret = explain_instruction(
+            &decode_8080(0xc0, 0, 0),
+            cpu,
+            MemoryValue8080::Unknown,
+        );
+        assert!(call.memory.contains("only when"));
+        assert!(ret.memory.contains("only when"));
     }
 
     #[test]
     fn unconditional_call_return_and_restart_are_not_described_as_conditional() {
         let cpu = Intel8080State::default();
-        let call = explain_instruction(&decode_8080(0xcd, 0x34, 0x12), cpu, None);
-        let ret = explain_instruction(&decode_8080(0xc9, 0, 0), cpu, None);
-        let rst = explain_instruction(&decode_8080(0xcf, 0, 0), cpu, None);
+        let call = explain_instruction(
+            &decode_8080(0xcd, 0x34, 0x12),
+            cpu,
+            MemoryValue8080::Unknown,
+        );
+        let ret = explain_instruction(
+            &decode_8080(0xc9, 0, 0),
+            cpu,
+            MemoryValue8080::Unknown,
+        );
+        let rst = explain_instruction(
+            &decode_8080(0xcf, 0, 0),
+            cpu,
+            MemoryValue8080::Unknown,
+        );
         assert!(!call.summary.contains("condition"));
         assert!(!ret.summary.contains("condition"));
         assert!(!rst.summary.contains("condition"));
