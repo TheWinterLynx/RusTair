@@ -1,4 +1,5 @@
 use super::super::{egui, RusTairApp};
+use crate::backend::{DebugStopReason, MemoryWatchAccess};
 use crate::callstack8080::{infer_call_stack_8080, CallKind8080};
 use crate::decoder8080::{decode_8080, ControlFlow};
 
@@ -8,6 +9,8 @@ struct DebuggerControlsUiState {
     call_stack_open: bool,
     run_to_input: String,
     breakpoint_input: String,
+    watchpoint_input: String,
+    watchpoint_access: MemoryWatchAccess,
     message: Option<String>,
 }
 
@@ -18,6 +21,8 @@ impl Default for DebuggerControlsUiState {
             call_stack_open: false,
             run_to_input: "0000".into(),
             breakpoint_input: "0000".into(),
+            watchpoint_input: "0000".into(),
+            watchpoint_access: MemoryWatchAccess::ReadWrite,
             message: None,
         }
     }
@@ -40,9 +45,10 @@ impl RusTairApp {
     pub(in crate::app) fn open_debugger_controls(&mut self, ctx: &egui::Context) {
         let mut state = Self::debugger_controls_state(ctx);
         state.window_open = true;
-        let pc = self.machine.intel8080_state().pc;
-        state.run_to_input = format!("{pc:04X}");
-        state.breakpoint_input = format!("{pc:04X}");
+        let cpu = self.machine.intel8080_state();
+        state.run_to_input = format!("{:04X}", cpu.pc);
+        state.breakpoint_input = format!("{:04X}", cpu.pc);
+        state.watchpoint_input = format!("{:04X}", cpu.hl());
         Self::store_debugger_controls_state(ctx, state);
     }
 
@@ -111,6 +117,29 @@ impl RusTairApp {
         format!("Step out: running to stack return candidate ${target:04X} read from [SP=${sp:04X}].")
     }
 
+    fn draw_debug_stop_reason(
+        &mut self,
+        ui: &mut egui::Ui,
+        running: bool,
+        current_pc: u16,
+    ) {
+        let Some(reason) = self.machine.debugger_stop_reason() else { return; };
+        if running {
+            return;
+        }
+
+        let relevant = match reason {
+            DebugStopReason::ExecuteBreakpoint(address) | DebugStopReason::RunTo(address) => {
+                current_pc == address
+            }
+            DebugStopReason::MemoryReadWatchpoint { .. }
+            | DebugStopReason::MemoryWriteWatchpoint { .. } => true,
+        };
+        if relevant {
+            ui.label(format!("Stopped by debugger: {}.", reason.label()));
+        }
+    }
+
     fn draw_debugger_controls_viewport_contents(
         &mut self,
         ctx: &egui::Context,
@@ -154,15 +183,7 @@ impl RusTairApp {
                 ui.small("Current PC is outside installed RAM.");
             }
 
-            if let Some(reason) = self.machine.debugger_stop_reason() {
-                let reason_address = match reason {
-                    crate::backend::DebugStopReason::ExecuteBreakpoint(address)
-                    | crate::backend::DebugStopReason::RunTo(address) => address,
-                };
-                if !running && cpu.pc == reason_address {
-                    ui.label(format!("Stopped by debugger: {}.", reason.label()));
-                }
-            }
+            self.draw_debug_stop_reason(ui, running, cpu.pc);
             if let Some(target) = self.machine.debugger_run_to_target() {
                 ui.label(format!("Active run-to target: ${target:04X}."));
             }
@@ -265,14 +286,12 @@ impl RusTairApp {
             } else {
                 egui::ScrollArea::vertical()
                     .id_salt("debugger-breakpoint-list")
-                    .max_height(150.0)
+                    .max_height(105.0)
                     .show(ui, |ui| {
                         for address in breakpoints {
                             ui.horizontal(|ui| {
                                 ui.monospace(format!("${address:04X}"));
-                                if address == cpu.pc {
-                                    ui.small("PC");
-                                }
+                                if address == cpu.pc { ui.small("PC"); }
                                 if ui.small_button("Remove").clicked() {
                                     self.machine.debugger_set_breakpoint(address, false);
                                 }
@@ -280,7 +299,72 @@ impl RusTairApp {
                         }
                     });
             }
-            ui.small("Execute breakpoints stop at the true instruction boundary before fetching the opcode. They work independently of Exec History capture.");
+            ui.small("Execute breakpoints stop at the true instruction boundary before fetching the opcode.");
+
+            ui.separator();
+            ui.strong("Memory watchpoints");
+            ui.horizontal_wrapped(|ui| {
+                let response = ui.add_sized(
+                    [90.0, 24.0],
+                    egui::TextEdit::singleline(&mut state.watchpoint_input)
+                        .font(egui::TextStyle::Monospace)
+                        .char_limit(6),
+                );
+                if response.changed() {
+                    Self::sanitize_debug_address_input(&mut state.watchpoint_input);
+                }
+                for (access, label) in [
+                    (MemoryWatchAccess::Read, "Read"),
+                    (MemoryWatchAccess::Write, "Write"),
+                    (MemoryWatchAccess::ReadWrite, "R/W"),
+                ] {
+                    ui.selectable_value(&mut state.watchpoint_access, access, label);
+                }
+                if ui.button("Add / update").clicked() {
+                    if let Some(address) = Self::parse_debug_address(&state.watchpoint_input) {
+                        self.machine.debugger_set_watchpoint(address, Some(state.watchpoint_access));
+                        state.message = Some(format!(
+                            "{} watchpoint armed at ${address:04X}.",
+                            state.watchpoint_access.label()
+                        ));
+                    } else {
+                        state.message = Some("Invalid watchpoint address.".into());
+                    }
+                }
+                if ui.small_button("Use HL").clicked() {
+                    state.watchpoint_input = format!("{:04X}", cpu.hl());
+                }
+                if ui.small_button("Use SP").clicked() {
+                    state.watchpoint_input = format!("{:04X}", cpu.sp);
+                }
+                if ui.button("Clear all").clicked() {
+                    self.machine.debugger_clear_watchpoints();
+                    state.message = Some("All memory watchpoints cleared.".into());
+                }
+            });
+
+            let watchpoints = self.machine.debugger_watchpoints();
+            if watchpoints.is_empty() {
+                ui.small("No memory watchpoints.");
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_salt("debugger-watchpoint-list")
+                    .max_height(105.0)
+                    .show(ui, |ui| {
+                        for (address, access) in watchpoints {
+                            ui.horizontal(|ui| {
+                                ui.monospace(format!("${address:04X}"));
+                                ui.strong(access.label());
+                                if address == cpu.hl() { ui.small("HL/M"); }
+                                if address == cpu.sp { ui.small("SP"); }
+                                if ui.small_button("Remove").clicked() {
+                                    self.machine.debugger_set_watchpoint(address, None);
+                                }
+                            });
+                        }
+                    });
+            }
+            ui.small("Watchpoints cover guest data-memory and stack accesses, not opcode/operand fetches. They stop after the causing instruction, so its resulting CPU and RAM state can be inspected.");
 
             if let Some(message) = state.message.as_ref() {
                 ui.separator();
@@ -355,8 +439,6 @@ impl RusTairApp {
             return;
         }
 
-        // Call-stack inference needs instruction boundaries but is independent
-        // of whether the Exec History window itself is visible.
         if !self.machine.instruction_trace_enabled() {
             self.machine.set_instruction_trace_enabled(true);
         }
@@ -385,8 +467,8 @@ impl RusTairApp {
                 egui::ViewportId::from_hash_of("rustair-8080-debugger-controls-viewport"),
                 egui::ViewportBuilder::default()
                     .with_title("RusTair - Intel 8080 Debugger")
-                    .with_inner_size([760.0, 640.0])
-                    .with_min_inner_size([600.0, 480.0])
+                    .with_inner_size([820.0, 760.0])
+                    .with_min_inner_size([660.0, 560.0])
                     .with_resizable(true),
                 |debugger_ctx, _class| {
                     self.draw_debugger_controls_viewport_contents(debugger_ctx, &mut state);
