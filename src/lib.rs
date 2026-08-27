@@ -11,6 +11,7 @@ pub mod decoder8080;
 pub mod explain8080;
 pub mod io;
 pub mod machine;
+pub mod memory_activity8080;
 pub mod peripherals;
 pub mod trace8080;
 pub(crate) mod embedded_assets;
