@@ -52,7 +52,7 @@ impl DebugStopReason {
                 "memory READ watchpoint at ${address:04X}: ${value:02X} read by instruction at ${instruction_pc:04X}"
             ),
             Self::MemoryWriteWatchpoint { instruction_pc, address, value } => format!(
-                "memory WRITE watchpoint at ${address:04X}: ${value:02X} written by instruction at ${instruction_pc:04X}"
+                "memory WRITE watchpoint at ${address:04X}: instruction at ${instruction_pc:04X} attempted a ${value:02X} write transfer"
             ),
         }
     }
@@ -269,10 +269,20 @@ mod tests {
         assert!(!control.active());
         assert_eq!(control.stop_before(0x1234), None);
 
-        // Re-arming the same address later must behave like a fresh breakpoint,
-        // not consume an old skip from the previous stop.
         control.set_breakpoint(0x1234, true);
         assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+    }
+
+    #[test]
+    fn write_watchpoint_label_does_not_claim_blocked_ram_changed() {
+        let label = DebugStopReason::MemoryWriteWatchpoint {
+            instruction_pc: 0x0100,
+            address: 0x0200,
+            value: 0x5a,
+        }
+        .label();
+        assert!(label.contains("attempted"));
+        assert!(label.contains("write transfer"));
     }
 
     #[test]
