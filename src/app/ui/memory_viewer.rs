@@ -3,6 +3,7 @@ use crate::cpu8080::{FLAG_AC, FLAG_C, FLAG_P, FLAG_S, FLAG_Z};
 use crate::debugger8080::{decode_at, detect_simple_backward_loop, InstructionAt, SimpleLoop};
 use crate::explain8080::explain_instruction;
 use crate::machine::{MAX_MEM_SIZE, MEMORY_BOARD_SIZE};
+use crate::trace8080::DEFAULT_INSTRUCTION_HISTORY_LIMIT;
 
 const BYTES_PER_ROW: usize = 16;
 const ROW_COUNT: usize = MAX_MEM_SIZE / BYTES_PER_ROW;
@@ -663,6 +664,7 @@ impl RusTairApp {
                         );
                         if ui.add_sized([124.0, 22.0], egui::Button::new("Loop Inspector")).clicked() {
                             state.loop_inspector_open = true;
+                            self.machine.set_instruction_trace_enabled(true);
                         }
                     } else {
                         ui.add_sized(
@@ -692,67 +694,86 @@ impl RusTairApp {
         });
     }
 
-    fn draw_loop_inspector(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
+    fn draw_loop_inspector(&mut self, parent_ctx: &egui::Context, state: &mut MemoryViewerUiState) {
         if !state.loop_inspector_open {
             return;
         }
+
+        if !self.machine.instruction_trace_enabled() {
+            self.machine.set_instruction_trace_enabled(true);
+        }
         let cpu = self.machine.intel8080_state();
         let loop_info = self.current_simple_loop();
-        let mut open = state.loop_inspector_open;
+        let history = self.machine.instruction_trace_snapshot();
 
-        egui::Window::new("8080 Loop Inspector")
-            .id(egui::Id::new("rustair-8080-loop-inspector"))
-            .open(&mut open)
-            .resizable(true)
-            .default_width(520.0)
-            .default_height(280.0)
-            .show(ctx, |ui| {
-                let Some(loop_info) = loop_info.as_ref() else {
-                    ui.label("The current PC is no longer inside a high-confidence simple backward-branch loop.");
-                    ui.small("RusTair does not guess loop boundaries when control flow is ambiguous.");
-                    return;
-                };
+        parent_ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("rustair-ram-loop-inspector-viewport"),
+            egui::ViewportBuilder::default()
+                .with_title("RusTair - 8080 Loop Inspector")
+                .with_inner_size([620.0, 390.0])
+                .with_min_inner_size([500.0, 300.0])
+                .with_resizable(true),
+            |loop_ctx, _class| {
+                egui::CentralPanel::default().show(loop_ctx, |ui| {
+                    let Some(loop_info) = loop_info.as_ref() else {
+                        ui.label("The current PC is no longer inside a high-confidence simple backward-branch loop.");
+                        ui.small("RusTair does not guess loop boundaries when control flow is ambiguous.");
+                        return;
+                    };
 
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(format!("Loop {:04X}h -> {:04X}h", loop_info.start, loop_info.back_edge));
-                    ui.separator();
-                    ui.label(format!("{} instructions", loop_info.instructions.len()));
-                });
-                ui.small(loop_info.exit_description());
-                if let Some(condition) = loop_info.condition {
-                    ui.small(format!(
-                        "Back-edge condition {} ({}) is currently {}.",
-                        condition.label(),
-                        condition.description(),
-                        if loop_info.branch_taken_now { "TRUE -> TAKEN" } else { "FALSE -> NOT TAKEN / EXIT" }
-                    ));
-                } else {
-                    ui.small("Back-edge is an unconditional JMP and is always taken if reached.");
-                }
-                ui.separator();
+                    let observed_iterations = history.iter().filter(|entry| {
+                        entry.address == loop_info.back_edge && entry.after.pc == loop_info.start
+                    }).count();
+                    let truncated = history.len() >= DEFAULT_INSTRUCTION_HISTORY_LIMIT
+                        && history.first().is_some_and(|entry| entry.sequence > 1);
 
-                egui::ScrollArea::vertical().id_salt("ram-loop-inspector-scroll").show(ui, |ui| {
-                    for instruction in &loop_info.instructions {
-                        let is_pc = instruction.address == cpu.pc;
-                        let is_back_edge = instruction.address == loop_info.back_edge;
-                        let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
-                        let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
-                        if is_pc {
-                            address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
-                            instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
-                        }
-                        ui.horizontal(|ui| {
-                            ui.add_sized([52.0, ROW_HEIGHT], egui::Label::new(address_text));
-                            ui.add_sized([92.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak()));
-                            ui.add_sized([210.0, ROW_HEIGHT], egui::Label::new(instruction_text));
-                            if is_pc { ui.strong("PC"); }
-                            if is_back_edge { ui.small("BACK-EDGE"); }
-                        });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.strong(format!("Loop {:04X}h -> {:04X}h", loop_info.start, loop_info.back_edge));
+                        ui.separator();
+                        ui.label(format!("{} instructions", loop_info.instructions.len()));
+                        ui.separator();
+                        ui.label(format!("Observed iterations: {}{}", if truncated { ">=" } else { "" }, observed_iterations));
+                    });
+                    ui.small("Iteration count is derived from retained completed-instruction history; it updates without changing the window layout.");
+                    ui.small(loop_info.exit_description());
+                    if let Some(condition) = loop_info.condition {
+                        ui.small(format!(
+                            "Back-edge condition {} ({}) is currently {}.",
+                            condition.label(),
+                            condition.description(),
+                            if loop_info.branch_taken_now { "TRUE -> TAKEN" } else { "FALSE -> NOT TAKEN / EXIT" }
+                        ));
+                    } else {
+                        ui.small("Back-edge is an unconditional JMP and is always taken if reached.");
                     }
-                });
-            });
+                    ui.separator();
 
-        state.loop_inspector_open = open;
+                    egui::ScrollArea::vertical().id_salt("ram-loop-inspector-scroll").show(ui, |ui| {
+                        for instruction in &loop_info.instructions {
+                            let is_pc = instruction.address == cpu.pc;
+                            let is_back_edge = instruction.address == loop_info.back_edge;
+                            let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
+                            let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
+                            if is_pc {
+                                address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
+                                instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.add_sized([52.0, ROW_HEIGHT], egui::Label::new(address_text));
+                                ui.add_sized([92.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak()));
+                                ui.add_sized([210.0, ROW_HEIGHT], egui::Label::new(instruction_text));
+                                if is_pc { ui.strong("PC"); }
+                                if is_back_edge { ui.small("BACK-EDGE"); }
+                            });
+                        }
+                    });
+                });
+
+                if loop_ctx.input(|input| input.viewport().close_requested()) {
+                    state.loop_inspector_open = false;
+                }
+            },
+        );
     }
 
     fn draw_memory_viewer_window(&mut self, ctx: &egui::Context, state: &mut MemoryViewerUiState) {
