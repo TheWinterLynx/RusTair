@@ -1,6 +1,9 @@
 use super::super::{egui, RusTairApp};
+use super::execution_position::current_instruction_address;
 use crate::debugger8080::SimpleLoop;
 use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
+
+const LOOP_STATUS_LINE_HEIGHT: f32 = 20.0;
 
 #[derive(Clone, Default)]
 struct LoopInspectorUiState {
@@ -77,11 +80,6 @@ impl RusTairApp {
 
         let mut new_entries = history.iter().filter(|entry| entry.sequence > state.last_sequence);
         if let Some(first) = new_entries.next() {
-            // Ring eviction by itself does not imply that this inspector lost
-            // anything: when the buffer is full, every new instruction evicts
-            // one old entry. We only lose countable execution when the oldest
-            // newly retained sequence has jumped past the sequence we last
-            // processed.
             if state.last_sequence != 0
                 && first.sequence > state.last_sequence.saturating_add(1)
             {
@@ -110,6 +108,7 @@ impl RusTairApp {
         let metadata = self.machine.instruction_trace_metadata();
         Self::update_shared_loop_counter(state, &history, metadata);
         let cpu = self.machine.intel8080_state();
+        let execution_address = current_instruction_address(self);
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(loop_info) = state.snapshot.as_ref() else {
@@ -117,7 +116,7 @@ impl RusTairApp {
                 return;
             };
 
-            ui.horizontal_wrapped(|ui| {
+            ui.horizontal(|ui| {
                 ui.strong(format!("Loop {:04X}h -> {:04X}h", loop_info.start, loop_info.back_edge));
                 ui.separator();
                 ui.label(format!("{} instructions", loop_info.instructions.len()));
@@ -127,17 +126,29 @@ impl RusTairApp {
                     if state.trace_gap { ">=" } else { "" },
                     state.iterations
                 ));
+                ui.separator();
+                ui.monospace(format!("PC=${:04X} EXEC=${execution_address:04X}", cpu.pc));
             });
-            if state.trace_reset {
-                ui.small("Instruction history was cleared/reset while this inspector was open; the iteration counter restarted from zero.");
+
+            let capture_status = if state.trace_reset {
+                "Instruction history was cleared/reset while this inspector was open; the iteration counter restarted from zero."
             } else if state.trace_gap {
-                ui.small("Execution outran the retained trace between two observations; the iteration count is therefore a lower bound.");
+                "Execution outran the retained trace between two observations; the iteration count is therefore a lower bound."
             } else {
-                ui.small("Iteration count is exact for all trace sequences observed since this inspector was opened.");
-            }
-            if state.exited {
-                ui.small("Last observed execution of the back-edge did not return to the loop entry: the loop exited.");
-            }
+                "Iteration count is exact for all trace sequences observed since this inspector was opened."
+            };
+            ui.add_sized(
+                [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(capture_status).small()),
+            );
+            ui.add_sized(
+                [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(if state.exited {
+                    "Last observed execution of the back-edge did not return to the loop entry: the loop exited."
+                } else {
+                    ""
+                }).small()),
+            );
 
             ui.separator();
             ui.small(format!(
@@ -145,49 +156,57 @@ impl RusTairApp {
                 loop_info.start, loop_info.back_edge
             ));
             ui.small(loop_info.exit_description());
-            if let Some(condition) = loop_info.condition {
+            let condition_text = if let Some(condition) = loop_info.condition {
                 let flag_value = condition.evaluate(cpu.flags);
-                if cpu.pc == loop_info.back_edge {
-                    ui.small(format!(
+                if execution_address == loop_info.back_edge {
+                    format!(
                         "At the back-edge now: {} is {} -> branch {}.",
                         condition.label(),
                         if flag_value { "TRUE" } else { "FALSE" },
                         if flag_value { "TAKEN" } else { "NOT TAKEN / EXIT" },
-                    ));
+                    )
                 } else {
-                    ui.small(format!(
+                    format!(
                         "Current flags make {} {}; instructions before the back-edge may still change those flags.",
                         condition.label(),
                         if flag_value { "TRUE" } else { "FALSE" },
-                    ));
+                    )
                 }
             } else {
-                ui.small("Back-edge is unconditional; the structural loop has no conditional exit.");
-            }
+                "Back-edge is unconditional; the structural loop has no conditional exit.".into()
+            };
+            ui.add_sized(
+                [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
+                egui::Label::new(egui::RichText::new(condition_text).small()),
+            );
             ui.separator();
 
             egui::ScrollArea::vertical()
                 .id_salt("shared-8080-loop-inspector-scroll")
                 .show(ui, |ui| {
                     for instruction in &loop_info.instructions {
-                        let is_pc = instruction.address == cpu.pc;
+                        let is_exec = instruction.address == execution_address;
                         let is_back_edge = instruction.address == loop_info.back_edge;
                         let is_entry = instruction.address == loop_info.start;
                         let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
                         let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
-                        if is_pc {
+                        if is_exec {
                             address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
                             instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
                         }
+                        let markers = format!(
+                            "{} {} {}",
+                            if is_entry { "ENTRY" } else { "     " },
+                            if is_back_edge { "BACK-EDGE" } else { "         " },
+                            if is_exec { "EXEC" } else { "    " },
+                        );
                         ui.horizontal(|ui| {
                             ui.add_sized([56.0, 22.0], egui::Label::new(address_text));
                             ui.add_sized([96.0, 22.0], egui::Label::new(
                                 egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak(),
                             ));
                             ui.add_sized([230.0, 22.0], egui::Label::new(instruction_text));
-                            if is_entry { ui.small("ENTRY"); }
-                            if is_back_edge { ui.small("BACK-EDGE"); }
-                            if is_pc { ui.strong("PC"); }
+                            ui.add_sized([210.0, 22.0], egui::Label::new(egui::RichText::new(markers).small()));
                         });
                     }
                 });
@@ -204,8 +223,8 @@ impl RusTairApp {
             egui::ViewportId::from_hash_of("rustair-shared-8080-loop-inspector-viewport"),
             egui::ViewportBuilder::default()
                 .with_title("RusTair - 8080 Loop Inspector")
-                .with_inner_size([720.0, 520.0])
-                .with_min_inner_size([560.0, 360.0])
+                .with_inner_size([760.0, 520.0])
+                .with_min_inner_size([620.0, 360.0])
                 .with_resizable(true),
             |loop_ctx, _class| {
                 self.draw_shared_loop_inspector_contents(loop_ctx, &mut state);
