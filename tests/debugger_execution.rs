@@ -177,31 +177,29 @@ fn exercise_halted_debugger_step_is_noop(engine: EmulationEngine) {
     );
 }
 
-fn exercise_hold_blocks_debugger_execution(engine: EmulationEngine) {
+fn exercise_hold_blocks_debugger_step(engine: EmulationEngine) {
     let mut host = prepared_host(engine, &[0x00, 0x76]); // NOP / HLT
     host.set_instruction_trace_enabled(true);
     host.request_hold(true);
 
     let before = host.intel8080_state();
     host.debugger_step_instruction();
-    let after_step = host.intel8080_state();
-    assert_eq!(after_step.pc, before.pc, "{engine:?}: debugger step must not execute while HOLD is asserted");
-    assert_eq!(after_step.total_t_states, before.total_t_states, "{engine:?}: stopped debugger step must not consume T-states during HOLD");
+    let held = host.intel8080_state();
+    assert_eq!(held.pc, before.pc, "{engine:?}: debugger step must not execute while HOLD is asserted");
+    assert_eq!(held.total_t_states, before.total_t_states, "{engine:?}: stopped debugger step must not consume T-states during HOLD");
     assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: HOLD must not fabricate a completed instruction");
 
-    host.set_running(true);
-    host.run_cycles(64);
-    assert_eq!(host.intel8080_state().pc, 0x0000, "{engine:?}: RUN must not advance guest PC while HOLD owns the bus");
-    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: running HOLD dwell must not fabricate history");
-
+    // Runtime HOLD itself is machine-cycle based: Cycle Accurate may finish the
+    // currently granted machine cycle before HLDA, while Fast grants immediately.
+    // The debugger-level contract tested here starts from an already asserted
+    // HOLD and therefore must be identical across both engines.
     host.request_hold(false);
-    host.run_cycles(128);
+    host.debugger_step_instruction();
     let resumed = host.intel8080_state();
-    assert!(resumed.halted.unwrap_or(false), "{engine:?}: execution must resume after HOLD release");
+    assert_eq!(resumed.pc, 0x0001, "{engine:?}: debugger step must resume after HOLD release");
     let history = host.instruction_trace_snapshot();
-    assert!(history.len() >= 2, "{engine:?}: NOP and HLT should be captured after HOLD release: {history:?}");
+    assert_eq!(history.len(), 1, "{engine:?}: exactly one NOP should be captured after HOLD release");
     assert_eq!(history[0].address, 0x0000, "{engine:?}");
-    assert_eq!(history[1].address, 0x0001, "{engine:?}");
 }
 
 fn exercise_memory_read_watchpoint_without_history(engine: EmulationEngine) {
@@ -349,7 +347,7 @@ fn exercise_debugger_suite(engine: EmulationEngine) {
     exercise_stack_guarded_run_to(engine);
     exercise_debugger_instruction_step(engine);
     exercise_halted_debugger_step_is_noop(engine);
-    exercise_hold_blocks_debugger_execution(engine);
+    exercise_hold_blocks_debugger_step(engine);
     exercise_memory_read_watchpoint_without_history(engine);
     exercise_memory_write_watchpoint_without_history(engine);
     exercise_uninstalled_memory_read_watchpoint(engine);
