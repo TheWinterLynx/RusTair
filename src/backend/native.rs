@@ -87,6 +87,13 @@ impl NativeMachineBackend {
     }
 
     fn record_one_stopped_instruction(&mut self) {
+        // HLT dwell is not a guest instruction. The instruction-level CPU uses
+        // 4T chunks while halted, but the debugger must never decode the byte at
+        // the post-HLT PC and publish it as if that instruction had executed.
+        if self.machine.cpu.halted {
+            return;
+        }
+
         let before = self.trace_cpu_snapshot();
         let bytes = self.trace_bytes(before.pc);
         let mut effects = collect_pre_instruction_effects(bytes, before, |address| {
@@ -155,8 +162,17 @@ impl NativeMachineBackend {
                 break;
             }
 
+            // RESET suppresses opcode fetches while the physical RUN latch may
+            // remain set. Do not let an execute breakpoint fire merely because
+            // RESET left PC at the same numerical address.
+            if self.machine.bus.cpu_control_lines().reset {
+                self.machine.run_cycles(t_state_budget - used);
+                break;
+            }
+
             let pc = self.machine.cpu.pc;
-            if self.debug_control.stop_before(pc).is_some() {
+            let sp = self.machine.cpu.sp;
+            if self.debug_control.stop_before_with_sp(pc, sp).is_some() {
                 self.machine.set_running(false);
                 break;
             }
@@ -203,7 +219,7 @@ impl MachineBackend for NativeMachineBackend {
         Ok(())
     }
     fn run(&mut self) -> BackendResult<()> {
-        self.debug_control.prepare_resume(self.machine.cpu.pc);
+        self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
         self.machine.set_running(true);
         Ok(())
     }
@@ -214,7 +230,9 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn step(&mut self) -> BackendResult<()> {
         self.debug_control.prepare_manual_step();
-        if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
+        if self.machine.cpu.halted {
+            self.machine.step();
+        } else if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
             self.record_one_stopped_instruction();
         } else {
             self.machine.step();
@@ -232,7 +250,7 @@ impl MachineBackend for NativeMachineBackend {
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> { self.machine.commit_panel_activity(dt); Ok(()) }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
         if run {
-            self.debug_control.prepare_resume(self.machine.cpu.pc);
+            self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
         } else {
             self.debug_control.cancel_run_to();
         }
@@ -323,7 +341,7 @@ impl MachineBackend for NativeMachineBackend {
     fn clear_instruction_trace(&mut self) -> BackendResult<()> { self.instruction_trace.clear(); Ok(()) }
 
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
-        if self.machine.powered && !self.machine.running {
+        if self.machine.powered && !self.machine.running && !self.machine.cpu.halted {
             self.debug_control.prepare_manual_step();
             if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
                 self.record_one_stopped_instruction();
@@ -359,7 +377,13 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
         self.debug_control.set_run_to(address);
-        self.debug_control.prepare_resume(self.machine.cpu.pc);
+        self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
+        self.machine.set_running(true);
+        Ok(())
+    }
+    fn debugger_run_to_with_sp(&mut self, address: u16, required_sp: u16) -> BackendResult<()> {
+        self.debug_control.set_run_to_with_sp(address, required_sp);
+        self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
         self.machine.set_running(true);
         Ok(())
     }
