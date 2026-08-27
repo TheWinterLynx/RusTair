@@ -12,9 +12,10 @@ use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
+pub use crate::debugger_control::DebugStopReason;
+pub use crate::trace8080::InstructionTraceEntry;
 pub use cycle::CycleAccurateMachineBackend;
 pub use native::NativeMachineBackend;
-pub use crate::trace8080::InstructionTraceEntry;
 pub type FastMachineBackend = NativeMachineBackend;
 pub type InstructionTraceSnapshot = Vec<InstructionTraceEntry>;
 
@@ -267,6 +268,30 @@ pub trait MachineBackend {
     fn clear_instruction_trace(&mut self) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "clear instruction trace", engine: self.engine() })
     }
+    fn debugger_step_instruction(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "debugger step instruction", engine: self.engine() })
+    }
+    fn debugger_breakpoints(&mut self) -> BackendResult<Vec<u16>> {
+        Err(BackendError::Unsupported { operation: "read debugger breakpoints", engine: self.engine() })
+    }
+    fn debugger_set_breakpoint(&mut self, _address: u16, _enabled: bool) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "set debugger breakpoint", engine: self.engine() })
+    }
+    fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "clear debugger breakpoints", engine: self.engine() })
+    }
+    fn debugger_run_to(&mut self, _address: u16) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "debugger run to", engine: self.engine() })
+    }
+    fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "cancel debugger run to", engine: self.engine() })
+    }
+    fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> {
+        Err(BackendError::Unsupported { operation: "query debugger run to", engine: self.engine() })
+    }
+    fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> {
+        Err(BackendError::Unsupported { operation: "query debugger stop reason", engine: self.engine() })
+    }
     fn debugger_input_port(&mut self, _port: u8) -> BackendResult<u8> {
         Err(BackendError::Unsupported { operation: "debugger IN", engine: self.engine() })
     }
@@ -400,6 +425,14 @@ impl BackendHost {
     pub fn instruction_trace_enabled(&mut self) -> bool { Self::call(self.backend.instruction_trace_enabled()) }
     pub fn set_instruction_trace_enabled(&mut self, enabled: bool) { Self::call(self.backend.set_instruction_trace_enabled(enabled)); }
     pub fn clear_instruction_trace(&mut self) { Self::call(self.backend.clear_instruction_trace()); }
+    pub fn debugger_step_instruction(&mut self) { Self::call(self.backend.debugger_step_instruction()); }
+    pub fn debugger_breakpoints(&mut self) -> Vec<u16> { Self::call(self.backend.debugger_breakpoints()) }
+    pub fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) { Self::call(self.backend.debugger_set_breakpoint(address, enabled)); }
+    pub fn debugger_clear_breakpoints(&mut self) { Self::call(self.backend.debugger_clear_breakpoints()); }
+    pub fn debugger_run_to(&mut self, address: u16) { Self::call(self.backend.debugger_run_to(address)); }
+    pub fn debugger_cancel_run_to(&mut self) { Self::call(self.backend.debugger_cancel_run_to()); }
+    pub fn debugger_run_to_target(&mut self) -> Option<u16> { Self::call(self.backend.debugger_run_to_target()) }
+    pub fn debugger_stop_reason(&mut self) -> Option<DebugStopReason> { Self::call(self.backend.debugger_stop_reason()) }
     pub fn debugger_input_port(&mut self, port: u8) -> u8 { Self::call(self.backend.debugger_input_port(port)) }
     pub fn debugger_output_port(&mut self, port: u8, value: u8) { Self::call(self.backend.debugger_output_port(port, value)); }
     pub fn debugger_inject_serial_rx(&mut self, port: u8, byte: u8) -> bool { Self::call(self.backend.debugger_inject_serial_rx(port, byte)) }
