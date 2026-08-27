@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::cpu8080_cycle::{MachineCycle, TState};
+use crate::debugger_control::DebugExecutionControl;
 use crate::machine::CpuDiagnosticResult;
 use crate::trace8080::{
     collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
@@ -10,7 +11,7 @@ use crate::trace8080::{
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
-    CpuState, CycleAccurateMachineBackend, EmulationEngine, FrontPanelState,
+    CpuState, CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
     InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend,
 };
 
@@ -31,6 +32,7 @@ pub(super) struct CycleHostBackend {
     inner: CycleAccurateMachineBackend,
     instruction_trace: InstructionTraceBuffer,
     pending_instruction_trace: Option<PendingInstructionTrace>,
+    debug_control: DebugExecutionControl,
 }
 
 impl Default for CycleHostBackend {
@@ -39,6 +41,7 @@ impl Default for CycleHostBackend {
             inner: CycleAccurateMachineBackend::default(),
             instruction_trace: InstructionTraceBuffer::default(),
             pending_instruction_trace: None,
+            debug_control: DebugExecutionControl::default(),
         }
     }
 }
@@ -70,12 +73,16 @@ impl CycleHostBackend {
         ]
     }
 
+    fn at_instruction_boundary(&self) -> bool {
+        !self.inner.cpu().is_halted()
+            && self.inner.cpu().machine_cycle() == MachineCycle::InstructionFetch
+            && self.inner.cpu().t_state() == TState::T1
+    }
+
     fn begin_instruction_trace_if_needed(&mut self) {
         if !self.instruction_trace.enabled()
             || self.pending_instruction_trace.is_some()
-            || self.inner.cpu().is_halted()
-            || self.inner.cpu().machine_cycle() != MachineCycle::InstructionFetch
-            || self.inner.cpu().t_state() != TState::T1
+            || !self.at_instruction_boundary()
         {
             return;
         }
@@ -96,8 +103,7 @@ impl CycleHostBackend {
 
     fn finish_instruction_trace_if_complete(&mut self) {
         let Some(pending) = self.pending_instruction_trace.as_ref() else { return; };
-        let at_next_fetch = self.inner.cpu().machine_cycle() == MachineCycle::InstructionFetch
-            && self.inner.cpu().t_state() == TState::T1
+        let at_next_fetch = self.at_instruction_boundary()
             && self.inner.cpu().total_t_states() > pending.start_t_states;
         if !at_next_fetch && !self.inner.cpu().is_halted() {
             return;
@@ -127,6 +133,30 @@ impl CycleHostBackend {
     fn clear_pending_instruction_trace(&mut self) {
         self.pending_instruction_trace = None;
     }
+
+    fn debugger_step_one_instruction(&mut self) -> BackendResult<()> {
+        if !self.inner.machine().powered || self.inner.machine().running {
+            return Ok(());
+        }
+
+        let start_t_states = self.inner.cpu().total_t_states();
+        // An 8080 instruction uses only a handful of machine cycles. Keep a
+        // generous hard bound so a malformed core state cannot hang the UI.
+        for _ in 0..16 {
+            self.begin_instruction_trace_if_needed();
+            self.inner.step()?;
+            self.finish_instruction_trace_if_complete();
+
+            if self.inner.cpu().is_halted() {
+                break;
+            }
+            if self.inner.cpu().total_t_states() > start_t_states && self.at_instruction_boundary() {
+                break;
+            }
+        }
+        self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+        Ok(())
+    }
 }
 
 impl MachineBackend for CycleHostBackend {
@@ -154,6 +184,7 @@ impl MachineBackend for CycleHostBackend {
         }
         self.clear_pending_instruction_trace();
         self.instruction_trace.clear();
+        self.debug_control.clear_transient();
         Ok(())
     }
 
@@ -164,27 +195,41 @@ impl MachineBackend for CycleHostBackend {
         self.inner.power_with_historical_run_latch(on, historical)?;
         self.clear_pending_instruction_trace();
         self.instruction_trace.clear();
+        self.debug_control.clear_transient();
         Ok(())
     }
-    fn run(&mut self) -> BackendResult<()> { self.inner.run() }
-    fn halt(&mut self) -> BackendResult<()> { self.inner.halt() }
+    fn run(&mut self) -> BackendResult<()> {
+        self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+        self.inner.run()
+    }
+    fn halt(&mut self) -> BackendResult<()> {
+        self.debug_control.cancel_run_to();
+        self.inner.halt()
+    }
     fn step(&mut self) -> BackendResult<()> {
+        // Physical/front-panel SINGLE STEP remains one real machine cycle.
         self.begin_instruction_trace_if_needed();
         self.inner.step()?;
         self.finish_instruction_trace_if_complete();
         Ok(())
     }
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
-        if !self.instruction_trace.enabled() {
+        if !self.instruction_trace.enabled() && !self.debug_control.active() {
             return self.inner.service_execution(t_state_budget);
         }
 
-        // The cycle core already advances one real T-state per unit of budget.
-        // Keeping this wrapper around each tick lets us snapshot exact guest
-        // instruction boundaries while preserving the inner pin-level model.
+        // Breakpoints are checked only at InstructionFetch/T1, before the opcode
+        // is consumed. Trace capture remains exact at the same guest boundary.
         for _ in 0..t_state_budget {
             if !self.inner.machine().running {
                 break;
+            }
+            if self.at_instruction_boundary() {
+                let pc = self.inner.cpu().registers().pc;
+                if self.debug_control.stop_before(pc).is_some() {
+                    self.inner.halt()?;
+                    break;
+                }
             }
             self.begin_instruction_trace_if_needed();
             self.inner.service_execution(1)?;
@@ -195,10 +240,18 @@ impl MachineBackend for CycleHostBackend {
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
         self.inner.commit_panel_activity(dt)
     }
-    fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> { self.inner.assert_run_stop(run) }
+    fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
+        if run {
+            self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+        } else {
+            self.debug_control.cancel_run_to();
+        }
+        self.inner.assert_run_stop(run)
+    }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.inner.release_run_stop(run) }
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.clear_pending_instruction_trace();
+        self.debug_control.clear_transient();
         self.inner.assert_reset()
     }
     fn release_reset(&mut self) -> BackendResult<()> { self.inner.release_reset() }
@@ -207,6 +260,7 @@ impl MachineBackend for CycleHostBackend {
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.inner.request_hold(hold) }
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
         self.clear_pending_instruction_trace();
+        self.debug_control.clear_transient();
         self.inner.panel_examine(next)
     }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> { self.inner.panel_deposit(next) }
@@ -225,6 +279,7 @@ impl MachineBackend for CycleHostBackend {
         self.inner.machine_mut().configure_serial_board(board);
         if powered {
             self.clear_pending_instruction_trace();
+            self.debug_control.clear_transient();
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
         }
@@ -341,6 +396,31 @@ impl MachineBackend for CycleHostBackend {
         self.clear_pending_instruction_trace();
         Ok(())
     }
+
+    fn debugger_step_instruction(&mut self) -> BackendResult<()> {
+        self.debugger_step_one_instruction()
+    }
+    fn debugger_breakpoints(&mut self) -> BackendResult<Vec<u16>> { Ok(self.debug_control.breakpoints()) }
+    fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) -> BackendResult<()> {
+        self.debug_control.set_breakpoint(address, enabled);
+        Ok(())
+    }
+    fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
+        self.debug_control.clear_breakpoints();
+        Ok(())
+    }
+    fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
+        self.debug_control.set_run_to(address);
+        self.debug_control.prepare_resume(self.inner.cpu().registers().pc);
+        self.inner.run()
+    }
+    fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
+        self.debug_control.cancel_run_to();
+        Ok(())
+    }
+    fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> { Ok(self.debug_control.run_to()) }
+    fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> { Ok(self.debug_control.stop_reason()) }
+
     fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> {
         Ok(self.inner.machine_mut().bus.debugger_input_port(port))
     }
