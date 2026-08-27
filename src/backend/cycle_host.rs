@@ -394,6 +394,13 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x3e, 0x42, 0x3c, 0x76]).unwrap(); // MVI A,42 / INR A / HLT
+
+        // RESET guarantees the execution entry point, but the 8080 general
+        // registers are not a contractual zero-filled debugger state. Capture
+        // the actual pre-execution CPU state and require the trace to preserve it.
+        let CpuState::Intel8080(initial) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(initial.pc, 0x0000);
+
         backend.set_instruction_trace_enabled(true).unwrap();
         backend.run().unwrap();
         backend.service_execution(128).unwrap();
@@ -402,7 +409,8 @@ mod tests {
         assert!(history.len() >= 3, "expected MVI, INR and HLT in history: {history:?}");
         assert_eq!(history[0].address, 0x0000);
         assert_eq!(history[0].bytes[0], 0x3e);
-        assert_eq!(history[0].before.a, 0x00);
+        assert_eq!(history[0].before.a, initial.a);
+        assert_eq!(history[0].before.pc, initial.pc);
         assert_eq!(history[0].after.a, 0x42);
         assert_eq!(history[1].address, 0x0002);
         assert_eq!(history[1].after.a, 0x43);
