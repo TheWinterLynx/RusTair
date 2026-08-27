@@ -1,9 +1,11 @@
 use super::super::{egui, RusTairApp};
+use crate::callstack8080::{infer_call_stack_8080, CallKind8080};
 use crate::decoder8080::{decode_8080, ControlFlow};
 
 #[derive(Clone)]
 struct DebuggerControlsUiState {
     window_open: bool,
+    call_stack_open: bool,
     run_to_input: String,
     breakpoint_input: String,
     message: Option<String>,
@@ -13,6 +15,7 @@ impl Default for DebuggerControlsUiState {
     fn default() -> Self {
         Self {
             window_open: false,
+            call_stack_open: false,
             run_to_input: "0000".into(),
             breakpoint_input: "0000".into(),
             message: None,
@@ -184,6 +187,11 @@ impl RusTairApp {
                 if ui.add_enabled(stopped_for_step, egui::Button::new("Step out")).clicked() {
                     state.message = Some(self.debugger_step_out());
                 }
+                if ui.button("Call stack").clicked() {
+                    state.call_stack_open = true;
+                    self.machine.set_instruction_trace_enabled(true);
+                    state.message = Some("Call-stack inference enabled instruction capture.".into());
+                }
             });
             ui.small("Debugger Step instruction is not the Altair front-panel SINGLE STEP. On Cycle Accurate, the debugger completes one whole instruction; the physical panel switch still advances one machine cycle.");
 
@@ -281,27 +289,115 @@ impl RusTairApp {
         });
     }
 
-    pub(in crate::app) fn show_debugger_controls_viewport(&mut self, parent_ctx: &egui::Context) {
-        let mut state = Self::debugger_controls_state(parent_ctx);
-        if !state.window_open {
+    fn draw_call_stack_viewport_contents(&mut self, ctx: &egui::Context) {
+        let history = self.machine.instruction_trace_snapshot();
+        let inferred = infer_call_stack_8080(&history);
+        let cpu = self.machine.intel8080_state();
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("INFERRED 8080 CALL STACK");
+                ui.separator();
+                ui.monospace(format!("PC=${:04X}  SP=${:04X}", cpu.pc, cpu.sp));
+                ui.separator();
+                ui.label(format!("{} retained frame(s)", inferred.frames.len()));
+            });
+            ui.small("Frames are reconstructed only from observed CALL/RST/RET instructions in the bounded instruction history. No symbols or speculative frames are invented.");
+            if inferred.incomplete {
+                ui.label("INCOMPLETE: older/lost execution may contain additional callers not reconstructable from the retained history.");
+            }
+            if let Some(diagnostic) = inferred.diagnostic.as_ref() {
+                ui.small(format!("Reason: {diagnostic}."));
+            }
+            ui.separator();
+
+            if inferred.frames.is_empty() {
+                ui.label("No live call frames can be proven from the retained trace.");
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_salt("debugger-inferred-call-stack")
+                    .show(ui, |ui| {
+                        for (depth, frame) in inferred.frames.iter().enumerate().rev() {
+                            let kind = match frame.kind {
+                                CallKind8080::Call => "CALL",
+                                CallKind8080::Restart => "RST",
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                ui.monospace(format!("#{depth:02}"));
+                                ui.strong(kind);
+                                ui.monospace(format!("${:04X} -> ${:04X}", frame.call_site, frame.target));
+                                ui.separator();
+                                ui.monospace(format!("return ${:04X}", frame.return_address));
+                                ui.separator();
+                                ui.monospace(format!("SP after push ${:04X}", frame.stack_pointer_after_push));
+                                ui.separator();
+                                ui.small(format!("trace #{}", frame.sequence));
+                            });
+                        }
+                    });
+            }
+
+            ui.separator();
+            if let Some(candidate) = self.candidate_return_address() {
+                ui.small(format!("Current raw stack top: [SP=${:04X}] -> ${candidate:04X}. This value is shown independently from inferred frames.", cpu.sp));
+            } else {
+                ui.small("Current raw stack top cannot be read from installed RAM.");
+            }
+        });
+    }
+
+    fn show_call_stack_viewport(
+        &mut self,
+        parent_ctx: &egui::Context,
+        state: &mut DebuggerControlsUiState,
+    ) {
+        if !state.call_stack_open {
             return;
         }
 
+        // Call-stack inference needs instruction boundaries but is independent
+        // of whether the Exec History window itself is visible.
+        if !self.machine.instruction_trace_enabled() {
+            self.machine.set_instruction_trace_enabled(true);
+        }
+
         parent_ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("rustair-8080-debugger-controls-viewport"),
+            egui::ViewportId::from_hash_of("rustair-8080-call-stack-viewport"),
             egui::ViewportBuilder::default()
-                .with_title("RusTair - Intel 8080 Debugger")
-                .with_inner_size([760.0, 640.0])
-                .with_min_inner_size([600.0, 480.0])
+                .with_title("RusTair - Intel 8080 Call Stack")
+                .with_inner_size([760.0, 500.0])
+                .with_min_inner_size([600.0, 360.0])
                 .with_resizable(true),
-            |debugger_ctx, _class| {
-                self.draw_debugger_controls_viewport_contents(debugger_ctx, &mut state);
-                if debugger_ctx.input(|input| input.viewport().close_requested()) {
-                    state.window_open = false;
+            |stack_ctx, _class| {
+                self.draw_call_stack_viewport_contents(stack_ctx);
+                if stack_ctx.input(|input| input.viewport().close_requested()) {
+                    state.call_stack_open = false;
                 }
             },
         );
+    }
 
+    pub(in crate::app) fn show_debugger_controls_viewport(&mut self, parent_ctx: &egui::Context) {
+        let mut state = Self::debugger_controls_state(parent_ctx);
+
+        if state.window_open {
+            parent_ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("rustair-8080-debugger-controls-viewport"),
+                egui::ViewportBuilder::default()
+                    .with_title("RusTair - Intel 8080 Debugger")
+                    .with_inner_size([760.0, 640.0])
+                    .with_min_inner_size([600.0, 480.0])
+                    .with_resizable(true),
+                |debugger_ctx, _class| {
+                    self.draw_debugger_controls_viewport_contents(debugger_ctx, &mut state);
+                    if debugger_ctx.input(|input| input.viewport().close_requested()) {
+                        state.window_open = false;
+                    }
+                },
+            );
+        }
+
+        self.show_call_stack_viewport(parent_ctx, &mut state);
         Self::store_debugger_controls_state(parent_ctx, state);
     }
 }
