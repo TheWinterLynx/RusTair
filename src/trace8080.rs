@@ -110,6 +110,18 @@ fn stack_write(effects: &mut Vec<InstructionEffect8080>, address: u16, value: u8
     effects.push(InstructionEffect8080::StackWrite { address, value });
 }
 
+/// 8080 PUSH/CALL/RST write the high byte first at SP-1 and the low byte
+/// second at SP-2. Keep trace effects in electrical/temporal order so a pair of
+/// stack watchpoints reports the same first transfer the CPU actually performs.
+fn stack_push_word(effects: &mut Vec<InstructionEffect8080>, before_sp: u16, value: u16) {
+    stack_write(
+        effects,
+        before_sp.wrapping_sub(1),
+        (value >> 8) as u8,
+    );
+    stack_write(effects, before_sp.wrapping_sub(2), value as u8);
+}
+
 fn branch_taken(decoded: &DecodedInstruction, before: CpuSnapshot8080) -> bool {
     decoded
         .control_flow
@@ -266,26 +278,22 @@ pub fn collect_post_instruction_effects(
         }
         "PUSH" => {
             if let Some(value) = op0.and_then(|operand| pushed_pair(before, operand)) {
-                stack_write(&mut effects, after.sp, value as u8);
-                stack_write(&mut effects, after.sp.wrapping_add(1), (value >> 8) as u8);
+                stack_push_word(&mut effects, before.sp, value);
             }
         }
         "RST" => {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
-            stack_write(&mut effects, after.sp, return_address as u8);
-            stack_write(&mut effects, after.sp.wrapping_add(1), (return_address >> 8) as u8);
+            stack_push_word(&mut effects, before.sp, return_address);
         }
         "CALL" if branch_taken(&decoded, before) => {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
-            stack_write(&mut effects, after.sp, return_address as u8);
-            stack_write(&mut effects, after.sp.wrapping_add(1), (return_address >> 8) as u8);
+            stack_push_word(&mut effects, before.sp, return_address);
         }
         _ if matches!(decoded.control_flow, ControlFlow::Call { condition: Some(_), .. })
             && branch_taken(&decoded, before) =>
         {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
-            stack_write(&mut effects, after.sp, return_address as u8);
-            stack_write(&mut effects, after.sp.wrapping_add(1), (return_address >> 8) as u8);
+            stack_push_word(&mut effects, before.sp, return_address);
         }
         _ => {}
     }
@@ -474,5 +482,41 @@ mod tests {
             InstructionEffect8080::MemoryRead { address: 0x0100, value: 0xff },
             InstructionEffect8080::MemoryWrite { address: 0x0100, value: 0x00 },
         ]);
+    }
+
+    #[test]
+    fn push_and_call_stack_writes_follow_real_bus_order_and_wrap() {
+        let before = CpuSnapshot8080 {
+            b: 0x12,
+            c: 0x34,
+            pc: 0xffff,
+            sp: 0x0000,
+            ..CpuSnapshot8080::default()
+        };
+        let after_push = CpuSnapshot8080 {
+            sp: 0xfffe,
+            ..before
+        };
+        assert_eq!(
+            collect_post_instruction_effects([0xc5, 0, 0], before, after_push, &[]),
+            vec![
+                InstructionEffect8080::StackWrite { address: 0xffff, value: 0x12 },
+                InstructionEffect8080::StackWrite { address: 0xfffe, value: 0x34 },
+            ]
+        );
+
+        let after_call = CpuSnapshot8080 {
+            pc: 0x1234,
+            sp: 0xfffe,
+            ..before
+        };
+        // CALL at FFFFh has a wrapping return address of 0002h.
+        assert_eq!(
+            collect_post_instruction_effects([0xcd, 0x34, 0x12], before, after_call, &[]),
+            vec![
+                InstructionEffect8080::StackWrite { address: 0xffff, value: 0x00 },
+                InstructionEffect8080::StackWrite { address: 0xfffe, value: 0x02 },
+            ]
+        );
     }
 }
