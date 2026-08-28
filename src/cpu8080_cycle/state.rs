@@ -54,3 +54,35 @@ impl super::Cpu8080Cycle {
         self.pins.inte = inte;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cpu8080_cycle::Cpu8080Cycle;
+
+    #[test]
+    fn power_on_seed_carries_interrupt_flip_flop_without_advancing_time() {
+        let registers = Registers {
+            a: 0x11,
+            b: 0x22,
+            c: 0x33,
+            d: 0x44,
+            e: 0x55,
+            h: 0x66,
+            l: 0x77,
+            f: 0xd7,
+            sp: 0x1234,
+            pc: 0xabcd,
+        };
+        let mut cpu = Cpu8080Cycle::new();
+
+        cpu.initialize_power_on_state(registers, true);
+
+        assert_eq!(cpu.registers(), registers);
+        assert!(cpu.interrupts_enabled());
+        assert!(cpu.pins().inte);
+        assert_eq!(cpu.total_t_states(), 0);
+        assert_eq!(cpu.completed_instructions(), 0);
+        assert!(!cpu.is_halted());
+    }
+}
