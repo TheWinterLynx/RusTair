@@ -98,68 +98,20 @@ struct PinState {
     released: bool,
 }
 
+/// The package renderer is deliberately view-only. CPU control-pin truth is
+/// decided by the backend teaching snapshot; this UI never reconstructs a
+/// signal from S-100 lamps, machine-cycle names or other presentation state.
 fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool>, bool, &'static str) {
-    let control_state = snapshot.accuracy == BusTeachingAccuracy::ControlState;
-    let stop_wait = control_state
-        && snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped;
-    let raw_control_outputs_known = control_state
-        && !matches!(
-            snapshot.machine_cycle,
-            BusMachineCycle::PowerOff | BusMachineCycle::PowerOnUndefined
-        );
-
     match pin {
         ControlPin::Reset => (snapshot.reset, false, "RESET input; active HIGH."),
         ControlPin::Hold => (snapshot.hold, false, "HOLD input requests that the 8080 relinquish the bus; active HIGH."),
-        ControlPin::Inte => (
-            if raw_control_outputs_known { snapshot.status.inte } else { snapshot.pins.inte },
-            false,
-            "INTE output indicates that maskable interrupts are enabled; active HIGH.",
-        ),
-        ControlPin::Dbin => (
-            if stop_wait {
-                Some(true)
-            } else if control_state {
-                None
-            } else {
-                snapshot.pins.dbin
-            },
-            false,
-            "DBIN output indicates that the CPU is accepting data from the external data bus; it remains HIGH through TW during a read wait.",
-        ),
-        ControlPin::WrN => (
-            if stop_wait {
-                Some(true)
-            } else if control_state {
-                None
-            } else {
-                snapshot.pins.wr_n
-            },
-            true,
-            "/WR is the active-LOW CPU write output. LOW means the write signal is asserted.",
-        ),
-        ControlPin::Sync => (
-            if stop_wait {
-                Some(false)
-            } else if control_state {
-                None
-            } else {
-                snapshot.pins.sync
-            },
-            false,
-            "SYNC marks the T1 status/synchronization portion of a machine cycle; it is LOW while the CPU dwells in TW.",
-        ),
-        ControlPin::Wait => (
-            if raw_control_outputs_known { snapshot.status.wait } else { snapshot.pins.wait },
-            false,
-            "WAIT output indicates that the processor is waiting; active HIGH.",
-        ),
+        ControlPin::Inte => (snapshot.pins.inte, false, "INTE output indicates that maskable interrupts are enabled; active HIGH."),
+        ControlPin::Dbin => (snapshot.pins.dbin, false, "DBIN output indicates that the CPU is accepting data from the external data bus; it remains HIGH through TW during a read wait."),
+        ControlPin::WrN => (snapshot.pins.wr_n, true, "/WR is the active-LOW CPU write output. LOW means the write signal is asserted."),
+        ControlPin::Sync => (snapshot.pins.sync, false, "SYNC marks the T1 status/synchronization portion of a machine cycle; active HIGH."),
+        ControlPin::Wait => (snapshot.pins.wait, false, "WAIT output indicates that the processor is waiting; active HIGH."),
         ControlPin::Ready => (snapshot.ready, false, "READY input controls wait-state insertion; active HIGH."),
-        ControlPin::Hlda => (
-            if raw_control_outputs_known { snapshot.status.hlda } else { snapshot.pins.hlda },
-            false,
-            "HLDA output acknowledges HOLD and bus relinquishment; active HIGH.",
-        ),
+        ControlPin::Hlda => (snapshot.pins.hlda, false, "HLDA output acknowledges HOLD and bus relinquishment; active HIGH."),
     }
 }
 
