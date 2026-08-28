@@ -56,14 +56,24 @@ fn exact_undriven_address_data_pins_are_hi_z_not_unknown() {
 }
 
 #[test]
-fn control_state_projects_cpu_address_data_only_for_stable_stop_wait() {
+fn cpu_address_data_pin_truth_requires_exact_sample_or_stable_stop_wait() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
     assert!(source.contains("fn cpu_bus_pin_levels_available"));
-    assert!(source.contains("snapshot.accuracy != BusTeachingAccuracy::ControlState"));
-    assert!(source.contains("|| snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped"));
+    assert!(source.contains("snapshot.accuracy == BusTeachingAccuracy::Exact"));
+    assert!(source.contains("snapshot.accuracy == BusTeachingAccuracy::ControlState"));
+    assert!(source.contains("snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped"));
+    assert!(source.contains("A reconstructed Fast snapshot may"));
+    assert!(source.contains("projected back into the 8080 package"));
     assert!(source.contains("RESET RELEASED / STOP-WAIT is a special stable control state"));
     assert!(source.contains("CPU owns the address bus at PC=0000h"));
     assert!(source.contains("memory drives the same S-100 data byte onto D0-D7"));
+}
+
+#[test]
+fn reconstructed_fast_bus_is_explicitly_not_cpu_package_pin_truth() {
+    let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
+    assert!(source.contains("RECONSTRUCTED: ADDRESS/DATA are useful S-100/front-panel observations only"));
+    assert!(source.contains("deliberately not projected onto 8080 A0-A15/D0-D7 package pins"));
 }
 
 #[test]
