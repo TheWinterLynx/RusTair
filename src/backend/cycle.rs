@@ -321,6 +321,14 @@ impl CycleAccurateMachineBackend {
         let visible_data = self.drive_s100_t_state(&trace, data_in, front_panel_data, ready);
         self.sync_machine_cpu();
         self.capture_teaching_snapshot(&trace, visible_data, ready);
+
+        // A STOP pressed while HLDA was active cannot be captured until the CPU
+        // owns the bus again and emits the next PSYNC. Apply the pending physical
+        // switch only after recording that exact T1 sample; the subsequent
+        // stable STOP-WAIT control state is a later electrical instant.
+        if trace.t_state == TState::T1 && trace.pins.sync {
+            self.machine.cycle_capture_pending_stop_at_psync();
+        }
         trace
     }
 
@@ -523,10 +531,11 @@ impl CycleAccurateMachineBackend {
     /// STOP is latched by the display/control hardware at PSYNC. If the switch
     /// is actuated in the middle of a machine cycle, let that cycle reach the
     /// next externally visible SYNC before dropping the RUN latch/READY line.
-    /// A processor already dwelling in HLT produces no useful new PSYNC, so the
-    /// historical STOP+RESET recovery behavior remains intact.
+    /// A processor already dwelling in HLT or HLDA produces no useful new PSYNC,
+    /// so STOP remains physically asserted and is captured by RESET or the first
+    /// PSYNC after HOLD is released.
     fn advance_to_stop_sync(&mut self) {
-        if self.cpu.is_halted() {
+        if self.cpu.is_halted() || self.cpu.is_holding() {
             return;
         }
         for _ in 0..64 {
@@ -617,6 +626,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
         let lines = self.machine.bus.cpu_control_lines();
         if self.machine.powered && self.machine.running && !lines.reset {
             for _ in 0..t_state_budget {
+                if !self.machine.running {
+                    break;
+                }
                 let ready = self.machine.bus.cpu_control_lines().ready;
                 let trace = self.tick_once(ready);
                 if trace.fault.is_some() {
@@ -636,10 +648,16 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
         self.sync_machine_cpu();
-        if !run && self.machine.powered && self.machine.running && !self.cpu.is_halted() {
+        if !run
+            && self.machine.powered
+            && self.machine.running
+            && !self.cpu.is_halted()
+            && !self.cpu.is_holding()
+        {
             self.advance_to_stop_sync();
         }
-        self.machine.assert_run_stop(run);
+        self.machine
+            .cycle_assert_run_stop(run, self.cpu.is_halted(), self.cpu.is_holding());
         if !run {
             self.refresh_teaching_visible_lamps();
         }
@@ -665,7 +683,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
 
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> {
-        self.machine.request_hold(hold);
+        self.machine.bus.cycle_set_hold_request(hold);
         Ok(())
     }
 
@@ -1042,13 +1060,54 @@ mod tests {
         // T1, T2(sample HOLD), T3, T4(boundary), THOLD.
         backend.service_execution(5).unwrap();
         assert!(backend.cpu().is_holding());
+        assert!(backend.machine().bus.raw_s100_hlda());
         backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
         let held = backend.front_panel_state().unwrap();
         assert_eq!(held.lamps.hlda, 1.0);
 
         backend.request_hold(false).unwrap();
+        assert!(!backend.machine().bus.cpu_control_lines().hold);
+        assert!(
+            backend.machine().bus.raw_s100_hlda(),
+            "removing HOLD must not fabricate an HLDA transition before the CPU clocks"
+        );
         backend.service_execution(1).unwrap();
         assert!(!backend.cpu().is_holding());
+        assert!(!backend.machine().bus.raw_s100_hlda());
+    }
+
+    #[test]
+    fn stop_pressed_during_hlda_waits_for_first_psync_after_hold_release() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00, 0x00]).unwrap();
+        backend.run().unwrap();
+        backend.request_hold(true).unwrap();
+        backend.service_execution(5).unwrap();
+        assert!(backend.cpu().is_holding());
+        assert!(backend.machine().bus.raw_s100_hlda());
+
+        backend.assert_run_stop(false).unwrap();
+        assert!(
+            backend.machine().running,
+            "STOP cannot clear the RUN latch while HLDA suppresses PSYNC"
+        );
+        assert!(backend.cpu().is_holding());
+        assert!(backend.machine().bus.raw_s100_hlda());
+
+        backend.request_hold(false).unwrap();
+        assert!(backend.machine().bus.raw_s100_hlda());
+        backend.service_execution(1).unwrap();
+
+        assert!(!backend.cpu().is_holding());
+        assert!(!backend.machine().running, "held STOP must latch at the resumed T1/PSYNC");
+        assert!(!backend.machine().bus.raw_s100_hlda());
+        assert!(backend.machine().wait_led());
+        assert_eq!(backend.cpu().t_state(), TState::T2);
+
+        backend.release_run_stop(false).unwrap();
     }
 
     #[test]
