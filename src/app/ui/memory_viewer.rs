@@ -176,6 +176,10 @@ impl RusTairApp {
         )
     }
 
+    fn activity_exec_color() -> egui::Color32 { egui::Color32::from_rgb(72, 116, 220) }
+    fn activity_read_color() -> egui::Color32 { egui::Color32::from_rgb(68, 174, 104) }
+    fn activity_write_color() -> egui::Color32 { egui::Color32::from_rgb(220, 82, 68) }
+
     fn filtered_activity_count(state: &MemoryViewerUiState, activity: MemoryActivity8080) -> u64 {
         let mut total = 0u64;
         if state.activity_show_execute {
@@ -228,13 +232,13 @@ impl RusTairApp {
         }
         let denominator = (max_count as f32 + 1.0).ln().max(1.0);
         let strength = ((count as f32 + 1.0).ln() / denominator).clamp(0.0, 1.0);
-        let alpha = (36.0 + strength * 104.0).round() as u8;
-        let (r, g, b) = match kind {
-            "WRITE" => (220, 82, 68),
-            "READ" => (68, 174, 104),
-            _ => (72, 116, 220),
+        let alpha = (54.0 + strength * 140.0).round() as u8;
+        let base = match kind {
+            "WRITE" => Self::activity_write_color(),
+            "READ" => Self::activity_read_color(),
+            _ => Self::activity_exec_color(),
         };
-        Some(egui::Color32::from_rgba_unmultiplied(r, g, b, alpha))
+        Some(egui::Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha))
     }
 
     fn activity_hover_text(activity: MemoryActivity8080) -> String {
@@ -251,6 +255,48 @@ impl RusTairApp {
                 .map(|sequence| sequence.to_string())
                 .unwrap_or_else(|| "-".into()),
         )
+    }
+
+    fn draw_activity_legend_item(ui: &mut egui::Ui, label: &str, color: egui::Color32) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 1.0, color);
+        ui.small(label);
+    }
+
+    fn draw_activity_stripes(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        state: &MemoryViewerUiState,
+        activity: MemoryActivity8080,
+    ) {
+        if !state.activity_overlay || !activity.any() {
+            return;
+        }
+        let inner = rect.shrink(2.5);
+        let stripe_width = 3.0;
+        let x0 = inner.right() - stripe_width;
+        let segment_height = inner.height() / 3.0;
+        let painter = ui.painter();
+        let slots = [
+            (state.activity_show_execute && activity.execute_count != 0, Self::activity_exec_color()),
+            (state.activity_show_read && activity.read_count != 0, Self::activity_read_color()),
+            (state.activity_show_write && activity.write_count != 0, Self::activity_write_color()),
+        ];
+        for (index, (visible, color)) in slots.into_iter().enumerate() {
+            if !visible {
+                continue;
+            }
+            let top = inner.top() + segment_height * index as f32;
+            let bottom = if index == 2 { inner.bottom() } else { top + segment_height - 0.8 };
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    egui::pos2(x0, top),
+                    egui::pos2(inner.right(), bottom),
+                ),
+                0.0,
+                color,
+            );
+        }
     }
 
     fn instruction_hover_text(
@@ -425,7 +471,8 @@ impl RusTairApp {
         ui.small("- B+C, D+E and H+L are the 8080's natural 16-bit register pairs: BC, DE and HL. The first register is the high byte and the second is the low byte.");
         ui.small("- HL is especially important for memory access: register M in 8080 assembly means the byte in memory addressed by HL.");
         ui.small("- Cell markers do not change layout: EXEC = box, PC(reg) = left line, HL/M = top line, SP = bottom line.");
-        ui.small("- Optional activity tint uses retained instruction history: blue = latest EXEC, green = latest READ, red = latest WRITE; stronger tint means a larger retained count.");
+        ui.small("- Activity overlay: blue = EXECUTE, green = data/stack READ, red = data/stack WRITE. The right-edge bar has fixed slots: top EXEC, middle READ, bottom WRITE.");
+        ui.small("- I/O instructions such as IN/OUT are not RAM READ/WRITE activity; inspect them in Execution History or the I/O Inspector.");
         ui.small("- READ/WRITE activity means guest data/stack transfers. Opcode/operand fetches are intentionally not counted as READ activity.");
         ui.small("- The Loop Inspector only claims simple straight-line loops ending in one direct backward JMP/Jcc; ambiguous/nested control flow is deliberately rejected.");
         ui.small("- The 8080 address space is 0000h-FFFFh. '--' means that no physical RAM is installed at that address.");
@@ -444,13 +491,32 @@ impl RusTairApp {
             ui.checkbox(&mut state.activity_show_read, "READ");
             ui.checkbox(&mut state.activity_show_write, "WRITE");
         });
-        ui.small("Tint color follows the most recent enabled activity at each address; tint strength is logarithmic in the retained activity count.");
-        ui.small("Fixed markers: EXEC = box | PC(reg) = left | HL/M = top | SP = bottom. They never insert/remove widgets.");
+        ui.horizontal(|ui| {
+            ui.strong("Legend:");
+            Self::draw_activity_legend_item(ui, "EXEC", Self::activity_exec_color());
+            ui.separator();
+            Self::draw_activity_legend_item(ui, "READ RAM/stack", Self::activity_read_color());
+            ui.separator();
+            Self::draw_activity_legend_item(ui, "WRITE RAM/stack", Self::activity_write_color());
+        });
+        ui.small("Every byte cell has one fixed right-edge activity bar: top = EXEC, middle = READ, bottom = WRITE. Multiple slots can be visible at the same time.");
+        ui.small("Background tint shows relative frequency. The right-edge slots show presence even when selection/pointer highlighting hides the tint.");
+        ui.small("IN/OUT are I/O bus activity, not RAM activity. Use Execution History / I/O Inspector to inspect port transfers.");
+        ui.small("Fixed pointer markers: EXEC = box | PC(reg) = left | HL/M = top | SP = bottom. They never insert/remove widgets.");
 
         if state.activity_overlay {
             let history = self.machine.instruction_trace_snapshot();
             let metadata = self.machine.instruction_trace_metadata();
             let activity = summarize_memory_activity_8080(&history, metadata);
+            let selected = activity.get(state.selected_address);
+            ui.monospace(format!(
+                "Selected ${:04X}: EXEC {} | READ {} | WRITE {} | last #{}",
+                state.selected_address,
+                selected.execute_count,
+                selected.read_count,
+                selected.write_count,
+                selected.last_sequence().map(|value| value.to_string()).unwrap_or_else(|| "-".into()),
+            ));
             ui.small(format!(
                 "Retained: {} instruction(s) | {} active address(es) | dropped {}",
                 history.len(), activity.active_addresses(), activity.dropped_entries,
@@ -460,9 +526,14 @@ impl RusTairApp {
             } else if activity.dropped_entries != 0 {
                 ui.small("Older trace entries were evicted: overlay counts are lower bounds for this generation.");
             }
-            if ui.button("Clear shared activity / history").clicked() {
-                self.machine.clear_instruction_trace();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Open full Memory Activity").clicked() {
+                    self.open_memory_activity(ui.ctx());
+                }
+                if ui.button("Clear shared activity / history").clicked() {
+                    self.machine.clear_instruction_trace();
+                }
+            });
         } else {
             ui.small("Overlay OFF: RAM Inspector does not request instruction capture on its own.");
         }
@@ -560,6 +631,18 @@ impl RusTairApp {
 
         ui.set_min_width(748.0);
         ui.spacing_mut().item_spacing.x = 2.0;
+        if state.activity_overlay {
+            ui.horizontal(|ui| {
+                ui.strong("ACTIVITY");
+                Self::draw_activity_legend_item(ui, "EXEC", Self::activity_exec_color());
+                ui.separator();
+                Self::draw_activity_legend_item(ui, "READ", Self::activity_read_color());
+                ui.separator();
+                Self::draw_activity_legend_item(ui, "WRITE", Self::activity_write_color());
+                ui.separator();
+                ui.small("right edge: top / middle / bottom; tint = relative frequency");
+            });
+        }
         ui.horizontal(|ui| {
             ui.add_sized([54.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
             ui.add_sized([20.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("P").monospace().strong()))
@@ -613,6 +696,7 @@ impl RusTairApp {
                                 if address == execution_address { text = text.strong(); }
                                 if address == state.selected_address { text = text.background_color(selected_fill); }
                                 let response = ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(text).sense(egui::Sense::click()));
+                                Self::draw_activity_stripes(ui, response.rect, state, activity);
                                 Self::draw_cell_markers(ui, response.rect, address, execution_address, pc, sp, hl);
                                 if response.clicked() { state.follow_pc = false; self.select_memory_address(state, address, false); }
                                 if response.hovered() {
@@ -635,6 +719,7 @@ impl RusTairApp {
                                 if let Some(fill) = overlay_fill { text = text.background_color(fill); }
                                 if address == state.selected_address { text = text.background_color(selected_fill); }
                                 let response = ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(text).sense(egui::Sense::click()));
+                                Self::draw_activity_stripes(ui, response.rect, state, activity);
                                 Self::draw_cell_markers(ui, response.rect, address, execution_address, pc, sp, hl);
                                 if response.clicked() { state.follow_pc = false; self.select_memory_address(state, address, false); }
                                 let mut hover = format!("{:04X}h - no RAM installed; guest reads return 00h", address);
