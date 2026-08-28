@@ -24,8 +24,16 @@ impl Default for AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
+        let mut stream = OutputStreamBuilder::open_default_stream().ok();
+        if let Some(stream) = stream.as_mut() {
+            // Rodio prints a diagnostic every time OutputStream is dropped,
+            // including the normal application shutdown path. RusTair owns the
+            // stream for the lifetime of AudioEngine, so that message is noise,
+            // not an indication of premature audio teardown.
+            stream.log_on_drop(false);
+        }
         Self {
-            stream: OutputStreamBuilder::open_default_stream().ok(),
+            stream,
             loops: HashMap::new(),
             muted: false,
         }
