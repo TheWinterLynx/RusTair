@@ -25,6 +25,7 @@ fn ram_inspector_primary_sidebar_sections_are_collapsible() {
             "CURRENT INSTRUCTION",
             "Explain selected instruction",
             "Selected byte / editor",
+            "Memory activity overlay",
             "1 KiB protection map",
             "CPU REGISTERS",
             "How to read this inspector",
