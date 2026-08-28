@@ -148,9 +148,9 @@ impl RusTairApp {
             ui.strong(accuracy);
         });
         ui.small(if capabilities.exact_t_state_timing {
-            "Cycle Accurate exposes the real machine-cycle, T-state and 8080 pin sample that drove the S-100 adapter."
+            "Cycle Accurate exposes the real machine-cycle, T-state, 8080 pins and latched S-100 status driven by the CPU-board sample."
         } else {
-            "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin values remain unknown."
+            "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin/status-latch values remain unknown."
         });
     }
 
@@ -279,7 +279,7 @@ impl RusTairApp {
         Self::draw_timing_row(ui, "Address bus", &address, "Data bus", &data);
         Self::draw_timing_row(
             ui,
-            "Status word",
+            "Latched status",
             &status,
             "Complete",
             Self::bool_signal(snapshot.instruction_complete),
@@ -405,7 +405,7 @@ impl RusTairApp {
             );
         });
         ui.small(
-            "RAW is the captured electrical/status state. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
+            "RAW is the captured S-100 status latch/electrical state. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
         );
     }
 
@@ -443,10 +443,16 @@ impl RusTairApp {
             BusMachineCycle::HaltAck => {
                 lines.push("HALT acknowledge: the CPU has entered its halted bus sequence.".into())
             }
-            BusMachineCycle::Internal => lines.push(
-                "Internal cycle: this part of execution does not represent an external memory/I/O transfer."
-                    .into(),
-            ),
+            BusMachineCycle::Internal => {
+                lines.push(
+                    "Internal cycle: this part of execution does not represent an external memory/I/O transfer."
+                        .into(),
+                );
+                lines.push(
+                    "No new S-100 status byte is emitted here, so the Display/Control status latch retains the previous value until the next status/SYNC update."
+                        .into(),
+                );
+            }
             BusMachineCycle::Unknown => lines.push(
                 "Fast mode cannot identify the exact machine cycle from an instruction-level snapshot."
                     .into(),
@@ -482,19 +488,19 @@ impl RusTairApp {
             ),
         }
         if snapshot.status.m1 == Some(true) {
-            lines.push("M1 is ON because this is an instruction-fetch/status cycle.".into());
+            lines.push("M1 is ON because the retained S-100 status latch currently has M1 set.".into());
         }
         if snapshot.status.memr == Some(true) {
-            lines.push("MEMR is ON because memory is being read during this machine cycle.".into());
+            lines.push("MEMR is ON because the retained S-100 status latch currently has MEMR set.".into());
         }
         if snapshot.status.inp == Some(true) {
-            lines.push("INP is ON because this machine cycle reads an input port.".into());
+            lines.push("INP is ON because the retained S-100 status latch identifies an input-port cycle.".into());
         }
         if snapshot.status.out == Some(true) {
-            lines.push("OUT is ON because this machine cycle writes an output port.".into());
+            lines.push("OUT is ON because the retained S-100 status latch identifies an output-port cycle.".into());
         }
         if snapshot.status.stack == Some(true) {
-            lines.push("STACK is ON because this transfer is classified as stack activity.".into());
+            lines.push("STACK is ON because the retained S-100 status latch identifies stack activity.".into());
         }
         if snapshot.status.wo == Some(false) {
             lines.push("W/O is OFF: the physical /WO convention identifies a write/output cycle.".into());
@@ -506,7 +512,7 @@ impl RusTairApp {
             lines.push("HLDA is ON because the CPU has granted the external HOLD request.".into());
         }
         if snapshot.status.prot == Some(true) {
-            lines.push("PROT is ON because the addressed 1 KiB memory block is write-protected.".into());
+            lines.push("PROT is ON because the currently latched S-100 address selects a write-protected 1 KiB memory block.".into());
         }
         lines
     }
