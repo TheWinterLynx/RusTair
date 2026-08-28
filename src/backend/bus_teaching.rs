@@ -60,7 +60,7 @@ impl BusMachineCycle {
             Self::HaltAck => "HALT ACK",
             Self::InterruptAckWhileHalt => "INTERRUPT ACK WHILE HALTED",
             Self::Internal => "INTERNAL",
-            Self::Unknown => "UNKNOWN / RECONSTRUCTED",
+            Self::Unknown => "UNSAMPLED / UNKNOWN",
         }
     }
 }
@@ -235,5 +235,10 @@ mod tests {
         assert_eq!(lines.wo, Some(true));
         assert_eq!(lines.inp, Some(false));
         assert_eq!(lines.out, Some(false));
+    }
+
+    #[test]
+    fn unknown_cycle_label_does_not_claim_reconstruction_for_exact_backend_control_states() {
+        assert_eq!(BusMachineCycle::Unknown.label(), "UNSAMPLED / UNKNOWN");
     }
 }
