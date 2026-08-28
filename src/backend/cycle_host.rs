@@ -11,10 +11,10 @@ use crate::trace8080::{
 
 use super::cycle::CycleExecutionEvent;
 use super::{
-    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
-    BusTeachingSnapshot, CpuState, CycleAccurateMachineBackend, DebugStopReason, EmulationEngine,
-    FrontPanelState, InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend,
-    MemoryWatchAccess,
+    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
+    BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState, CpuState,
+    CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
+    InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
 };
 
 #[derive(Clone, Debug)]
@@ -31,6 +31,7 @@ pub(super) struct CycleHostBackend {
     instruction_trace: InstructionTraceBuffer,
     pending_instruction_trace: Option<PendingInstructionTrace>,
     debug_control: DebugExecutionControl,
+    teaching_reset_seen: bool,
 }
 
 impl Default for CycleHostBackend {
@@ -40,6 +41,7 @@ impl Default for CycleHostBackend {
             instruction_trace: InstructionTraceBuffer::default(),
             pending_instruction_trace: None,
             debug_control: DebugExecutionControl::default(),
+            teaching_reset_seen: false,
         }
     }
 }
@@ -199,6 +201,100 @@ impl CycleHostBackend {
         }
     }
 
+    fn control_teaching_snapshot(&self) -> BusTeachingSnapshot {
+        let machine = self.inner.machine();
+        let lines = machine.bus.cpu_control_lines();
+        let lamps = machine.panel_lamps();
+        let powered = machine.powered;
+
+        let phase = if !powered {
+            BusMachineCycle::PowerOff
+        } else if lines.reset {
+            BusMachineCycle::ResetAsserted
+        } else if !self.teaching_reset_seen {
+            BusMachineCycle::PowerOnUndefined
+        } else if machine.running {
+            BusMachineCycle::ResetReleasedRunning
+        } else {
+            BusMachineCycle::ResetReleasedStopped
+        };
+
+        let lamp = |value: f32| Some(value >= 0.5);
+        let status = if powered {
+            BusStatusLines {
+                memr: lamp(lamps.memr),
+                inp: lamp(lamps.inp),
+                m1: lamp(lamps.m1),
+                out: lamp(lamps.out),
+                hlta: lamp(lamps.hlta),
+                stack: lamp(lamps.stack),
+                wo: lamp(lamps.wo),
+                int_ack: lamp(lamps.int_ack),
+                inte: lamp(lamps.inte),
+                prot: lamp(lamps.prot),
+                wait: lamp(lamps.wait),
+                hlda: lamp(lamps.hlda),
+            }
+        } else {
+            BusStatusLines::default()
+        };
+
+        let status_word = if powered {
+            Some(
+                (u8::from(status.memr == Some(true)) << 7)
+                    | (u8::from(status.inp == Some(true)) << 6)
+                    | (u8::from(status.m1 == Some(true)) << 5)
+                    | (u8::from(status.out == Some(true)) << 4)
+                    | (u8::from(status.hlta == Some(true)) << 3)
+                    | (u8::from(status.stack == Some(true)) << 2)
+                    | (u8::from(status.wo == Some(true)) << 1)
+                    | u8::from(status.int_ack == Some(true)),
+            )
+        } else {
+            None
+        };
+
+        let pins = if !powered || phase == BusMachineCycle::PowerOnUndefined {
+            BusCpuPins::default()
+        } else {
+            let cpu_pins = self.inner.cpu().pins();
+            BusCpuPins {
+                sync: Some(cpu_pins.sync),
+                dbin: Some(cpu_pins.dbin),
+                wr_n: Some(cpu_pins.wr_n),
+                inte: Some(cpu_pins.inte),
+                wait: Some(cpu_pins.wait),
+                hlda: Some(cpu_pins.hlda),
+            }
+        };
+
+        let r = self.inner.cpu().registers();
+        BusTeachingSnapshot {
+            accuracy: BusTeachingAccuracy::ControlState,
+            engine: EmulationEngine::RustCycleAccurate8080,
+            instruction_address: if powered { Some(r.pc) } else { None },
+            opcode: None,
+            machine_cycle: phase,
+            machine_cycle_index: None,
+            t_state: BusTState::Unknown,
+            // In these lifecycle states ADDRESS/DATA are the actual S-100/front-
+            // panel values. The package renderer deliberately does not project
+            // them back onto CPU A/D pins without a real T-state sample.
+            address: if powered { Some(machine.address_leds()) } else { None },
+            data: if powered { Some(machine.data_leds()) } else { None },
+            status_word,
+            pins,
+            status,
+            ready: if powered { Some(lines.ready) } else { None },
+            hold: if powered { Some(lines.hold) } else { None },
+            reset: if powered { Some(lines.reset) } else { None },
+            total_t_states: if powered { Some(self.inner.cpu().total_t_states()) } else { None },
+            instruction_t_states: None,
+            instruction_complete: None,
+            visible_lamps: lamps,
+        }
+    }
+
     fn debugger_step_one_t_state(&mut self) -> BackendResult<()> {
         let lines = self.inner.machine().bus.cpu_control_lines();
         if !self.inner.machine().powered
@@ -284,11 +380,13 @@ impl MachineBackend for CycleHostBackend {
             self.inner.machine_mut().configure_memory(size, init);
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
+            self.teaching_reset_seen = true;
         } else {
             let mut replacement = CycleAccurateMachineBackend::default();
             replacement.machine_mut().configure_memory(size, init);
             replacement.machine_mut().configure_serial_board(serial_board);
             self.inner = replacement;
+            self.teaching_reset_seen = false;
         }
         self.reset_debugger_epoch();
         Ok(())
@@ -299,6 +397,7 @@ impl MachineBackend for CycleHostBackend {
     }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.inner.power_with_historical_run_latch(on, historical)?;
+        self.teaching_reset_seen = false;
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -363,6 +462,7 @@ impl MachineBackend for CycleHostBackend {
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.inner.release_run_stop(run) }
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.reset_debugger_epoch();
+        self.teaching_reset_seen = true;
         self.inner.assert_reset()
     }
     fn release_reset(&mut self) -> BackendResult<()> { self.inner.release_reset() }
@@ -398,6 +498,7 @@ impl MachineBackend for CycleHostBackend {
         if powered {
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
+            self.teaching_reset_seen = true;
         }
         Ok(())
     }
@@ -524,7 +625,11 @@ impl MachineBackend for CycleHostBackend {
     }
 
     fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
-        Ok(self.inner.teaching_snapshot())
+        Ok(Some(
+            self.inner
+                .teaching_snapshot()
+                .unwrap_or_else(|| self.control_teaching_snapshot()),
+        ))
     }
     fn debugger_step_t_state(&mut self) -> BackendResult<()> {
         self.debugger_step_one_t_state()
@@ -624,6 +729,45 @@ mod tests {
         assert_eq!(cpu.pc, 1);
         assert_eq!(cpu.total_t_states, Some(4));
         assert!(panel.lamps.wait > 0.0);
+    }
+
+    #[test]
+    fn bus_teacher_exposes_power_and_reset_without_fake_t_states() {
+        let mut backend = CycleHostBackend::default();
+        let off = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(off.accuracy, BusTeachingAccuracy::ControlState);
+        assert_eq!(off.machine_cycle, BusMachineCycle::PowerOff);
+        assert_eq!(off.t_state, BusTState::Unknown);
+
+        backend.power(true).unwrap();
+        let powered = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(powered.machine_cycle, BusMachineCycle::PowerOnUndefined);
+        assert_eq!(powered.accuracy, BusTeachingAccuracy::ControlState);
+        assert_eq!(powered.pins.sync, None, "undefined power-on outputs must not be invented");
+
+        backend.assert_reset().unwrap();
+        let held = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(held.machine_cycle, BusMachineCycle::ResetAsserted);
+        assert_eq!(held.reset, Some(true));
+        assert_eq!(held.t_state, BusTState::Unknown);
+        assert_eq!(held.address, Some(0xffff));
+        assert_eq!(held.data, Some(0xff));
+        assert_eq!(held.pins.wr_n, Some(true));
+        assert_eq!(held.status.memr, Some(false));
+        assert_eq!(held.status.wait, Some(false));
+
+        backend.release_reset().unwrap();
+        let released = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(released.machine_cycle, BusMachineCycle::ResetReleasedStopped);
+        assert_eq!(released.reset, Some(false));
+        assert_eq!(released.ready, Some(false));
+        assert_eq!(released.instruction_address, Some(0x0000));
+        assert_eq!(released.status_word, Some(0xa2));
+        assert_eq!(released.status.memr, Some(true));
+        assert_eq!(released.status.m1, Some(true));
+        assert_eq!(released.status.wo, Some(true));
+        assert_eq!(released.status.wait, Some(true));
+        assert_eq!(released.total_t_states, Some(0));
     }
 
     #[test]
