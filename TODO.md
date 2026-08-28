@@ -37,60 +37,62 @@
 
 ## P0/P1 — Didactic RAM viewer and debugger
 
+> P0 completed on `feature/didactic-ram-debugger`. The core P1 debugger/teaching scope is also implemented; remaining unchecked items in this section are deliberate P2 extensions.
+
 ### Shared 8080 decode/control-flow foundation
 
-- [ ] **[P0] Extract the Intel 8080 decoder/disassembler from `memory_viewer.rs` into a shared structured decoder module.** UI, debugger, traces and future tools should use one opcode description source.
-- [ ] **[P0] Decoder metadata should include** mnemonic, length, operands, immediate/address targets, flags affected, nominal timing, memory/I/O behavior and control-flow type.
-- [ ] **[P1] Add tests covering all 256 opcode byte values**, including undocumented aliases currently accepted by the cores.
+- [x] ~~**[P0] Extract the Intel 8080 decoder/disassembler from `memory_viewer.rs` into a shared structured decoder module.** UI, debugger, traces and future tools should use one opcode description source.~~ Implemented in `src/decoder8080.rs`.
+- [x] ~~**[P0] Decoder metadata should include** mnemonic, length, operands, immediate/address targets, flags affected, nominal timing, memory/I/O behavior and control-flow type.~~
+- [x] ~~**[P1] Add tests covering all 256 opcode byte values**, including undocumented aliases currently accepted by the cores.~~ Includes decoder coverage and timing cross-checks.
 
 ### Memory hover / instruction understanding
 
-- [ ] **[P0] Enhance RAM-byte hover with opcode interpretation.** In addition to HEX/decimal/ASCII, show the 8080 instruction that would begin at that address, its bytes and operands.
-- [ ] **[P0] Clearly distinguish “this byte can decode as…” from “CPU is executing this instruction”** so data bytes are not misleadingly presented as known code.
-- [ ] **[P1] Add an “Explain instruction” view** with plain-language semantics, input/output registers, flags affected, memory/I/O accesses and T-state/machine-cycle information.
-- [ ] **[P1] Explain `M` contextually as memory at `[HL]`**, including the current HL address/value when relevant.
+- [x] ~~**[P0] Enhance RAM-byte hover with opcode interpretation.** In addition to HEX/decimal/ASCII, show the 8080 instruction that would begin at that address, its bytes and operands.~~
+- [x] ~~**[P0] Clearly distinguish “this byte can decode as…” from “CPU is executing this instruction”** so data bytes are not misleadingly presented as known code.~~
+- [x] ~~**[P1] Add an “Explain instruction” view** with plain-language semantics, input/output registers, flags affected, memory/I/O accesses and T-state/machine-cycle information.~~ Semantic explanation is paired with the exact/approximate Bus/T-state Teacher for cycle-level detail.
+- [x] ~~**[P1] Explain `M` contextually as memory at `[HL]`**, including the current HL address/value when relevant.~~
 
 ### Loop inspector
 
-- [ ] **[P0] Detect simple backward-branch loops around the current PC.**
-- [ ] **[P0] Add a closable floating Loop Inspector** showing the whole loop disassembly instead of only the current instruction.
-- [ ] **[P0] Highlight the live PC inside the loop** without causing layout movement/flicker.
-- [ ] **[P1] Show loop entry, back-edge, exit condition and branch target.**
-- [ ] **[P1] Track live iteration count where detection is unambiguous.**
-- [ ] **[P1] Explain conditional loop branches as `TAKEN` / `NOT TAKEN` using the actual flags.**
+- [x] ~~**[P0] Detect simple backward-branch loops around the current PC.**~~
+- [x] ~~**[P0] Add a closable floating Loop Inspector** showing the whole loop disassembly instead of only the current instruction.~~ Implemented as an independent native viewport rather than an embedded egui window.
+- [x] ~~**[P0] Highlight the live PC inside the loop** without causing layout movement/flicker.~~ Uses stable EXEC/current-instruction semantics for Cycle Accurate mid-instruction PC movement.
+- [x] ~~**[P1] Show loop entry, back-edge, exit condition and branch target.**~~
+- [x] ~~**[P1] Track live iteration count where detection is unambiguous.**~~ Uses retained instruction trace and reports a lower bound if sequence gaps are actually observed.
+- [x] ~~**[P1] Explain conditional loop branches as `TAKEN` / `NOT TAKEN` using the actual flags.**~~
 - [ ] **[P2] Support nested/simple adjacent loops without presenting speculative boundaries as certain.**
 
 ### “What just happened?” execution history
 
-- [ ] **[P0] Add a bounded instruction trace/history buffer** independent of the I/O trace.
-- [ ] **[P0] For each executed instruction record before/after deltas** for PC, registers and flags.
-- [ ] **[P1] Show memory reads/writes caused by the instruction.**
-- [ ] **[P1] Show I/O operations caused by the instruction and link them to the configured MITS serial board/port.**
-- [ ] **[P1] Add a “What just happened?” panel** explaining the last instruction in human terms.
-- [ ] **[P1] Allow pausing/following history without stopping capture unintentionally.**
+- [x] ~~**[P0] Add a bounded instruction trace/history buffer** independent of the I/O trace.~~
+- [x] ~~**[P0] For each executed instruction record before/after deltas** for PC, registers and flags.~~
+- [x] ~~**[P1] Show memory reads/writes caused by the instruction.**~~ Includes data/stack accesses and attempted writes to protected/uninstalled RAM.
+- [x] ~~**[P1] Show I/O operations caused by the instruction and link them to the configured MITS serial board/port.**~~ Historical entries label board mapping as current configuration when appropriate.
+- [x] ~~**[P1] Add a “What just happened?” panel** explaining the last instruction in human terms.~~
+- [x] ~~**[P1] Allow pausing/following history without stopping capture unintentionally.**~~ Trace ownership is centrally aggregated across all debugger consumers.
 
 ### Stack / calls / control flow
 
-- [ ] **[P1] Add CALL/RET/RST stack visualization** around SP, including pushed return addresses.
-- [ ] **[P1] Detect likely call frames conservatively** and label uncertainty instead of inventing symbols.
-- [ ] **[P1] Add debugger `Step over`, `Step out` and `Run to cursor/address`.**
-- [ ] **[P1] Add execute breakpoints.**
-- [ ] **[P1] Add memory read/write watchpoints.**
+- [x] ~~**[P1] Add CALL/RET/RST stack visualization** around SP, including pushed return addresses.~~
+- [x] ~~**[P1] Detect likely call frames conservatively** and label uncertainty instead of inventing symbols.~~
+- [x] ~~**[P1] Add debugger `Step over`, `Step out` and `Run to cursor/address`.**~~ Step over/out use PC+SP guards; manual Run-to remains address-based.
+- [x] ~~**[P1] Add execute breakpoints.**~~ Stops at true instruction boundaries; Cycle Accurate distinguishes PC(reg) from EXEC.
+- [x] ~~**[P1] Add memory read/write watchpoints.**~~ Data/stack accesses only; opcode/operand fetches are deliberately excluded.
 - [ ] **[P2] Add conditional breakpoints/watchpoints** over registers/flags/address/value.
 
 ### Memory activity visualization
 
-- [ ] **[P1] Track READ / WRITE / EXECUTE activity separately** and provide an optional overlay/heatmap in the RAM viewer.
-- [ ] **[P1] Add explicit STACK / PC / HL/M markers** without moving surrounding layout as addresses change.
-- [ ] **[P2] Add per-address recent access counters/timestamps with a clear/reset action.**
-- [ ] **[P2] Link memory activity back to the instruction-history entry that caused it.**
+- [x] ~~**[P1] Track READ / WRITE / EXECUTE activity separately** and provide an optional overlay/heatmap in the RAM viewer.~~ Includes explicit EXEC/READ/WRITE edge markers plus frequency tinting.
+- [x] ~~**[P1] Add explicit STACK / PC / HL/M markers** without moving surrounding layout as addresses change.~~ RAM/debugger layouts reserve stable geometry; EXEC is shown separately from raw PC where required.
+- [ ] **[P2] Add per-address recent access counters/timestamps with a clear/reset action.** Counters, last retained trace sequence and clear are present; wall-clock/age timestamps are still pending.
+- [ ] **[P2] Link memory activity back to the instruction-history entry that caused it.** Last trace sequence is shown, but direct navigation/backlink is still pending.
 
 ### Bus / front-panel teaching
 
-- [ ] **[P1] Add an educational machine-cycle/T-state view for the Cycle Accurate engine**, showing address, data, S-100 status/control lines and current machine cycle.
-- [ ] **[P1] Explain why the corresponding front-panel LEDs are lit for the selected/current cycle.**
-- [ ] **[P2] Provide a side-by-side “instruction → machine cycles → T-states → panel LEDs” explanation.**
-- [ ] **[P2] In Fast mode, clearly label reconstructed/synthesized bus activity as approximate.**
+- [x] ~~**[P1] Add an educational machine-cycle/T-state view for the Cycle Accurate engine**, showing address, data, S-100 status/control lines and current machine cycle.~~ `Bus / T-state Teacher` exposes exact Cycle samples and debugger T-state/machine-cycle stepping.
+- [x] ~~**[P1] Explain why the corresponding front-panel LEDs are lit for the selected/current cycle.**~~ Separates raw S-100/status state from visible optical persistence and explains active signals.
+- [ ] **[P2] Provide a side-by-side “instruction → machine cycles → T-states → panel LEDs” explanation.** The Teacher currently explains the selected/live T-state, not a complete multi-cycle timeline for the whole instruction.
+- [x] ~~**[P2] In Fast mode, clearly label reconstructed/synthesized bus activity as approximate.**~~ Exact T-state/pin fields remain unknown rather than being fabricated.
 
 ---
 
@@ -196,7 +198,7 @@
 - [ ] **[P1] Add end-to-end punch tests** for blank tape, pause/resume, queued bytes, finish/save retry and exact 8-bit output.
 - [ ] **[P1] Add deterministic serial-card conformance tests** for status/data/control/overrun once the fuller UART models are implemented.
 - [ ] **[P1] Add front-panel integration tests through both backends** for known I/O polling loops and stable duty-cycle expectations.
-- [ ] **[P1] Add tests for debugger decoder/control-flow/loop detection before enabling educational conclusions in the UI.**
+- [x] ~~**[P1] Add tests for debugger decoder/control-flow/loop detection before enabling educational conclusions in the UI.**~~ Covered by decoder coverage/timing, loop, history, debugger execution, Bus Teacher and architecture regressions.
 - [ ] **[P2] Add performance regression benchmarks** for Cycle core, long diagnostics and high-rate UI traces.
 - [ ] **[P2] Document the intentionally ignored long-running tests and the exact `--release --ignored` commands/results expected before major releases.**
 
