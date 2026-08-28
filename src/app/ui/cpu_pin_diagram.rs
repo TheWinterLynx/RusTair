@@ -99,21 +99,73 @@ struct PinState {
 }
 
 fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool>, bool, &'static str) {
+    let control_state = snapshot.accuracy == BusTeachingAccuracy::ControlState;
+    let stop_wait = control_state
+        && snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped;
+    let raw_control_outputs_known = control_state
+        && !matches!(
+            snapshot.machine_cycle,
+            BusMachineCycle::PowerOff | BusMachineCycle::PowerOnUndefined
+        );
+
     match pin {
         ControlPin::Reset => (snapshot.reset, false, "RESET input; active HIGH."),
         ControlPin::Hold => (snapshot.hold, false, "HOLD input requests that the 8080 relinquish the bus; active HIGH."),
-        ControlPin::Inte => (snapshot.pins.inte, false, "INTE output indicates that maskable interrupts are enabled; active HIGH."),
-        ControlPin::Dbin => (snapshot.pins.dbin, false, "DBIN output indicates that the CPU is accepting data from the external data bus; active HIGH."),
-        ControlPin::WrN => (snapshot.pins.wr_n, true, "/WR is the active-LOW CPU write output. LOW means the write signal is asserted."),
-        ControlPin::Sync => (snapshot.pins.sync, false, "SYNC marks the T1 status/synchronization portion of a machine cycle; active HIGH."),
-        ControlPin::Wait => (snapshot.pins.wait, false, "WAIT output indicates that the processor is waiting; active HIGH."),
+        ControlPin::Inte => (
+            if raw_control_outputs_known { snapshot.status.inte } else { snapshot.pins.inte },
+            false,
+            "INTE output indicates that maskable interrupts are enabled; active HIGH.",
+        ),
+        ControlPin::Dbin => (
+            if stop_wait {
+                Some(true)
+            } else if control_state {
+                None
+            } else {
+                snapshot.pins.dbin
+            },
+            false,
+            "DBIN output indicates that the CPU is accepting data from the external data bus; it remains HIGH through TW during a read wait.",
+        ),
+        ControlPin::WrN => (
+            if stop_wait {
+                Some(true)
+            } else if control_state {
+                None
+            } else {
+                snapshot.pins.wr_n
+            },
+            true,
+            "/WR is the active-LOW CPU write output. LOW means the write signal is asserted.",
+        ),
+        ControlPin::Sync => (
+            if stop_wait {
+                Some(false)
+            } else if control_state {
+                None
+            } else {
+                snapshot.pins.sync
+            },
+            false,
+            "SYNC marks the T1 status/synchronization portion of a machine cycle; it is LOW while the CPU dwells in TW.",
+        ),
+        ControlPin::Wait => (
+            if raw_control_outputs_known { snapshot.status.wait } else { snapshot.pins.wait },
+            false,
+            "WAIT output indicates that the processor is waiting; active HIGH.",
+        ),
         ControlPin::Ready => (snapshot.ready, false, "READY input controls wait-state insertion; active HIGH."),
-        ControlPin::Hlda => (snapshot.pins.hlda, false, "HLDA output acknowledges HOLD and bus relinquishment; active HIGH."),
+        ControlPin::Hlda => (
+            if raw_control_outputs_known { snapshot.status.hlda } else { snapshot.pins.hlda },
+            false,
+            "HLDA output acknowledges HOLD and bus relinquishment; active HIGH.",
+        ),
     }
 }
 
 fn cpu_bus_pin_levels_available(snapshot: BusTeachingSnapshot) -> bool {
     snapshot.accuracy != BusTeachingAccuracy::ControlState
+        || snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped
 }
 
 fn exact_bus_is_released(snapshot: BusTeachingSnapshot, level: Option<bool>) -> bool {
@@ -137,7 +189,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 } else {
                     level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
                 },
-                note: "8080 address-output pin. In an exact sample with no driven address the pin is HI-Z/released; in CONTROL STATE the S-100/front-panel bus may already have a value while CPU A0-A15 remain unknown.",
+                note: "8080 address-output pin. In an exact sample with no driven address the pin is HI-Z/released. RESET RELEASED / STOP-WAIT is a special stable control state: the CPU owns the address bus at PC=0000h, so those electrical levels are known even though no numbered T-state sample is fabricated.",
                 modeled: level.is_some() || released,
                 static_pin: false,
                 released,
@@ -158,7 +210,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 } else {
                     level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
                 },
-                note: "8080 bidirectional data pin. In an exact sample with no external transfer it is HI-Z/released. The front-panel DATA display may still retain/integrate the preceding bus value; that does not mean this CPU pin is still driving HIGH.",
+                note: "8080 bidirectional data pin. During RESET RELEASED / STOP-WAIT the CPU is held in a read wait: DBIN is active and memory drives the same S-100 data byte onto D0-D7. In an exact sample with no external transfer the pin can instead be HI-Z/released; an optically persistent panel LED alone is never used as pin truth.",
                 modeled: level.is_some() || released,
                 static_pin: false,
                 released,
@@ -230,9 +282,8 @@ fn data_bus_context(snapshot: BusTeachingSnapshot) -> (&'static str, &'static st
         BusMachineCycle::PowerOff => ("off", "UNPOWERED"),
         BusMachineCycle::PowerOnUndefined => ("S-100 chassis", "POWER-ON BUS / CPU UNDEFINED"),
         BusMachineCycle::ResetAsserted => ("front panel", "RESET CHECKOUT BUS"),
-        BusMachineCycle::ResetReleasedStopped | BusMachineCycle::ResetReleasedRunning => {
-            ("S-100 chassis", "RESET-RELEASE BUS")
-        }
+        BusMachineCycle::ResetReleasedStopped => ("S-100 -> CPU", "STOP-WAIT OPCODE / MEMORY DATA"),
+        BusMachineCycle::ResetReleasedRunning => ("S-100 chassis", "RESET-RELEASE BUS"),
         BusMachineCycle::InstructionFetch => ("S-100 -> CPU", "OPCODE"),
         BusMachineCycle::MemoryRead => ("S-100 -> CPU", "MEMORY DATA"),
         BusMachineCycle::StackRead => ("S-100 -> CPU", "STACK DATA"),
@@ -253,9 +304,8 @@ fn address_bus_context(snapshot: BusTeachingSnapshot) -> &'static str {
         BusMachineCycle::PowerOff => "bus unpowered",
         BusMachineCycle::PowerOnUndefined => "S-100 power-on value; CPU A pins undefined",
         BusMachineCycle::ResetAsserted => "front panel owns S-100 during RESET",
-        BusMachineCycle::ResetReleasedStopped | BusMachineCycle::ResetReleasedRunning => {
-            "S-100 reset-release state; no CPU T-state sampled"
-        }
+        BusMachineCycle::ResetReleasedStopped => "CPU -> S-100; stable STOP-WAIT fetch address",
+        BusMachineCycle::ResetReleasedRunning => "S-100 reset-release state; first CPU T-state not sampled yet",
         _ if snapshot.pins.hlda == Some(true) || snapshot.t_state == BusTState::Hold => {
             "CPU bus released"
         }
@@ -396,7 +446,11 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
         ui.weak(data_purpose);
     });
     if snapshot.accuracy == BusTeachingAccuracy::ControlState {
-        ui.small("CONTROL STATE: ADDRESS/DATA above are the S-100/front-panel bus. CPU A/D package pins remain '?' until an actual T-state is sampled.");
+        if snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped {
+            ui.small("CONTROL STATE: this is a stable STOP-WAIT read condition. A0-A15 follow the CPU-owned S-100 address and memory drives the S-100 byte onto the bidirectional D0-D7 pins while DBIN is active. No numbered T-state is fabricated.");
+        } else {
+            ui.small("CONTROL STATE: ADDRESS/DATA above are the S-100/front-panel bus. CPU package pins are shown only where the electrical level is physically determined without inventing a T-state sample.");
+        }
     } else if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
         ui.small("Exact sample: CPU D0-D7 are HI-Z/released now. The front-panel DATA display can still show the preceding bus byte because its display/lamp model retains and integrates recent bus activity.");
     } else {
