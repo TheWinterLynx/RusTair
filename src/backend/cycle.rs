@@ -8,8 +8,9 @@ use crate::cpu8080_cycle::{
 use crate::machine::{AltairMachine, Cycle8080S100Adapter};
 
 use super::{
-    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
-    EmulationEngine, FrontPanelState, Intel8080State, MachineBackend,
+    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
+    BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, CpuState, EmulationEngine,
+    FrontPanelState, Intel8080State, MachineBackend,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,6 +29,7 @@ pub struct CycleAccurateMachineBackend {
     machine: AltairMachine,
     cpu: Cpu8080Cycle,
     instruction_address: u16,
+    last_teaching_snapshot: Option<BusTeachingSnapshot>,
 }
 
 impl Default for CycleAccurateMachineBackend {
@@ -37,6 +39,7 @@ impl Default for CycleAccurateMachineBackend {
             machine,
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
+            last_teaching_snapshot: None,
         };
         backend.sync_machine_cpu();
         backend
@@ -47,6 +50,7 @@ impl CycleAccurateMachineBackend {
     pub fn machine(&self) -> &AltairMachine { &self.machine }
     pub fn machine_mut(&mut self) -> &mut AltairMachine { &mut self.machine }
     pub fn cpu(&self) -> &Cpu8080Cycle { &self.cpu }
+    pub(super) fn teaching_snapshot(&self) -> Option<BusTeachingSnapshot> { self.last_teaching_snapshot }
 
     fn snapshot_cpu(&self) -> CpuState {
         let r = self.cpu.registers();
@@ -231,10 +235,55 @@ impl CycleAccurateMachineBackend {
         sampled_data_in: u8,
         front_panel_data: Option<u8>,
         ready: bool,
-    ) {
+    ) -> Option<u8> {
         let visible_data = self.visible_bus_data(trace, sampled_data_in, front_panel_data);
         let sample = Cycle8080S100Adapter::sample(trace, visible_data, ready);
         self.machine.bus.drive_cpu_board_sample(sample);
+        visible_data
+    }
+
+    fn capture_teaching_snapshot(&mut self, trace: &TickTrace, visible_data: Option<u8>, ready: bool) {
+        let status_word = trace.machine_cycle.status_word();
+        let mut status = BusStatusLines::from_status_word(status_word);
+        status.inte = Some(trace.pins.inte);
+        status.prot = trace.pins.address.map(|address| self.machine.bus.is_protected(address));
+        status.wait = Some(trace.pins.wait);
+        status.hlda = Some(trace.pins.hlda);
+        let lines = self.machine.bus.cpu_control_lines();
+        self.last_teaching_snapshot = Some(BusTeachingSnapshot {
+            accuracy: BusTeachingAccuracy::Exact,
+            engine: EmulationEngine::RustCycleAccurate8080,
+            instruction_address: Some(self.instruction_address),
+            opcode: trace.opcode,
+            machine_cycle: trace.machine_cycle.into(),
+            machine_cycle_index: Some(trace.machine_cycle_index),
+            t_state: trace.t_state.into(),
+            address: trace.pins.address,
+            data: trace.pins.data_out.or(visible_data),
+            status_word,
+            pins: BusCpuPins {
+                sync: Some(trace.pins.sync),
+                dbin: Some(trace.pins.dbin),
+                wr_n: Some(trace.pins.wr_n),
+                inte: Some(trace.pins.inte),
+                wait: Some(trace.pins.wait),
+                hlda: Some(trace.pins.hlda),
+            },
+            status,
+            ready: Some(ready),
+            hold: Some(lines.hold),
+            reset: Some(lines.reset),
+            total_t_states: Some(trace.total_t_states),
+            instruction_t_states: Some(trace.instruction_t_states),
+            instruction_complete: Some(trace.instruction_complete),
+            visible_lamps: self.machine.panel_lamps(),
+        });
+    }
+
+    fn refresh_teaching_visible_lamps(&mut self) {
+        if let Some(snapshot) = self.last_teaching_snapshot.as_mut() {
+            snapshot.visible_lamps = self.machine.panel_lamps();
+        }
     }
 
     fn tick_once_with_front_panel_data(
@@ -261,13 +310,31 @@ impl CycleAccurateMachineBackend {
             reset: lines.reset,
         });
         self.apply_trace_side_effects(&trace, record_instruction);
-        self.drive_s100_t_state(&trace, data_in, front_panel_data, ready);
+        let visible_data = self.drive_s100_t_state(&trace, data_in, front_panel_data, ready);
         self.sync_machine_cpu();
+        self.capture_teaching_snapshot(&trace, visible_data, ready);
         trace
     }
 
     fn tick_once(&mut self, ready: bool) -> TickTrace {
         self.tick_once_with_front_panel_data(ready, None, true)
+    }
+
+    pub(super) fn debugger_step_t_state_exact(&mut self) -> BackendResult<()> {
+        let lines = self.machine.bus.cpu_control_lines();
+        if !self.machine.powered
+            || self.machine.running
+            || lines.reset
+            || lines.hold
+            || self.cpu.is_halted()
+            || self.cpu.is_holding()
+        {
+            return Ok(());
+        }
+        let _ = self.tick_once(true);
+        self.machine.set_running(false);
+        self.refresh_teaching_visible_lamps();
+        Ok(())
     }
 
     fn at_instruction_boundary(&self) -> bool {
@@ -308,6 +375,7 @@ impl CycleAccurateMachineBackend {
             if self.at_instruction_boundary() {
                 if observer(self, CycleExecutionEvent::BeforeInstruction) {
                     self.machine.set_running(false);
+                    self.refresh_teaching_visible_lamps();
                     break;
                 }
                 if !self.machine.running {
@@ -325,6 +393,7 @@ impl CycleAccurateMachineBackend {
                 && observer(self, CycleExecutionEvent::InstructionComplete)
             {
                 self.machine.set_running(false);
+                self.refresh_teaching_visible_lamps();
                 break;
             }
         }
@@ -389,6 +458,7 @@ impl CycleAccurateMachineBackend {
             }
         }
         self.machine.set_running(false);
+        self.refresh_teaching_visible_lamps();
     }
 
     fn front_panel_controls_available(&self) -> bool {
@@ -508,12 +578,17 @@ impl MachineBackend for CycleAccurateMachineBackend {
         } else {
             self.cpu = Cpu8080Cycle::new();
         }
+        self.last_teaching_snapshot = None;
         self.sync_machine_cpu();
         Ok(())
     }
 
     fn run(&mut self) -> BackendResult<()> { self.machine.set_running(true); Ok(()) }
-    fn halt(&mut self) -> BackendResult<()> { self.machine.set_running(false); Ok(()) }
+    fn halt(&mut self) -> BackendResult<()> {
+        self.machine.set_running(false);
+        self.refresh_teaching_visible_lamps();
+        Ok(())
+    }
 
     fn step(&mut self) -> BackendResult<()> {
         let lines = self.machine.bus.cpu_control_lines();
@@ -523,6 +598,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
             // Reassert STOP afterwards without replacing the last real bus
             // address/data/status sample produced by that cycle.
             self.machine.set_running(false);
+            self.refresh_teaching_visible_lamps();
         }
         Ok(())
     }
@@ -544,6 +620,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
         self.sync_machine_cpu();
         self.machine.commit_panel_activity(dt);
+        self.refresh_teaching_visible_lamps();
         Ok(())
     }
 
@@ -553,6 +630,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
             self.advance_to_stop_sync();
         }
         self.machine.assert_run_stop(run);
+        if !run {
+            self.refresh_teaching_visible_lamps();
+        }
         Ok(())
     }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> {
@@ -561,6 +641,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn assert_reset(&mut self) -> BackendResult<()> {
+        self.last_teaching_snapshot = None;
         self.machine.assert_front_panel_reset();
         self.reset_cycle_core_from_s100();
         Ok(())
