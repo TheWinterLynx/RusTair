@@ -97,6 +97,7 @@ fn transport_viewports_use_shared_collapsible_sections() {
     assert_sections(
         tcp,
         &[
+            "TCP endpoint configuration",
             "Connection guide",
             "Transport state",
             "Connected clients",
