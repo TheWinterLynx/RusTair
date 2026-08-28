@@ -246,7 +246,7 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
         0x00,             // NOP
     ];
     const SETUP_INSTRUCTIONS: usize = 5;
-    const WORKLOAD_INSTRUCTIONS: usize = 13;
+    const WORKLOAD_INSTRUCTIONS: usize = 12;
 
     let mut fast = NativeMachineBackend::default();
     let mut cycle = CycleAccurateMachineBackend::default();
@@ -294,4 +294,16 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
             &format!("differential workload instruction #{instruction_index}"),
         );
     }
+
+    let expected_end = program.len() as u16;
+    assert_eq!(
+        intel_state(&mut fast).pc,
+        expected_end,
+        "Fast differential must stop at the first byte after the deterministic program"
+    );
+    assert_eq!(
+        intel_state(&mut cycle).pc,
+        expected_end,
+        "Cycle differential must stop at the first byte after the deterministic program"
+    );
 }
