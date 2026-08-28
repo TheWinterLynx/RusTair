@@ -95,6 +95,7 @@ struct PinState {
     note: &'static str,
     modeled: bool,
     static_pin: bool,
+    released: bool,
 }
 
 fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool>, bool, &'static str) {
@@ -115,6 +116,10 @@ fn cpu_bus_pin_levels_available(snapshot: BusTeachingSnapshot) -> bool {
     snapshot.accuracy != BusTeachingAccuracy::ControlState
 }
 
+fn exact_bus_is_released(snapshot: BusTeachingSnapshot, level: Option<bool>) -> bool {
+    snapshot.accuracy == BusTeachingAccuracy::Exact && level.is_none()
+}
+
 fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinState {
     match pin.kind {
         PinKind::Address(bit) => {
@@ -123,13 +128,19 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             } else {
                 None
             };
+            let released = exact_bus_is_released(snapshot, level);
             PinState {
                 level,
                 asserted: None,
-                state_text: level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into(),
-                note: "8080 address-output pin. In CONTROL STATE the S-100/front-panel bus may already have a value, but CPU A0-A15 are left unknown until a real T-state sample exists.",
-                modeled: level.is_some(),
+                state_text: if released {
+                    "HI-Z / RELEASED".into()
+                } else {
+                    level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
+                },
+                note: "8080 address-output pin. In an exact sample with no driven address the pin is HI-Z/released; in CONTROL STATE the S-100/front-panel bus may already have a value while CPU A0-A15 remain unknown.",
+                modeled: level.is_some() || released,
                 static_pin: false,
+                released,
             }
         }
         PinKind::Data(bit) => {
@@ -138,13 +149,19 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             } else {
                 None
             };
+            let released = exact_bus_is_released(snapshot, level);
             PinState {
                 level,
                 asserted: None,
-                state_text: level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into(),
-                note: "8080 bidirectional data pin. In CONTROL STATE it is deliberately not inferred from the S-100/front-panel bus; see the bus summary below.",
-                modeled: level.is_some(),
+                state_text: if released {
+                    "HI-Z / RELEASED".into()
+                } else {
+                    level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
+                },
+                note: "8080 bidirectional data pin. In an exact sample with no external transfer it is HI-Z/released. The front-panel DATA display may still retain/integrate the preceding bus value; that does not mean this CPU pin is still driving HIGH.",
+                modeled: level.is_some() || released,
                 static_pin: false,
+                released,
             }
         }
         PinKind::Control(control) => {
@@ -157,7 +174,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 (Some(false), Some(false)) => "LOW inactive".into(),
                 _ => if powered { "UNKNOWN / NO SAMPLE".into() } else { "UNPOWERED".into() },
             };
-            PinState { level, asserted, state_text, note, modeled: level.is_some(), static_pin: false }
+            PinState { level, asserted, state_text, note, modeled: level.is_some(), static_pin: false, released: false }
         }
         PinKind::Power(note) => PinState {
             level: Some(powered),
@@ -166,6 +183,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             note,
             modeled: true,
             static_pin: true,
+            released: false,
         },
         PinKind::Clock(note) => PinState {
             level: Some(powered),
@@ -178,6 +196,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             note,
             modeled: true,
             static_pin: true,
+            released: false,
         },
         PinKind::Ground => PinState {
             level: Some(false),
@@ -186,6 +205,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             note: "Ground reference connection.",
             modeled: true,
             static_pin: true,
+            released: false,
         },
         PinKind::Unmodeled(note) => PinState {
             level: None,
@@ -194,11 +214,15 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             note,
             modeled: false,
             static_pin: false,
+            released: false,
         },
     }
 }
 
 fn data_bus_context(snapshot: BusTeachingSnapshot) -> (&'static str, &'static str) {
+    if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
+        return ("HI-Z / released", "NO DATA TRANSFER THIS T-STATE");
+    }
     if snapshot.t_state == BusTState::T1 && snapshot.pins.sync == Some(true) {
         return ("CPU -> S-100", "STATUS BYTE");
     }
@@ -261,9 +285,12 @@ fn draw_pin(
     let low_color = visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.36);
     let neutral_color = visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.72);
     let unknown_color = visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.55);
+    let released_color = visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.52);
     let asserted_color = visuals.warn_fg_color;
 
-    let line_color = if state.static_pin {
+    let line_color = if state.released {
+        released_color
+    } else if state.static_pin {
         match state.level {
             Some(true) => high_color,
             Some(false) => low_color,
@@ -278,7 +305,7 @@ fn draw_pin(
             None => unknown_color,
         }
     };
-    let stroke = egui::Stroke::new(if state.asserted == Some(true) { 2.0_f32 } else { 1.35_f32 }, line_color);
+    let stroke = egui::Stroke::new(if state.asserted == Some(true) { 2.0_f32 } else if state.released { 1.0_f32 } else { 1.35_f32 }, line_color);
     painter.line_segment([egui::pos2(body_x, y), egui::pos2(terminal_x, y)], stroke);
     painter.circle_filled(egui::pos2(terminal_x, y), PIN_RADIUS, visuals.panel_fill);
     painter.circle_stroke(egui::pos2(terminal_x, y), PIN_RADIUS, egui::Stroke::new(1.5_f32, line_color));
@@ -301,6 +328,8 @@ fn draw_pin(
 
     let level_suffix = if state.static_pin {
         ""
+    } else if state.released {
+        " Z"
     } else if !state.modeled {
         " ?"
     } else {
@@ -331,7 +360,9 @@ fn draw_pin(
             ui.strong(format!("Pin {} - {}", pin.number, pin.label));
             ui.monospace(&state.state_text);
             ui.label(state.note);
-            if state.asserted == Some(true) {
+            if state.released {
+                ui.label("Pin is electrically released (high impedance) in this exact T-state.");
+            } else if state.asserted == Some(true) {
                 ui.label("Signal is ASSERTED in this sample.");
             } else if state.asserted == Some(false) {
                 ui.label("Signal is inactive in this sample.");
@@ -341,7 +372,11 @@ fn draw_pin(
 
 fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
     let address = snapshot.address.map(|value| format!("${value:04X}  {value:016b}")).unwrap_or_else(|| "----  ----------------".into());
-    let data = snapshot.data.map(|value| format!("${value:02X}  {value:08b}")).unwrap_or_else(|| "--  --------".into());
+    let data = if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
+        "HI-Z  --------".into()
+    } else {
+        snapshot.data.map(|value| format!("${value:02X}  {value:08b}")).unwrap_or_else(|| "--  --------".into())
+    };
     let (data_direction, data_purpose) = data_bus_context(snapshot);
 
     ui.add_space(3.0);
@@ -362,8 +397,10 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
     });
     if snapshot.accuracy == BusTeachingAccuracy::ControlState {
         ui.small("CONTROL STATE: ADDRESS/DATA above are the S-100/front-panel bus. CPU A/D package pins remain '?' until an actual T-state is sampled.");
+    } else if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
+        ui.small("Exact sample: CPU D0-D7 are HI-Z/released now. The front-panel DATA display can still show the preceding bus byte because its display/lamp model retains and integrates recent bus activity.");
     } else {
-        ui.small("Bright lead = HIGH, dim lead = LOW, outer amber ring = signal ASSERTED. /WR demonstrates why LOW can still mean asserted. Gray '?' pins are deliberately not fabricated.");
+        ui.small("Bright lead = HIGH, dim lead = LOW, Z = HI-Z/released, outer amber ring = signal ASSERTED. /WR demonstrates why LOW can still mean asserted. Gray '?' pins are deliberately not fabricated.");
     }
 }
 
