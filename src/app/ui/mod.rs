@@ -54,6 +54,7 @@ fn instruction_trace_requested(ctx: &egui::Context) -> bool {
         || debugger_controls::trace_requested(ctx)
         || memory_activity::trace_requested(ctx)
         || loop_inspector::trace_requested(ctx)
+        || memory_viewer::trace_requested(ctx)
 }
 
 /// One authoritative owner for the global instruction-trace switch. Individual
