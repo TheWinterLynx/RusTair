@@ -94,6 +94,24 @@ fn ram_activity_overlay_has_explicit_three_slot_markers() {
 }
 
 #[test]
+fn bus_teacher_sections_are_collapsible_and_explanation_height_is_stable() {
+    let source = include_str!("../src/app/ui/bus_teacher.rs");
+    assert_sections(
+        source,
+        &[
+            "Teaching source / accuracy",
+            "Execution stepping",
+            "Instruction / machine cycle / T-state",
+            "Intel 8080 pins",
+            "S-100 status / front-panel LEDs",
+            "Why are these signals active?",
+        ],
+    );
+    assert!(source.contains("const WHY_HEIGHT: f32"));
+    assert!(source.contains("bus-teacher-why-scroll"));
+}
+
+#[test]
 fn auxiliary_tool_viewports_use_collapsible_conceptual_sections() {
     let loop_inspector = include_str!("../src/app/ui/loop_inspector.rs");
     assert_sections(loop_inspector, &["Loop state / exit condition", "Loop instructions"]);
