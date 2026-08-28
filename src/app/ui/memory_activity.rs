@@ -27,8 +27,6 @@ impl Default for MemoryActivityUiState {
     fn default() -> Self {
         Self {
             window_open: false,
-            // Stable by default: live CPU activity changes counters, not row
-            // positions. Users can opt into Recent/Total sorting explicitly.
             sort: ActivitySort::Address,
             descending: false,
             message: None,
@@ -93,92 +91,100 @@ impl RusTairApp {
                     cpu.sp
                 ));
             });
-            ui.small("EXECUTE counts instruction starts; READ/WRITE count guest data-memory and stack bus transfers. Opcode/operand fetches are intentionally excluded.");
-            ui.small("WRITE means the 8080 attempted the write transfer; front-panel protection or uninstalled RAM may prevent the physical cell from changing.");
-            ui.add_sized(
-                [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(if activity.dropped_entries != 0 {
-                    format!(
-                        "{} older trace entr{} were evicted; displayed activity counts are lower bounds for the current capture generation.",
-                        activity.dropped_entries,
-                        if activity.dropped_entries == 1 { "y" } else { "ies" },
-                    )
-                } else {
-                    String::new()
-                }).small()),
-            );
-            ui.add_sized(
-                [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(if activity.sequence_gap {
-                    "A sequence gap exists inside the retained trace; displayed activity counts are incomplete."
-                } else {
-                    ""
-                }).small()),
-            );
-
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Sort:");
-                for (value, label) in [
-                    (ActivitySort::Recent, "Recent"),
-                    (ActivitySort::Total, "Total"),
-                    (ActivitySort::Execute, "Exec"),
-                    (ActivitySort::Read, "Read"),
-                    (ActivitySort::Write, "Write"),
-                    (ActivitySort::Address, "Address"),
-                ] {
-                    ui.selectable_value(&mut state.sort, value, label);
-                }
-                ui.checkbox(&mut state.descending, "Descending");
-                if ui.button("Clear trace").clicked() {
-                    self.machine.clear_instruction_trace();
-                    state.message = Some("Instruction trace/activity counters cleared; this starts a new capture generation.".into());
-                }
+
+            super::collapsible_section(ui, "Activity meaning / capture status", true, |ui| {
+                ui.small("EXECUTE counts instruction starts; READ/WRITE count guest data-memory and stack bus transfers. Opcode/operand fetches are intentionally excluded.");
+                ui.small("WRITE means the 8080 attempted the write transfer; front-panel protection or uninstalled RAM may prevent the physical cell from changing.");
+                ui.add_sized(
+                    [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
+                    egui::Label::new(egui::RichText::new(if activity.dropped_entries != 0 {
+                        format!(
+                            "{} older trace entr{} were evicted; displayed activity counts are lower bounds for the current capture generation.",
+                            activity.dropped_entries,
+                            if activity.dropped_entries == 1 { "y" } else { "ies" },
+                        )
+                    } else {
+                        String::new()
+                    }).small()),
+                );
+                ui.add_sized(
+                    [ui.available_width(), ACTIVITY_STATUS_LINE_HEIGHT],
+                    egui::Label::new(egui::RichText::new(if activity.sequence_gap {
+                        "A sequence gap exists inside the retained trace; displayed activity counts are incomplete."
+                    } else {
+                        ""
+                    }).small()),
+                );
             });
 
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
-                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("EXEC").monospace().strong()));
-                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("READ").monospace().strong()));
-                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("WRITE").monospace().strong()));
-                ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new("LAST #").monospace().strong()));
-                ui.add_sized([138.0, 20.0], egui::Label::new(egui::RichText::new("MARKERS").strong()));
-                ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new("ACTIONS").strong()));
-            });
-
-            egui::ScrollArea::vertical()
-                .id_salt("memory-activity-list")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for (address, counters) in rows {
-                        let markers = format!(
-                            "{} {} {} {}",
-                            if address == execution_address { "EXEC" } else { "    " },
-                            if address == cpu.pc { "PC" } else { "  " },
-                            if address == cpu.hl() { "HL/M" } else { "    " },
-                            if address == cpu.sp { "SP" } else { "  " },
-                        );
-                        ui.horizontal(|ui| {
-                            ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
-                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.execute_count)).monospace()));
-                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.read_count)).monospace()));
-                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.write_count)).monospace()));
-                            ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(
-                                counters.last_sequence().map(|value| value.to_string()).unwrap_or_else(|| "-".into())
-                            ).monospace()));
-                            ui.add_sized([138.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
-                            if ui.add_sized([82.0, 20.0], egui::Button::new("R/W watch")).clicked() {
-                                self.machine.debugger_set_watchpoint(address, Some(MemoryWatchAccess::ReadWrite));
-                                state.message = Some(format!("READ/WRITE watchpoint armed at ${address:04X}."));
-                            }
-                            if ui.add_sized([62.0, 20.0], egui::Button::new("Run to")).clicked() {
-                                self.machine.debugger_run_to(address);
-                                state.message = Some(format!("Running to ${address:04X}."));
-                            }
-                        });
+            super::collapsible_section(ui, "Sort / controls", true, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Sort:");
+                    for (value, label) in [
+                        (ActivitySort::Recent, "Recent"),
+                        (ActivitySort::Total, "Total"),
+                        (ActivitySort::Execute, "Exec"),
+                        (ActivitySort::Read, "Read"),
+                        (ActivitySort::Write, "Write"),
+                        (ActivitySort::Address, "Address"),
+                    ] {
+                        ui.selectable_value(&mut state.sort, value, label);
+                    }
+                    ui.checkbox(&mut state.descending, "Descending");
+                    if ui.button("Clear trace").clicked() {
+                        self.machine.clear_instruction_trace();
+                        state.message = Some("Instruction trace/activity counters cleared; this starts a new capture generation.".into());
                     }
                 });
+            });
+
+            ui.separator();
+            super::collapsible_section(ui, "Activity table", true, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
+                    ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("EXEC").monospace().strong()));
+                    ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("READ").monospace().strong()));
+                    ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("WRITE").monospace().strong()));
+                    ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new("LAST #").monospace().strong()));
+                    ui.add_sized([138.0, 20.0], egui::Label::new(egui::RichText::new("MARKERS").strong()));
+                    ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new("ACTIONS").strong()));
+                });
+
+                egui::ScrollArea::vertical()
+                    .id_salt("memory-activity-list")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (address, counters) in rows {
+                            let markers = format!(
+                                "{} {} {} {}",
+                                if address == execution_address { "EXEC" } else { "    " },
+                                if address == cpu.pc { "PC" } else { "  " },
+                                if address == cpu.hl() { "HL/M" } else { "    " },
+                                if address == cpu.sp { "SP" } else { "  " },
+                            );
+                            ui.horizontal(|ui| {
+                                ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
+                                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.execute_count)).monospace()));
+                                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.read_count)).monospace()));
+                                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.write_count)).monospace()));
+                                ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(
+                                    counters.last_sequence().map(|value| value.to_string()).unwrap_or_else(|| "-".into())
+                                ).monospace()));
+                                ui.add_sized([138.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
+                                if ui.add_sized([82.0, 20.0], egui::Button::new("R/W watch")).clicked() {
+                                    self.machine.debugger_set_watchpoint(address, Some(MemoryWatchAccess::ReadWrite));
+                                    state.message = Some(format!("READ/WRITE watchpoint armed at ${address:04X}."));
+                                }
+                                if ui.add_sized([62.0, 20.0], egui::Button::new("Run to")).clicked() {
+                                    self.machine.debugger_run_to(address);
+                                    state.message = Some(format!("Running to ${address:04X}."));
+                                }
+                            });
+                        }
+                    });
+            });
 
             ui.separator();
             ui.add_sized(
