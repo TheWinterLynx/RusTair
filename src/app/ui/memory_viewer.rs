@@ -198,9 +198,6 @@ impl RusTairApp {
         state: &MemoryViewerUiState,
         activity: MemoryActivity8080,
     ) -> Option<(&'static str, u64)> {
-        // WRITE wins ties over READ, and READ wins ties over EXECUTE. A single
-        // instruction can both execute at and transfer data through one address;
-        // choosing the data transfer makes the tint more informative.
         let mut latest: Option<(&'static str, u64)> = None;
         let mut consider = |label: &'static str, sequence: Option<u64>| {
             let Some(sequence) = sequence else { return; };
@@ -579,26 +576,26 @@ impl RusTairApp {
             painter.rect_stroke(
                 rect,
                 1.0,
-                egui::Stroke::new(1.5, ui.visuals().selection.stroke.color),
+                egui::Stroke::new(1.5_f32, ui.visuals().selection.stroke.color),
                 egui::StrokeKind::Inside,
             );
         }
         if address == pc {
             painter.line_segment(
                 [rect.left_top(), rect.left_bottom()],
-                egui::Stroke::new(2.0, ui.visuals().widgets.active.fg_stroke.color),
+                egui::Stroke::new(2.0_f32, ui.visuals().widgets.active.fg_stroke.color),
             );
         }
         if address == hl {
             painter.line_segment(
                 [rect.left_top(), rect.right_top()],
-                egui::Stroke::new(2.0, egui::Color32::LIGHT_BLUE),
+                egui::Stroke::new(2.0_f32, egui::Color32::LIGHT_BLUE),
             );
         }
         if address == sp {
             painter.line_segment(
                 [rect.left_bottom(), rect.right_bottom()],
-                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+                egui::Stroke::new(2.0_f32, egui::Color32::YELLOW),
             );
         }
     }
