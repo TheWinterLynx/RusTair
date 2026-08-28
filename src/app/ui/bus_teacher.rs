@@ -5,6 +5,11 @@ use crate::backend::{
 use crate::decoder8080::decode_8080;
 
 const SIGNAL_ROW_HEIGHT: f32 = 20.0;
+const TIMING_ROW_HEIGHT: f32 = 22.0;
+const TIMING_LEFT_LABEL_WIDTH: f32 = 105.0;
+const TIMING_LEFT_VALUE_WIDTH: f32 = 220.0;
+const TIMING_RIGHT_LABEL_WIDTH: f32 = 88.0;
+const TIMING_RIGHT_VALUE_WIDTH: f32 = 90.0;
 const WHY_HEIGHT: f32 = 132.0;
 const BUS_TEACHER_WIDTH: f32 = 1220.0;
 const BUS_TEACHER_HEIGHT: f32 = 760.0;
@@ -206,54 +211,88 @@ impl RusTairApp {
         }
     }
 
+    fn draw_timing_row(
+        ui: &mut egui::Ui,
+        left_label: &str,
+        left_value: &str,
+        right_label: &str,
+        right_value: &str,
+    ) {
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [TIMING_LEFT_LABEL_WIDTH, TIMING_ROW_HEIGHT],
+                egui::Label::new(egui::RichText::new(left_label).strong()),
+            );
+            ui.add_sized(
+                [TIMING_LEFT_VALUE_WIDTH, TIMING_ROW_HEIGHT],
+                egui::Label::new(egui::RichText::new(left_value).monospace()),
+            );
+            ui.add_sized(
+                [TIMING_RIGHT_LABEL_WIDTH, TIMING_ROW_HEIGHT],
+                egui::Label::new(egui::RichText::new(right_label).strong()),
+            );
+            ui.add_sized(
+                [TIMING_RIGHT_VALUE_WIDTH, TIMING_ROW_HEIGHT],
+                egui::Label::new(egui::RichText::new(right_value).monospace()),
+            );
+        });
+    }
+
     fn draw_bus_teacher_timing(&mut self, ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
-        ui.monospace(self.instruction_text_for_bus_snapshot(snapshot));
+        ui.add_sized(
+            [ui.available_width(), TIMING_ROW_HEIGHT],
+            egui::Label::new(
+                egui::RichText::new(self.instruction_text_for_bus_snapshot(snapshot)).monospace(),
+            ),
+        );
         ui.add_space(3.0);
-        egui::Grid::new("bus-teacher-timing-grid")
-            .num_columns(4)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                ui.strong("Machine cycle");
-                ui.monospace(format!(
-                    "M{}  {}",
-                    snapshot
-                        .machine_cycle_index
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "?".into()),
-                    snapshot.machine_cycle.label(),
-                ));
-                ui.strong("T-state");
-                ui.monospace(snapshot.t_state.label());
-                ui.end_row();
 
-                ui.strong("Address bus");
-                ui.monospace(Self::hex16(snapshot.address));
-                ui.strong("Data bus");
-                ui.monospace(Self::hex8(snapshot.data));
-                ui.end_row();
+        let machine_cycle = format!(
+            "M{}  {}",
+            snapshot
+                .machine_cycle_index
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into()),
+            snapshot.machine_cycle.label(),
+        );
+        let address = Self::hex16(snapshot.address);
+        let data = Self::hex8(snapshot.data);
+        let status = Self::hex8(snapshot.status_word);
+        let total_t_states = snapshot
+            .total_t_states
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".into());
+        let instruction_t_states = snapshot
+            .instruction_t_states
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".into());
 
-                ui.strong("Status word");
-                ui.monospace(Self::hex8(snapshot.status_word));
-                ui.strong("Complete");
-                ui.monospace(Self::bool_signal(snapshot.instruction_complete));
-                ui.end_row();
-
-                ui.strong("Total T-states");
-                ui.monospace(
-                    snapshot
-                        .total_t_states
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "?".into()),
-                );
-                ui.strong("In instruction");
-                ui.monospace(
-                    snapshot
-                        .instruction_t_states
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "?".into()),
-                );
-                ui.end_row();
-            });
+        // Do not use egui::Grid here. Grid column widths are content-driven and
+        // a live transition such as INSTRUCTION FETCH -> MEMORY READ would move
+        // the right-hand fields. These four fixed slots keep every X coordinate
+        // stable while only the text inside each slot changes.
+        Self::draw_timing_row(
+            ui,
+            "Machine cycle",
+            &machine_cycle,
+            "T-state",
+            snapshot.t_state.label(),
+        );
+        Self::draw_timing_row(ui, "Address bus", &address, "Data bus", &data);
+        Self::draw_timing_row(
+            ui,
+            "Status word",
+            &status,
+            "Complete",
+            Self::bool_signal(snapshot.instruction_complete),
+        );
+        Self::draw_timing_row(
+            ui,
+            "Total T-states",
+            &total_t_states,
+            "In instruction",
+            &instruction_t_states,
+        );
     }
 
     fn draw_pin_group(
