@@ -63,11 +63,15 @@ impl Cpu8080 {
         }
     }
 
+    /// Apply the real Intel 8080 RESET semantics. RESET clears the program
+    /// counter and interrupt/control state, but does not clear A, flags, the
+    /// general registers, or SP. Keeping those values is important after the
+    /// Altair's deliberately undefined/random power-on state.
     pub fn reset(&mut self) {
-        let cycles = self.cycles;
-        *self = Self::new();
-        self.cycles = cycles;
         self.pc = 0;
+        self.inte = false;
+        self.halted = false;
+        self.ei_pending = false;
     }
 
     #[inline] pub fn af(&self) -> u16 { ((self.a as u16) << 8) | self.flags_for_stack() as u16 }
@@ -501,6 +505,42 @@ mod tests {
     impl Bus for TestBus {
         fn read(&mut self, a: u16) -> u8 { self.mem[a as usize] }
         fn write(&mut self, a: u16, v: u8) { self.mem[a as usize] = v; }
+    }
+
+    #[test]
+    fn reset_preserves_programmer_visible_registers() {
+        let mut cpu = Cpu8080::new();
+        cpu.a = 0x11;
+        cpu.b = 0x22;
+        cpu.c = 0x33;
+        cpu.d = 0x44;
+        cpu.e = 0x55;
+        cpu.h = 0x66;
+        cpu.l = 0x77;
+        cpu.f = 0xd7;
+        cpu.pc = 0x1234;
+        cpu.sp = 0x5678;
+        cpu.inte = true;
+        cpu.halted = true;
+        cpu.cycles = 0x1234;
+        cpu.ei_pending = true;
+
+        cpu.reset();
+
+        assert_eq!(cpu.a, 0x11);
+        assert_eq!(cpu.b, 0x22);
+        assert_eq!(cpu.c, 0x33);
+        assert_eq!(cpu.d, 0x44);
+        assert_eq!(cpu.e, 0x55);
+        assert_eq!(cpu.h, 0x66);
+        assert_eq!(cpu.l, 0x77);
+        assert_eq!(cpu.f, 0xd7);
+        assert_eq!(cpu.sp, 0x5678);
+        assert_eq!(cpu.cycles, 0x1234);
+        assert_eq!(cpu.pc, 0);
+        assert!(!cpu.inte);
+        assert!(!cpu.halted);
+        assert!(!cpu.ei_pending);
     }
 
     #[test]
