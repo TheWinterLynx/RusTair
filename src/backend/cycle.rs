@@ -1080,7 +1080,12 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x00]).unwrap();
-        backend.debugger_step_t_state_exact().unwrap();
+
+        // Compare the exact Teacher sample and the canonical S-100 latch at the
+        // same electrical instant. The debugger helper records a T-state and
+        // then reasserts STOP/READY low; that later control transition must not
+        // be compared with the historical sample captured just before it.
+        let _ = backend.tick_once(true);
 
         let teaching = backend.teaching_snapshot().expect("exact teaching sample");
         assert_eq!(teaching.status_word, Some(backend.machine().bus.raw_s100_status_word()));
