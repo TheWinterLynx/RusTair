@@ -1,7 +1,5 @@
 use super::super::{egui, RusTairApp};
-use crate::backend::{
-    BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
-};
+use crate::backend::{BusMachineCycle, BusTeachingSnapshot, BusTState};
 use crate::decoder8080::decode_8080;
 
 const SIGNAL_ROW_HEIGHT: f32 = 20.0;
