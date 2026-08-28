@@ -6,6 +6,7 @@ use super::{CpuState, EmulationEngine, FrontPanelState};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BusTeachingAccuracy {
     Exact,
+    ControlState,
     Reconstructed,
 }
 
@@ -13,6 +14,7 @@ impl BusTeachingAccuracy {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Exact => "EXACT",
+            Self::ControlState => "CONTROL STATE / NO T-STATE SAMPLE",
             Self::Reconstructed => "RECONSTRUCTED / APPROXIMATE",
         }
     }
@@ -20,6 +22,11 @@ impl BusTeachingAccuracy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BusMachineCycle {
+    PowerOff,
+    PowerOnUndefined,
+    ResetAsserted,
+    ResetReleasedStopped,
+    ResetReleasedRunning,
     InstructionFetch,
     MemoryRead,
     MemoryWrite,
@@ -37,6 +44,11 @@ pub enum BusMachineCycle {
 impl BusMachineCycle {
     pub const fn label(self) -> &'static str {
         match self {
+            Self::PowerOff => "POWER OFF",
+            Self::PowerOnUndefined => "POWER ON / CPU STATE UNDEFINED",
+            Self::ResetAsserted => "RESET ASSERTED",
+            Self::ResetReleasedStopped => "RESET RELEASED / STOP-WAIT",
+            Self::ResetReleasedRunning => "RESET RELEASED / RUN",
             Self::InstructionFetch => "INSTRUCTION FETCH",
             Self::MemoryRead => "MEMORY READ",
             Self::MemoryWrite => "MEMORY WRITE",
@@ -95,7 +107,7 @@ impl BusTState {
             Self::T5 => "T5",
             Self::Halt => "THALT",
             Self::Hold => "THOLD",
-            Self::Unknown => "UNKNOWN",
+            Self::Unknown => "NO T-STATE",
         }
     }
 }
@@ -192,11 +204,11 @@ impl BusTeachingSnapshot {
             engine,
             instruction_address,
             opcode: None,
-            machine_cycle: BusMachineCycle::Unknown,
+            machine_cycle: if panel.powered { BusMachineCycle::Unknown } else { BusMachineCycle::PowerOff },
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
-            address: Some(panel.address),
-            data: Some(panel.data),
+            address: if panel.powered { Some(panel.address) } else { None },
+            data: if panel.powered { Some(panel.data) } else { None },
             status_word: None,
             pins: BusCpuPins::default(),
             status: BusStatusLines::default(),
