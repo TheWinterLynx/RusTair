@@ -65,6 +65,35 @@ fn debugger_and_history_primary_sections_are_collapsible() {
 }
 
 #[test]
+fn execution_history_dynamic_detail_sections_reserve_stable_heights() {
+    let history = include_str!("../src/app/ui/instruction_history.rs");
+    for constant in [
+        "HISTORY_DETAIL_SUMMARY_HEIGHT",
+        "HISTORY_STATE_CHANGES_HEIGHT",
+        "HISTORY_EFFECTS_HEIGHT",
+        "HISTORY_REGISTERS_HEIGHT",
+    ] {
+        assert!(history.contains(constant), "missing stable history-detail height {constant}");
+    }
+    assert!(history.contains("fn fixed_detail_body("));
+    assert!(history.contains("instruction-history-effects-body"));
+    assert!(history.contains("instruction-history-before-after-body"));
+    assert!(
+        !history.contains("fn draw_effect(&self, ui: &mut egui::Ui, effect: InstructionEffect8080) {\n        ui.horizontal_wrapped"),
+        "effect rows must not wrap and change section geometry while following live history",
+    );
+}
+
+#[test]
+fn ram_activity_overlay_has_explicit_three_slot_markers() {
+    let source = include_str!("../src/app/ui/memory_viewer.rs");
+    assert!(source.contains("fn draw_activity_stripes("));
+    assert!(source.contains("top = EXEC, middle = READ, bottom = WRITE"));
+    assert!(source.contains("IN/OUT are I/O bus activity, not RAM activity"));
+    assert!(source.contains("Open full Memory Activity"));
+}
+
+#[test]
 fn auxiliary_tool_viewports_use_collapsible_conceptual_sections() {
     let loop_inspector = include_str!("../src/app/ui/loop_inspector.rs");
     assert_sections(loop_inspector, &["Loop state / exit condition", "Loop instructions"]);
