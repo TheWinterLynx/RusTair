@@ -32,14 +32,24 @@ fn intel_8080a_dip40_pinout_keeps_reference_numbering() {
 }
 
 #[test]
-fn pin_visualizer_distinguishes_level_assertion_and_unmodeled_lines() {
+fn pin_visualizer_distinguishes_level_assertion_power_clock_and_unmodeled_lines() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
     assert!(source.contains("ControlPin::WrN => (snapshot.pins.wr_n, true"));
     assert!(source.contains("LOW ASSERTED"));
     assert!(source.contains("outer amber ring = signal ASSERTED"));
     assert!(source.contains("label: \"INT\", kind: PinKind::Unmodeled"));
-    assert!(source.contains("label: \"PHI1\", kind: PinKind::Unmodeled"));
-    assert!(source.contains("label: \"PHI2\", kind: PinKind::Unmodeled"));
+    assert!(source.contains("label: \"PHI1\", kind: PinKind::Clock"));
+    assert!(source.contains("label: \"PHI2\", kind: PinKind::Clock"));
+    assert!(source.contains("CLOCK PRESENT - phase not modeled"));
+    assert!(source.contains("POWER ON"));
+    assert!(source.contains("POWER OFF"));
+}
+
+#[test]
+fn control_state_never_projects_s100_bus_values_back_into_cpu_address_data_pins() {
+    let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
+    assert!(source.contains("snapshot.accuracy != BusTeachingAccuracy::ControlState"));
+    assert!(source.contains("CPU A/D package pins remain '?' until an actual T-state is sampled"));
 }
 
 #[test]
