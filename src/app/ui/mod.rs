@@ -18,6 +18,25 @@ mod memory_viewer;
 pub(super) mod persistence;
 pub(super) mod terminal;
 
+/// Standard collapsible section used by debugger/tool viewports.
+///
+/// `CollapsingHeader` owns the fold/unfold interaction; `Frame::group` only
+/// supplies the visual border/background around the section body. Keeping this
+/// helper in one place prevents individual tool windows from inventing slightly
+/// different section behavior.
+pub(super) fn collapsible_section(
+    ui: &mut egui::Ui,
+    title: &'static str,
+    default_open: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    egui::CollapsingHeader::new(title)
+        .default_open(default_open)
+        .show(ui, |ui| {
+            egui::Frame::group(ui.style()).show(ui, |ui| add_contents(ui));
+        });
+}
+
 pub(in crate::app) fn ensure_persistent_configuration_loaded(app: &mut RusTairApp) {
     app.ensure_persistent_configuration_loaded();
 }
