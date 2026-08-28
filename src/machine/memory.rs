@@ -225,6 +225,36 @@ impl super::AltairBus {
         }
     }
 
+    /// Canonical raw S-100 status latch. Debugger/teaching code must read this
+    /// rather than reverse-engineering electrical state from optical LED duty.
+    pub(crate) fn raw_s100_status_word(&self) -> u8 {
+        let s = self.s100.signals();
+        (u8::from(s.memr) << 7)
+            | (u8::from(s.inp) << 6)
+            | (u8::from(s.m1) << 5)
+            | (u8::from(s.out) << 4)
+            | (u8::from(s.hlta) << 3)
+            | (u8::from(s.stack) << 2)
+            | (u8::from(s.wo) << 1)
+            | u8::from(s.int_ack)
+    }
+
+    pub(crate) fn raw_s100_inte(&self) -> bool {
+        self.s100.signals().inte
+    }
+
+    pub(crate) fn raw_s100_prot(&self) -> bool {
+        self.s100.signals().prot
+    }
+
+    pub(crate) fn raw_s100_wait(&self) -> bool {
+        self.s100.signals().wait
+    }
+
+    pub(crate) fn raw_s100_hlda(&self) -> bool {
+        self.s100.signals().hlda
+    }
+
     pub(crate) fn cycle_drive_s100_t_state(
         &mut self,
         address: Option<u16>,
@@ -313,5 +343,18 @@ mod tests {
         assert_eq!(after.data, before.data);
         assert_eq!(after.memr, before.memr);
         assert_eq!(after.m1, before.m1);
+    }
+
+    #[test]
+    fn raw_s100_status_word_reads_the_electrical_latch_not_led_persistence() {
+        let mut bus = super::super::AltairBus::default();
+        bus.cycle_drive_s100_t_state(
+            Some(0x1234), Some(0xa2), Some(0xa2), false, true, false, false,
+        );
+        assert_eq!(bus.raw_s100_status_word(), 0xa2);
+        assert!(!bus.raw_s100_inte());
+        assert!(!bus.raw_s100_prot());
+        assert!(!bus.raw_s100_wait());
+        assert!(!bus.raw_s100_hlda());
     }
 }
