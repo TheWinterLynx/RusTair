@@ -12,8 +12,9 @@ use crate::trace8080::{
 use super::cycle::CycleExecutionEvent;
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort,
-    CpuState, CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
-    InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
+    BusTeachingSnapshot, CpuState, CycleAccurateMachineBackend, DebugStopReason, EmulationEngine,
+    FrontPanelState, InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend,
+    MemoryWatchAccess,
 };
 
 #[derive(Clone, Debug)]
@@ -196,6 +197,44 @@ impl CycleHostBackend {
         if self.pending_instruction_trace.is_some() {
             self.reset_debugger_epoch();
         }
+    }
+
+    fn debugger_step_one_t_state(&mut self) -> BackendResult<()> {
+        let lines = self.inner.machine().bus.cpu_control_lines();
+        if !self.inner.machine().powered
+            || self.inner.machine().running
+            || lines.reset
+            || lines.hold
+            || self.inner.cpu().is_halted()
+            || self.inner.cpu().is_holding()
+        {
+            return Ok(());
+        }
+
+        self.debug_control.prepare_manual_step();
+        self.begin_instruction_trace_if_needed();
+        self.inner.debugger_step_t_state_exact()?;
+        self.finish_instruction_trace_if_complete();
+        Ok(())
+    }
+
+    fn debugger_step_one_machine_cycle(&mut self) -> BackendResult<()> {
+        let lines = self.inner.machine().bus.cpu_control_lines();
+        if !self.inner.machine().powered
+            || self.inner.machine().running
+            || lines.reset
+            || lines.hold
+            || self.inner.cpu().is_halted()
+            || self.inner.cpu().is_holding()
+        {
+            return Ok(());
+        }
+
+        self.debug_control.prepare_manual_step();
+        self.begin_instruction_trace_if_needed();
+        self.inner.step()?;
+        self.finish_instruction_trace_if_complete();
+        Ok(())
     }
 
     fn debugger_step_one_instruction(&mut self) -> BackendResult<()> {
@@ -484,6 +523,15 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
 
+    fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
+        Ok(self.inner.teaching_snapshot())
+    }
+    fn debugger_step_t_state(&mut self) -> BackendResult<()> {
+        self.debugger_step_one_t_state()
+    }
+    fn debugger_step_machine_cycle(&mut self) -> BackendResult<()> {
+        self.debugger_step_one_machine_cycle()
+    }
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
         self.debugger_step_one_instruction()
     }
