@@ -202,7 +202,7 @@ impl BusTeachingSnapshot {
             status: BusStatusLines::default(),
             ready: None,
             hold: None,
-            reset: Some(panel.ext_clear_asserted && false),
+            reset: None,
             total_t_states,
             instruction_t_states: None,
             instruction_complete: None,
