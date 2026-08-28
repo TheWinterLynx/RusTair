@@ -1,5 +1,6 @@
 //! Machine-level abstraction for RusTair's selectable emulator engines.
 
+mod bus_teaching;
 mod cycle;
 mod cycle_host;
 mod native;
@@ -12,6 +13,9 @@ use crate::config::{RamInit, RamSize, SerialBoard};
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
+pub use bus_teaching::{
+    BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
+};
 pub use crate::debugger_control::{DebugStopReason, MemoryWatchAccess};
 pub use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
 pub use cycle::CycleAccurateMachineBackend;
@@ -278,6 +282,18 @@ pub trait MachineBackend {
     fn clear_instruction_trace(&mut self) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "clear instruction trace", engine: self.engine() })
     }
+    fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
+        let engine = self.engine();
+        let panel = self.front_panel_state()?;
+        let cpu = self.cpu_state()?;
+        Ok(Some(BusTeachingSnapshot::reconstructed(engine, panel, cpu)))
+    }
+    fn debugger_step_t_state(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "debugger T-state step", engine: self.engine() })
+    }
+    fn debugger_step_machine_cycle(&mut self) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "debugger machine-cycle step", engine: self.engine() })
+    }
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "debugger step instruction", engine: self.engine() })
     }
@@ -452,6 +468,9 @@ impl BackendHost {
     pub fn instruction_trace_metadata(&mut self) -> InstructionTraceMetadata { Self::call(self.backend.instruction_trace_metadata()) }
     pub fn set_instruction_trace_enabled(&mut self, enabled: bool) { Self::call(self.backend.set_instruction_trace_enabled(enabled)); }
     pub fn clear_instruction_trace(&mut self) { Self::call(self.backend.clear_instruction_trace()); }
+    pub fn bus_teaching_snapshot(&mut self) -> Option<BusTeachingSnapshot> { Self::call(self.backend.bus_teaching_snapshot()) }
+    pub fn debugger_step_t_state(&mut self) { Self::call(self.backend.debugger_step_t_state()); }
+    pub fn debugger_step_machine_cycle(&mut self) { Self::call(self.backend.debugger_step_machine_cycle()); }
     pub fn debugger_step_instruction(&mut self) { Self::call(self.backend.debugger_step_instruction()); }
     pub fn debugger_breakpoints(&mut self) -> Vec<u16> { Self::call(self.backend.debugger_breakpoints()) }
     pub fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) { Self::call(self.backend.debugger_set_breakpoint(address, enabled)); }
