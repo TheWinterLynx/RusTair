@@ -85,7 +85,7 @@ impl RusTairApp {
                     "RESET HIGH - CPU reset state forced; normal instruction fetch is not executing".into()
                 }
                 BusMachineCycle::ResetReleasedStopped => {
-                    "RESET released - PC=$0000, STOP/READY low; awaiting a real CPU T-state".into()
+                    "RESET released - PC=$0000, CPU held in stable M1 STOP-WAIT read state".into()
                 }
                 BusMachineCycle::ResetReleasedRunning => {
                     "RESET released - PC=$0000, RUN active; awaiting first real CPU T-state".into()
@@ -171,7 +171,7 @@ impl RusTairApp {
         });
         match snapshot.map(|snapshot| snapshot.accuracy) {
             Some(BusTeachingAccuracy::ControlState) => ui.small(
-                "POWER/RESET/READY/S-100 control state is known, but no CPU T-state is claimed. This is deliberate: the Teacher never fabricates T1 just to animate the diagram.",
+                "POWER/RESET/READY/S-100 control state is known. Stable electrical levels are shown where that lifecycle state determines them; the Teacher never invents a numbered CPU T-state just to animate the diagram.",
             ),
             _ if capabilities.exact_t_state_timing => ui.small(
                 "Cycle Accurate exposes the real machine-cycle, T-state, 8080 pins and latched S-100 status driven by the CPU-board sample.",
@@ -470,8 +470,8 @@ impl RusTairApp {
                 lines.push("The Altair Display/Control board drives the documented RESET checkout display (ADDRESS/DATA all ones, status lamps off); those S-100 values are not mislabeled as CPU A/D output pins.".into());
             }
             BusMachineCycle::ResetReleasedStopped => {
-                lines.push("RESET is LOW again. The CPU is prepared at PC=0000h while the RUN/STOP latch remains STOP, so READY is LOW and the front panel shows the stopped instruction-fetch state.".into());
-                lines.push("No CPU T-state has executed yet, so A0-A15/D0-D7 remain '?' in the package diagram until Step T or RUN produces a real sample.".into());
+                lines.push("RESET is LOW again. The CPU is prepared at PC=0000h while the RUN/STOP latch remains STOP, so READY is LOW and the machine is held in the read wait associated with the first M1 instruction fetch.".into());
+                lines.push("STOP-WAIT is electrically stable even though no numbered T-state sample is fabricated: the CPU owns ADDRESS at 0000h, DBIN remains HIGH through the wait, memory drives the current S-100 DATA byte onto D0-D7, /WR is HIGH/inactive, SYNC is LOW and WAIT is HIGH.".into());
             }
             BusMachineCycle::ResetReleasedRunning => {
                 lines.push("RESET is LOW and the RUN latch is active. The processor is ready to begin at PC=0000h.".into());
@@ -549,7 +549,7 @@ impl RusTairApp {
                 "THOLD: the processor has relinquished the bus after acknowledging HOLD.".into(),
             ),
             BusTState::Unknown if snapshot.accuracy == BusTeachingAccuracy::ControlState => {
-                lines.push("No T-state is shown because this is an asynchronous/control lifecycle state, not a fabricated CPU clock step.".into())
+                lines.push("No numbered T-state sample is shown because this is a control/lifecycle observation; stable bus and pin levels may still be electrically determined without inventing a clock step.".into())
             }
             BusTState::Unknown => lines.push(
                 "Exact T-state is unavailable in the instruction-level Fast core.".into(),
