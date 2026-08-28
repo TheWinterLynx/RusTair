@@ -34,3 +34,23 @@ impl Default for Registers {
         }
     }
 }
+
+impl super::Cpu8080Cycle {
+    /// Seed the undefined processor state that exists immediately after power is
+    /// applied, before RESET establishes its documented control state.
+    ///
+    /// The Altair chassis deliberately randomizes programmer-visible registers
+    /// and the 8080 interrupt-enable flip-flop at power-on. The cycle backend
+    /// must inherit the same sample so CPU state, its passive fast-core mirror,
+    /// and the S-100 INTE line all describe one physical machine.
+    pub fn initialize_power_on_state(&mut self, registers: Registers, inte: bool) {
+        debug_assert_eq!(self.total_t_states, 0);
+        debug_assert_eq!(self.completed_instructions, 0);
+        self.set_registers(registers);
+        self.inte = inte;
+        self.ei_pending = false;
+        self.enable_inte_after_instruction = false;
+        self.halted = false;
+        self.pins.inte = inte;
+    }
+}
