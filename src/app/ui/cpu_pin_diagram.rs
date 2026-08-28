@@ -115,9 +115,15 @@ fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool
     }
 }
 
+/// ADDRESS/DATA package-pin truth exists only for a real cycle-core sample, or
+/// for the one lifecycle condition whose electrical ownership is independently
+/// determined: RESET RELEASED / STOP-WAIT. A reconstructed Fast snapshot may
+/// contain useful S-100/front-panel observations, but those values are never
+/// projected back into the 8080 package.
 fn cpu_bus_pin_levels_available(snapshot: BusTeachingSnapshot) -> bool {
-    snapshot.accuracy != BusTeachingAccuracy::ControlState
-        || snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped
+    snapshot.accuracy == BusTeachingAccuracy::Exact
+        || (snapshot.accuracy == BusTeachingAccuracy::ControlState
+            && snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped)
 }
 
 fn exact_bus_is_released(snapshot: BusTeachingSnapshot, level: Option<bool>) -> bool {
@@ -403,6 +409,8 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
         } else {
             ui.small("CONTROL STATE: ADDRESS/DATA above are the S-100/front-panel bus. CPU package pins are shown only where the electrical level is physically determined without inventing a T-state sample.");
         }
+    } else if snapshot.accuracy == BusTeachingAccuracy::Reconstructed {
+        ui.small("RECONSTRUCTED: ADDRESS/DATA are useful S-100/front-panel observations only. They are deliberately not projected onto 8080 A0-A15/D0-D7 package pins because Fast mode has no exact T-state pin sample.");
     } else if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
         ui.small("Exact sample: CPU D0-D7 are HI-Z/released now. The front-panel DATA display can still show the preceding bus byte because its display/lamp model retains and integrates recent bus activity.");
     } else {
