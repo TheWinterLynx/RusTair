@@ -206,9 +206,58 @@ impl super::AltairBus {
         self.panel.set_address_latch(address);
         self.front_panel_deposit(address, value);
     }
+
+    /// Change only the external HOLD request seen by the cycle-accurate CPU.
+    /// HLDA is an 8080 output and must remain whatever the last exact CPU sample
+    /// drove until a later `Cpu8080Cycle::tick()` changes it. The generic chassis
+    /// helper also drops HLDA on HOLD release for the instruction-level backend;
+    /// Cycle must not use that approximation.
+    pub(crate) fn cycle_set_hold_request(&mut self, hold: bool) {
+        let cpu_hlda = self.s100.signals().hlda;
+        self.s100.set_hold(hold);
+        self.s100.set_hlda(cpu_hlda);
+    }
 }
 
 impl super::AltairMachine {
+    /// Cycle-accurate RUN/STOP entry point. STOP still records the physical
+    /// switch level while HLT or HLDA suppresses PSYNC, but it must not mutate
+    /// the R-S RUN latch until a real synchronization opportunity exists.
+    pub(crate) fn cycle_assert_run_stop(
+        &mut self,
+        run: bool,
+        cpu_halted: bool,
+        cpu_holding: bool,
+    ) {
+        if !self.powered { return; }
+        self.run_switch_asserted = run;
+        self.stop_switch_asserted = !run;
+
+        if run {
+            if !self.bus.reset_asserted() {
+                self.set_running(true);
+            }
+        } else if self.bus.reset_asserted() || (!cpu_halted && !cpu_holding) {
+            self.set_running(false);
+        }
+    }
+
+    /// A STOP held while HLDA was active becomes effective at the first real
+    /// PSYNC after HOLD is released. Returns true when the physical RUN latch was
+    /// actually cleared so the cycle backend can stop host execution immediately.
+    pub(crate) fn cycle_capture_pending_stop_at_psync(&mut self) -> bool {
+        if self.powered
+            && self.running
+            && self.stop_switch_asserted
+            && !self.bus.reset_asserted()
+        {
+            self.set_running(false);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Instruction-level approximation of the original EXAMINE/EXAMINE NEXT
     /// sequencer. The fast CPU executes the real injected JMP/NOP rather than
     /// having its PC assigned by the GUI or backend.
@@ -374,6 +423,15 @@ mod tests {
         assert_eq!(sample.status_word, Some(0x82));
         assert!(sample.inte);
         assert!(sample.ready);
+    }
+
+    #[test]
+    fn cycle_hold_request_change_does_not_fabricate_hlda_output() {
+        let mut bus = super::super::AltairBus::default();
+        bus.s100.set_hlda(true);
+        bus.cycle_set_hold_request(false);
+        assert!(!bus.s100.signals().hold);
+        assert!(bus.s100.signals().hlda, "HLDA must remain CPU-owned until the next exact sample");
     }
 
     #[test]
