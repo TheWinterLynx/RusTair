@@ -222,7 +222,6 @@ impl RusTairApp {
 
     fn draw_cpu_registers_sidebar(&mut self, ui: &mut egui::Ui) {
         let cpu = self.machine.intel8080_state();
-        ui.strong("CPU REGISTERS");
         ui.small("The 8080 can use BC, DE and HL as 16-bit pairs. A and F form the PSW when pushed or popped together.");
         ui.add_space(5.0);
 
@@ -682,18 +681,17 @@ impl RusTairApp {
 
     fn draw_memory_sidebar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         egui::ScrollArea::vertical().id_salt("ram-inspector-sidebar-scroll").auto_shrink([false, false]).show(ui, |ui| {
-            ui.strong("CURRENT INSTRUCTION");
-            self.draw_current_instruction_side(ui);
+            super::collapsible_section(ui, "CURRENT INSTRUCTION", true, |ui| self.draw_current_instruction_side(ui));
             ui.separator();
-            egui::CollapsingHeader::new("Explain selected instruction").default_open(true).show(ui, |ui| self.draw_instruction_explainer(ui, state));
+            super::collapsible_section(ui, "Explain selected instruction", true, |ui| self.draw_instruction_explainer(ui, state));
             ui.separator();
-            egui::CollapsingHeader::new("Selected byte / editor").default_open(false).show(ui, |ui| self.draw_memory_editor(ui, state));
+            super::collapsible_section(ui, "Selected byte / editor", false, |ui| self.draw_memory_editor(ui, state));
             ui.separator();
-            egui::CollapsingHeader::new("1 KiB protection map").default_open(false).show(ui, |ui| self.draw_memory_block_map(ui, state));
+            super::collapsible_section(ui, "1 KiB protection map", false, |ui| self.draw_memory_block_map(ui, state));
             ui.separator();
-            egui::Frame::group(ui.style()).show(ui, |ui| { self.draw_cpu_registers_sidebar(ui); });
+            super::collapsible_section(ui, "CPU REGISTERS", true, |ui| self.draw_cpu_registers_sidebar(ui));
             ui.separator();
-            egui::CollapsingHeader::new("How to read this inspector").default_open(false).show(ui, |ui| self.draw_memory_help(ui));
+            super::collapsible_section(ui, "How to read this inspector", false, |ui| self.draw_memory_help(ui));
         });
     }
 
