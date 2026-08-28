@@ -206,6 +206,7 @@ impl CycleHostBackend {
         let lines = machine.bus.cpu_control_lines();
         let lamps = machine.panel_lamps();
         let powered = machine.powered;
+        let has_exact_history = self.inner.teaching_snapshot().is_some();
 
         let phase = if !powered {
             BusMachineCycle::PowerOff
@@ -213,10 +214,16 @@ impl CycleHostBackend {
             BusMachineCycle::ResetAsserted
         } else if !self.teaching_reset_seen {
             BusMachineCycle::PowerOnUndefined
-        } else if machine.running {
+        } else if !has_exact_history && machine.running {
             BusMachineCycle::ResetReleasedRunning
-        } else {
+        } else if !has_exact_history {
             BusMachineCycle::ResetReleasedStopped
+        } else {
+            // Once at least one exact T-state exists, a later chassis-only
+            // change (Pause, HOLD, panel deposit/protect, etc.) is not another
+            // RESET-release phase. It is a real current control state for which
+            // no new CPU T-state has yet been sampled.
+            BusMachineCycle::Unknown
         };
 
         // RAW status always comes from the canonical S100BusState. The lamp
@@ -286,6 +293,44 @@ impl CycleHostBackend {
             instruction_complete: None,
             visible_lamps: lamps,
         }
+    }
+
+    /// An exact teaching sample describes the most recent CPU T-state. It is
+    /// valid as the live view only while the independently mutable chassis state
+    /// still matches the electrical inputs/status captured with that sample.
+    /// Front-panel/debugger controls can change READY/HOLD/RESET or raw S-100
+    /// lines without clocking the CPU; in that interval the exact sample remains
+    /// useful history but must not be presented as the current electrical state.
+    fn exact_teaching_snapshot_matches_current_chassis(
+        &self,
+        snapshot: BusTeachingSnapshot,
+    ) -> bool {
+        if snapshot.accuracy != BusTeachingAccuracy::Exact {
+            return false;
+        }
+
+        let machine = self.inner.machine();
+        if !machine.powered {
+            return false;
+        }
+        let lines = machine.bus.cpu_control_lines();
+        let cpu_pins = self.inner.cpu().pins();
+
+        snapshot.total_t_states == Some(self.inner.cpu().total_t_states())
+            && snapshot.ready == Some(lines.ready)
+            && snapshot.hold == Some(lines.hold)
+            && snapshot.reset == Some(lines.reset)
+            && snapshot.status_word == Some(machine.bus.raw_s100_status_word())
+            && snapshot.status.inte == Some(machine.bus.raw_s100_inte())
+            && snapshot.status.prot == Some(machine.bus.raw_s100_prot())
+            && snapshot.status.wait == Some(machine.bus.raw_s100_wait())
+            && snapshot.status.hlda == Some(machine.bus.raw_s100_hlda())
+            && snapshot.pins.sync == Some(cpu_pins.sync)
+            && snapshot.pins.dbin == Some(cpu_pins.dbin)
+            && snapshot.pins.wr_n == Some(cpu_pins.wr_n)
+            && snapshot.pins.inte == Some(cpu_pins.inte)
+            && snapshot.pins.wait == Some(cpu_pins.wait)
+            && snapshot.pins.hlda == Some(cpu_pins.hlda)
     }
 
     fn debugger_step_one_t_state(&mut self) -> BackendResult<()> {
@@ -618,11 +663,11 @@ impl MachineBackend for CycleHostBackend {
     }
 
     fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
-        Ok(Some(
-            self.inner
-                .teaching_snapshot()
-                .unwrap_or_else(|| self.control_teaching_snapshot()),
-        ))
+        let snapshot = match self.inner.teaching_snapshot() {
+            Some(exact) if self.exact_teaching_snapshot_matches_current_chassis(exact) => exact,
+            _ => self.control_teaching_snapshot(),
+        };
+        Ok(Some(snapshot))
     }
     fn debugger_step_t_state(&mut self) -> BackendResult<()> {
         self.debugger_step_one_t_state()
@@ -780,6 +825,63 @@ mod tests {
         assert_eq!(snapshot.status.m1, Some(true));
         assert_eq!(snapshot.status.wo, Some(true));
         assert_eq!(snapshot.status.wait, Some(true));
+    }
+
+    #[test]
+    fn teacher_prefers_current_control_state_over_stale_exact_sample_after_pause() {
+        let mut backend = CycleHostBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.run().unwrap();
+        backend.service_execution(1).unwrap();
+
+        let exact = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(exact.accuracy, BusTeachingAccuracy::Exact);
+        assert_eq!(exact.t_state, BusTState::T1);
+        let exact_t_states = exact.total_t_states;
+
+        backend.halt().unwrap();
+        let current = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(current.accuracy, BusTeachingAccuracy::ControlState);
+        assert_eq!(current.machine_cycle, BusMachineCycle::Unknown);
+        assert_eq!(current.t_state, BusTState::Unknown);
+        assert_eq!(current.ready, Some(false));
+        assert_eq!(current.status.wait, Some(true));
+        assert_eq!(current.total_t_states, exact_t_states);
+
+        let historical = backend.inner.teaching_snapshot().expect("last exact sample retained");
+        assert_eq!(historical.accuracy, BusTeachingAccuracy::Exact);
+        assert_eq!(historical.t_state, BusTState::T1);
+        assert_eq!(historical.total_t_states, exact_t_states);
+    }
+
+    #[test]
+    fn teacher_returns_to_exact_after_cpu_samples_changed_hold_input() {
+        let mut backend = CycleHostBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.run().unwrap();
+        backend.service_execution(1).unwrap(); // exact T1, core now awaits T2
+        assert_eq!(
+            backend.bus_teaching_snapshot().unwrap().unwrap().accuracy,
+            BusTeachingAccuracy::Exact
+        );
+
+        backend.request_hold(true).unwrap();
+        let pending = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(pending.accuracy, BusTeachingAccuracy::ControlState);
+        assert_eq!(pending.machine_cycle, BusMachineCycle::Unknown);
+        assert_eq!(pending.hold, Some(true));
+
+        backend.service_execution(1).unwrap(); // T2 samples HOLD
+        let sampled = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(sampled.accuracy, BusTeachingAccuracy::Exact);
+        assert_eq!(sampled.t_state, BusTState::T2);
+        assert_eq!(sampled.hold, Some(true));
     }
 
     #[test]
