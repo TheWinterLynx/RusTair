@@ -56,10 +56,31 @@ fn exact_undriven_address_data_pins_are_hi_z_not_unknown() {
 }
 
 #[test]
-fn control_state_never_projects_s100_bus_values_back_into_cpu_address_data_pins() {
+fn control_state_projects_cpu_address_data_only_for_stable_stop_wait() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
+    assert!(source.contains("fn cpu_bus_pin_levels_available"));
     assert!(source.contains("snapshot.accuracy != BusTeachingAccuracy::ControlState"));
-    assert!(source.contains("CPU A/D package pins remain '?' until an actual T-state is sampled"));
+    assert!(source.contains("|| snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped"));
+    assert!(source.contains("RESET RELEASED / STOP-WAIT is a special stable control state"));
+    assert!(source.contains("CPU owns the address bus at PC=0000h"));
+    assert!(source.contains("memory drives the same S-100 data byte onto D0-D7"));
+}
+
+#[test]
+fn cpu_control_pin_renderer_uses_backend_pin_truth_without_reconstructing_signals() {
+    let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
+    for expected in [
+        "ControlPin::Inte => (snapshot.pins.inte",
+        "ControlPin::Dbin => (snapshot.pins.dbin",
+        "ControlPin::WrN => (snapshot.pins.wr_n",
+        "ControlPin::Sync => (snapshot.pins.sync",
+        "ControlPin::Wait => (snapshot.pins.wait",
+        "ControlPin::Hlda => (snapshot.pins.hlda",
+    ] {
+        assert!(source.contains(expected), "control pin must come from backend snapshot: {expected}");
+    }
+    assert!(source.contains("this UI never reconstructs a"));
+    assert!(source.contains("signal from S-100 lamps, machine-cycle names or other presentation state"));
 }
 
 #[test]
