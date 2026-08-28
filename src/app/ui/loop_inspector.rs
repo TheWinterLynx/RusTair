@@ -129,87 +129,91 @@ impl RusTairApp {
                 ui.separator();
                 ui.monospace(format!("PC=${:04X} EXEC=${execution_address:04X}", cpu.pc));
             });
-
-            let capture_status = if state.trace_reset {
-                "Instruction history was cleared/reset while this inspector was open; the iteration counter restarted from zero."
-            } else if state.trace_gap {
-                "Execution outran the retained trace between two observations; the iteration count is therefore a lower bound."
-            } else {
-                "Iteration count is exact for all trace sequences observed since this inspector was opened."
-            };
-            ui.add_sized(
-                [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(capture_status).small()),
-            );
-            ui.add_sized(
-                [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(if state.exited {
-                    "Last observed execution of the back-edge did not return to the loop entry: the loop exited."
-                } else {
-                    ""
-                }).small()),
-            );
-
-            ui.separator();
-            ui.small(format!(
-                "Entry: ${:04X} | back-edge: ${:04X}",
-                loop_info.start, loop_info.back_edge
-            ));
-            ui.small(loop_info.exit_description());
-            let condition_text = if let Some(condition) = loop_info.condition {
-                let flag_value = condition.evaluate(cpu.flags);
-                if execution_address == loop_info.back_edge {
-                    format!(
-                        "At the back-edge now: {} is {} -> branch {}.",
-                        condition.label(),
-                        if flag_value { "TRUE" } else { "FALSE" },
-                        if flag_value { "TAKEN" } else { "NOT TAKEN / EXIT" },
-                    )
-                } else {
-                    format!(
-                        "Current flags make {} {}; instructions before the back-edge may still change those flags.",
-                        condition.label(),
-                        if flag_value { "TRUE" } else { "FALSE" },
-                    )
-                }
-            } else {
-                "Back-edge is unconditional; the structural loop has no conditional exit.".into()
-            };
-            ui.add_sized(
-                [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
-                egui::Label::new(egui::RichText::new(condition_text).small()),
-            );
             ui.separator();
 
-            egui::ScrollArea::vertical()
-                .id_salt("shared-8080-loop-inspector-scroll")
-                .show(ui, |ui| {
-                    for instruction in &loop_info.instructions {
-                        let is_exec = instruction.address == execution_address;
-                        let is_back_edge = instruction.address == loop_info.back_edge;
-                        let is_entry = instruction.address == loop_info.start;
-                        let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
-                        let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
-                        if is_exec {
-                            address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
-                            instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
-                        }
-                        let markers = format!(
-                            "{} {} {}",
-                            if is_entry { "ENTRY" } else { "     " },
-                            if is_back_edge { "BACK-EDGE" } else { "         " },
-                            if is_exec { "EXEC" } else { "    " },
-                        );
-                        ui.horizontal(|ui| {
-                            ui.add_sized([56.0, 22.0], egui::Label::new(address_text));
-                            ui.add_sized([96.0, 22.0], egui::Label::new(
-                                egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak(),
-                            ));
-                            ui.add_sized([230.0, 22.0], egui::Label::new(instruction_text));
-                            ui.add_sized([210.0, 22.0], egui::Label::new(egui::RichText::new(markers).small()));
-                        });
+            super::collapsible_section(ui, "Loop state / exit condition", true, |ui| {
+                let capture_status = if state.trace_reset {
+                    "Instruction history was cleared/reset while this inspector was open; the iteration counter restarted from zero."
+                } else if state.trace_gap {
+                    "Execution outran the retained trace between two observations; the iteration count is therefore a lower bound."
+                } else {
+                    "Iteration count is exact for all trace sequences observed since this inspector was opened."
+                };
+                ui.add_sized(
+                    [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
+                    egui::Label::new(egui::RichText::new(capture_status).small()),
+                );
+                ui.add_sized(
+                    [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
+                    egui::Label::new(egui::RichText::new(if state.exited {
+                        "Last observed execution of the back-edge did not return to the loop entry: the loop exited."
+                    } else {
+                        ""
+                    }).small()),
+                );
+
+                ui.small(format!(
+                    "Entry: ${:04X} | back-edge: ${:04X}",
+                    loop_info.start, loop_info.back_edge
+                ));
+                ui.small(loop_info.exit_description());
+                let condition_text = if let Some(condition) = loop_info.condition {
+                    let flag_value = condition.evaluate(cpu.flags);
+                    if execution_address == loop_info.back_edge {
+                        format!(
+                            "At the back-edge now: {} is {} -> branch {}.",
+                            condition.label(),
+                            if flag_value { "TRUE" } else { "FALSE" },
+                            if flag_value { "TAKEN" } else { "NOT TAKEN / EXIT" },
+                        )
+                    } else {
+                        format!(
+                            "Current flags make {} {}; instructions before the back-edge may still change those flags.",
+                            condition.label(),
+                            if flag_value { "TRUE" } else { "FALSE" },
+                        )
                     }
-                });
+                } else {
+                    "Back-edge is unconditional; the structural loop has no conditional exit.".into()
+                };
+                ui.add_sized(
+                    [ui.available_width(), LOOP_STATUS_LINE_HEIGHT],
+                    egui::Label::new(egui::RichText::new(condition_text).small()),
+                );
+            });
+
+            ui.separator();
+            super::collapsible_section(ui, "Loop instructions", true, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("shared-8080-loop-inspector-scroll")
+                    .show(ui, |ui| {
+                        for instruction in &loop_info.instructions {
+                            let is_exec = instruction.address == execution_address;
+                            let is_back_edge = instruction.address == loop_info.back_edge;
+                            let is_entry = instruction.address == loop_info.start;
+                            let mut address_text = egui::RichText::new(format!("{:04X}", instruction.address)).monospace();
+                            let mut instruction_text = egui::RichText::new(instruction.decoded.text()).monospace();
+                            if is_exec {
+                                address_text = address_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
+                                instruction_text = instruction_text.strong().background_color(ui.visuals().widgets.active.bg_fill);
+                            }
+                            let markers = format!(
+                                "{} {} {}",
+                                if is_entry { "ENTRY" } else { "     " },
+                                if is_back_edge { "BACK-EDGE" } else { "         " },
+                                if is_exec { "EXEC" } else { "    " },
+                            );
+                            ui.horizontal(|ui| {
+                                ui.add_sized([56.0, 22.0], egui::Label::new(address_text));
+                                ui.add_sized([96.0, 22.0], egui::Label::new(
+                                    egui::RichText::new(instruction.decoded.bytes_text(instruction.bytes)).monospace().weak(),
+                                ));
+                                ui.add_sized([230.0, 22.0], egui::Label::new(instruction_text));
+                                ui.add_sized([210.0, 22.0], egui::Label::new(egui::RichText::new(markers).small()));
+                            });
+                        }
+                    });
+            });
         });
     }
 
