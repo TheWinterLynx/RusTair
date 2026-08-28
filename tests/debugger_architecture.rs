@@ -1,6 +1,7 @@
 const CYCLE_HOST_SOURCE: &str = include_str!("../src/backend/cycle_host.rs");
 const CYCLE_SOURCE: &str = include_str!("../src/backend/cycle.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
+const UI_MOD_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
 const MEMORY_VIEWER_SOURCE: &str = include_str!("../src/app/ui/memory_viewer.rs");
 const INSTRUCTION_HISTORY_SOURCE: &str = include_str!("../src/app/ui/instruction_history.rs");
 const DEBUGGER_CONTROLS_SOURCE: &str = include_str!("../src/app/ui/debugger_controls.rs");
@@ -33,6 +34,14 @@ fn debugger_ui_has_one_instruction_trace_enable_owner() {
     assert!(
         RUNTIME_SOURCE.contains("sync_instruction_trace_capture(self, ctx)"),
         "runtime must centrally aggregate debugger trace demand before execution",
+    );
+    assert!(
+        UI_MOD_SOURCE.contains("memory_viewer::trace_requested(ctx)"),
+        "RAM activity overlay demand must participate in the shared trace owner",
+    );
+    assert!(
+        MEMORY_VIEWER_SOURCE.contains("state.window_open && state.activity_overlay"),
+        "RAM Viewer should request trace only while its optional activity overlay is enabled",
     );
 
     for (name, source) in [
