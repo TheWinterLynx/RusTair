@@ -46,6 +46,16 @@ fn pin_visualizer_distinguishes_level_assertion_power_clock_and_unmodeled_lines(
 }
 
 #[test]
+fn exact_undriven_address_data_pins_are_hi_z_not_unknown() {
+    let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
+    assert!(source.contains("fn exact_bus_is_released"));
+    assert!(source.contains("HI-Z / RELEASED"));
+    assert!(source.contains("\" Z\""));
+    assert!(source.contains("NO DATA TRANSFER THIS T-STATE"));
+    assert!(source.contains("front-panel DATA display can still show the preceding bus byte"));
+}
+
+#[test]
 fn control_state_never_projects_s100_bus_values_back_into_cpu_address_data_pins() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
     assert!(source.contains("snapshot.accuracy != BusTeachingAccuracy::ControlState"));
