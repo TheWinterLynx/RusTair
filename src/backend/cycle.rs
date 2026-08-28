@@ -581,8 +581,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.machine.power_with_historical_run_latch(on, historical);
         if on {
+            let registers = Self::cycle_registers_from_fast(&self.machine.cpu);
+            let inte = self.machine.cpu.inte;
             self.cpu = Cpu8080Cycle::new();
-            self.cpu.set_registers(Self::cycle_registers_from_fast(&self.machine.cpu));
+            self.cpu.initialize_power_on_state(registers, inte);
         } else {
             self.cpu = Cpu8080Cycle::new();
         }
