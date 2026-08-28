@@ -27,9 +27,27 @@ fn fast_bus_teacher_is_explicitly_reconstructed() {
 }
 
 #[test]
+fn cycle_teacher_exposes_reset_released_stop_before_first_t_state() {
+    let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
+    let snapshot = host.bus_teaching_snapshot().expect("Cycle control snapshot");
+    assert_eq!(snapshot.accuracy, BusTeachingAccuracy::ControlState);
+    assert_eq!(snapshot.machine_cycle, BusMachineCycle::ResetReleasedStopped);
+    assert_eq!(snapshot.t_state, BusTState::Unknown);
+    assert_eq!(snapshot.instruction_address, Some(0x0000));
+    assert_eq!(snapshot.status_word, Some(0xA2));
+    assert_eq!(snapshot.reset, Some(false));
+    assert_eq!(snapshot.ready, Some(false));
+    assert_eq!(snapshot.total_t_states, Some(0));
+}
+
+#[test]
 fn cycle_t_state_step_exposes_exact_m1_t1_sample() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
-    assert!(host.bus_teaching_snapshot().is_none(), "no T-state has executed yet");
+    assert_eq!(
+        host.bus_teaching_snapshot().unwrap().accuracy,
+        BusTeachingAccuracy::ControlState,
+        "before the first CPU tick the teacher must expose control state, not fake T1",
+    );
 
     let before = host.intel8080_state().total_t_states.unwrap();
     host.debugger_step_t_state();
