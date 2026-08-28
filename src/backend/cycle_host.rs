@@ -219,40 +219,17 @@ impl CycleHostBackend {
             BusMachineCycle::ResetReleasedStopped
         };
 
-        let lamp = |value: f32| Some(value >= 0.5);
-        let status = if powered {
-            BusStatusLines {
-                memr: lamp(lamps.memr),
-                inp: lamp(lamps.inp),
-                m1: lamp(lamps.m1),
-                out: lamp(lamps.out),
-                hlta: lamp(lamps.hlta),
-                stack: lamp(lamps.stack),
-                wo: lamp(lamps.wo),
-                int_ack: lamp(lamps.int_ack),
-                inte: lamp(lamps.inte),
-                prot: lamp(lamps.prot),
-                wait: lamp(lamps.wait),
-                hlda: lamp(lamps.hlda),
-            }
-        } else {
-            BusStatusLines::default()
-        };
-
-        let status_word = if powered {
-            Some(
-                (u8::from(status.memr == Some(true)) << 7)
-                    | (u8::from(status.inp == Some(true)) << 6)
-                    | (u8::from(status.m1 == Some(true)) << 5)
-                    | (u8::from(status.out == Some(true)) << 4)
-                    | (u8::from(status.hlta == Some(true)) << 3)
-                    | (u8::from(status.stack == Some(true)) << 2)
-                    | (u8::from(status.wo == Some(true)) << 1)
-                    | u8::from(status.int_ack == Some(true)),
-            )
-        } else {
-            None
-        };
+        // RAW status always comes from the canonical S100BusState. The lamp
+        // snapshot below is optical persistence only and is never reverse-
+        // engineered back into an electrical truth value.
+        let status_word = powered.then(|| machine.bus.raw_s100_status_word());
+        let mut status = BusStatusLines::from_status_word(status_word);
+        if powered {
+            status.inte = Some(machine.bus.raw_s100_inte());
+            status.prot = Some(machine.bus.raw_s100_prot());
+            status.wait = Some(machine.bus.raw_s100_wait());
+            status.hlda = Some(machine.bus.raw_s100_hlda());
+        }
 
         let pins = if !powered || phase == BusMachineCycle::PowerOnUndefined {
             BusCpuPins::default()
@@ -768,6 +745,21 @@ mod tests {
         assert_eq!(released.status.wo, Some(true));
         assert_eq!(released.status.wait, Some(true));
         assert_eq!(released.total_t_states, Some(0));
+    }
+
+    #[test]
+    fn lifecycle_teacher_raw_status_is_not_derived_from_optical_lamps() {
+        let mut backend = CycleHostBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+
+        let snapshot = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(snapshot.status_word, Some(backend.inner.machine().bus.raw_s100_status_word()));
+        assert_eq!(snapshot.status.memr, Some(true));
+        assert_eq!(snapshot.status.m1, Some(true));
+        assert_eq!(snapshot.status.wo, Some(true));
+        assert_eq!(snapshot.status.wait, Some(true));
     }
 
     #[test]
