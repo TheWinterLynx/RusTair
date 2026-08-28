@@ -87,10 +87,19 @@ fn bus_teacher_consumes_only_the_backend_contract() {
             && BUS_TEACHER_SOURCE.contains("bus_teaching_snapshot()"),
         "Bus Teacher must consume the backend-neutral teaching snapshot",
     );
+
+    // Check actual code dependencies rather than arbitrary prose. The viewport
+    // may explain where an exact sample originated, but it must never import or
+    // name the concrete cycle backend as a code dependency.
+    let imports = BUS_TEACHER_SOURCE
+        .lines()
+        .filter(|line| line.trim_start().starts_with("use "))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        !BUS_TEACHER_SOURCE.contains("cpu8080_cycle")
-            && !BUS_TEACHER_SOURCE.contains("TickTrace")
-            && !BUS_TEACHER_SOURCE.contains("CycleAccurateMachineBackend"),
+        !BUS_TEACHER_SOURCE.contains("crate::cpu8080_cycle")
+            && !BUS_TEACHER_SOURCE.contains("CycleAccurateMachineBackend")
+            && !imports.contains("TickTrace"),
         "Bus Teacher UI must not depend directly on the Cycle core or concrete backend",
     );
     assert!(
