@@ -5,57 +5,59 @@ use crate::config::TerminalDuplex;
 
 impl RusTairApp {
     fn draw_terminal_input(&mut self, ui: &mut egui::Ui) {
-        ui.strong("COMMAND / INPUT");
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(">").monospace().strong());
-            let width = (ui.available_width() - 122.0).max(80.0);
-            let response = ui.add_sized(
-                [width, 26.0],
-                egui::TextEdit::singleline(&mut self.terminal.command)
-                    .font(egui::TextStyle::Monospace)
-                    .hint_text("command"),
-            );
-            let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Send").clicked() || enter {
-                self.terminal_send_command();
-                response.request_focus();
-            }
-            if ui
-                .button("CR")
-                .on_hover_text("Send carriage return only")
-                .clicked()
-            {
-                self.terminal_send_control(b'\r', "CR");
-                response.request_focus();
-            }
+        super::collapsible_section(ui, "Command / input", true, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(">").monospace().strong());
+                let width = (ui.available_width() - 122.0).max(80.0);
+                let response = ui.add_sized(
+                    [width, 26.0],
+                    egui::TextEdit::singleline(&mut self.terminal.command)
+                        .font(egui::TextStyle::Monospace)
+                        .hint_text("command"),
+                );
+                let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("Send").clicked() || enter {
+                    self.terminal_send_command();
+                    response.request_focus();
+                }
+                if ui
+                    .button("CR")
+                    .on_hover_text("Send carriage return only")
+                    .clicked()
+                {
+                    self.terminal_send_control(b'\r', "CR");
+                    response.request_focus();
+                }
+            });
         });
 
         ui.separator();
-        ui.horizontal_wrapped(|ui| {
-            ui.strong("Paste / program input");
-            if ui.button("Send block").clicked() {
-                self.terminal_send_program();
-            }
-            if ui.button("Clear editor").clicked() {
-                self.terminal.program.clear();
-            }
-        });
-        ui.small(format!(
-            "One or many lines; input is paced at {} and newlines become carriage returns.",
-            self.config.peripherals.terminal_speed.label()
-        ));
+        super::collapsible_section(ui, "Paste / program input", true, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Send block").clicked() {
+                    self.terminal_send_program();
+                }
+                if ui.button("Clear editor").clicked() {
+                    self.terminal.program.clear();
+                }
+            });
+            ui.small(format!(
+                "One or many lines; input is paced at {} and newlines become carriage returns.",
+                self.config.peripherals.terminal_speed.label()
+            ));
 
-        let editor_height = (ui.available_height() - 8.0).max(80.0);
-        ui.add_sized(
-            [ui.available_width(), editor_height],
-            egui::TextEdit::multiline(&mut self.terminal.program)
-                .font(egui::TextStyle::Monospace)
-                .desired_width(f32::INFINITY),
-        );
+            let editor_height = (ui.available_height() - 8.0).max(80.0);
+            ui.add_sized(
+                [ui.available_width(), editor_height],
+                egui::TextEdit::multiline(&mut self.terminal.program)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY),
+            );
+        });
     }
 
     fn draw_terminal_output(&self, ui: &mut egui::Ui) {
-        egui::Frame::group(ui.style()).show(ui, |ui| {
+        super::collapsible_section(ui, "Terminal output", true, |ui| {
             let output_height = ui.available_height();
             egui::ScrollArea::vertical()
                 .stick_to_bottom(true)
