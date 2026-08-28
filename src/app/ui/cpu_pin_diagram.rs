@@ -1,5 +1,7 @@
 use super::super::egui;
-use crate::backend::{BusMachineCycle, BusTeachingSnapshot, BusTState};
+use crate::backend::{
+    BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
+};
 
 const DIAGRAM_HEIGHT: f32 = 424.0;
 const BODY_MIN_WIDTH: f32 = 150.0;
@@ -27,6 +29,7 @@ enum PinKind {
     Data(u8),
     Control(ControlPin),
     Power(&'static str),
+    Clock(&'static str),
     Ground,
     Unmodeled(&'static str),
 }
@@ -50,16 +53,16 @@ const LEFT_PINS: [PinDef; 20] = [
     PinDef { number: 8, label: "D2", kind: PinKind::Data(2) },
     PinDef { number: 9, label: "D1", kind: PinKind::Data(1) },
     PinDef { number: 10, label: "D0", kind: PinKind::Data(0) },
-    PinDef { number: 11, label: "-5V", kind: PinKind::Power("-5 V supply") },
+    PinDef { number: 11, label: "-5V", kind: PinKind::Power("-5 V supply rail") },
     PinDef { number: 12, label: "RESET", kind: PinKind::Control(ControlPin::Reset) },
     PinDef { number: 13, label: "HOLD", kind: PinKind::Control(ControlPin::Hold) },
     PinDef { number: 14, label: "INT", kind: PinKind::Unmodeled("Interrupt input is not wired to the current S-100 peripheral model yet.") },
-    PinDef { number: 15, label: "PHI2", kind: PinKind::Unmodeled("Clock phase PHI2 is below the emulator's T-state abstraction and is not synthesized.") },
+    PinDef { number: 15, label: "PHI2", kind: PinKind::Clock("Clock phase PHI2 is physically present when powered, but phase edges are below the emulator's T-state abstraction.") },
     PinDef { number: 16, label: "INTE", kind: PinKind::Control(ControlPin::Inte) },
     PinDef { number: 17, label: "DBIN", kind: PinKind::Control(ControlPin::Dbin) },
     PinDef { number: 18, label: "/WR", kind: PinKind::Control(ControlPin::WrN) },
     PinDef { number: 19, label: "SYNC", kind: PinKind::Control(ControlPin::Sync) },
-    PinDef { number: 20, label: "+5V", kind: PinKind::Power("+5 V supply") },
+    PinDef { number: 20, label: "+5V", kind: PinKind::Power("+5 V supply rail") },
 ];
 
 const RIGHT_PINS: [PinDef; 20] = [
@@ -75,13 +78,13 @@ const RIGHT_PINS: [PinDef; 20] = [
     PinDef { number: 31, label: "A5", kind: PinKind::Address(5) },
     PinDef { number: 30, label: "A4", kind: PinKind::Address(4) },
     PinDef { number: 29, label: "A3", kind: PinKind::Address(3) },
-    PinDef { number: 28, label: "+12V", kind: PinKind::Power("+12 V supply") },
+    PinDef { number: 28, label: "+12V", kind: PinKind::Power("+12 V supply rail") },
     PinDef { number: 27, label: "A2", kind: PinKind::Address(2) },
     PinDef { number: 26, label: "A1", kind: PinKind::Address(1) },
     PinDef { number: 25, label: "A0", kind: PinKind::Address(0) },
     PinDef { number: 24, label: "WAIT", kind: PinKind::Control(ControlPin::Wait) },
     PinDef { number: 23, label: "READY", kind: PinKind::Control(ControlPin::Ready) },
-    PinDef { number: 22, label: "PHI1", kind: PinKind::Unmodeled("Clock phase PHI1 is below the emulator's T-state abstraction and is not synthesized.") },
+    PinDef { number: 22, label: "PHI1", kind: PinKind::Clock("Clock phase PHI1 is physically present when powered, but phase edges are below the emulator's T-state abstraction.") },
     PinDef { number: 21, label: "HLDA", kind: PinKind::Control(ControlPin::Hlda) },
 ];
 
@@ -108,26 +111,38 @@ fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool
     }
 }
 
-fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef) -> PinState {
+fn cpu_bus_pin_levels_available(snapshot: BusTeachingSnapshot) -> bool {
+    snapshot.accuracy != BusTeachingAccuracy::ControlState
+}
+
+fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinState {
     match pin.kind {
         PinKind::Address(bit) => {
-            let level = snapshot.address.map(|value| value & (1u16 << bit) != 0);
+            let level = if cpu_bus_pin_levels_available(snapshot) {
+                snapshot.address.map(|value| value & (1u16 << bit) != 0)
+            } else {
+                None
+            };
             PinState {
                 level,
                 asserted: None,
-                state_text: level.map(|v| if v { "1" } else { "0" }).unwrap_or("?").into(),
-                note: "Address-bus output bit. HIGH/LOW is the electrical logic level; address bits do not have an asserted/inactive meaning.",
+                state_text: level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into(),
+                note: "8080 address-output pin. In CONTROL STATE the S-100/front-panel bus may already have a value, but CPU A0-A15 are left unknown until a real T-state sample exists.",
                 modeled: level.is_some(),
                 static_pin: false,
             }
         }
         PinKind::Data(bit) => {
-            let level = snapshot.data.map(|value| value & (1u8 << bit) != 0);
+            let level = if cpu_bus_pin_levels_available(snapshot) {
+                snapshot.data.map(|value| value & (1u8 << bit) != 0)
+            } else {
+                None
+            };
             PinState {
                 level,
                 asserted: None,
-                state_text: level.map(|v| if v { "1" } else { "0" }).unwrap_or("?").into(),
-                note: "Bidirectional data-bus bit. Its direction/purpose depends on the current T-state and machine cycle; see the bus summary below the package.",
+                state_text: level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into(),
+                note: "8080 bidirectional data pin. In CONTROL STATE it is deliberately not inferred from the S-100/front-panel bus; see the bus summary below.",
                 modeled: level.is_some(),
                 static_pin: false,
             }
@@ -140,14 +155,26 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef) -> PinState {
                 (Some(false), Some(true)) => "LOW ASSERTED".into(),
                 (Some(true), Some(false)) => "HIGH inactive".into(),
                 (Some(false), Some(false)) => "LOW inactive".into(),
-                _ => "?".into(),
+                _ => if powered { "UNKNOWN / NO SAMPLE".into() } else { "UNPOWERED".into() },
             };
             PinState { level, asserted, state_text, note, modeled: level.is_some(), static_pin: false }
         }
         PinKind::Power(note) => PinState {
-            level: None,
+            level: Some(powered),
             asserted: None,
-            state_text: "POWER".into(),
+            state_text: if powered { "POWER ON".into() } else { "POWER OFF".into() },
+            note,
+            modeled: true,
+            static_pin: true,
+        },
+        PinKind::Clock(note) => PinState {
+            level: Some(powered),
+            asserted: None,
+            state_text: if powered {
+                "CLOCK PRESENT - phase not modeled".into()
+            } else {
+                "CLOCK OFF".into()
+            },
             note,
             modeled: true,
             static_pin: true,
@@ -155,15 +182,15 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef) -> PinState {
         PinKind::Ground => PinState {
             level: Some(false),
             asserted: None,
-            state_text: "0 V".into(),
-            note: "Ground reference pin.",
+            state_text: "0 V reference".into(),
+            note: "Ground reference connection.",
             modeled: true,
             static_pin: true,
         },
         PinKind::Unmodeled(note) => PinState {
             level: None,
             asserted: None,
-            state_text: "NOT MODELED".into(),
+            state_text: if powered { "NOT WIRED / NOT MODELED".into() } else { "UNPOWERED".into() },
             note,
             modeled: false,
             static_pin: false,
@@ -176,6 +203,12 @@ fn data_bus_context(snapshot: BusTeachingSnapshot) -> (&'static str, &'static st
         return ("CPU -> S-100", "STATUS BYTE");
     }
     match snapshot.machine_cycle {
+        BusMachineCycle::PowerOff => ("off", "UNPOWERED"),
+        BusMachineCycle::PowerOnUndefined => ("S-100 chassis", "POWER-ON BUS / CPU UNDEFINED"),
+        BusMachineCycle::ResetAsserted => ("front panel", "RESET CHECKOUT BUS"),
+        BusMachineCycle::ResetReleasedStopped | BusMachineCycle::ResetReleasedRunning => {
+            ("S-100 chassis", "RESET-RELEASE BUS")
+        }
         BusMachineCycle::InstructionFetch => ("S-100 -> CPU", "OPCODE"),
         BusMachineCycle::MemoryRead => ("S-100 -> CPU", "MEMORY DATA"),
         BusMachineCycle::StackRead => ("S-100 -> CPU", "STACK DATA"),
@@ -192,10 +225,17 @@ fn data_bus_context(snapshot: BusTeachingSnapshot) -> (&'static str, &'static st
 }
 
 fn address_bus_context(snapshot: BusTeachingSnapshot) -> &'static str {
-    if snapshot.pins.hlda == Some(true) || snapshot.t_state == BusTState::Hold {
-        "CPU bus released"
-    } else {
-        "CPU -> S-100"
+    match snapshot.machine_cycle {
+        BusMachineCycle::PowerOff => "bus unpowered",
+        BusMachineCycle::PowerOnUndefined => "S-100 power-on value; CPU A pins undefined",
+        BusMachineCycle::ResetAsserted => "front panel owns S-100 during RESET",
+        BusMachineCycle::ResetReleasedStopped | BusMachineCycle::ResetReleasedRunning => {
+            "S-100 reset-release state; no CPU T-state sampled"
+        }
+        _ if snapshot.pins.hlda == Some(true) || snapshot.t_state == BusTState::Hold => {
+            "CPU bus released"
+        }
+        _ => "CPU -> S-100",
     }
 }
 
@@ -208,12 +248,13 @@ fn draw_pin(
     wire_len: f32,
     pin: PinDef,
     snapshot: BusTeachingSnapshot,
+    powered: bool,
 ) {
     let spacing = body.height() / 21.0;
     let y = body.top() + spacing * (row as f32 + 1.0);
     let body_x = if left_side { body.left() } else { body.right() };
     let terminal_x = if left_side { body_x - wire_len } else { body_x + wire_len };
-    let state = pin_state(snapshot, pin);
+    let state = pin_state(snapshot, pin, powered);
 
     let visuals = ui.visuals();
     let high_color = visuals.selection.stroke.color;
@@ -223,7 +264,11 @@ fn draw_pin(
     let asserted_color = visuals.warn_fg_color;
 
     let line_color = if state.static_pin {
-        neutral_color
+        match state.level {
+            Some(true) => high_color,
+            Some(false) => low_color,
+            None => neutral_color,
+        }
     } else if !state.modeled {
         unknown_color
     } else {
@@ -301,6 +346,10 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
 
     ui.add_space(3.0);
     ui.horizontal(|ui| {
+        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("STATE").strong()));
+        ui.monospace(snapshot.machine_cycle.label());
+    });
+    ui.horizontal(|ui| {
         ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("ADDRESS").strong()));
         ui.add_sized([196.0, 20.0], egui::Label::new(egui::RichText::new(address).monospace()));
         ui.weak(address_bus_context(snapshot));
@@ -311,12 +360,20 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
         ui.add_sized([118.0, 20.0], egui::Label::new(egui::RichText::new(data_direction).monospace()));
         ui.weak(data_purpose);
     });
-    ui.small("Bright lead = HIGH, dim lead = LOW, outer amber ring = signal ASSERTED. /WR demonstrates why LOW can still mean asserted. Gray '?' pins are deliberately not fabricated.");
+    if snapshot.accuracy == BusTeachingAccuracy::ControlState {
+        ui.small("CONTROL STATE: ADDRESS/DATA above are the S-100/front-panel bus. CPU A/D package pins remain '?' until an actual T-state is sampled.");
+    } else {
+        ui.small("Bright lead = HIGH, dim lead = LOW, outer amber ring = signal ASSERTED. /WR demonstrates why LOW can still mean asserted. Gray '?' pins are deliberately not fabricated.");
+    }
 }
 
 /// Draw the live Intel 8080A package from code so every pin remains tied to the
-/// exact BusTeachingSnapshot rather than to a decorative/static image asset.
-pub(super) fn draw_8080a_package(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
+/// teaching contract rather than to a decorative/static image asset.
+pub(super) fn draw_8080a_package(
+    ui: &mut egui::Ui,
+    snapshot: BusTeachingSnapshot,
+    powered: bool,
+) {
     let width = ui.available_width().max(360.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, DIAGRAM_HEIGHT), egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -335,7 +392,14 @@ pub(super) fn draw_8080a_package(ui: &mut egui::Ui, snapshot: BusTeachingSnapsho
     painter.rect_stroke(
         body,
         egui::CornerRadius::same(8),
-        egui::Stroke::new(1.7_f32, visuals.widgets.noninteractive.fg_stroke.color),
+        egui::Stroke::new(
+            1.7_f32,
+            if powered {
+                visuals.widgets.noninteractive.fg_stroke.color
+            } else {
+                visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.45)
+            },
+        ),
         egui::StrokeKind::Inside,
     );
 
@@ -358,21 +422,21 @@ pub(super) fn draw_8080a_package(ui: &mut egui::Ui, snapshot: BusTeachingSnapsho
         egui::Align2::CENTER_CENTER,
         "INTEL 8080A",
         egui::FontId::monospace(19.0),
-        visuals.strong_text_color(),
+        if powered { visuals.strong_text_color() } else { visuals.weak_text_color() },
     );
     painter.text(
         body.center() + egui::vec2(0.0, 12.0),
         egui::Align2::CENTER_CENTER,
-        "DIP-40",
+        if powered { "DIP-40" } else { "POWER OFF" },
         egui::FontId::monospace(11.0),
         visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.7),
     );
 
     for (row, pin) in LEFT_PINS.iter().copied().enumerate() {
-        draw_pin(ui, &painter, body, row, true, wire_len, pin, snapshot);
+        draw_pin(ui, &painter, body, row, true, wire_len, pin, snapshot, powered);
     }
     for (row, pin) in RIGHT_PINS.iter().copied().enumerate() {
-        draw_pin(ui, &painter, body, row, false, wire_len, pin, snapshot);
+        draw_pin(ui, &painter, body, row, false, wire_len, pin, snapshot, powered);
     }
 
     draw_bus_summary(ui, snapshot);
