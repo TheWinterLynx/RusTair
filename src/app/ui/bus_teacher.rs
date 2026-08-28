@@ -1,5 +1,7 @@
 use super::super::{egui, RusTairApp};
-use crate::backend::{BusMachineCycle, BusTeachingSnapshot, BusTState};
+use crate::backend::{
+    BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
+};
 use crate::decoder8080::decode_8080;
 
 const SIGNAL_ROW_HEIGHT: f32 = 20.0;
@@ -73,6 +75,25 @@ impl RusTairApp {
     }
 
     fn instruction_text_for_bus_snapshot(&mut self, snapshot: BusTeachingSnapshot) -> String {
+        if snapshot.accuracy == BusTeachingAccuracy::ControlState {
+            return match snapshot.machine_cycle {
+                BusMachineCycle::PowerOff => "8080A unpowered - no CPU execution state".into(),
+                BusMachineCycle::PowerOnUndefined => {
+                    "POWER ON - 8080 internal power-on state is undefined until RESET".into()
+                }
+                BusMachineCycle::ResetAsserted => {
+                    "RESET HIGH - CPU reset state forced; normal instruction fetch is not executing".into()
+                }
+                BusMachineCycle::ResetReleasedStopped => {
+                    "RESET released - PC=$0000, STOP/READY low; awaiting a real CPU T-state".into()
+                }
+                BusMachineCycle::ResetReleasedRunning => {
+                    "RESET released - PC=$0000, RUN active; awaiting first real CPU T-state".into()
+                }
+                _ => "CPU control state - no T-state sample".into(),
+            };
+        }
+
         let Some(address) = snapshot.instruction_address else {
             return "Instruction: --".into();
         };
@@ -148,23 +169,39 @@ impl RusTairApp {
             );
             ui.strong(accuracy);
         });
-        ui.small(if capabilities.exact_t_state_timing {
-            "Cycle Accurate exposes the real machine-cycle, T-state, 8080 pins and latched S-100 status driven by the CPU-board sample."
-        } else {
-            "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin/status-latch values remain unknown."
-        });
+        match snapshot.map(|snapshot| snapshot.accuracy) {
+            Some(BusTeachingAccuracy::ControlState) => ui.small(
+                "POWER/RESET/READY/S-100 control state is known, but no CPU T-state is claimed. This is deliberate: the Teacher never fabricates T1 just to animate the diagram.",
+            ),
+            _ if capabilities.exact_t_state_timing => ui.small(
+                "Cycle Accurate exposes the real machine-cycle, T-state, 8080 pins and latched S-100 status driven by the CPU-board sample.",
+            ),
+            _ => ui.small(
+                "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin/status-latch values remain unknown.",
+            ),
+        };
     }
 
     fn draw_bus_teacher_controls(&mut self, ui: &mut egui::Ui) {
         let panel = self.machine.front_panel_state();
         let cpu = self.machine.intel8080_state();
         let exact = self.machine.capabilities().exact_t_state_timing;
-        let can_step = panel.powered && !panel.running && !cpu.halted.unwrap_or(false);
+        let reset_held = self
+            .machine
+            .bus_teaching_snapshot()
+            .is_some_and(|snapshot| snapshot.reset == Some(true));
+        let can_step = panel.powered
+            && !panel.running
+            && !reset_held
+            && !cpu.halted.unwrap_or(false);
 
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
-                    panel.powered && !panel.running && !cpu.halted.unwrap_or(false),
+                    panel.powered
+                        && !panel.running
+                        && !reset_held
+                        && !cpu.halted.unwrap_or(false),
                     egui::Button::new("Continue"),
                 )
                 .clicked()
@@ -202,9 +239,13 @@ impl RusTairApp {
                 self.machine.debugger_step_instruction();
             }
         });
-        ui.small(
-            "Debugger T/M stepping is educational. The physical Altair SINGLE STEP control remains one machine cycle in Cycle Accurate mode.",
-        );
+        if reset_held {
+            ui.small("RESET is physically asserted: execution controls remain disabled until RESET is released.");
+        } else {
+            ui.small(
+                "Debugger T/M stepping is educational. The physical Altair SINGLE STEP control remains one machine cycle in Cycle Accurate mode.",
+            );
+        }
         if !exact {
             ui.small("Fast mode disables exact T-state and machine-cycle stepping.");
         }
@@ -246,14 +287,18 @@ impl RusTairApp {
         );
         ui.add_space(3.0);
 
-        let machine_cycle = format!(
-            "M{}  {}",
-            snapshot
-                .machine_cycle_index
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "?".into()),
-            snapshot.machine_cycle.label(),
-        );
+        let machine_cycle = if snapshot.accuracy == BusTeachingAccuracy::ControlState {
+            snapshot.machine_cycle.label().to_string()
+        } else {
+            format!(
+                "M{}  {}",
+                snapshot
+                    .machine_cycle_index
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "?".into()),
+                snapshot.machine_cycle.label(),
+            )
+        };
         let address = Self::hex16(snapshot.address);
         let data = Self::hex8(snapshot.data);
         let status = Self::hex8(snapshot.status_word);
@@ -277,7 +322,7 @@ impl RusTairApp {
             "T-state",
             snapshot.t_state.label(),
         );
-        Self::draw_timing_row(ui, "Address bus", &address, "Data bus", &data);
+        Self::draw_timing_row(ui, "S-100 address", &address, "S-100 data", &data);
         Self::draw_timing_row(
             ui,
             "Latched status",
@@ -406,13 +451,32 @@ impl RusTairApp {
             );
         });
         ui.small(
-            "RAW is the captured S-100 status latch/electrical state. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
+            "RAW is the captured S-100 status/control state. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
         );
     }
 
     fn why_lines(snapshot: BusTeachingSnapshot) -> Vec<String> {
         let mut lines = Vec::new();
         match snapshot.machine_cycle {
+            BusMachineCycle::PowerOff => lines.push(
+                "POWER OFF: the 8080 package still exists physically, but its supply rails and clocks are not active and no CPU signal level is claimed.".into(),
+            ),
+            BusMachineCycle::PowerOnUndefined => {
+                lines.push("POWER ON: the +5 V, +12 V and -5 V rails and CPU clocks are present.".into());
+                lines.push("Before RESET, the Intel 8080 power-on internal state is undefined; RusTair deliberately does not turn that uncertainty into fake pin values.".into());
+            }
+            BusMachineCycle::ResetAsserted => {
+                lines.push("RESET is HIGH / ASSERTED. The CPU reset path forces PC to 0000h, disables INTE and leaves normal instruction execution suspended.".into());
+                lines.push("The Altair Display/Control board drives the documented RESET checkout display (ADDRESS/DATA all ones, status lamps off); those S-100 values are not mislabeled as CPU A/D output pins.".into());
+            }
+            BusMachineCycle::ResetReleasedStopped => {
+                lines.push("RESET is LOW again. The CPU is prepared at PC=0000h while the RUN/STOP latch remains STOP, so READY is LOW and the front panel shows the stopped instruction-fetch state.".into());
+                lines.push("No CPU T-state has executed yet, so A0-A15/D0-D7 remain '?' in the package diagram until Step T or RUN produces a real sample.".into());
+            }
+            BusMachineCycle::ResetReleasedRunning => {
+                lines.push("RESET is LOW and the RUN latch is active. The processor is ready to begin at PC=0000h.".into());
+                lines.push("The next execution service produces the real M1/T1 sample; the Teacher does not synthesize it in advance.".into());
+            }
             BusMachineCycle::InstructionFetch => {
                 lines.push("M1 fetch: the processor is obtaining an opcode from memory.".into())
             }
@@ -484,6 +548,9 @@ impl RusTairApp {
             BusTState::Hold => lines.push(
                 "THOLD: the processor has relinquished the bus after acknowledging HOLD.".into(),
             ),
+            BusTState::Unknown if snapshot.accuracy == BusTeachingAccuracy::ControlState => {
+                lines.push("No T-state is shown because this is an asynchronous/control lifecycle state, not a fabricated CPU clock step.".into())
+            }
             BusTState::Unknown => lines.push(
                 "Exact T-state is unavailable in the instruction-level Fast core.".into(),
             ),
@@ -507,7 +574,7 @@ impl RusTairApp {
             lines.push("W/O is OFF: the physical /WO convention identifies a write/output cycle.".into());
         }
         if snapshot.status.wait == Some(true) {
-            lines.push("WAIT is ON because the CPU is stopped/waiting on READY.".into());
+            lines.push("WAIT is ON because the CPU/front-panel state is stopped/waiting on READY.".into());
         }
         if snapshot.status.hlda == Some(true) {
             lines.push("HLDA is ON because the CPU has granted the external HOLD request.".into());
@@ -552,7 +619,7 @@ impl RusTairApp {
             if let Some(snapshot) = snapshot {
                 self.draw_bus_teacher_timing(ui, snapshot);
             } else {
-                ui.label("No sample yet. Pause Cycle Accurate and press Step T, or run briefly.");
+                ui.label("No teaching state is available.");
             }
         });
         ui.separator();
@@ -560,7 +627,7 @@ impl RusTairApp {
             if let Some(snapshot) = snapshot {
                 Self::draw_bus_teacher_why(ui, snapshot);
             } else {
-                ui.label("No captured signal sample to explain yet.");
+                ui.label("No captured signal/control state to explain yet.");
             }
         });
     }
@@ -571,6 +638,7 @@ impl RusTairApp {
         snapshot: Option<BusTeachingSnapshot>,
         state: &mut BusTeacherUiState,
     ) {
+        let powered = self.machine.front_panel_state().powered;
         super::collapsible_section(ui, "Intel 8080 pins", true, |ui| {
             ui.horizontal(|ui| {
                 if ui.selectable_label(!state.pin_table_view, "Package diagram").clicked() {
@@ -587,10 +655,10 @@ impl RusTairApp {
                 if state.pin_table_view {
                     Self::draw_bus_teacher_pins(ui, snapshot);
                 } else {
-                    super::cpu_pin_diagram::draw_8080a_package(ui, snapshot);
+                    super::cpu_pin_diagram::draw_8080a_package(ui, snapshot, powered);
                 }
             } else {
-                ui.label("No pin sample yet.");
+                ui.label("No pin/control state available.");
             }
         });
         ui.separator();
@@ -598,7 +666,7 @@ impl RusTairApp {
             if let Some(snapshot) = snapshot {
                 Self::draw_bus_teacher_status(ui, snapshot);
             } else {
-                ui.label("No S-100 sample yet.");
+                ui.label("No S-100 state available.");
             }
         });
     }
