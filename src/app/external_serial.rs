@@ -220,9 +220,11 @@ impl RusTairApp {
 
     fn draw_external_serial_window(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("external-tcp-top").show(ctx, |ui| {
-            self.draw_external_connection_selector(ui);
-            ui.separator();
-            self.draw_external_serial_config_controls(ui, false);
+            ui::collapsible_section(ui, "TCP endpoint configuration", true, |ui| {
+                self.draw_external_connection_selector(ui);
+                ui.separator();
+                self.draw_external_serial_config_controls(ui, false);
+            });
         });
         egui::TopBottomPanel::bottom("external-tcp-status").show(ctx, |ui| { ui.small(self.external_tcp_status_text()); });
 
