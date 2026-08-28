@@ -248,6 +248,10 @@ impl RusTairApp {
                         self.open_memory_activity(ui.ctx());
                         state.message = Some("Memory activity opened in an independent window.".into());
                     }
+                    if ui.button("Bus / T-state teacher").clicked() {
+                        self.open_bus_teacher(ui.ctx());
+                        state.message = Some("Bus / T-state Teacher opened in an independent window.".into());
+                    }
                 });
                 ui.small("Debugger Step instruction advances to the next 8080 instruction boundary. Step over/out also require the expected stack depth, so revisiting the same PC inside a deeper call does not stop early. On Cycle Accurate, the architectural PC may move during an instruction; EXEC remains the stable opcode boundary used by debugger controls.");
 
@@ -503,6 +507,7 @@ impl RusTairApp {
 
         self.show_call_stack_viewport(parent_ctx, &mut state);
         self.show_memory_activity_viewport(parent_ctx);
+        self.show_bus_teacher_viewport(parent_ctx);
         Self::store_debugger_controls_state(parent_ctx, state);
     }
 }
