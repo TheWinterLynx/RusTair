@@ -75,6 +75,30 @@ fn cycle_machine_cycle_step_completes_one_fetch_cycle() {
 }
 
 #[test]
+fn cycle_teacher_retains_s100_status_latch_during_internal_cycle() {
+    // DAD B performs its arithmetic through an internal machine cycle after the
+    // opcode fetch. No new S-100 status byte is emitted for that internal work,
+    // so the Display/Control status latch must retain the preceding M1 value.
+    let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x09, 0x76]);
+    let mut saw_internal = false;
+
+    for _ in 0..16 {
+        host.debugger_step_t_state();
+        let snapshot = host.bus_teaching_snapshot().expect("Cycle teaching sample");
+        if snapshot.machine_cycle == BusMachineCycle::Internal {
+            assert_eq!(snapshot.status_word, Some(0xA2));
+            assert_eq!(snapshot.status.memr, Some(true));
+            assert_eq!(snapshot.status.m1, Some(true));
+            assert_eq!(snapshot.status.wo, Some(true));
+            saw_internal = true;
+            break;
+        }
+    }
+
+    assert!(saw_internal, "DAD B should enter an internal machine cycle");
+}
+
+#[test]
 fn t_state_stepping_still_closes_shared_instruction_history() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00, 0x76]);
     host.set_instruction_trace_enabled(true);
