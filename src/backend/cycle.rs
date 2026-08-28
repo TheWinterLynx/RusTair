@@ -32,6 +32,10 @@ pub struct CycleAccurateMachineBackend {
     /// Historical teaching sample only. It is a derived observation of the
     /// canonical CPU/S-100 state, never an authority used to drive the machine.
     last_teaching_snapshot: Option<BusTeachingSnapshot>,
+    /// STOP may be asserted while HLDA suppresses PSYNC. Once the first resumed
+    /// T1 captures the physical STOP latch, finish the real T2 -> TW handshake
+    /// before host execution freezes.
+    stop_wait_park_pending: bool,
 }
 
 impl Default for CycleAccurateMachineBackend {
@@ -42,6 +46,7 @@ impl Default for CycleAccurateMachineBackend {
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
             last_teaching_snapshot: None,
+            stop_wait_park_pending: false,
         };
         backend.sync_machine_cpu();
         backend
@@ -323,17 +328,48 @@ impl CycleAccurateMachineBackend {
         self.capture_teaching_snapshot(&trace, visible_data, ready);
 
         // A STOP pressed while HLDA was active cannot be captured until the CPU
-        // owns the bus again and emits the next PSYNC. Apply the pending physical
-        // switch only after recording that exact T1 sample; the subsequent
-        // stable STOP-WAIT control state is a later electrical instant.
-        if trace.t_state == TState::T1 && trace.pins.sync {
-            self.machine.cycle_capture_pending_stop_at_psync();
+        // owns the bus again and emits the next PSYNC. Capture the R-S latch only
+        // after recording that real T1. The service loop then clocks the genuine
+        // T2 -> first TW transition before freezing host execution.
+        if trace.t_state == TState::T1
+            && trace.pins.sync
+            && self.machine.cycle_capture_pending_stop_at_psync()
+        {
+            self.stop_wait_park_pending = true;
         }
         trace
     }
 
     fn tick_once(&mut self, ready: bool) -> TickTrace {
         self.tick_once_with_front_panel_data(ready, None, true)
+    }
+
+    /// Complete one real STOP handshake after the RUN latch has lowered READY.
+    /// We expose the first actual TW sample and then freeze host execution; we do
+    /// not invent an arbitrary number of repeated wait states while the human
+    /// operator leaves the machine stopped.
+    fn park_physical_stop_at_first_tw(&mut self) {
+        self.stop_wait_park_pending = false;
+        let lines = self.machine.bus.cpu_control_lines();
+        if !self.machine.powered
+            || lines.reset
+            || lines.ready
+            || self.cpu.is_halted()
+            || self.cpu.is_holding()
+        {
+            return;
+        }
+
+        for _ in 0..8 {
+            let trace = self.tick_once_with_front_panel_data(false, None, false);
+            if trace.fault.is_some() || self.cpu.is_halted() || self.cpu.is_holding() {
+                break;
+            }
+            if trace.t_state == TState::Tw {
+                break;
+            }
+        }
+        self.refresh_teaching_visible_lamps();
     }
 
     pub(super) fn debugger_step_t_state_exact(&mut self) -> BackendResult<()> {
@@ -348,7 +384,9 @@ impl CycleAccurateMachineBackend {
             return Ok(());
         }
         let _ = self.tick_once(true);
-        self.machine.set_running(false);
+        // Debugger pause is not a physical STOP transition. Lower READY without
+        // fabricating WAIT; retain the exact T-state the user just requested.
+        self.machine.cycle_set_running(false);
         self.refresh_teaching_visible_lamps();
         Ok(())
     }
@@ -390,7 +428,7 @@ impl CycleAccurateMachineBackend {
 
             if self.at_instruction_boundary() {
                 if observer(self, CycleExecutionEvent::BeforeInstruction) {
-                    self.machine.set_running(false);
+                    self.machine.cycle_set_running(false);
                     self.refresh_teaching_visible_lamps();
                     break;
                 }
@@ -404,11 +442,15 @@ impl CycleAccurateMachineBackend {
             if trace.fault.is_some() {
                 break;
             }
+            if self.stop_wait_park_pending {
+                self.park_physical_stop_at_first_tw();
+                break;
+            }
 
             if trace.instruction_complete
                 && observer(self, CycleExecutionEvent::InstructionComplete)
             {
-                self.machine.set_running(false);
+                self.machine.cycle_set_running(false);
                 self.refresh_teaching_visible_lamps();
                 break;
             }
@@ -473,6 +515,9 @@ impl CycleAccurateMachineBackend {
                 }
             }
         }
+        // EXAMINE has its own historical sequencer and still uses the established
+        // stable STOP-WAIT approximation. Its T-state parking is audited
+        // separately from the physical RUN/STOP correction above.
         self.machine.set_running(false);
         self.refresh_teaching_visible_lamps();
     }
@@ -558,6 +603,7 @@ impl CycleAccurateMachineBackend {
             reset: lines.reset,
             ..Cpu8080Inputs::default()
         });
+        self.stop_wait_park_pending = false;
         self.sync_machine_cpu();
     }
 }
@@ -598,13 +644,19 @@ impl MachineBackend for CycleAccurateMachineBackend {
             self.cpu = Cpu8080Cycle::new();
         }
         self.last_teaching_snapshot = None;
+        self.stop_wait_park_pending = false;
         self.sync_machine_cpu();
         Ok(())
     }
 
-    fn run(&mut self) -> BackendResult<()> { self.machine.set_running(true); Ok(()) }
+    fn run(&mut self) -> BackendResult<()> {
+        self.machine.cycle_set_running(true);
+        Ok(())
+    }
     fn halt(&mut self) -> BackendResult<()> {
-        self.machine.set_running(false);
+        // Host/debugger pause is not the physical STOP switch. Change the RUN
+        // request/READY input without asserting a synthetic WAIT output.
+        self.machine.cycle_set_running(false);
         self.refresh_teaching_visible_lamps();
         Ok(())
     }
@@ -613,9 +665,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
         let lines = self.machine.bus.cpu_control_lines();
         if self.machine.powered && !self.machine.running && !lines.reset && !lines.hold {
             self.run_one_machine_cycle();
-            // SINGLE STEP releases READY only for the selected machine cycle.
-            // Reassert STOP afterwards without replacing the last real bus
-            // address/data/status sample produced by that cycle.
+            // SINGLE STEP has a separate front-panel sequencer. Preserve its
+            // established behavior in this commit; its next-PSYNC/TW parking is
+            // audited independently from physical RUN/STOP.
             self.machine.set_running(false);
             self.refresh_teaching_visible_lamps();
         }
@@ -634,6 +686,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
                 if trace.fault.is_some() {
                     break;
                 }
+                if self.stop_wait_park_pending {
+                    self.park_physical_stop_at_first_tw();
+                    break;
+                }
             }
         }
         Ok(())
@@ -648,6 +704,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
         self.sync_machine_cpu();
+        let was_running = self.machine.running;
         if !run
             && self.machine.powered
             && self.machine.running
@@ -658,6 +715,18 @@ impl MachineBackend for CycleAccurateMachineBackend {
         }
         self.machine
             .cycle_assert_run_stop(run, self.cpu.is_halted(), self.cpu.is_holding());
+
+        // For a directly captured STOP, PSYNC/T1 has already occurred. READY is
+        // now low, so clock the exact T2 and first TW instead of turning WAIT on
+        // merely because READY changed.
+        if !run
+            && was_running
+            && !self.machine.running
+            && !self.cpu.is_halted()
+            && !self.cpu.is_holding()
+        {
+            self.park_physical_stop_at_first_tw();
+        }
         if !run {
             self.refresh_teaching_visible_lamps();
         }
@@ -670,12 +739,14 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.last_teaching_snapshot = None;
+        self.stop_wait_park_pending = false;
         self.machine.assert_front_panel_reset();
         self.reset_cycle_core_from_s100();
         Ok(())
     }
     fn release_reset(&mut self) -> BackendResult<()> {
         self.machine.release_front_panel_reset();
+        self.stop_wait_park_pending = false;
         self.sync_machine_cpu();
         Ok(())
     }
@@ -906,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_stop_waits_for_next_psync_boundary() {
+    fn physical_stop_waits_for_next_psync_then_enters_real_tw() {
         let mut backend = CycleAccurateMachineBackend::default();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
@@ -915,30 +986,39 @@ mod tests {
         let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
         backend.run().unwrap();
 
-        // Stop is requested after fetch T2. The current M1 is allowed to finish,
-        // then the M2 PSYNC/status T1 is exposed before READY is withdrawn.
+        // Stop is requested after fetch T2. The current M1 finishes, M2 PSYNC/T1
+        // is exposed, READY falls, then the CPU itself traverses T2 and the first
+        // TW. WAIT therefore comes from the exact core, never from !READY.
         backend.service_execution(2).unwrap();
         assert_eq!(backend.cpu().t_state(), TState::T3);
         backend.assert_run_stop(false).unwrap();
 
         assert!(!backend.machine().running);
+        assert!(!backend.machine().bus.cpu_control_lines().ready);
         assert!(backend.machine().wait_led());
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
         assert_eq!(backend.cpu().machine_cycle_index(), 2);
-        assert_eq!(backend.cpu().t_state(), TState::T2);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
+        let teaching = backend.teaching_snapshot().expect("physical STOP must end on an exact TW");
+        assert_eq!(teaching.t_state, TState::Tw.into());
+        assert_eq!(teaching.pins.wait, Some(true));
+        assert_eq!(teaching.ready, Some(false));
+
         let CpuState::Intel8080(stopped) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(stopped.pc, 1);
         assert_eq!(stopped.a, before.a, "STOP at PSYNC must not execute the MVI operand read");
-        assert_eq!(stopped.total_t_states, Some(5));
+        assert_eq!(stopped.total_t_states, Some(7));
 
         backend.release_run_stop(false).unwrap();
         backend.assert_run_stop(true).unwrap();
+        assert!(backend.machine().bus.cpu_control_lines().ready);
+        assert!(backend.machine().wait_led(), "raising READY must not itself fabricate WAIT low");
         backend.release_run_stop(true).unwrap();
         backend.service_execution(2).unwrap();
         let CpuState::Intel8080(resumed) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(resumed.pc, 2);
         assert_eq!(resumed.a, 0x5a);
-        assert_eq!(resumed.total_t_states, Some(7));
+        assert_eq!(resumed.total_t_states, Some(9));
     }
 
     #[test]
@@ -1077,7 +1157,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_pressed_during_hlda_waits_for_first_psync_after_hold_release() {
+    fn stop_pressed_during_hlda_waits_for_first_psync_then_real_tw() {
         let mut backend = CycleAccurateMachineBackend::default();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
@@ -1105,7 +1185,10 @@ mod tests {
         assert!(!backend.machine().running, "held STOP must latch at the resumed T1/PSYNC");
         assert!(!backend.machine().bus.raw_s100_hlda());
         assert!(backend.machine().wait_led());
-        assert_eq!(backend.cpu().t_state(), TState::T2);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
+        let teaching = backend.teaching_snapshot().expect("pending STOP must park on exact TW");
+        assert_eq!(teaching.pins.wait, Some(true));
+        assert_eq!(teaching.ready, Some(false));
 
         backend.release_run_stop(false).unwrap();
     }
