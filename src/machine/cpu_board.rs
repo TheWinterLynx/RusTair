@@ -207,6 +207,12 @@ impl super::AltairBus {
         self.front_panel_deposit(address, value);
     }
 
+    /// Cycle Accurate mutates the external READY input independently of WAIT.
+    /// WAIT is an 8080 output and is updated only by exact CPU-board samples.
+    pub(crate) fn cycle_set_ready_input(&mut self, ready: bool) {
+        self.s100.set_ready_input(ready);
+    }
+
     /// Change only the external HOLD request seen by the cycle-accurate CPU.
     /// HLDA is an 8080 output and must remain whatever the last exact CPU sample
     /// drove until a later `Cpu8080Cycle::tick()` changes it. The generic chassis
@@ -220,6 +226,20 @@ impl super::AltairBus {
 }
 
 impl super::AltairMachine {
+    /// Cycle Accurate RUN-latch mutation. READY follows the Display/Control
+    /// board, but WAIT is deliberately untouched until the real 8080 sample
+    /// acknowledges entry to or exit from TW.
+    pub(crate) fn cycle_set_running(&mut self, run: bool) {
+        if !self.powered || self.bus.reset_asserted() { return; }
+        self.running = run;
+        self.bus.set_run(run);
+        self.bus.cycle_set_ready_input(run);
+        if !run {
+            let address = self.bus.panel_address();
+            self.bus.panel.set_address_latch(address);
+        }
+    }
+
     /// Cycle-accurate RUN/STOP entry point. STOP still records the physical
     /// switch level while HLT or HLDA suppresses PSYNC, but it must not mutate
     /// the R-S RUN latch until a real synchronization opportunity exists.
@@ -235,10 +255,10 @@ impl super::AltairMachine {
 
         if run {
             if !self.bus.reset_asserted() {
-                self.set_running(true);
+                self.cycle_set_running(true);
             }
         } else if self.bus.reset_asserted() || (!cpu_halted && !cpu_holding) {
-            self.set_running(false);
+            self.cycle_set_running(false);
         }
     }
 
@@ -251,7 +271,7 @@ impl super::AltairMachine {
             && self.stop_switch_asserted
             && !self.bus.reset_asserted()
         {
-            self.set_running(false);
+            self.cycle_set_running(false);
             true
         } else {
             false
@@ -432,6 +452,21 @@ mod tests {
         bus.cycle_set_hold_request(false);
         assert!(!bus.s100.signals().hold);
         assert!(bus.s100.signals().hlda, "HLDA must remain CPU-owned until the next exact sample");
+    }
+
+    #[test]
+    fn cycle_run_ready_change_does_not_fabricate_wait_output() {
+        let mut machine = super::super::AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.bus.s100.drive_cpu_t_state(
+            Some(0), Some(0xa2), Some(0xa2), false, false, true, false, false,
+        );
+        machine.cycle_set_running(false);
+        let stopped_request = machine.bus.s100.signals();
+        assert!(!stopped_request.run);
+        assert!(!stopped_request.ready);
+        assert!(!stopped_request.wait, "lowering READY is not itself a WAIT acknowledgement");
     }
 
     #[test]
