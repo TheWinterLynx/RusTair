@@ -220,8 +220,18 @@ fn cycle_backend_mirror_stays_synced_across_cpu_and_chassis_transitions() {
 
 #[test]
 fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path() {
+    // A real 8080 does not define A/flags/general-register/SP contents after
+    // power-on, and RESET deliberately does not clear those programmer-visible
+    // registers. Two independently powered emulator instances are therefore
+    // allowed to begin with different random values. Make that undefined state
+    // deterministic through real guest instructions before comparing engines.
     let program = [
         0x31, 0x00, 0xf0, // LXI SP,F000h
+        0x01, 0x00, 0x00, // LXI B,0000h
+        0x11, 0x00, 0x00, // LXI D,0000h
+        0x21, 0x00, 0x00, // LXI H,0000h
+        0xaf,             // XRA A -> A=0 and deterministic flags
+        // Workload compared instruction by instruction from here.
         0x3e, 0x12,       // MVI A,12h
         0x06, 0x34,       // MVI B,34h
         0x80,             // ADD B
@@ -235,7 +245,8 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
         0x91,             // SUB C
         0x00,             // NOP
     ];
-    const INSTRUCTION_COUNT: usize = 13;
+    const SETUP_INSTRUCTIONS: usize = 5;
+    const WORKLOAD_INSTRUCTIONS: usize = 13;
 
     let mut fast = NativeMachineBackend::default();
     let mut cycle = CycleAccurateMachineBackend::default();
@@ -247,7 +258,19 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
         backend.load_bytes(0, &program).unwrap();
     }
 
-    for instruction_index in 0..INSTRUCTION_COUNT {
+    for _ in 0..SETUP_INSTRUCTIONS {
+        fast.step().unwrap();
+        cycle_step_instruction(&mut cycle);
+    }
+
+    assert_eq!(
+        intel_state(&mut cycle),
+        intel_state(&mut fast),
+        "backends must agree once guest code initializes RESET-undefined state"
+    );
+    assert_cycle_mirror_matches_authority(&cycle, "after deterministic setup");
+
+    for instruction_index in 0..WORKLOAD_INSTRUCTIONS {
         fast.step().unwrap();
         cycle_step_instruction(&mut cycle);
 
@@ -255,16 +278,16 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
         let cycle_state = intel_state(&mut cycle);
         assert_eq!(
             cycle_state, fast_state,
-            "architectural mismatch after instruction #{instruction_index}"
+            "architectural mismatch after workload instruction #{instruction_index}"
         );
         assert_eq!(
             cycle.peek_memory(0x0200).unwrap(),
             fast.peek_memory(0x0200).unwrap(),
-            "memory mismatch after instruction #{instruction_index}"
+            "memory mismatch after workload instruction #{instruction_index}"
         );
         assert_cycle_mirror_matches_authority(
             &cycle,
-            &format!("differential instruction #{instruction_index}"),
+            &format!("differential workload instruction #{instruction_index}"),
         );
     }
 }
