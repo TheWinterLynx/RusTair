@@ -231,46 +231,57 @@ impl RusTairApp {
             ui.label("Connect a terminal application to an emulated MITS serial port through a raw TCP byte stream.");
             ui.separator();
             let config = self.external_serial.config;
-            if config.listen_scope == TcpListenScope::Loopback {
-                ui.monospace(format!("PuTTY: Connection type = Raw   Host = 127.0.0.1   Port = {}", config.tcp_port));
-            } else {
-                ui.monospace(format!("PuTTY: Connection type = Raw   Host = <this PC's LAN IP>   Port = {}", config.tcp_port));
-            }
-            match config.duplex {
-                TerminalDuplex::FullDuplexRemoteEcho => ui.monospace("PuTTY: Terminal -> Local echo = Force off   Local line editing = Force off"),
-                TerminalDuplex::HalfDuplexLocalEcho => ui.monospace("PuTTY: Terminal -> Local echo = Force on    Local line editing = Force off"),
-            };
-            ui.small("Use Raw rather than Telnet so negotiation bytes never enter the guest serial stream.");
 
-            ui.separator(); ui.strong("Transport state");
-            egui::Grid::new("external-tcp-counters").num_columns(2).show(ui, |ui| {
-                ui.label("Character mode"); ui.monospace(config.character_mode.label()); ui.end_row();
-                ui.label("Terminal duplex"); ui.monospace(config.duplex.label()); ui.end_row();
-                ui.label("Clients"); ui.monospace(self.external_serial.server.client_count().to_string()); ui.end_row();
-                ui.label("Network RX bytes"); ui.monospace(self.external_serial.server.rx_bytes().to_string()); ui.end_row();
-                ui.label("Pending RX bytes"); ui.monospace(self.external_serial.server.rx_pending().to_string()); ui.end_row();
-                ui.label("Altair TX bytes"); ui.monospace(self.external_serial.server.tx_bytes().to_string()); ui.end_row();
-                ui.label("Rejected extra clients"); ui.monospace(self.external_serial.server.rejected_clients().to_string()); ui.end_row();
-                ui.label("Dropped slow-client TX copies"); ui.monospace(self.external_serial.server.dropped_tx_bytes().to_string()); ui.end_row();
+            ui::collapsible_section(ui, "Connection guide", true, |ui| {
+                if config.listen_scope == TcpListenScope::Loopback {
+                    ui.monospace(format!("PuTTY: Connection type = Raw   Host = 127.0.0.1   Port = {}", config.tcp_port));
+                } else {
+                    ui.monospace(format!("PuTTY: Connection type = Raw   Host = <this PC's LAN IP>   Port = {}", config.tcp_port));
+                }
+                match config.duplex {
+                    TerminalDuplex::FullDuplexRemoteEcho => ui.monospace("PuTTY: Terminal -> Local echo = Force off   Local line editing = Force off"),
+                    TerminalDuplex::HalfDuplexLocalEcho => ui.monospace("PuTTY: Terminal -> Local echo = Force on    Local line editing = Force off"),
+                };
+                ui.small("Use Raw rather than Telnet so negotiation bytes never enter the guest serial stream.");
             });
 
-            let peers = self.external_serial.server.peer_addresses();
-            if !peers.is_empty() {
-                ui.separator(); ui.strong("Connected clients");
-                for peer in peers { ui.monospace(peer.to_string()); }
-            }
+            ui.separator();
+            ui::collapsible_section(ui, "Transport state", true, |ui| {
+                egui::Grid::new("external-tcp-counters").num_columns(2).show(ui, |ui| {
+                    ui.label("Character mode"); ui.monospace(config.character_mode.label()); ui.end_row();
+                    ui.label("Terminal duplex"); ui.monospace(config.duplex.label()); ui.end_row();
+                    ui.label("Clients"); ui.monospace(self.external_serial.server.client_count().to_string()); ui.end_row();
+                    ui.label("Network RX bytes"); ui.monospace(self.external_serial.server.rx_bytes().to_string()); ui.end_row();
+                    ui.label("Pending RX bytes"); ui.monospace(self.external_serial.server.rx_pending().to_string()); ui.end_row();
+                    ui.label("Altair TX bytes"); ui.monospace(self.external_serial.server.tx_bytes().to_string()); ui.end_row();
+                    ui.label("Rejected extra clients"); ui.monospace(self.external_serial.server.rejected_clients().to_string()); ui.end_row();
+                    ui.label("Dropped slow-client TX copies"); ui.monospace(self.external_serial.server.dropped_tx_bytes().to_string()); ui.end_row();
+                });
+            });
 
             ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Disconnect client(s)").clicked() { self.external_serial.server.disconnect_all(); self.external_serial.reset_line_timing(); }
-                if ui.button("Clear pending RX").clicked() { self.external_serial.server.clear_rx(); self.external_serial.rx_next_at = None; }
-                if ui.button("Restart listener").clicked() {
-                    self.external_serial.server.restart_on_next_poll(); self.external_serial.reset_line_timing(); ctx.request_repaint();
+            ui::collapsible_section(ui, "Connected clients", true, |ui| {
+                let peers = self.external_serial.server.peer_addresses();
+                if peers.is_empty() {
+                    ui.small("No TCP clients connected.");
+                } else {
+                    for peer in peers { ui.monospace(peer.to_string()); }
                 }
             });
 
             ui.separator();
-            ui.collapsing("How the serial bridge behaves", |ui| {
+            ui::collapsible_section(ui, "Transport actions", true, |ui| {
+                ui.horizontal(|ui| {
+                    if ui.button("Disconnect client(s)").clicked() { self.external_serial.server.disconnect_all(); self.external_serial.reset_line_timing(); }
+                    if ui.button("Clear pending RX").clicked() { self.external_serial.server.clear_rx(); self.external_serial.rx_next_at = None; }
+                    if ui.button("Restart listener").clicked() {
+                        self.external_serial.server.restart_on_next_poll(); self.external_serial.reset_line_timing(); ctx.request_repaint();
+                    }
+                });
+            });
+
+            ui.separator();
+            ui::collapsible_section(ui, "How the serial bridge behaves", false, |ui| {
                 ui.label("• TCP is only the host transport; the guest still sees the selected 88-SIO/88-2SIO UART and normal I/O addresses.");
                 ui.label("• Duplex controls how the attached terminal should display typed input. RusTair does not create local-echo serial bytes.");
                 ui.label("• ASR-33 style masks bit 7 in both directions and uppercases host a-z on input; 7-bit ASCII preserves input case; Raw 8-bit performs no transformation.");
