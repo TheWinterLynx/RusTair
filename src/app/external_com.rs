@@ -237,27 +237,33 @@ impl RusTairApp {
             ui.label("Connect a real RS-232/USB serial adapter, virtual COM pair or Unix serial device to one emulated MITS serial port.");
             ui.separator();
             let config = self.external_com.config.clone();
-            ui.strong("Transport state");
-            egui::Grid::new("external-com-counters").num_columns(2).show(ui, |ui| {
-                ui.label("Host port"); ui.monospace(if config.port_name.is_empty() { "--" } else { config.port_name.as_str() }); ui.end_row();
-                ui.label("Framing"); ui.monospace(config.framing_label()); ui.end_row();
-                ui.label("Flow control"); ui.monospace(config.flow_control.label()); ui.end_row();
-                ui.label("Character mode"); ui.monospace(config.character_mode.label()); ui.end_row();
-                ui.label("Terminal duplex"); ui.monospace(config.duplex.label()); ui.end_row();
-                ui.label("Host RX bytes"); ui.monospace(self.external_com.port.rx_bytes().to_string()); ui.end_row();
-                ui.label("Pending RX bytes"); ui.monospace(self.external_com.port.rx_pending().to_string()); ui.end_row();
-                ui.label("Host TX bytes"); ui.monospace(self.external_com.port.tx_bytes().to_string()); ui.end_row();
-                ui.label("Dropped RX bytes"); ui.monospace(self.external_com.port.dropped_rx_bytes().to_string()); ui.end_row();
-                ui.label("Dropped TX bytes"); ui.monospace(self.external_com.port.dropped_tx_bytes().to_string()); ui.end_row();
+
+            ui::collapsible_section(ui, "Transport state", true, |ui| {
+                egui::Grid::new("external-com-counters").num_columns(2).show(ui, |ui| {
+                    ui.label("Host port"); ui.monospace(if config.port_name.is_empty() { "--" } else { config.port_name.as_str() }); ui.end_row();
+                    ui.label("Framing"); ui.monospace(config.framing_label()); ui.end_row();
+                    ui.label("Flow control"); ui.monospace(config.flow_control.label()); ui.end_row();
+                    ui.label("Character mode"); ui.monospace(config.character_mode.label()); ui.end_row();
+                    ui.label("Terminal duplex"); ui.monospace(config.duplex.label()); ui.end_row();
+                    ui.label("Host RX bytes"); ui.monospace(self.external_com.port.rx_bytes().to_string()); ui.end_row();
+                    ui.label("Pending RX bytes"); ui.monospace(self.external_com.port.rx_pending().to_string()); ui.end_row();
+                    ui.label("Host TX bytes"); ui.monospace(self.external_com.port.tx_bytes().to_string()); ui.end_row();
+                    ui.label("Dropped RX bytes"); ui.monospace(self.external_com.port.dropped_rx_bytes().to_string()); ui.end_row();
+                    ui.label("Dropped TX bytes"); ui.monospace(self.external_com.port.dropped_tx_bytes().to_string()); ui.end_row();
+                });
             });
+
             ui.separator();
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Clear pending RX").clicked() { self.external_com.port.clear_rx(); }
-                if ui.button("Reopen port").clicked() { self.external_com.port.restart_on_next_poll(); self.external_com.reset_line_timing(); ctx.request_repaint(); }
-                if ui.button("Refresh port list").clicked() { self.refresh_external_com_ports(); }
+            ui::collapsible_section(ui, "Transport actions", true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button("Clear pending RX").clicked() { self.external_com.port.clear_rx(); }
+                    if ui.button("Reopen port").clicked() { self.external_com.port.restart_on_next_poll(); self.external_com.reset_line_timing(); ctx.request_repaint(); }
+                    if ui.button("Refresh port list").clicked() { self.refresh_external_com_ports(); }
+                });
             });
+
             ui.separator();
-            ui.collapsing("How the COM bridge behaves", |ui| {
+            ui::collapsible_section(ui, "How the COM bridge behaves", false, |ui| {
                 ui.label("• The host COM device is a transport only; guest software still sees the selected 88-SIO/88-2SIO and its normal I/O addresses.");
                 ui.label("• The OS serial driver applies baud rate, data bits, parity, stop bits and flow control to the actual host port.");
                 ui.label("• Received host bytes enter the emulated UART only when its receive register is free; no second baud delay is added on top of the physical link.");
