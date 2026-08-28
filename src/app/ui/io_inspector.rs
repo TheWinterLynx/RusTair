@@ -224,59 +224,68 @@ impl RusTairApp {
             ui.label("IN / OUT count"); ui.monospace(format!("{in_count} / {out_count}")); ui.end_row();
         });
 
-        self.draw_status_interpretation(ui, selected, live);
+        if self.is_serial_status_port(selected) || selected == 0xff {
+            ui.separator();
+            super::collapsible_section(ui, "Status interpretation", true, |ui| {
+                self.draw_status_interpretation(ui, selected, live);
+            });
+        }
+
         ui.separator();
-
-        let value_id = egui::Id::new(WRITE_VALUE).with(selected);
-        let mut write_text = ui.data_mut(|data| data.get_temp_mut_or(value_id, format!("{:02X}", live)).clone());
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Hex:"); ui.add(egui::TextEdit::singleline(&mut write_text).desired_width(55.0));
-            if ui.small_button("Load peek").clicked() { write_text = format!("{:02X}", live); }
-            if ui.small_button("CPU-style IN").clicked() {
-                let value = self.machine.debugger_input_port(selected);
-                self.status = format!("Debugger IN {:02X}h -> {:02X}h ({})", selected, value, Self::byte_text(value));
-            }
-            if ui.small_button("CPU-style OUT").clicked() {
-                match Self::parse_hex_byte(&write_text) {
-                    Ok(value) => {
-                        self.machine.debugger_output_port(selected, value);
-                        self.status = format!("Debugger OUT {:02X}h <- {:02X}h ({})", selected, value, Self::byte_text(value));
-                    }
-                    Err(error) => self.status = error,
-                }
-            }
-        });
-        ui.data_mut(|data| data.insert_temp(value_id, write_text));
-
-        if serial_data {
-            ui.separator(); ui.strong("Serial DATA-port tools");
-            let inject_id = egui::Id::new(INJECT_BYTES).with(selected);
-            let mut inject_text = ui.data_mut(|data| data.get_temp_mut_or(inject_id, "59 0D".to_owned()).clone());
+        super::collapsible_section(ui, "Debugger I/O controls", true, |ui| {
+            let value_id = egui::Id::new(WRITE_VALUE).with(selected);
+            let mut write_text = ui.data_mut(|data| data.get_temp_mut_or(value_id, format!("{:02X}", live)).clone());
             ui.horizontal_wrapped(|ui| {
-                ui.label("RX hex:"); ui.add(egui::TextEdit::singleline(&mut inject_text).desired_width(150.0));
-                if ui.small_button("Inject RX").clicked() {
-                    match Self::parse_hex_sequence(&inject_text) {
-                        Ok(bytes) => {
-                            let mut injected = 0usize;
-                            for byte in bytes { if self.machine.debugger_inject_serial_rx(selected, byte) { injected += 1; } }
-                            self.status = format!("Injected {injected} byte(s) directly into UART RX at {:02X}h", selected);
+                ui.label("Hex:"); ui.add(egui::TextEdit::singleline(&mut write_text).desired_width(55.0));
+                if ui.small_button("Load peek").clicked() { write_text = format!("{:02X}", live); }
+                if ui.small_button("CPU-style IN").clicked() {
+                    let value = self.machine.debugger_input_port(selected);
+                    self.status = format!("Debugger IN {:02X}h -> {:02X}h ({})", selected, value, Self::byte_text(value));
+                }
+                if ui.small_button("CPU-style OUT").clicked() {
+                    match Self::parse_hex_byte(&write_text) {
+                        Ok(value) => {
+                            self.machine.debugger_output_port(selected, value);
+                            self.status = format!("Debugger OUT {:02X}h <- {:02X}h ({})", selected, value, Self::byte_text(value));
                         }
                         Err(error) => self.status = error,
                     }
                 }
             });
-            ui.data_mut(|data| data.insert_temp(inject_id, inject_text));
-            ui.small("Example 59 0D = ASCII 'Y' + carriage return, bypassing host transports.");
-            ui.horizontal_wrapped(|ui| {
-                if ui.small_button("Clear RX").clicked() { self.machine.debugger_clear_serial_rx(selected); }
-                if ui.small_button("Complete one TX").clicked() {
-                    let completed = self.machine.debugger_complete_serial_tx(selected);
-                    self.status = match completed {
-                        Some(byte) => format!("Completed UART TX {:02X}h ({})", byte, Self::byte_text(byte)),
-                        None => "UART TX was already empty".into(),
-                    };
-                }
-                if ui.small_button("Clear TX").clicked() { self.machine.debugger_clear_serial_tx(selected); }
+            ui.data_mut(|data| data.insert_temp(value_id, write_text));
+        });
+
+        if serial_data {
+            ui.separator();
+            super::collapsible_section(ui, "Serial DATA-port tools", true, |ui| {
+                let inject_id = egui::Id::new(INJECT_BYTES).with(selected);
+                let mut inject_text = ui.data_mut(|data| data.get_temp_mut_or(inject_id, "59 0D".to_owned()).clone());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("RX hex:"); ui.add(egui::TextEdit::singleline(&mut inject_text).desired_width(150.0));
+                    if ui.small_button("Inject RX").clicked() {
+                        match Self::parse_hex_sequence(&inject_text) {
+                            Ok(bytes) => {
+                                let mut injected = 0usize;
+                                for byte in bytes { if self.machine.debugger_inject_serial_rx(selected, byte) { injected += 1; } }
+                                self.status = format!("Injected {injected} byte(s) directly into UART RX at {:02X}h", selected);
+                            }
+                            Err(error) => self.status = error,
+                        }
+                    }
+                });
+                ui.data_mut(|data| data.insert_temp(inject_id, inject_text));
+                ui.small("Example 59 0D = ASCII 'Y' + carriage return, bypassing host transports.");
+                ui.horizontal_wrapped(|ui| {
+                    if ui.small_button("Clear RX").clicked() { self.machine.debugger_clear_serial_rx(selected); }
+                    if ui.small_button("Complete one TX").clicked() {
+                        let completed = self.machine.debugger_complete_serial_tx(selected);
+                        self.status = match completed {
+                            Some(byte) => format!("Completed UART TX {:02X}h ({})", byte, Self::byte_text(byte)),
+                            None => "UART TX was already empty".into(),
+                        };
+                    }
+                    if ui.small_button("Clear TX").clicked() { self.machine.debugger_clear_serial_tx(selected); }
+                });
             });
         }
     }
@@ -379,10 +388,11 @@ impl RusTairApp {
 
     fn draw_io_sidebar(&mut self, ui: &mut egui::Ui, selected: &mut u8) {
         egui::ScrollArea::vertical().id_salt("io-inspector-sidebar-scroll").auto_shrink([false, false]).show(ui, |ui| {
-            self.draw_selected_port(ui, *selected); ui.separator();
-            egui::CollapsingHeader::new("I/O port map 00h–FFh").default_open(false).show(ui, |ui| self.draw_port_map(ui, selected));
+            super::collapsible_section(ui, "Selected I/O port", true, |ui| self.draw_selected_port(ui, *selected));
             ui.separator();
-            egui::CollapsingHeader::new("How to use the serial traces").default_open(false).show(ui, |ui| self.draw_io_help(ui));
+            super::collapsible_section(ui, "I/O port map 00h–FFh", false, |ui| self.draw_port_map(ui, selected));
+            ui.separator();
+            super::collapsible_section(ui, "How to use the serial traces", false, |ui| self.draw_io_help(ui));
         });
     }
 
