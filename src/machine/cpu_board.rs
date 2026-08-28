@@ -203,6 +203,12 @@ impl super::AltairBus {
     /// the write data/pulse itself while the stopped CPU continues to provide the
     /// address. Expose that physical action to backend CPU-board adapters.
     pub(crate) fn cpu_board_front_panel_deposit(&mut self, address: u16, value: u8) {
+        // `cpu_inte` exists for the instruction-level CPU-board adapter, while
+        // Cycle drives canonical INTE directly into S100BusState every T-state.
+        // A later front-panel DEPOSIT must never let the compatibility mirror
+        // overwrite that newer electrical truth, so resynchronise it from S-100
+        // before entering the shared deposit path.
+        self.cpu_inte = self.s100.signals().inte;
         self.panel.set_address_latch(address);
         self.front_panel_deposit(address, value);
     }
@@ -432,6 +438,16 @@ mod tests {
         bus.cycle_set_hold_request(false);
         assert!(!bus.s100.signals().hold);
         assert!(bus.s100.signals().hlda, "HLDA must remain CPU-owned until the next exact sample");
+    }
+
+    #[test]
+    fn front_panel_deposit_resynchronizes_inte_from_canonical_s100_state() {
+        let mut bus = super::super::AltairBus::default();
+        bus.cpu_inte = false;
+        bus.s100.set_inte(true);
+        bus.cpu_board_front_panel_deposit(0x0000, 0x5a);
+        assert!(bus.cpu_inte, "compatibility mirror must follow canonical S-100 INTE");
+        assert!(bus.s100.signals().inte, "DEPOSIT must preserve current electrical INTE");
     }
 
     #[test]
