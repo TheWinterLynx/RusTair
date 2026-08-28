@@ -35,8 +35,25 @@ fn bus_teacher_dense_signal_tables_are_split_horizontally() {
             "missing compact side-by-side Bus Teacher table {id}",
         );
     }
+}
+
+#[test]
+fn bus_teacher_live_timing_fields_have_fixed_horizontal_geometry() {
+    for constant in [
+        "TIMING_LEFT_LABEL_WIDTH",
+        "TIMING_LEFT_VALUE_WIDTH",
+        "TIMING_RIGHT_LABEL_WIDTH",
+        "TIMING_RIGHT_VALUE_WIDTH",
+    ] {
+        assert!(
+            BUS_TEACHER_SOURCE.contains(constant),
+            "missing fixed Bus Teacher timing slot {constant}",
+        );
+    }
+    assert!(BUS_TEACHER_SOURCE.contains("fn draw_timing_row("));
+    assert!(BUS_TEACHER_SOURCE.contains("Self::draw_timing_row("));
     assert!(
-        BUS_TEACHER_SOURCE.contains(".num_columns(4)"),
-        "instruction/timing data should use paired fields across four columns",
+        !BUS_TEACHER_SOURCE.contains("Grid::new(\"bus-teacher-timing-grid\")"),
+        "live timing values must not use content-sized egui::Grid columns because changing machine-cycle text would shift neighboring fields",
     );
 }
