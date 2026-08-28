@@ -17,6 +17,7 @@ struct BusTeacherUiState {
     window_open: bool,
     freeze_display: bool,
     frozen_snapshot: Option<BusTeachingSnapshot>,
+    pin_table_view: bool,
 }
 
 impl RusTairApp {
@@ -568,10 +569,26 @@ impl RusTairApp {
         &mut self,
         ui: &mut egui::Ui,
         snapshot: Option<BusTeachingSnapshot>,
+        state: &mut BusTeacherUiState,
     ) {
         super::collapsible_section(ui, "Intel 8080 pins", true, |ui| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(!state.pin_table_view, "Package diagram").clicked() {
+                    state.pin_table_view = false;
+                }
+                if ui.selectable_label(state.pin_table_view, "Signal table").clicked() {
+                    state.pin_table_view = true;
+                }
+                ui.separator();
+                ui.weak("DIP-40 live electrical view");
+            });
+            ui.separator();
             if let Some(snapshot) = snapshot {
-                Self::draw_bus_teacher_pins(ui, snapshot);
+                if state.pin_table_view {
+                    Self::draw_bus_teacher_pins(ui, snapshot);
+                } else {
+                    super::cpu_pin_diagram::draw_8080a_package(ui, snapshot);
+                }
             } else {
                 ui.label("No pin sample yet.");
             }
@@ -611,7 +628,7 @@ impl RusTairApp {
                     ui.columns(2, |columns| {
                         let (left_column, right_column) = columns.split_at_mut(1);
                         self.draw_bus_teacher_left_column(&mut left_column[0], snapshot);
-                        self.draw_bus_teacher_right_column(&mut right_column[0], snapshot);
+                        self.draw_bus_teacher_right_column(&mut right_column[0], snapshot, state);
                     });
                 });
         });
