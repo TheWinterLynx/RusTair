@@ -9,6 +9,11 @@ use crate::trace8080::{CpuSnapshot8080, InstructionEffect8080};
 
 const HISTORY_LIST_HEIGHT: f32 = 260.0;
 const HISTORY_DETAIL_HEIGHT: f32 = 380.0;
+const HISTORY_DETAIL_SUMMARY_HEIGHT: f32 = 116.0;
+const HISTORY_STATE_CHANGES_HEIGHT: f32 = 54.0;
+const HISTORY_EFFECTS_HEIGHT: f32 = 88.0;
+const HISTORY_REGISTERS_HEIGHT: f32 = 166.0;
+const HISTORY_EFFECT_ROW_HEIGHT: f32 = 22.0;
 const HISTORY_VISIBLE_ROWS: usize = 256;
 
 #[derive(Clone)]
@@ -50,6 +55,25 @@ impl RusTairApp {
         state.capture = true;
         state.follow_latest = true;
         Self::store_instruction_history_state(ctx, state);
+    }
+
+    fn fixed_detail_body(
+        ui: &mut egui::Ui,
+        id: &'static str,
+        height: f32,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        let width = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, height),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt(id)
+                    .auto_shrink([false, false])
+                    .show(ui, add_contents);
+            },
+        );
     }
 
     fn cpu_state_from_trace(snapshot: CpuSnapshot8080) -> Intel8080State {
@@ -190,25 +214,36 @@ impl RusTairApp {
         mapped.map(|label| format!("Current board mapping: {label}"))
     }
 
+    fn effect_context(&self, effect: InstructionEffect8080) -> String {
+        match effect {
+            InstructionEffect8080::IoRead { port, .. }
+            | InstructionEffect8080::IoWrite { port, .. } => self.io_port_context(port).unwrap_or_default(),
+            InstructionEffect8080::MemoryWrite { .. }
+            | InstructionEffect8080::StackWrite { .. } => "guest write transfer/attempt".into(),
+            _ => String::new(),
+        }
+    }
+
     fn draw_effect(&self, ui: &mut egui::Ui, effect: InstructionEffect8080) {
-        ui.horizontal_wrapped(|ui| {
-            ui.monospace(effect.label());
-            match effect {
-                InstructionEffect8080::IoRead { port, .. }
-                | InstructionEffect8080::IoWrite { port, .. } => {
-                    if let Some(context) = self.io_port_context(port) {
-                        ui.separator();
-                        ui.small(context);
-                    }
+        let context = self.effect_context(effect);
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), HISTORY_EFFECT_ROW_HEIGHT),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.add_sized(
+                    [178.0, HISTORY_EFFECT_ROW_HEIGHT],
+                    egui::Label::new(egui::RichText::new(effect.label()).monospace()),
+                );
+                ui.separator();
+                let response = ui.add_sized(
+                    [ui.available_width(), HISTORY_EFFECT_ROW_HEIGHT],
+                    egui::Label::new(egui::RichText::new(&context).small()),
+                );
+                if !context.is_empty() {
+                    response.on_hover_text(context);
                 }
-                InstructionEffect8080::MemoryWrite { .. }
-                | InstructionEffect8080::StackWrite { .. } => {
-                    ui.separator();
-                    ui.small("guest write transfer/attempt");
-                }
-                _ => {}
-            }
-        });
+            },
+        );
     }
 
     fn draw_history_detail(
@@ -237,75 +272,129 @@ impl RusTairApp {
             .unwrap_or(MemoryValue8080::Unknown);
         let explanation = explain_instruction(&decoded, before_cpu, memory_context);
 
-        ui.horizontal_wrapped(|ui| {
-            ui.strong(format!("#{:06}", entry.sequence));
-            ui.monospace(format!("${:04X}", entry.address));
-            ui.monospace(entry.bytes_text());
-            ui.monospace(decoded.text());
-            ui.separator();
-            ui.label(format!("{} T", entry.t_states));
-        });
-        ui.label(explanation.summary);
-        ui.small(Self::observed_flow(entry));
+        Self::fixed_detail_body(
+            ui,
+            "instruction-history-summary-body",
+            HISTORY_DETAIL_SUMMARY_HEIGHT,
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_sized([82.0, 20.0], egui::Label::new(egui::RichText::new(format!("#{:06}", entry.sequence)).strong()));
+                    ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${:04X}", entry.address)).monospace()));
+                    ui.add_sized([92.0, 20.0], egui::Label::new(egui::RichText::new(entry.bytes_text()).monospace()));
+                    ui.add_sized([180.0, 20.0], egui::Label::new(egui::RichText::new(decoded.text()).monospace()));
+                    ui.separator();
+                    ui.add_sized([56.0, 20.0], egui::Label::new(format!("{} T", entry.t_states)));
+                });
+                ui.add_sized(
+                    [ui.available_width(), 22.0],
+                    egui::Label::new(&explanation.summary),
+                );
+                ui.add_sized(
+                    [ui.available_width(), 22.0],
+                    egui::Label::new(egui::RichText::new(Self::observed_flow(entry)).small()),
+                );
 
-        if entry.sequence == latest_sequence {
-            let live_cpu = self.machine.intel8080_state();
-            let execution_address = current_instruction_address(self);
-            if execution_address == entry.after.pc {
-                if let Some(loop_info) = detect_simple_backward_loop(
-                    |address| self.machine.peek_memory(address),
-                    execution_address,
-                    live_cpu.flags,
-                ) {
-                    if ui.button("Open independent Loop Inspector").clicked() {
-                        self.open_loop_inspector(ui.ctx(), loop_info);
+                ui.horizontal(|ui| {
+                    if entry.sequence == latest_sequence {
+                        let live_cpu = self.machine.intel8080_state();
+                        let execution_address = current_instruction_address(self);
+                        let loop_info = if execution_address == entry.after.pc {
+                            detect_simple_backward_loop(
+                                |address| self.machine.peek_memory(address),
+                                execution_address,
+                                live_cpu.flags,
+                            )
+                        } else {
+                            None
+                        };
+                        if let Some(loop_info) = loop_info {
+                            if ui.add_sized([238.0, 22.0], egui::Button::new("Open independent Loop Inspector")).clicked() {
+                                self.open_loop_inspector(ui.ctx(), loop_info);
+                            }
+                            ui.add_sized([ui.available_width(), 22.0], egui::Label::new(""));
+                        } else {
+                            ui.add_enabled_ui(false, |ui| {
+                                ui.add_sized([238.0, 22.0], egui::Button::new("Open independent Loop Inspector"));
+                            });
+                            ui.add_sized(
+                                [ui.available_width(), 22.0],
+                                egui::Label::new(egui::RichText::new("No simple live loop is demonstrated at this boundary.").small()),
+                            );
+                        }
+                    } else {
+                        ui.add_sized(
+                            [ui.available_width(), 22.0],
+                            egui::Label::new(egui::RichText::new("Historical loop reconstruction is not attempted because RAM snapshots are not retained per instruction.").small()),
+                        );
                     }
-                }
-            }
-        } else {
-            ui.small("Historical loop reconstruction is not attempted because RAM snapshots are not retained per instruction.");
-        }
+                });
+            },
+        );
 
         ui.separator();
         let deltas = Self::register_deltas(entry);
         super::collapsible_section(ui, "State changes", true, |ui| {
-            if deltas.is_empty() {
-                ui.small("No visible CPU register/flag changes.");
-            } else {
-                ui.horizontal_wrapped(|ui| {
-                    for delta in deltas {
-                        ui.monospace(delta);
-                        ui.separator();
+            Self::fixed_detail_body(
+                ui,
+                "instruction-history-state-changes-body",
+                HISTORY_STATE_CHANGES_HEIGHT,
+                |ui| {
+                    if deltas.is_empty() {
+                        ui.small("No visible CPU register/flag changes.");
+                    } else {
+                        ui.horizontal_wrapped(|ui| {
+                            for delta in deltas {
+                                ui.monospace(delta);
+                                ui.separator();
+                            }
+                        });
                     }
-                });
-            }
+                },
+            );
         });
 
         ui.separator();
         super::collapsible_section(ui, "Memory / I/O effects", true, |ui| {
-            if entry.effects.is_empty() {
-                ui.small("No guest-visible data-memory, stack or I/O transfer for this instruction.");
-            } else {
-                for effect in entry.effects.iter().copied() {
-                    self.draw_effect(ui, effect);
-                }
-            }
+            Self::fixed_detail_body(
+                ui,
+                "instruction-history-effects-body",
+                HISTORY_EFFECTS_HEIGHT,
+                |ui| {
+                    if entry.effects.is_empty() {
+                        ui.add_sized(
+                            [ui.available_width(), HISTORY_EFFECT_ROW_HEIGHT],
+                            egui::Label::new(egui::RichText::new("No guest-visible data-memory, stack or I/O transfer for this instruction.").small()),
+                        );
+                    } else {
+                        for effect in entry.effects.iter().copied() {
+                            self.draw_effect(ui, effect);
+                        }
+                    }
+                },
+            );
         });
 
         ui.separator();
         super::collapsible_section(ui, "Before / after registers", true, |ui| {
-            egui::Grid::new("instruction-history-before-after")
-                .num_columns(3)
-                .spacing([10.0, 3.0])
-                .show(ui, |ui| {
-                    ui.strong(""); ui.strong("BEFORE"); ui.strong("AFTER"); ui.end_row();
-                    ui.strong("AF"); ui.monospace(format!("{:04X}", entry.before.af())); ui.monospace(format!("{:04X}", entry.after.af())); ui.end_row();
-                    ui.strong("BC"); ui.monospace(format!("{:04X}", entry.before.bc())); ui.monospace(format!("{:04X}", entry.after.bc())); ui.end_row();
-                    ui.strong("DE"); ui.monospace(format!("{:04X}", entry.before.de())); ui.monospace(format!("{:04X}", entry.after.de())); ui.end_row();
-                    ui.strong("HL"); ui.monospace(format!("{:04X}", entry.before.hl())); ui.monospace(format!("{:04X}", entry.after.hl())); ui.end_row();
-                    ui.strong("SP"); ui.monospace(format!("{:04X}", entry.before.sp)); ui.monospace(format!("{:04X}", entry.after.sp)); ui.end_row();
-                    ui.strong("PC"); ui.monospace(format!("{:04X}", entry.before.pc)); ui.monospace(format!("{:04X}", entry.after.pc)); ui.end_row();
-                });
+            Self::fixed_detail_body(
+                ui,
+                "instruction-history-before-after-body",
+                HISTORY_REGISTERS_HEIGHT,
+                |ui| {
+                    egui::Grid::new("instruction-history-before-after")
+                        .num_columns(3)
+                        .spacing([10.0, 3.0])
+                        .show(ui, |ui| {
+                            ui.strong(""); ui.strong("BEFORE"); ui.strong("AFTER"); ui.end_row();
+                            ui.strong("AF"); ui.monospace(format!("{:04X}", entry.before.af())); ui.monospace(format!("{:04X}", entry.after.af())); ui.end_row();
+                            ui.strong("BC"); ui.monospace(format!("{:04X}", entry.before.bc())); ui.monospace(format!("{:04X}", entry.after.bc())); ui.end_row();
+                            ui.strong("DE"); ui.monospace(format!("{:04X}", entry.before.de())); ui.monospace(format!("{:04X}", entry.after.de())); ui.end_row();
+                            ui.strong("HL"); ui.monospace(format!("{:04X}", entry.before.hl())); ui.monospace(format!("{:04X}", entry.after.hl())); ui.end_row();
+                            ui.strong("SP"); ui.monospace(format!("{:04X}", entry.before.sp)); ui.monospace(format!("{:04X}", entry.after.sp)); ui.end_row();
+                            ui.strong("PC"); ui.monospace(format!("{:04X}", entry.before.pc)); ui.monospace(format!("{:04X}", entry.after.pc)); ui.end_row();
+                        });
+                },
+            );
         });
     }
 
