@@ -231,18 +231,32 @@ impl CycleHostBackend {
             status.hlda = Some(machine.bus.raw_s100_hlda());
         }
 
-        let pins = if !powered || phase == BusMachineCycle::PowerOnUndefined {
-            BusCpuPins::default()
-        } else {
-            let cpu_pins = self.inner.cpu().pins();
-            BusCpuPins {
-                sync: Some(cpu_pins.sync),
-                dbin: Some(cpu_pins.dbin),
-                wr_n: Some(cpu_pins.wr_n),
-                inte: Some(cpu_pins.inte),
-                wait: Some(cpu_pins.wait),
-                hlda: Some(cpu_pins.hlda),
+        // A lifecycle/control snapshot must never reuse stale Cpu8080Cycle pin
+        // values from a previous T-state. Publish only levels that are physically
+        // determined by the current chassis state. RESET RELEASED / STOP-WAIT is
+        // a stable read wait: READY is low, WAIT is high, DBIN remains asserted,
+        // /WR is inactive and SYNC is low after T1. Other lifecycle phases keep
+        // T-state-specific CPU outputs unknown until an actual tick is sampled.
+        let pins = match phase {
+            BusMachineCycle::PowerOff | BusMachineCycle::PowerOnUndefined => {
+                BusCpuPins::default()
             }
+            BusMachineCycle::ResetReleasedStopped => BusCpuPins {
+                sync: Some(false),
+                dbin: Some(true),
+                wr_n: Some(true),
+                inte: status.inte,
+                wait: status.wait,
+                hlda: status.hlda,
+            },
+            _ => BusCpuPins {
+                sync: None,
+                dbin: None,
+                wr_n: None,
+                inte: status.inte,
+                wait: status.wait,
+                hlda: status.hlda,
+            },
         };
 
         let r = self.inner.cpu().registers();
@@ -254,9 +268,11 @@ impl CycleHostBackend {
             machine_cycle: phase,
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
-            // In these lifecycle states ADDRESS/DATA are the actual S-100/front-
-            // panel values. The package renderer deliberately does not project
-            // them back onto CPU A/D pins without a real T-state sample.
+            // ADDRESS/DATA are always the canonical S-100 values. In the stable
+            // STOP-WAIT read state they also determine the CPU A/D pin levels:
+            // the CPU owns ADDRESS and memory drives DATA while DBIN is active.
+            // Other lifecycle states do not gain fabricated CPU pin truth merely
+            // because the chassis/front panel has a visible bus value.
             address: if powered { Some(machine.address_leds()) } else { None },
             data: if powered { Some(machine.data_leds()) } else { None },
             status_word,
@@ -729,7 +745,7 @@ mod tests {
         assert_eq!(held.t_state, BusTState::Unknown);
         assert_eq!(held.address, Some(0xffff));
         assert_eq!(held.data, Some(0xff));
-        assert_eq!(held.pins.wr_n, Some(true));
+        assert_eq!(held.pins.wr_n, None, "RESET control state must not reuse stale /WR from a previous T-state");
         assert_eq!(held.status.memr, Some(false));
         assert_eq!(held.status.wait, Some(false));
 
@@ -744,6 +760,10 @@ mod tests {
         assert_eq!(released.status.m1, Some(true));
         assert_eq!(released.status.wo, Some(true));
         assert_eq!(released.status.wait, Some(true));
+        assert_eq!(released.pins.sync, Some(false));
+        assert_eq!(released.pins.dbin, Some(true));
+        assert_eq!(released.pins.wr_n, Some(true));
+        assert_eq!(released.pins.wait, Some(true));
         assert_eq!(released.total_t_states, Some(0));
     }
 
