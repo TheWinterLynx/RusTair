@@ -2,6 +2,7 @@ const CYCLE_HOST_SOURCE: &str = include_str!("../src/backend/cycle_host.rs");
 const CYCLE_SOURCE: &str = include_str!("../src/backend/cycle.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const UI_MOD_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
+const BUS_TEACHER_SOURCE: &str = include_str!("../src/app/ui/bus_teacher.rs");
 const MEMORY_VIEWER_SOURCE: &str = include_str!("../src/app/ui/memory_viewer.rs");
 const INSTRUCTION_HISTORY_SOURCE: &str = include_str!("../src/app/ui/instruction_history.rs");
 const DEBUGGER_CONTROLS_SOURCE: &str = include_str!("../src/app/ui/debugger_controls.rs");
@@ -76,5 +77,24 @@ fn loop_inspector_has_one_shared_native_viewport_implementation() {
         !MEMORY_VIEWER_SOURCE.contains("rustair-ram-loop-inspector-viewport")
             && !MEMORY_VIEWER_SOURCE.contains("loop_inspector_open"),
         "RAM Viewer must not grow a second Loop Inspector implementation",
+    );
+}
+
+#[test]
+fn bus_teacher_consumes_only_the_backend_contract() {
+    assert!(
+        BUS_TEACHER_SOURCE.contains("BusTeachingSnapshot")
+            && BUS_TEACHER_SOURCE.contains("bus_teaching_snapshot()"),
+        "Bus Teacher must consume the backend-neutral teaching snapshot",
+    );
+    assert!(
+        !BUS_TEACHER_SOURCE.contains("cpu8080_cycle")
+            && !BUS_TEACHER_SOURCE.contains("TickTrace")
+            && !BUS_TEACHER_SOURCE.contains("CycleAccurateMachineBackend"),
+        "Bus Teacher UI must not depend directly on the Cycle core or concrete backend",
+    );
+    assert!(
+        DEBUGGER_CONTROLS_SOURCE.contains("show_bus_teacher_viewport(parent_ctx)"),
+        "Bus Teacher must remain renderable after the parent Debugger viewport closes",
     );
 }
