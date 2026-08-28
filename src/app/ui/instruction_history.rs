@@ -1,4 +1,5 @@
 use super::super::{egui, RusTairApp};
+use super::execution_position::current_instruction_address;
 use crate::backend::{Intel8080State, InstructionTraceEntry};
 use crate::config::SerialBoard;
 use crate::debugger8080::detect_simple_backward_loop;
@@ -216,97 +217,96 @@ impl RusTairApp {
         entry: Option<&InstructionTraceEntry>,
         latest_sequence: u64,
     ) {
-        ui.allocate_ui_with_layout(
-            egui::vec2(ui.available_width(), HISTORY_DETAIL_HEIGHT),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                let Some(entry) = entry else {
-                    ui.label("No captured instruction selected yet.");
-                    ui.small("Enable Capture and run or single-step the machine.");
-                    return;
-                };
+        let Some(entry) = entry else {
+            ui.label("No captured instruction selected yet.");
+            ui.small("Enable Capture and run or single-step the machine.");
+            return;
+        };
 
-                let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
-                let before_cpu = Self::cpu_state_from_trace(entry.before);
-                let memory_context = entry
-                    .effects
-                    .iter()
-                    .find_map(|effect| match effect {
-                        InstructionEffect8080::MemoryRead { address, value }
-                            if *address == entry.before.hl() => Some(*value),
-                        _ => None,
-                    })
-                    .map(MemoryValue8080::Known)
-                    .unwrap_or(MemoryValue8080::Unknown);
-                let explanation = explain_instruction(&decoded, before_cpu, memory_context);
+        let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
+        let before_cpu = Self::cpu_state_from_trace(entry.before);
+        let memory_context = entry
+            .effects
+            .iter()
+            .find_map(|effect| match effect {
+                InstructionEffect8080::MemoryRead { address, value }
+                    if *address == entry.before.hl() => Some(*value),
+                _ => None,
+            })
+            .map(MemoryValue8080::Known)
+            .unwrap_or(MemoryValue8080::Unknown);
+        let explanation = explain_instruction(&decoded, before_cpu, memory_context);
 
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(format!("#{:06}", entry.sequence));
+            ui.monospace(format!("${:04X}", entry.address));
+            ui.monospace(entry.bytes_text());
+            ui.monospace(decoded.text());
+            ui.separator();
+            ui.label(format!("{} T", entry.t_states));
+        });
+        ui.label(explanation.summary);
+        ui.small(Self::observed_flow(entry));
+
+        if entry.sequence == latest_sequence {
+            let live_cpu = self.machine.intel8080_state();
+            let execution_address = current_instruction_address(self);
+            if execution_address == entry.after.pc {
+                if let Some(loop_info) = detect_simple_backward_loop(
+                    |address| self.machine.peek_memory(address),
+                    execution_address,
+                    live_cpu.flags,
+                ) {
+                    if ui.button("Open independent Loop Inspector").clicked() {
+                        self.open_loop_inspector(ui.ctx(), loop_info);
+                    }
+                }
+            }
+        } else {
+            ui.small("Historical loop reconstruction is not attempted because RAM snapshots are not retained per instruction.");
+        }
+
+        ui.separator();
+        let deltas = Self::register_deltas(entry);
+        super::collapsible_section(ui, "State changes", true, |ui| {
+            if deltas.is_empty() {
+                ui.small("No visible CPU register/flag changes.");
+            } else {
                 ui.horizontal_wrapped(|ui| {
-                    ui.strong(format!("#{:06}", entry.sequence));
-                    ui.monospace(format!("${:04X}", entry.address));
-                    ui.monospace(entry.bytes_text());
-                    ui.monospace(decoded.text());
-                    ui.separator();
-                    ui.label(format!("{} T", entry.t_states));
+                    for delta in deltas {
+                        ui.monospace(delta);
+                        ui.separator();
+                    }
                 });
-                ui.label(explanation.summary);
-                ui.small(Self::observed_flow(entry));
+            }
+        });
 
-                if entry.sequence == latest_sequence {
-                    let live_cpu = self.machine.intel8080_state();
-                    if live_cpu.pc == entry.after.pc {
-                        if let Some(loop_info) = detect_simple_backward_loop(
-                            |address| self.machine.peek_memory(address),
-                            live_cpu.pc,
-                            live_cpu.flags,
-                        ) {
-                            if ui.button("Open independent Loop Inspector").clicked() {
-                                self.open_loop_inspector(ui.ctx(), loop_info);
-                            }
-                        }
-                    }
-                } else {
-                    ui.small("Historical loop reconstruction is not attempted because RAM snapshots are not retained per instruction.");
+        ui.separator();
+        super::collapsible_section(ui, "Memory / I/O effects", true, |ui| {
+            if entry.effects.is_empty() {
+                ui.small("No guest-visible data-memory, stack or I/O transfer for this instruction.");
+            } else {
+                for effect in entry.effects.iter().copied() {
+                    self.draw_effect(ui, effect);
                 }
-                ui.separator();
+            }
+        });
 
-                let deltas = Self::register_deltas(entry);
-                ui.strong("State changes");
-                if deltas.is_empty() {
-                    ui.small("No visible CPU register/flag changes.");
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        for delta in deltas {
-                            ui.monospace(delta);
-                            ui.separator();
-                        }
-                    });
-                }
-
-                ui.add_space(4.0);
-                ui.strong("Memory / I/O effects");
-                if entry.effects.is_empty() {
-                    ui.small("No guest-visible data-memory, stack or I/O transfer for this instruction.");
-                } else {
-                    for effect in entry.effects.iter().copied() {
-                        self.draw_effect(ui, effect);
-                    }
-                }
-
-                ui.add_space(4.0);
-                egui::Grid::new("instruction-history-before-after")
-                    .num_columns(3)
-                    .spacing([10.0, 3.0])
-                    .show(ui, |ui| {
-                        ui.strong(""); ui.strong("BEFORE"); ui.strong("AFTER"); ui.end_row();
-                        ui.strong("AF"); ui.monospace(format!("{:04X}", entry.before.af())); ui.monospace(format!("{:04X}", entry.after.af())); ui.end_row();
-                        ui.strong("BC"); ui.monospace(format!("{:04X}", entry.before.bc())); ui.monospace(format!("{:04X}", entry.after.bc())); ui.end_row();
-                        ui.strong("DE"); ui.monospace(format!("{:04X}", entry.before.de())); ui.monospace(format!("{:04X}", entry.after.de())); ui.end_row();
-                        ui.strong("HL"); ui.monospace(format!("{:04X}", entry.before.hl())); ui.monospace(format!("{:04X}", entry.after.hl())); ui.end_row();
-                        ui.strong("SP"); ui.monospace(format!("{:04X}", entry.before.sp)); ui.monospace(format!("{:04X}", entry.after.sp)); ui.end_row();
-                        ui.strong("PC"); ui.monospace(format!("{:04X}", entry.before.pc)); ui.monospace(format!("{:04X}", entry.after.pc)); ui.end_row();
-                    });
-            },
-        );
+        ui.separator();
+        super::collapsible_section(ui, "Before / after registers", true, |ui| {
+            egui::Grid::new("instruction-history-before-after")
+                .num_columns(3)
+                .spacing([10.0, 3.0])
+                .show(ui, |ui| {
+                    ui.strong(""); ui.strong("BEFORE"); ui.strong("AFTER"); ui.end_row();
+                    ui.strong("AF"); ui.monospace(format!("{:04X}", entry.before.af())); ui.monospace(format!("{:04X}", entry.after.af())); ui.end_row();
+                    ui.strong("BC"); ui.monospace(format!("{:04X}", entry.before.bc())); ui.monospace(format!("{:04X}", entry.after.bc())); ui.end_row();
+                    ui.strong("DE"); ui.monospace(format!("{:04X}", entry.before.de())); ui.monospace(format!("{:04X}", entry.after.de())); ui.end_row();
+                    ui.strong("HL"); ui.monospace(format!("{:04X}", entry.before.hl())); ui.monospace(format!("{:04X}", entry.after.hl())); ui.end_row();
+                    ui.strong("SP"); ui.monospace(format!("{:04X}", entry.before.sp)); ui.monospace(format!("{:04X}", entry.after.sp)); ui.end_row();
+                    ui.strong("PC"); ui.monospace(format!("{:04X}", entry.before.pc)); ui.monospace(format!("{:04X}", entry.after.pc)); ui.end_row();
+                });
+        });
     }
 
     fn draw_instruction_history_viewport_contents(
@@ -315,77 +315,86 @@ impl RusTairApp {
         state: &mut InstructionHistoryUiState,
     ) {
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut state.capture, "Capture")
-                    .on_hover_text("Request instruction capture for this window. The shared trace can remain active if Call Stack, Memory Activity or Loop Inspector still needs it.");
-                ui.checkbox(&mut state.follow_latest, "Follow latest")
-                    .on_hover_text("Following the newest entry is independent from Capture. Turn Follow off to inspect older entries while capture continues.");
-                if ui.button("Clear shared history")
-                    .on_hover_text("Clears the shared instruction ring and starts a new trace generation for Execution History, Call Stack, Memory Activity and Loop Inspector.")
-                    .clicked()
-                {
-                    self.machine.clear_instruction_trace();
-                    state.selected_sequence = None;
-                }
-                ui.separator();
-                ui.small("Bounded history: last 4096 completed guest instructions.");
-            });
-
             let history = self.machine.instruction_trace_snapshot();
             let metadata = self.machine.instruction_trace_metadata();
             let backend_capture_active = self.machine.instruction_trace_enabled();
             if state.follow_latest {
                 state.selected_sequence = history.last().map(|entry| entry.sequence);
             }
-            let capture_status = if state.capture {
-                "LIVE · requested by Execution History"
-            } else if backend_capture_active {
-                "LIVE · required by another debugger view"
-            } else {
-                "PAUSED"
-            };
-            ui.small(format!(
-                "Captured: {} entries | {} | dropped this generation: {}",
-                history.len(),
-                capture_status,
-                metadata.dropped_entries,
-            ));
-            ui.separator();
 
-            ui.strong("Completed instructions");
-            egui::ScrollArea::vertical()
-                .id_salt("instruction-history-list")
-                .max_height(HISTORY_LIST_HEIGHT)
-                .auto_shrink([false, false])
-                .stick_to_bottom(state.follow_latest)
-                .show(ui, |ui| {
-                    let start = history.len().saturating_sub(HISTORY_VISIBLE_ROWS);
-                    for entry in &history[start..] {
-                        let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
-                        let selected = state.selected_sequence == Some(entry.sequence);
-                        let effect_marker = if entry.effects.is_empty() { " " } else { "*" };
-                        let text = format!(
-                            "{} #{:06}  {:04X}  {:<8}  {:<18}  {:>2}T",
-                            effect_marker,
-                            entry.sequence,
-                            entry.address,
-                            entry.bytes_text(),
-                            decoded.text(),
-                            entry.t_states,
-                        );
-                        if ui.selectable_label(selected, egui::RichText::new(text).monospace()).clicked() {
-                            state.selected_sequence = Some(entry.sequence);
-                            state.follow_latest = false;
-                        }
+            super::collapsible_section(ui, "Capture controls", true, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut state.capture, "Capture")
+                        .on_hover_text("Request instruction capture for this window. The shared trace can remain active if Call Stack, Memory Activity or Loop Inspector still needs it.");
+                    ui.checkbox(&mut state.follow_latest, "Follow latest")
+                        .on_hover_text("Following the newest entry is independent from Capture. Turn Follow off to inspect older entries while capture continues.");
+                    if ui.button("Clear shared history")
+                        .on_hover_text("Clears the shared instruction ring and starts a new trace generation for Execution History, Call Stack, Memory Activity and Loop Inspector.")
+                        .clicked()
+                    {
+                        self.machine.clear_instruction_trace();
+                        state.selected_sequence = None;
                     }
+                    ui.separator();
+                    ui.small("Bounded history: last 4096 completed guest instructions.");
                 });
 
+                let capture_status = if state.capture {
+                    "LIVE · requested by Execution History"
+                } else if backend_capture_active {
+                    "LIVE · required by another debugger view"
+                } else {
+                    "PAUSED"
+                };
+                ui.small(format!(
+                    "Captured: {} entries | {} | dropped this generation: {}",
+                    history.len(),
+                    capture_status,
+                    metadata.dropped_entries,
+                ));
+            });
+
             ui.separator();
-            ui.strong("WHAT JUST HAPPENED?");
-            let selected = state.selected_sequence
-                .and_then(|sequence| history.iter().find(|entry| entry.sequence == sequence));
-            let latest_sequence = history.last().map(|entry| entry.sequence).unwrap_or(0);
-            self.draw_history_detail(ui, selected, latest_sequence);
+            super::collapsible_section(ui, "Completed instructions", true, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("instruction-history-list")
+                    .max_height(HISTORY_LIST_HEIGHT)
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(state.follow_latest)
+                    .show(ui, |ui| {
+                        let start = history.len().saturating_sub(HISTORY_VISIBLE_ROWS);
+                        for entry in &history[start..] {
+                            let decoded = decode_8080(entry.bytes[0], entry.bytes[1], entry.bytes[2]);
+                            let selected = state.selected_sequence == Some(entry.sequence);
+                            let effect_marker = if entry.effects.is_empty() { " " } else { "*" };
+                            let text = format!(
+                                "{} #{:06}  {:04X}  {:<8}  {:<18}  {:>2}T",
+                                effect_marker,
+                                entry.sequence,
+                                entry.address,
+                                entry.bytes_text(),
+                                decoded.text(),
+                                entry.t_states,
+                            );
+                            if ui.selectable_label(selected, egui::RichText::new(text).monospace()).clicked() {
+                                state.selected_sequence = Some(entry.sequence);
+                                state.follow_latest = false;
+                            }
+                        }
+                    });
+            });
+
+            ui.separator();
+            super::collapsible_section(ui, "WHAT JUST HAPPENED?", true, |ui| {
+                let selected = state.selected_sequence
+                    .and_then(|sequence| history.iter().find(|entry| entry.sequence == sequence));
+                let latest_sequence = history.last().map(|entry| entry.sequence).unwrap_or(0);
+                egui::ScrollArea::vertical()
+                    .id_salt("instruction-history-detail")
+                    .max_height(HISTORY_DETAIL_HEIGHT)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| self.draw_history_detail(ui, selected, latest_sequence));
+            });
         });
     }
 
