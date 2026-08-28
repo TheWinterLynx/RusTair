@@ -1,8 +1,12 @@
 use super::super::{egui, RusTairApp};
+use super::execution_position::current_instruction_address;
 use crate::cpu8080::{FLAG_AC, FLAG_C, FLAG_P, FLAG_S, FLAG_Z};
 use crate::debugger8080::{decode_at, detect_simple_backward_loop, InstructionAt, SimpleLoop};
 use crate::explain8080::{explain_instruction, MemoryValue8080};
 use crate::machine::{MAX_MEM_SIZE, MEMORY_BOARD_SIZE};
+use crate::memory_activity8080::{
+    summarize_memory_activity_8080, MemoryActivity8080, MemoryActivityMap8080,
+};
 
 const BYTES_PER_ROW: usize = 16;
 const ROW_COUNT: usize = MAX_MEM_SIZE / BYTES_PER_ROW;
@@ -23,6 +27,10 @@ struct MemoryViewerUiState {
     edit_value: u8,
     respect_protection: bool,
     last_edit_message: Option<String>,
+    activity_overlay: bool,
+    activity_show_execute: bool,
+    activity_show_read: bool,
+    activity_show_write: bool,
 }
 
 impl Default for MemoryViewerUiState {
@@ -37,6 +45,10 @@ impl Default for MemoryViewerUiState {
             edit_value: 0,
             respect_protection: true,
             last_edit_message: None,
+            activity_overlay: false,
+            activity_show_execute: true,
+            activity_show_read: true,
+            activity_show_write: true,
         }
     }
 }
@@ -155,11 +167,89 @@ impl RusTairApp {
     }
 
     fn current_simple_loop(&mut self) -> Option<SimpleLoop> {
-        let cpu = self.machine.intel8080_state();
+        let execution_address = current_instruction_address(self);
+        let flags = self.machine.intel8080_state().flags;
         detect_simple_backward_loop(
             |address| self.machine.peek_memory(address),
-            cpu.pc,
-            cpu.flags,
+            execution_address,
+            flags,
+        )
+    }
+
+    fn filtered_activity_count(state: &MemoryViewerUiState, activity: MemoryActivity8080) -> u64 {
+        let mut total = 0u64;
+        if state.activity_show_execute {
+            total = total.saturating_add(activity.execute_count);
+        }
+        if state.activity_show_read {
+            total = total.saturating_add(activity.read_count);
+        }
+        if state.activity_show_write {
+            total = total.saturating_add(activity.write_count);
+        }
+        total
+    }
+
+    fn latest_selected_activity(
+        state: &MemoryViewerUiState,
+        activity: MemoryActivity8080,
+    ) -> Option<(&'static str, u64)> {
+        // WRITE wins ties over READ, and READ wins ties over EXECUTE. A single
+        // instruction can both execute at and transfer data through one address;
+        // choosing the data transfer makes the tint more informative.
+        let mut latest: Option<(&'static str, u64)> = None;
+        let mut consider = |label: &'static str, sequence: Option<u64>| {
+            let Some(sequence) = sequence else { return; };
+            if latest.is_none_or(|(_, current)| sequence >= current) {
+                latest = Some((label, sequence));
+            }
+        };
+        if state.activity_show_execute {
+            consider("EXEC", activity.last_execute_sequence);
+        }
+        if state.activity_show_read {
+            consider("READ", activity.last_read_sequence);
+        }
+        if state.activity_show_write {
+            consider("WRITE", activity.last_write_sequence);
+        }
+        latest
+    }
+
+    fn activity_overlay_fill(
+        state: &MemoryViewerUiState,
+        activity: MemoryActivity8080,
+        max_count: u64,
+    ) -> Option<egui::Color32> {
+        let count = Self::filtered_activity_count(state, activity);
+        let (kind, _) = Self::latest_selected_activity(state, activity)?;
+        if count == 0 || max_count == 0 {
+            return None;
+        }
+        let denominator = (max_count as f32 + 1.0).ln().max(1.0);
+        let strength = ((count as f32 + 1.0).ln() / denominator).clamp(0.0, 1.0);
+        let alpha = (36.0 + strength * 104.0).round() as u8;
+        let (r, g, b) = match kind {
+            "WRITE" => (220, 82, 68),
+            "READ" => (68, 174, 104),
+            _ => (72, 116, 220),
+        };
+        Some(egui::Color32::from_rgba_unmultiplied(r, g, b, alpha))
+    }
+
+    fn activity_hover_text(activity: MemoryActivity8080) -> String {
+        if !activity.any() {
+            return "Activity: none in retained instruction trace".into();
+        }
+        format!(
+            "Activity (retained trace): EXEC {} | READ {} | WRITE {} | last #{}",
+            activity.execute_count,
+            activity.read_count,
+            activity.write_count,
+            activity
+                .last_sequence()
+                .map(|sequence| sequence.to_string())
+                .unwrap_or_else(|| "-".into()),
         )
     }
 
@@ -167,22 +257,35 @@ impl RusTairApp {
         &mut self,
         address: u16,
         byte: u8,
+        execution_address: u16,
         pc: u16,
         sp: u16,
+        hl: u16,
         protected: bool,
+        activity: MemoryActivity8080,
     ) -> String {
         let mut hover = format!(
             "{address:04X}h = {byte:02X}h = decimal {byte} = {}",
             Self::ascii_description(byte)
         );
+        if address == execution_address {
+            hover.push_str(" - EXEC");
+        }
         if address == pc {
-            hover.push_str(" - PC");
+            hover.push_str(" - PC(reg)");
         }
         if address == sp {
             hover.push_str(" - SP");
         }
+        if address == hl {
+            hover.push_str(" - HL/M");
+        }
         if protected {
             hover.push_str(" - protected 1 KiB block");
+        }
+        if activity.any() {
+            hover.push_str("\n");
+            hover.push_str(&Self::activity_hover_text(activity));
         }
 
         hover.push_str("\n\n");
@@ -191,11 +294,11 @@ impl RusTairApp {
             return hover;
         };
 
-        if address == pc {
-            hover.push_str("CPU instruction at PC:\n");
+        if address == execution_address {
+            hover.push_str("CPU instruction at EXEC boundary:\n");
         } else {
             hover.push_str("Decode only - if execution started at this byte:\n");
-            hover.push_str("This address is not the current PC; it may be code, an operand, text or arbitrary data.\n");
+            hover.push_str("This address is not the current EXEC boundary; it may be code, an operand, text or arbitrary data.\n");
         }
         hover.push_str(&format!(
             "{}  {}\n",
@@ -264,7 +367,7 @@ impl RusTairApp {
             ui.label(egui::RichText::new(Self::grouped_binary16(cpu.sp)).monospace());
             ui.label(egui::RichText::new(format!("${:04X}", cpu.sp)).monospace().strong());
             ui.end_row();
-            ui.strong("PC").on_hover_text("Program Counter - address of the next instruction to fetch");
+            ui.strong("PC").on_hover_text("Program Counter register - in Cycle Accurate it can point inside the current instruction between machine cycles");
             ui.label(egui::RichText::new(Self::grouped_binary16(cpu.pc)).monospace());
             ui.label(egui::RichText::new(format!("${:04X}", cpu.pc)).monospace().strong());
             ui.end_row();
@@ -274,10 +377,12 @@ impl RusTairApp {
     fn draw_memory_toolbar(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let installed = self.machine.installed_ram_bytes();
         let installed_end = installed.saturating_sub(1);
+        let execution_address = current_instruction_address(self);
         let cpu = self.machine.intel8080_state();
         let panel = self.machine.front_panel_state();
         let pc = cpu.pc;
         let sp = cpu.sp;
+        let hl = cpu.hl();
         let execution_state = if cpu.halted.unwrap_or(false) {
             if panel.running { "HALTED | RUN latch ON" } else { "HALTED | RUN latch OFF" }
         } else if panel.running { "RUNNING" } else { "STOPPED" };
@@ -303,26 +408,64 @@ impl RusTairApp {
                     state.follow_pc = false; self.select_memory_address(state, address, true);
                 }
             }
+            if ui.small_button(format!("EXEC {execution_address:04X}")).clicked() { state.follow_pc = false; self.select_memory_address(state, execution_address, true); }
             if ui.small_button(format!("PC {pc:04X}")).clicked() { state.follow_pc = false; self.select_memory_address(state, pc, true); }
             if ui.small_button(format!("SP {sp:04X}")).clicked() { state.follow_pc = false; self.select_memory_address(state, sp, true); }
-            if ui.checkbox(&mut state.follow_pc, "Follow PC").changed() && state.follow_pc { self.select_memory_address(state, pc, true); }
+            if ui.small_button(format!("HL {hl:04X}")).clicked() { state.follow_pc = false; self.select_memory_address(state, hl, true); }
+            if ui.checkbox(&mut state.follow_pc, "Follow EXEC").changed() && state.follow_pc { self.select_memory_address(state, execution_address, true); }
         });
     }
 
     fn draw_memory_help(&self, ui: &mut egui::Ui) {
-        ui.small("- Hover a RAM byte to decode the 8080 instruction that would begin there. Away from PC this is explicitly only a possible decode: RAM may contain operands or data.");
+        ui.small("- Hover a RAM byte to decode the 8080 instruction that would begin there. Away from EXEC this is explicitly only a possible decode: RAM may contain operands or data.");
+        ui.small("- EXEC is the stable current-instruction boundary. In Cycle Accurate, the physical PC register can temporarily point at an operand/next byte while the current instruction is still in flight.");
         ui.small("- The instruction metadata comes from one shared decoder used by debugger analysis, not a second UI-only opcode table.");
         ui.small("- Explain selected instruction is deliberately tied to the selected RAM address so a fast loop cannot resize or flicker the explanation layout.");
         ui.small("- A is the accumulator and F contains the condition flags. PUSH/POP PSW transfers A and F together.");
         ui.small("- B+C, D+E and H+L are the 8080's natural 16-bit register pairs: BC, DE and HL. The first register is the high byte and the second is the low byte.");
         ui.small("- HL is especially important for memory access: register M in 8080 assembly means the byte in memory addressed by HL.");
-        ui.small("- PC is the Program Counter (next instruction address). SP is the Stack Pointer.");
+        ui.small("- Cell markers do not change layout: EXEC = box, PC(reg) = left line, HL/M = top line, SP = bottom line.");
+        ui.small("- Optional activity tint uses retained instruction history: blue = latest EXEC, green = latest READ, red = latest WRITE; stronger tint means a larger retained count.");
+        ui.small("- READ/WRITE activity means guest data/stack transfers. Opcode/operand fetches are intentionally not counted as READ activity.");
         ui.small("- The Loop Inspector only claims simple straight-line loops ending in one direct backward JMP/Jcc; ambiguous/nested control flow is deliberately rejected.");
         ui.small("- The 8080 address space is 0000h-FFFFh. '--' means that no physical RAM is installed at that address.");
         ui.small("- ADDR is the row base; 00-0F are the hexadecimal byte offsets. ASCII is the printable interpretation of the same 16 bytes.");
-        ui.small("- PC bytes are highlighted; SP is underlined when it falls on a visible byte.");
         ui.small("- P marks a write-protected 1 KiB block. The block map is a logical protection map, not a literal S-100 card inventory.");
         ui.small("- RAM editing is a debugger feature. Keep 'Respect write protection' enabled unless you deliberately want to force-patch protected memory.");
+    }
+
+    fn draw_memory_activity_overlay_controls(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
+        if ui.checkbox(&mut state.activity_overlay, "Enable READ / WRITE / EXECUTE overlay").changed() {
+            ui.ctx().request_repaint();
+        }
+        ui.horizontal(|ui| {
+            ui.label("Show:");
+            ui.checkbox(&mut state.activity_show_execute, "EXEC");
+            ui.checkbox(&mut state.activity_show_read, "READ");
+            ui.checkbox(&mut state.activity_show_write, "WRITE");
+        });
+        ui.small("Tint color follows the most recent enabled activity at each address; tint strength is logarithmic in the retained activity count.");
+        ui.small("Fixed markers: EXEC = box | PC(reg) = left | HL/M = top | SP = bottom. They never insert/remove widgets.");
+
+        if state.activity_overlay {
+            let history = self.machine.instruction_trace_snapshot();
+            let metadata = self.machine.instruction_trace_metadata();
+            let activity = summarize_memory_activity_8080(&history, metadata);
+            ui.small(format!(
+                "Retained: {} instruction(s) | {} active address(es) | dropped {}",
+                history.len(), activity.active_addresses(), activity.dropped_entries,
+            ));
+            if activity.sequence_gap {
+                ui.small("Trace sequence gap detected: overlay counts are incomplete.");
+            } else if activity.dropped_entries != 0 {
+                ui.small("Older trace entries were evicted: overlay counts are lower bounds for this generation.");
+            }
+            if ui.button("Clear shared activity / history").clicked() {
+                self.machine.clear_instruction_trace();
+            }
+        } else {
+            ui.small("Overlay OFF: RAM Inspector does not request instruction capture on its own.");
+        }
     }
 
     fn draw_memory_block_map(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
@@ -350,11 +493,70 @@ impl RusTairApp {
         });
     }
 
+    fn draw_cell_markers(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        address: u16,
+        execution_address: u16,
+        pc: u16,
+        sp: u16,
+        hl: u16,
+    ) {
+        let painter = ui.painter();
+        let rect = rect.shrink(1.0);
+        if address == execution_address {
+            painter.rect_stroke(
+                rect,
+                1.0,
+                egui::Stroke::new(1.5, ui.visuals().selection.stroke.color),
+                egui::StrokeKind::Inside,
+            );
+        }
+        if address == pc {
+            painter.line_segment(
+                [rect.left_top(), rect.left_bottom()],
+                egui::Stroke::new(2.0, ui.visuals().widgets.active.fg_stroke.color),
+            );
+        }
+        if address == hl {
+            painter.line_segment(
+                [rect.left_top(), rect.right_top()],
+                egui::Stroke::new(2.0, egui::Color32::LIGHT_BLUE),
+            );
+        }
+        if address == sp {
+            painter.line_segment(
+                [rect.left_bottom(), rect.right_bottom()],
+                egui::Stroke::new(2.0, egui::Color32::YELLOW),
+            );
+        }
+    }
+
     fn draw_memory_table(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
+        let execution_address = current_instruction_address(self);
         let cpu = self.machine.intel8080_state();
         let pc = cpu.pc;
         let sp = cpu.sp;
-        if state.follow_pc && state.selected_address != pc { self.select_memory_address(state, pc, true); }
+        let hl = cpu.hl();
+        if state.follow_pc && state.selected_address != execution_address { self.select_memory_address(state, execution_address, true); }
+
+        let activity_map: Option<MemoryActivityMap8080> = if state.activity_overlay {
+            Some(summarize_memory_activity_8080(
+                &self.machine.instruction_trace_snapshot(),
+                self.machine.instruction_trace_metadata(),
+            ))
+        } else {
+            None
+        };
+        let max_activity_count = activity_map
+            .as_ref()
+            .map(|map| {
+                map.iter()
+                    .map(|(_, activity)| Self::filtered_activity_count(state, activity))
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
 
         ui.set_min_width(748.0);
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -381,41 +583,67 @@ impl RusTairApp {
                 let start = row * BYTES_PER_ROW;
                 let row_address = start as u16;
                 let protected = self.machine.memory_is_protected(row_address);
-                let row_contains_pc = (start..start + BYTES_PER_ROW).contains(&(pc as usize));
+                let row_contains_exec = (start..start + BYTES_PER_ROW).contains(&(execution_address as usize));
                 let row_contains_selected = (start..start + BYTES_PER_ROW).contains(&(state.selected_address as usize));
 
                 ui.horizontal(|ui| {
                     let mut address_text = egui::RichText::new(format!("{start:04X}")).monospace();
-                    if row_contains_pc { address_text = address_text.strong(); }
+                    if row_contains_exec { address_text = address_text.strong(); }
                     if row_contains_selected { address_text = address_text.underline(); }
                     ui.add_sized([54.0, ROW_HEIGHT], egui::Label::new(address_text));
                     ui.add_sized([20.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new(if protected { "P" } else { " " }).monospace()));
 
                     let selected_fill = ui.visuals().selection.bg_fill;
-                    let pc_fill = ui.visuals().widgets.active.bg_fill;
                     let weak_color = ui.visuals().weak_text_color();
                     let mut ascii = String::with_capacity(BYTES_PER_ROW);
 
                     for column in 0..BYTES_PER_ROW {
                         let address = (start + column) as u16;
+                        let activity = activity_map
+                            .as_ref()
+                            .map(|map| map.get(address))
+                            .unwrap_or_default();
+                        let overlay_fill = Self::activity_overlay_fill(state, activity, max_activity_count);
+
                         match self.machine.peek_memory(address) {
                             Some(byte) => {
                                 ascii.push(Self::printable_ascii(byte));
                                 let mut text = egui::RichText::new(format!("{byte:02X}")).monospace();
-                                if address == sp { text = text.underline(); }
-                                if address == pc { text = text.strong().background_color(pc_fill); }
+                                if let Some(fill) = overlay_fill { text = text.background_color(fill); }
+                                if address == execution_address { text = text.strong(); }
                                 if address == state.selected_address { text = text.background_color(selected_fill); }
                                 let response = ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(text).sense(egui::Sense::click()));
+                                Self::draw_cell_markers(ui, response.rect, address, execution_address, pc, sp, hl);
                                 if response.clicked() { state.follow_pc = false; self.select_memory_address(state, address, false); }
                                 if response.hovered() {
-                                    let hover = self.instruction_hover_text(address, byte, pc, sp, protected);
+                                    let hover = self.instruction_hover_text(
+                                        address,
+                                        byte,
+                                        execution_address,
+                                        pc,
+                                        sp,
+                                        hl,
+                                        protected,
+                                        activity,
+                                    );
                                     response.on_hover_text(hover);
                                 }
                             }
                             None => {
                                 ascii.push(' ');
-                                ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(egui::RichText::new("--").monospace().color(weak_color)))
-                                    .on_hover_text(format!("{:04X}h - no RAM installed; guest reads return 00h", address));
+                                let mut text = egui::RichText::new("--").monospace().color(weak_color);
+                                if let Some(fill) = overlay_fill { text = text.background_color(fill); }
+                                if address == state.selected_address { text = text.background_color(selected_fill); }
+                                let response = ui.add_sized([28.0, ROW_HEIGHT], egui::Label::new(text).sense(egui::Sense::click()));
+                                Self::draw_cell_markers(ui, response.rect, address, execution_address, pc, sp, hl);
+                                if response.clicked() { state.follow_pc = false; self.select_memory_address(state, address, false); }
+                                let mut hover = format!("{:04X}h - no RAM installed; guest reads return 00h", address);
+                                if activity.any() {
+                                    hover.push_str("\n");
+                                    hover.push_str(&Self::activity_hover_text(activity));
+                                    hover.push_str("\nWRITE activity records attempted bus transfers even though no RAM cell exists here.");
+                                }
+                                response.on_hover_text(hover);
                             }
                         }
                     }
@@ -467,18 +695,23 @@ impl RusTairApp {
         let block_end = block_start + MEMORY_BOARD_SIZE - 1;
         ui.small(format!("Block {block}: {block_start:04X}h-{block_end:04X}h - {}", if protected { "WRITE PROTECTED" } else { "writable" }));
 
+        let execution_address = current_instruction_address(self);
         let cpu = self.machine.intel8080_state();
+        let exec_here = address == execution_address;
         let pc_here = address == cpu.pc;
         let sp_here = address == cpu.sp;
+        let hl_here = address == cpu.hl();
         ui.horizontal(|ui| {
             ui.small("Pointers:");
-            ui.add_sized([28.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if pc_here { "PC" } else { "  " }).strong()));
-            ui.add_sized([28.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if sp_here { "SP" } else { "  " }).strong()));
+            ui.add_sized([42.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if exec_here { "EXEC" } else { "    " }).strong()));
+            ui.add_sized([56.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if pc_here { "PC(reg)" } else { "       " }).strong()));
+            ui.add_sized([32.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if sp_here { "SP" } else { "  " }).strong()));
+            ui.add_sized([46.0, CURRENT_INSTRUCTION_LINE_HEIGHT], egui::Label::new(egui::RichText::new(if hl_here { "HL/M" } else { "    " }).strong()));
         });
 
         if let Some(instruction) = self.decode_memory_instruction(address) {
-            ui.small(if pc_here {
-                format!("Instruction at PC: {}", instruction.decoded.text())
+            ui.small(if exec_here {
+                format!("Instruction at EXEC: {}", instruction.decoded.text())
             } else {
                 format!("Possible decode at selected address: {}", instruction.decoded.text())
             });
@@ -521,6 +754,7 @@ impl RusTairApp {
 
     fn draw_instruction_explainer(&mut self, ui: &mut egui::Ui, state: &mut MemoryViewerUiState) {
         let address = state.selected_address;
+        let execution_address = current_instruction_address(self);
         let cpu = self.machine.intel8080_state();
         let instruction = self.decode_memory_instruction(address);
         let memory_at_hl = match self.machine.peek_memory(cpu.hl()) {
@@ -546,9 +780,10 @@ impl RusTairApp {
                             ui.strong(format!("${address:04X}"));
                             ui.monospace(instruction.decoded.bytes_text(instruction.bytes));
                             ui.monospace(instruction.decoded.text());
-                            if address == cpu.pc { ui.strong("PC"); }
+                            if address == execution_address { ui.strong("EXEC"); }
+                            if address == cpu.pc { ui.small("PC(reg)"); }
                         });
-                        if address != cpu.pc {
+                        if address != execution_address {
                             ui.small("Decode context: selected RAM address. Live register values below still come from the current CPU state.");
                         }
                         ui.separator();
@@ -577,9 +812,9 @@ impl RusTairApp {
     }
 
     fn draw_current_instruction_side(&mut self, ui: &mut egui::Ui) {
+        let execution_address = current_instruction_address(self);
         let cpu = self.machine.intel8080_state();
-        let pc = cpu.pc;
-        let instruction = self.decode_memory_instruction(pc);
+        let instruction = self.decode_memory_instruction(execution_address);
         let loop_info = self.current_simple_loop();
         let width = ui.available_width();
 
@@ -595,7 +830,7 @@ impl RusTairApp {
                 };
 
                 let Some(instruction) = instruction.as_ref() else {
-                    add_row(ui, egui::RichText::new(format!("${pc:04X}  UNMAPPED")).monospace().strong());
+                    add_row(ui, egui::RichText::new(format!("${execution_address:04X}  UNMAPPED")).monospace().strong());
                     add_row(ui, egui::RichText::new("--").monospace().weak());
                     add_row(ui, egui::RichText::new("Timing: - | flags: -").small());
                     add_row(ui, egui::RichText::new("Memory: - | I/O: -").small());
@@ -607,7 +842,7 @@ impl RusTairApp {
                 ui.horizontal(|ui| {
                     ui.add_sized(
                         [64.0, CURRENT_INSTRUCTION_LINE_HEIGHT],
-                        egui::Label::new(egui::RichText::new(format!("${pc:04X}")).monospace().strong()),
+                        egui::Label::new(egui::RichText::new(format!("${execution_address:04X}")).monospace().strong()),
                     );
                     ui.add_sized(
                         [ui.available_width(), CURRENT_INSTRUCTION_LINE_HEIGHT],
@@ -621,10 +856,11 @@ impl RusTairApp {
                 add_row(
                     ui,
                     egui::RichText::new(format!(
-                        "{} | flags {}{}",
+                        "{} | flags {}{} | PC(reg) ${:04X}",
                         instruction.decoded.timing.label(),
                         instruction.decoded.flags.label(),
-                        if instruction.decoded.undocumented_alias { " | undocumented alias" } else { "" }
+                        if instruction.decoded.undocumented_alias { " | undocumented alias" } else { "" },
+                        cpu.pc,
                     )).small(),
                 );
                 add_row(
@@ -648,13 +884,13 @@ impl RusTairApp {
                 add_row(ui, egui::RichText::new(flow_text).small());
 
                 ui.horizontal(|ui| {
+                    let label_width = (width - 132.0).max(120.0);
                     if let Some(loop_info) = loop_info.as_ref() {
-                        let loop_state = if cpu.pc == loop_info.back_edge {
+                        let loop_state = if execution_address == loop_info.back_edge {
                             if loop_info.branch_taken_now { "TAKEN now" } else { "EXIT now" }
                         } else {
                             "inside loop"
                         };
-                        let label_width = (width - 132.0).max(120.0);
                         ui.add_sized(
                             [label_width, 22.0],
                             egui::Label::new(
@@ -670,9 +906,12 @@ impl RusTairApp {
                         }
                     } else {
                         ui.add_sized(
-                            [ui.available_width(), 22.0],
+                            [label_width, 22.0],
                             egui::Label::new(egui::RichText::new("Loop: -").small()),
                         );
+                        ui.add_enabled_ui(false, |ui| {
+                            ui.add_sized([124.0, 22.0], egui::Button::new("Loop Inspector"));
+                        });
                     }
                 });
             },
@@ -686,6 +925,8 @@ impl RusTairApp {
             super::collapsible_section(ui, "Explain selected instruction", true, |ui| self.draw_instruction_explainer(ui, state));
             ui.separator();
             super::collapsible_section(ui, "Selected byte / editor", false, |ui| self.draw_memory_editor(ui, state));
+            ui.separator();
+            super::collapsible_section(ui, "Memory activity overlay", false, |ui| self.draw_memory_activity_overlay_controls(ui, state));
             ui.separator();
             super::collapsible_section(ui, "1 KiB protection map", false, |ui| self.draw_memory_block_map(ui, state));
             ui.separator();
@@ -723,4 +964,9 @@ impl RusTairApp {
 
         Self::store_memory_viewer_state(parent_ctx, state);
     }
+}
+
+pub(super) fn trace_requested(ctx: &egui::Context) -> bool {
+    let state = RusTairApp::memory_viewer_state(ctx);
+    state.window_open && state.activity_overlay
 }
