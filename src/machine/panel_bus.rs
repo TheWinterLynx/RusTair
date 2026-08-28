@@ -341,9 +341,19 @@ impl S100BusState {
         self.signals.run = run;
     }
 
+    /// Instruction-level/Fast compatibility helper. That backend has no exact
+    /// T2->TW transition to supply WAIT, so it deliberately approximates WAIT as
+    /// the inverse of READY while stopped.
     pub(super) fn set_ready(&mut self, ready: bool) {
         self.signals.ready = ready;
         self.signals.wait = !ready && !self.signals.reset;
+    }
+
+    /// Exact CPU-board path: READY is an input to the 8080 and must be mutable
+    /// without also fabricating the CPU's WAIT output. Cycle Accurate publishes
+    /// WAIT only through a real `Cpu8080Cycle` T-state sample.
+    pub(super) fn set_ready_input(&mut self, ready: bool) {
+        self.signals.ready = ready;
     }
 
     pub(super) fn set_hold(&mut self, hold: bool) {
@@ -610,6 +620,23 @@ mod tests {
         assert!(held.hold && held.hlda && held.inte);
         assert!(!held.memr && !held.inp && !held.m1 && !held.out && !held.stack);
         assert_eq!(bus.lamps.total_weight, 2);
+    }
+
+    #[test]
+    fn cycle_ready_input_does_not_fabricate_cpu_wait_output() {
+        let mut bus = S100BusState::default();
+        bus.drive_cpu_t_state(
+            Some(0x0000), Some(0xa2), Some(0xa2), false, false, true, false, false,
+        );
+        bus.set_ready_input(false);
+        let requested = bus.signals();
+        assert!(!requested.ready);
+        assert!(!requested.wait, "WAIT belongs to the CPU and must remain low until TW is sampled");
+
+        bus.drive_cpu_t_state(
+            Some(0x0000), Some(0x00), None, false, false, false, true, false,
+        );
+        assert!(bus.signals().wait);
     }
 
     #[test]
