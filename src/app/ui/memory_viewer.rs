@@ -198,6 +198,9 @@ impl RusTairApp {
         state: &MemoryViewerUiState,
         activity: MemoryActivity8080,
     ) -> Option<(&'static str, u64)> {
+        // WRITE wins ties over READ, and READ wins ties over EXECUTE. A single
+        // instruction can both execute at and transfer data through one address;
+        // choosing the data transfer makes the tint more informative.
         let mut latest: Option<(&'static str, u64)> = None;
         let mut consider = |label: &'static str, sequence: Option<u64>| {
             let Some(sequence) = sequence else { return; };
