@@ -29,9 +29,9 @@ pub struct CycleAccurateMachineBackend {
     machine: AltairMachine,
     cpu: Cpu8080Cycle,
     instruction_address: u16,
+    /// Historical teaching sample only. It is a derived observation of the
+    /// canonical CPU/S-100 state, never an authority used to drive the machine.
     last_teaching_snapshot: Option<BusTeachingSnapshot>,
-    teaching_status_latch: u8,
-    teaching_prot_latch: bool,
 }
 
 impl Default for CycleAccurateMachineBackend {
@@ -42,8 +42,6 @@ impl Default for CycleAccurateMachineBackend {
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
             last_teaching_snapshot: None,
-            teaching_status_latch: 0,
-            teaching_prot_latch: false,
         };
         backend.sync_machine_cpu();
         backend
@@ -243,34 +241,22 @@ impl CycleAccurateMachineBackend {
         let visible_data = self.visible_bus_data(trace, sampled_data_in, front_panel_data);
         let sample = Cycle8080S100Adapter::sample(trace, visible_data, ready);
 
-        // The Display/Control board status latch changes only when the CPU board
-        // actually emits a new status byte. Internal T-states therefore retain
-        // the previous status instead of being re-derived from MachineCycle.
-        // During HLDA the CPU has relinquished the bus and the chassis clears the
-        // driven status lines, so the teaching latch follows that exact sample.
-        if sample.hlda {
-            self.teaching_status_latch = 0;
-            self.teaching_prot_latch = false;
-        } else {
-            if let Some(status_word) = sample.status_word {
-                self.teaching_status_latch = status_word;
-            }
-            if let Some(address) = sample.address {
-                self.teaching_prot_latch = self.machine.bus.is_protected(address);
-            }
-        }
-
+        // The CPU-board sample is the only writer of the canonical raw S-100
+        // state. The Teacher deliberately owns no parallel status/protection
+        // latch; it reads the chassis state back after this call.
         self.machine.bus.drive_cpu_board_sample(sample);
         visible_data
     }
 
     fn capture_teaching_snapshot(&mut self, trace: &TickTrace, visible_data: Option<u8>, ready: bool) {
-        let status_word = Some(self.teaching_status_latch);
+        // RAW status is read back from the same S100BusState that drives the
+        // physical front panel. PanelLampSnapshot remains presentation-only.
+        let status_word = Some(self.machine.bus.raw_s100_status_word());
         let mut status = BusStatusLines::from_status_word(status_word);
-        status.inte = Some(trace.pins.inte);
-        status.prot = Some(self.teaching_prot_latch);
-        status.wait = Some(trace.pins.wait);
-        status.hlda = Some(trace.pins.hlda);
+        status.inte = Some(self.machine.bus.raw_s100_inte());
+        status.prot = Some(self.machine.bus.raw_s100_prot());
+        status.wait = Some(self.machine.bus.raw_s100_wait());
+        status.hlda = Some(self.machine.bus.raw_s100_hlda());
         let lines = self.machine.bus.cpu_control_lines();
         self.last_teaching_snapshot = Some(BusTeachingSnapshot {
             accuracy: BusTeachingAccuracy::Exact,
@@ -601,8 +587,6 @@ impl MachineBackend for CycleAccurateMachineBackend {
             self.cpu = Cpu8080Cycle::new();
         }
         self.last_teaching_snapshot = None;
-        self.teaching_status_latch = 0;
-        self.teaching_prot_latch = false;
         self.sync_machine_cpu();
         Ok(())
     }
@@ -666,8 +650,6 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.last_teaching_snapshot = None;
-        self.teaching_status_latch = 0;
-        self.teaching_prot_latch = false;
         self.machine.assert_front_panel_reset();
         self.reset_cycle_core_from_s100();
         Ok(())
@@ -1089,5 +1071,22 @@ mod tests {
         assert_eq!(state.a, b'R');
         assert_eq!(state.pc, 2);
         assert_eq!(state.total_t_states, Some(10));
+    }
+
+    #[test]
+    fn exact_teacher_reads_the_same_raw_s100_latch_as_the_panel_bus() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.debugger_step_t_state_exact().unwrap();
+
+        let teaching = backend.teaching_snapshot().expect("exact teaching sample");
+        assert_eq!(teaching.status_word, Some(backend.machine().bus.raw_s100_status_word()));
+        assert_eq!(teaching.status.inte, Some(backend.machine().bus.raw_s100_inte()));
+        assert_eq!(teaching.status.prot, Some(backend.machine().bus.raw_s100_prot()));
+        assert_eq!(teaching.status.wait, Some(backend.machine().bus.raw_s100_wait()));
+        assert_eq!(teaching.status.hlda, Some(backend.machine().bus.raw_s100_hlda()));
     }
 }
