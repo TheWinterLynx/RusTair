@@ -30,6 +30,8 @@ pub struct CycleAccurateMachineBackend {
     cpu: Cpu8080Cycle,
     instruction_address: u16,
     last_teaching_snapshot: Option<BusTeachingSnapshot>,
+    teaching_status_latch: u8,
+    teaching_prot_latch: bool,
 }
 
 impl Default for CycleAccurateMachineBackend {
@@ -40,6 +42,8 @@ impl Default for CycleAccurateMachineBackend {
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
             last_teaching_snapshot: None,
+            teaching_status_latch: 0,
+            teaching_prot_latch: false,
         };
         backend.sync_machine_cpu();
         backend
@@ -238,15 +242,33 @@ impl CycleAccurateMachineBackend {
     ) -> Option<u8> {
         let visible_data = self.visible_bus_data(trace, sampled_data_in, front_panel_data);
         let sample = Cycle8080S100Adapter::sample(trace, visible_data, ready);
+
+        // The Display/Control board status latch changes only when the CPU board
+        // actually emits a new status byte. Internal T-states therefore retain
+        // the previous status instead of being re-derived from MachineCycle.
+        // During HLDA the CPU has relinquished the bus and the chassis clears the
+        // driven status lines, so the teaching latch follows that exact sample.
+        if sample.hlda {
+            self.teaching_status_latch = 0;
+            self.teaching_prot_latch = false;
+        } else {
+            if let Some(status_word) = sample.status_word {
+                self.teaching_status_latch = status_word;
+            }
+            if let Some(address) = sample.address {
+                self.teaching_prot_latch = self.machine.bus.is_protected(address);
+            }
+        }
+
         self.machine.bus.drive_cpu_board_sample(sample);
         visible_data
     }
 
     fn capture_teaching_snapshot(&mut self, trace: &TickTrace, visible_data: Option<u8>, ready: bool) {
-        let status_word = trace.machine_cycle.status_word();
+        let status_word = Some(self.teaching_status_latch);
         let mut status = BusStatusLines::from_status_word(status_word);
         status.inte = Some(trace.pins.inte);
-        status.prot = trace.pins.address.map(|address| self.machine.bus.is_protected(address));
+        status.prot = Some(self.teaching_prot_latch);
         status.wait = Some(trace.pins.wait);
         status.hlda = Some(trace.pins.hlda);
         let lines = self.machine.bus.cpu_control_lines();
@@ -579,6 +601,8 @@ impl MachineBackend for CycleAccurateMachineBackend {
             self.cpu = Cpu8080Cycle::new();
         }
         self.last_teaching_snapshot = None;
+        self.teaching_status_latch = 0;
+        self.teaching_prot_latch = false;
         self.sync_machine_cpu();
         Ok(())
     }
@@ -642,6 +666,8 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.last_teaching_snapshot = None;
+        self.teaching_status_latch = 0;
+        self.teaching_prot_latch = false;
         self.machine.assert_front_panel_reset();
         self.reset_cycle_core_from_s100();
         Ok(())
