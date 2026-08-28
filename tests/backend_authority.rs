@@ -256,6 +256,10 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &program).unwrap();
+        // RAM power-on contents are independently randomized just like CPU
+        // registers. Seed the location compared below so equality is meaningful
+        // even before the workload's STA 0200h has executed.
+        backend.load_bytes(0x0200, &[0xa5]).unwrap();
     }
 
     for _ in 0..SETUP_INSTRUCTIONS {
