@@ -215,8 +215,10 @@ impl eframe::App for RusTairApp {
                         ui.small("Peripheral timing is independent of CPU emulation speed.");
                     });
 
-                    ui.menu_button("External TCP", |ui| { self.draw_external_serial_config_menu(ui); });
-                    ui.menu_button("External COM", |ui| { self.draw_external_com_config_menu(ui); });
+                    ui.menu_button("External", |ui| {
+                        ui.menu_button("TCP", |ui| { self.draw_external_serial_config_menu(ui); });
+                        ui.menu_button("COM", |ui| { self.draw_external_com_config_menu(ui); });
+                    });
 
                     ui.menu_button("Preferences", |ui| {
                         ui.menu_button("Emulation speed", |ui| {
@@ -276,15 +278,22 @@ impl eframe::App for RusTairApp {
                 ui.separator();
                 if ui.button("ASR-33 TELETYPE").clicked() { self.asr33.window_open = true; }
                 if ui.button("TEXT TERMINAL").clicked() { self.terminal.window_open = true; }
-                if ui.button("EXTERNAL TCP").clicked() { self.external_serial.window_open = true; }
-                if ui.button("EXTERNAL COM").clicked() {
-                    self.external_com.window_open = true;
-                    if self.external_com.available_ports.is_empty() { self.refresh_external_com_ports(); }
-                }
+                ui.menu_button("EXTERNAL", |ui| {
+                    if ui.button("TCP").clicked() {
+                        self.external_serial.window_open = true;
+                        ui.close();
+                    }
+                    if ui.button("COM").clicked() {
+                        self.external_com.window_open = true;
+                        if self.external_com.available_ports.is_empty() { self.refresh_external_com_ports(); }
+                        ui.close();
+                    }
+                });
                 if ui.button("RAM VIEWER").clicked() { self.open_memory_viewer(ctx); }
                 if ui.button("DEBUGGER").clicked() { self.open_debugger_controls(ctx); }
                 if ui.button("EXEC HISTORY").clicked() { self.open_instruction_history(ctx); }
                 if ui.button("I/O INSPECTOR").clicked() { self.open_io_inspector(ctx); }
+                if ui.button("T-STATE TEACHER").clicked() { self.open_bus_teacher(ctx); }
                 if ui.button("PANEL OPERATOR").clicked() { self.open_standalone_front_panel_operator(ctx); }
                 ui.separator();
                 let mut muted = self.audio.muted();
