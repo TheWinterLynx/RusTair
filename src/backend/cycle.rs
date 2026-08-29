@@ -287,6 +287,7 @@ impl CycleAccurateMachineBackend {
             },
             status,
             ready: Some(ready),
+            interrupt: Some(lines.interrupt),
             hold: Some(lines.hold),
             reset: Some(lines.reset),
             total_t_states: Some(trace.total_t_states),
@@ -1334,6 +1335,7 @@ mod tests {
         assert_eq!(sample.t_state, TState::T1.into());
         assert_eq!(sample.status_word, Some(0x23));
         assert_eq!(sample.status.int_ack, Some(true));
+        assert_eq!(sample.interrupt, Some(true));
         assert_eq!(sample.pins.inte, Some(false));
         assert!(!backend.cpu().interrupts_enabled());
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InterruptAck);
@@ -1373,6 +1375,7 @@ mod tests {
         assert_eq!(sample.t_state, TState::T1.into());
         assert_eq!(sample.status_word, Some(0x2b));
         assert_eq!(sample.status.int_ack, Some(true));
+        assert_eq!(sample.interrupt, Some(true));
         assert_eq!(sample.pins.inte, Some(false));
         assert!(!backend.cpu().is_halted());
         assert!(!backend.cpu().interrupts_enabled());
@@ -1398,5 +1401,6 @@ mod tests {
         assert_eq!(teaching.status.prot, Some(backend.machine().bus.raw_s100_prot()));
         assert_eq!(teaching.status.wait, Some(backend.machine().bus.raw_s100_wait()));
         assert_eq!(teaching.status.hlda, Some(backend.machine().bus.raw_s100_hlda()));
+        assert_eq!(teaching.interrupt, Some(backend.machine().bus.cpu_control_lines().interrupt));
     }
 }
