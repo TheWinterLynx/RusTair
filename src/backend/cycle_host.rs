@@ -725,7 +725,7 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> {
-        Ok(self.debug_control.run_to_target())
+        Ok(self.debug_control.run_to())
     }
     fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> {
         Ok(self.debug_control.stop_reason())
