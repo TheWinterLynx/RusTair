@@ -188,6 +188,10 @@ pub struct BusTeachingSnapshot {
     /// They are intentionally historical if the host/debugger changes chassis
     /// controls after the tick without clocking another CPU T-state.
     pub ready: Option<bool>,
+    /// Intel 8080 pin 14 INT input. On the Altair this is sourced from the
+    /// canonical S-100 PINT line. It is deliberately distinct from the front-
+    /// panel INT lamp / SINTA acknowledgement status bit.
+    pub interrupt: Option<bool>,
     pub hold: Option<bool>,
     pub reset: Option<bool>,
     pub total_t_states: Option<u64>,
@@ -216,6 +220,7 @@ impl BusTeachingSnapshot {
             pins: BusCpuPins::default(),
             status: BusStatusLines::default(),
             ready: None,
+            interrupt: None,
             hold: None,
             reset: None,
             total_t_states,
