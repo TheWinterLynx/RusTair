@@ -97,9 +97,10 @@ fn cycle_run_latch_drives_ready_wait_without_changing_reset_semantics() {
     assert_eq!(after_clock.pins.wait, Some(false));
     host.release_run_stop(true);
 
-    // Physical RESET does not clear the independent RUN/STOP latch. While RESET
-    // is held the CPU cannot run, so READY and WAIT are both low. Releasing RESET
-    // restores READY from the still-set RUN latch and execution resumes at 0000h.
+    // Physical RESET does not clear the independent RUN/STOP latch. RUN also
+    // keeps the Display/Control PRDY contribution released while RESET is held;
+    // the CPU is stopped by RESET itself, not by fabricating a READY-low wait.
+    // WAIT remains a CPU output and is low in the reset control state.
     host.assert_front_panel_reset();
     let held_panel = host.front_panel_state();
     let held = host
@@ -108,7 +109,7 @@ fn cycle_run_latch_drives_ready_wait_without_changing_reset_semantics() {
     assert!(held_panel.running, "RESET must preserve the RUN/STOP latch");
     assert_eq!(held.machine_cycle, BusMachineCycle::ResetAsserted);
     assert_eq!(held.reset, Some(true));
-    assert_eq!(held.ready, Some(false));
+    assert_eq!(held.ready, Some(true));
     assert_eq!(held.status.wait, Some(false));
 
     host.release_front_panel_reset();
