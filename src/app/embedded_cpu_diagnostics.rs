@@ -411,9 +411,7 @@ impl RusTairApp {
             }
             ui.separator();
             for test in ClassicDiagnostic::SUITE {
-                if ui.add_enabled(enabled, egui::Button::new("Run")).clicked() {
-                    let _ = test;
-                }
+                if ui.add_enabled(enabled, egui::Button::new(test.label())).clicked() { self.start_embedded_classic_test(test, false); ui.close(); }
             }
         });
 
