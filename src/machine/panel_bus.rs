@@ -52,6 +52,9 @@ pub(super) struct S100Signals {
     pub run: bool,
     pub ready: bool,
     pub wait: bool,
+    /// PINT, S-100 pin 73. Internal booleans use `true` for asserted even
+    /// though the physical line is active-low on the original backplane.
+    pub interrupt: bool,
     pub hold: bool,
     pub hlda: bool,
     pub reset: bool,
@@ -78,6 +81,7 @@ impl Default for S100Signals {
             run: false,
             ready: false,
             wait: false,
+            interrupt: false,
             hold: false,
             hlda: false,
             reset: false,
@@ -354,6 +358,10 @@ impl S100BusState {
     /// WAIT only through a real `Cpu8080Cycle` T-state sample.
     pub(super) fn set_ready_input(&mut self, ready: bool) {
         self.signals.ready = ready;
+    }
+
+    pub(super) fn set_interrupt_request(&mut self, asserted: bool) {
+        self.signals.interrupt = asserted;
     }
 
     pub(super) fn set_hold(&mut self, hold: bool) {
@@ -637,6 +645,23 @@ mod tests {
             Some(0x0000), Some(0x00), None, false, false, false, true, false,
         );
         assert!(bus.signals().wait);
+    }
+
+    #[test]
+    fn pint_request_is_an_input_and_does_not_fabricate_sinta() {
+        let mut bus = S100BusState::default();
+        bus.set_interrupt_request(true);
+        assert!(bus.signals().interrupt);
+        assert!(!bus.signals().int_ack, "PINT request must not fabricate the CPU SINTA response");
+
+        bus.drive_cpu_t_state(
+            Some(0x0100), Some(0x23), Some(0x23), false, false, true, false, false,
+        );
+        assert!(bus.signals().interrupt, "level-sensitive PINT remains asserted until the device clears it");
+        assert!(bus.signals().int_ack);
+
+        bus.set_interrupt_request(false);
+        assert!(!bus.signals().interrupt);
     }
 
     #[test]
