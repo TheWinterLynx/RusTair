@@ -294,6 +294,12 @@ impl super::AltairBus {
         self.s100.set_ready_input(ready);
     }
 
+    /// Display/Control-board PRDY contribution before RAM/device wait sources
+    /// are wired into the effective S-100 READY level.
+    pub(crate) fn cycle_front_panel_ready_input(&self) -> bool {
+        self.s100.signals().front_panel_ready
+    }
+
     /// Change only the external HOLD request seen by the cycle-accurate CPU.
     /// HLDA is an 8080 output and must remain whatever the last exact CPU sample
     /// drove until a later `Cpu8080Cycle::tick()` changes it. The generic chassis
