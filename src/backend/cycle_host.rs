@@ -268,6 +268,26 @@ impl CycleHostBackend {
             },
         };
 
+        let (raw_cpu_data, s100_di, s100_do, panel_data) = if powered {
+            (
+                machine.bus.raw_cpu_data(),
+                machine.bus.raw_s100_data_in(),
+                machine.bus.raw_s100_data_out(),
+                Some(machine.bus.raw_panel_data()),
+            )
+        } else {
+            (None, None, None, None)
+        };
+        // Only STOP-WAIT gives us a stable, non-numbered CPU D0-D7 truth. In
+        // POWER ON, RESET-held and RESET-released RUN states the chassis may have
+        // meaningful DI/DO/display levels while the package D pins remain unknown
+        // until a real cycle-core sample exists.
+        let cpu_data = if phase == BusMachineCycle::ResetReleasedStopped {
+            raw_cpu_data
+        } else {
+            None
+        };
+
         let r = self.inner.cpu().registers();
         BusTeachingSnapshot {
             accuracy: BusTeachingAccuracy::ControlState,
@@ -277,13 +297,14 @@ impl CycleHostBackend {
             machine_cycle: phase,
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
-            // ADDRESS/DATA are always the canonical S-100 values. In the stable
-            // STOP-WAIT read state they also determine the CPU A/D pin levels:
-            // the CPU owns ADDRESS and memory drives DATA while DBIN is active.
-            // Other lifecycle states do not gain fabricated CPU pin truth merely
-            // because the chassis/front panel has a visible bus value.
             address: if powered { Some(machine.address_leds()) } else { None },
-            data: if powered { Some(machine.data_leds()) } else { None },
+            // Keep the legacy display byte until older Teacher call sites have
+            // migrated; the four fields below are the new electrical contract.
+            data: panel_data,
+            cpu_data,
+            s100_di,
+            s100_do,
+            panel_data,
             status_word,
             pins,
             status,
@@ -758,12 +779,16 @@ mod tests {
         assert_eq!(off.machine_cycle, BusMachineCycle::PowerOff);
         assert_eq!(off.t_state, BusTState::Unknown);
         assert_eq!(off.interrupt, None);
+        assert_eq!(off.cpu_data, None);
+        assert_eq!(off.s100_di, None);
+        assert_eq!(off.s100_do, None);
 
         backend.power(true).unwrap();
         let powered = backend.bus_teaching_snapshot().unwrap().unwrap();
         assert_eq!(powered.machine_cycle, BusMachineCycle::PowerOnUndefined);
         assert_eq!(powered.accuracy, BusTeachingAccuracy::ControlState);
         assert_eq!(powered.interrupt, Some(false));
+        assert_eq!(powered.cpu_data, None, "undefined power-on CPU D pins must not be invented");
         assert_eq!(powered.pins.sync, None, "undefined power-on outputs must not be invented");
 
         backend.assert_reset().unwrap();
@@ -774,6 +799,10 @@ mod tests {
         assert_eq!(held.t_state, BusTState::Unknown);
         assert_eq!(held.address, Some(0xffff));
         assert_eq!(held.data, Some(0xff));
+        assert_eq!(held.cpu_data, None);
+        assert_eq!(held.s100_di, Some(0xff));
+        assert_eq!(held.s100_do, None);
+        assert_eq!(held.panel_data, Some(0xff));
         assert_eq!(held.pins.wr_n, None, "RESET control state must not reuse stale /WR from a previous T-state");
         assert_eq!(held.status.memr, Some(false));
         assert_eq!(held.status.wait, Some(false));
@@ -794,11 +823,14 @@ mod tests {
         assert_eq!(released.pins.dbin, Some(true));
         assert_eq!(released.pins.wr_n, Some(true));
         assert_eq!(released.pins.wait, Some(true));
+        assert_eq!(released.cpu_data, released.s100_di);
+        assert_eq!(released.s100_do, None);
+        assert_eq!(released.panel_data, released.s100_di);
         assert_eq!(released.total_t_states, Some(0));
     }
 
     #[test]
-    fn lifecycle_teacher_raw_status_is_not_derived_from_optical_lamps() {
+    fn lifecycle_teacher_raw_status_and_data_are_not_derived_from_optical_lamps() {
         let mut backend = CycleHostBackend::default();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
@@ -810,6 +842,10 @@ mod tests {
         assert_eq!(snapshot.status.m1, Some(true));
         assert_eq!(snapshot.status.wo, Some(true));
         assert_eq!(snapshot.status.wait, Some(true));
+        assert_eq!(snapshot.cpu_data, backend.inner.machine().bus.raw_cpu_data());
+        assert_eq!(snapshot.s100_di, backend.inner.machine().bus.raw_s100_data_in());
+        assert_eq!(snapshot.s100_do, backend.inner.machine().bus.raw_s100_data_out());
+        assert_eq!(snapshot.panel_data, Some(backend.inner.machine().bus.raw_panel_data()));
         assert_eq!(snapshot.interrupt, Some(backend.inner.machine().bus.cpu_control_lines().interrupt));
     }
 
