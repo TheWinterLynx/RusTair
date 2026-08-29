@@ -1,7 +1,6 @@
 use rustair::backend::{
     CpuState, CycleAccurateMachineBackend, Intel8080State, MachineBackend, NativeMachineBackend,
 };
-use rustair::cpu8080_cycle::{MachineCycle, TState};
 
 fn intel_state<B: MachineBackend>(backend: &mut B) -> Intel8080State {
     match backend.cpu_state().expect("CPU state must be available") {
@@ -10,38 +9,58 @@ fn intel_state<B: MachineBackend>(backend: &mut B) -> Intel8080State {
     }
 }
 
-fn assert_cycle_mirror_matches_authority(
-    backend: &CycleAccurateMachineBackend,
-    context: &str,
-) {
-    let authoritative = backend.cpu().registers();
-    let mirror = &backend.machine().cpu;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DormantFastCpuState {
+    a: u8,
+    b: u8,
+    c: u8,
+    d: u8,
+    e: u8,
+    h: u8,
+    l: u8,
+    f: u8,
+    pc: u16,
+    sp: u16,
+    inte: bool,
+    halted: bool,
+    cycles: u64,
+}
 
-    assert_eq!(mirror.a, authoritative.a, "{context}: A mirror");
-    assert_eq!(mirror.b, authoritative.b, "{context}: B mirror");
-    assert_eq!(mirror.c, authoritative.c, "{context}: C mirror");
-    assert_eq!(mirror.d, authoritative.d, "{context}: D mirror");
-    assert_eq!(mirror.e, authoritative.e, "{context}: E mirror");
-    assert_eq!(mirror.h, authoritative.h, "{context}: H mirror");
-    assert_eq!(mirror.l, authoritative.l, "{context}: L mirror");
-    assert_eq!(mirror.f, authoritative.f, "{context}: flags mirror");
-    assert_eq!(mirror.pc, authoritative.pc, "{context}: PC mirror");
-    assert_eq!(mirror.sp, authoritative.sp, "{context}: SP mirror");
-    assert_eq!(
-        mirror.inte,
-        backend.cpu().interrupts_enabled(),
-        "{context}: INTE mirror"
-    );
-    assert_eq!(
-        mirror.halted,
-        backend.cpu().is_halted(),
-        "{context}: HALT mirror"
-    );
-    assert_eq!(
-        mirror.cycles,
-        backend.cpu().total_t_states(),
-        "{context}: T-state mirror"
-    );
+fn dormant_fast_cpu_state(backend: &CycleAccurateMachineBackend) -> DormantFastCpuState {
+    let cpu = &backend.machine().cpu;
+    DormantFastCpuState {
+        a: cpu.a,
+        b: cpu.b,
+        c: cpu.c,
+        d: cpu.d,
+        e: cpu.e,
+        h: cpu.h,
+        l: cpu.l,
+        f: cpu.f,
+        pc: cpu.pc,
+        sp: cpu.sp,
+        inte: cpu.inte,
+        halted: cpu.halted,
+        cycles: cpu.cycles,
+    }
+}
+
+fn poison_dormant_fast_cpu(backend: &mut CycleAccurateMachineBackend) -> DormantFastCpuState {
+    let cpu = &mut backend.machine_mut().cpu;
+    cpu.a = 0x11;
+    cpu.b = 0x22;
+    cpu.c = 0x33;
+    cpu.d = 0x44;
+    cpu.e = 0x55;
+    cpu.h = 0x66;
+    cpu.l = 0x77;
+    cpu.f = 0xd7;
+    cpu.pc = 0x3456;
+    cpu.sp = 0x789a;
+    cpu.inte = true;
+    cpu.halted = true;
+    cpu.cycles = 0xdead_beef;
+    dormant_fast_cpu_state(backend)
 }
 
 /// Advance one exact 8080 machine cycle without using the Altair front-panel
@@ -108,9 +127,8 @@ fn fast_backend_uses_altair_machine_cpu_as_its_execution_authority() {
     backend.release_reset().unwrap();
     backend.load_bytes(0x0100, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
 
-    // In the instruction-accurate backend AltairMachine.cpu is intentionally
-    // the real CPU, not a compatibility copy. Put execution at a non-panel PC
-    // and prove both cpu_state() and STEP follow that exact object.
+    // Fast deliberately keeps AltairMachine.cpu as its real execution object.
+    // The Cycle refactor must not change this contract.
     {
         let cpu = &mut backend.machine_mut().cpu;
         cpu.pc = 0x0100;
@@ -133,139 +151,79 @@ fn fast_backend_uses_altair_machine_cpu_as_its_execution_authority() {
 }
 
 #[test]
-fn cycle_backend_ignores_a_poisoned_fast_cpu_mirror_during_execution() {
+fn cycle_execution_neither_reads_nor_rewrites_dormant_fast_cpu() {
     let mut backend = CycleAccurateMachineBackend::default();
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
     backend.load_bytes(0, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
 
-    let authoritative = backend.cpu().registers();
-    let authoritative_inte = backend.cpu().interrupts_enabled();
+    let authoritative_a = backend.cpu().registers().a;
+    let dormant = poison_dormant_fast_cpu(&mut backend);
 
-    // Deliberately corrupt every important legacy Cpu8080 field. If Cycle ever
-    // executes or consults this object as CPU authority, the assertions below
-    // will immediately fail. The next exact tick must instead overwrite it from
-    // Cpu8080Cycle.
-    {
-        let mirror = &mut backend.machine_mut().cpu;
-        mirror.a = authoritative.a ^ 0xff;
-        mirror.b = authoritative.b ^ 0xff;
-        mirror.c = authoritative.c ^ 0xff;
-        mirror.d = authoritative.d ^ 0xff;
-        mirror.e = authoritative.e ^ 0xff;
-        mirror.h = authoritative.h ^ 0xff;
-        mirror.l = authoritative.l ^ 0xff;
-        mirror.f = authoritative.f ^ 0xd5;
-        mirror.pc = 0x3456;
-        mirror.sp = 0x789a;
-        mirror.inte = !authoritative_inte;
-        mirror.halted = true;
-        mirror.cycles = 0xdead_beef;
-    }
-
-    cycle_step_machine_cycle(&mut backend); // M1 fetch only, no panel parking.
+    cycle_step_machine_cycle(&mut backend); // M1 fetch only.
     assert_eq!(backend.cpu().registers().pc, 1);
-    assert_eq!(backend.cpu().registers().a, authoritative.a);
+    assert_eq!(backend.cpu().registers().a, authoritative_a);
     assert_eq!(backend.cpu().total_t_states(), 4);
-    assert_cycle_mirror_matches_authority(&backend, "after poisoned-mirror fetch");
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant);
 
     cycle_step_machine_cycle(&mut backend); // M2 operand read completes MVI.
     assert_eq!(backend.cpu().registers().pc, 2);
     assert_eq!(backend.cpu().registers().a, 0x5a);
     assert_eq!(backend.cpu().total_t_states(), 7);
-    assert_cycle_mirror_matches_authority(&backend, "after poisoned-mirror MVI");
+    assert_eq!(
+        dormant_fast_cpu_state(&backend),
+        dormant,
+        "Cycle must not use its embedded AltairMachine Cpu8080 as a mirror"
+    );
 }
 
 #[test]
-fn cycle_backend_mirror_stays_synced_across_cpu_and_chassis_transitions() {
+fn cycle_chassis_controls_leave_dormant_fast_cpu_untouched() {
     let mut backend = CycleAccurateMachineBackend::default();
-    assert_cycle_mirror_matches_authority(&backend, "default");
+    let dormant = poison_dormant_fast_cpu(&mut backend);
 
+    // Power-on now seeds Cpu8080Cycle directly instead of randomizing/copying
+    // AltairMachine.cpu.
     backend.power(true).unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "power on");
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "power on");
+
     backend.assert_reset().unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "RESET asserted");
     backend.release_reset().unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "RESET released");
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "RESET");
 
     backend.load_bytes(0, &[0x00, 0x00]).unwrap();
     backend.step().unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "physical SINGLE STEP");
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "physical SINGLE STEP");
+
     backend.run().unwrap();
     backend.service_execution(4).unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "RUN execution");
     backend.halt().unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "host STOP");
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "RUN/host pause");
 
-    // EXAMINE and DEPOSIT exercise the shared chassis while the exact CPU is
-    // parked in a fetch wait. The compatibility Cpu8080 must still only mirror.
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
     backend.load_bytes(0x0123, &[0xa5, 0x5a]).unwrap();
     backend.set_switch_register(0x0123).unwrap();
     backend.panel_examine(false).unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "EXAMINE");
     backend.set_switch_register(0x005a).unwrap();
     backend.panel_deposit(false).unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "DEPOSIT");
+    backend.protect_current_board(false).unwrap();
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "front panel operations");
 
-    // HOLD/HLDA is owned by the exact core and S-100 control lines; mirroring
-    // architectural CPU state must remain exact while ownership changes.
-    backend.assert_reset().unwrap();
-    backend.release_reset().unwrap();
-    backend.load_bytes(0, &[0x00, 0x00]).unwrap();
     backend.request_hold(true).unwrap();
     backend.run().unwrap();
     backend.service_execution(5).unwrap();
-    assert!(backend.cpu().is_holding());
-    assert_cycle_mirror_matches_authority(&backend, "HOLD/HLDA entered");
     backend.request_hold(false).unwrap();
     backend.service_execution(1).unwrap();
-    assert!(!backend.cpu().is_holding());
-    assert_cycle_mirror_matches_authority(&backend, "HOLD/HLDA released");
-
-    // HLT is the historical corner case where STOP cannot latch because no
-    // qualifying PSYNC is produced. RESET restarts the processor, but RESET
-    // itself does not clear the Display/Control RUN/STOP R-S latch: the held
-    // STOP is captured by the first real post-reset T1/PSYNC.
     backend.halt().unwrap();
-    backend.assert_reset().unwrap();
-    backend.release_reset().unwrap();
-    backend.load_bytes(0, &[0x76]).unwrap(); // HLT
-    backend.run().unwrap();
-    backend.service_execution(16).unwrap();
-    assert!(backend.cpu().is_halted());
-    assert_cycle_mirror_matches_authority(&backend, "HLT dwell");
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "HOLD/HLDA");
 
-    backend.assert_run_stop(false).unwrap();
-    assert!(
-        backend.front_panel_state().unwrap().running,
-        "STOP alone cannot latch without PSYNC while the 8080 is halted"
-    );
-    assert_cycle_mirror_matches_authority(&backend, "STOP requested during HLT");
+    backend.commit_panel_activity(std::time::Duration::from_millis(16)).unwrap();
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "panel lamp integration");
 
-    backend.assert_reset().unwrap();
-    assert!(
-        backend.front_panel_state().unwrap().running,
-        "RESET itself must preserve the physical RUN/STOP latch"
-    );
-    assert_cycle_mirror_matches_authority(&backend, "RESET asserted with STOP held");
-
-    backend.release_reset().unwrap();
-    assert!(
-        backend.front_panel_state().unwrap().running,
-        "RUN remains set until the first post-reset PSYNC is actually clocked"
-    );
-    assert_cycle_mirror_matches_authority(&backend, "RESET released before STOP capture");
-
-    backend.service_execution(1).unwrap();
-    assert!(
-        !backend.front_panel_state().unwrap().running,
-        "held STOP must latch at the first real post-reset PSYNC"
-    );
-    assert_cycle_mirror_matches_authority(&backend, "post-reset PSYNC STOP capture");
-    backend.release_run_stop(false).unwrap();
+    backend.power(false).unwrap();
+    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "power off");
 }
 
 #[test]
@@ -322,7 +280,6 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
         intel_state(&mut fast),
         "backends must agree once guest code initializes RESET-undefined state"
     );
-    assert_cycle_mirror_matches_authority(&cycle, "after deterministic setup");
 
     for instruction_index in 0..WORKLOAD_INSTRUCTIONS {
         fast.step().unwrap();
@@ -338,10 +295,6 @@ fn fast_and_cycle_backends_match_architectural_state_through_shared_machine_path
             cycle.peek_memory(0x0200).unwrap(),
             fast.peek_memory(0x0200).unwrap(),
             "memory mismatch after workload instruction #{instruction_index}"
-        );
-        assert_cycle_mirror_matches_authority(
-            &cycle,
-            &format!("differential workload instruction #{instruction_index}"),
         );
     }
 
