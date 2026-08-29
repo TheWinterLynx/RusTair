@@ -131,6 +131,29 @@ fn hold_request_after_exact_sample_does_not_rewrite_captured_input() {
 }
 
 #[test]
+fn reset_replaces_exact_sample_with_control_state_immediately() {
+    let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
+    host.debugger_step_t_state();
+    assert_eq!(host.bus_teaching_snapshot().unwrap().accuracy, BusTeachingAccuracy::Exact);
+    assert_eq!(host.bus_teaching_snapshot().unwrap().t_state, BusTState::T1);
+
+    host.assert_front_panel_reset();
+
+    let reset = host.bus_teaching_snapshot().expect("RESET control state");
+    assert_eq!(reset.accuracy, BusTeachingAccuracy::ControlState);
+    assert_eq!(reset.machine_cycle, BusMachineCycle::ResetAsserted);
+    assert_eq!(reset.t_state, BusTState::Unknown);
+    assert_eq!(reset.reset, Some(true));
+    assert_eq!(reset.pins.sync, None, "RESET must not reuse a stale exact SYNC output");
+
+    host.release_front_panel_reset();
+    let released = host.bus_teaching_snapshot().expect("reset-released control state");
+    assert_eq!(released.accuracy, BusTeachingAccuracy::ControlState);
+    assert_eq!(released.machine_cycle, BusMachineCycle::ResetReleasedStopped);
+    assert_eq!(released.reset, Some(false));
+}
+
+#[test]
 fn cycle_t_state_step_advances_one_t_state_at_a_time() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
     host.debugger_step_t_state();
