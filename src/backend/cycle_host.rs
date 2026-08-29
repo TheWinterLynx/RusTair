@@ -11,8 +11,8 @@ use crate::trace8080::{
 
 use super::cycle::CycleExecutionEvent;
 use super::{
-    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
-    BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState, CpuState,
+    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusChassisSnapshot,
+    BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState, CpuState,
     CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
     InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
 };
@@ -316,6 +316,7 @@ impl CycleHostBackend {
             instruction_t_states: None,
             instruction_complete: None,
             visible_lamps: lamps,
+            current_chassis: None,
         }
     }
 
@@ -663,11 +664,15 @@ impl MachineBackend for CycleHostBackend {
     }
 
     fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
-        Ok(Some(
-            self.inner
-                .teaching_snapshot()
-                .unwrap_or_else(|| self.control_teaching_snapshot()),
-        ))
+        let mut snapshot = self
+            .inner
+            .teaching_snapshot()
+            .unwrap_or_else(|| self.control_teaching_snapshot());
+        snapshot.current_chassis = Some(BusChassisSnapshot::from_altair_machine(
+            EmulationEngine::RustCycleAccurate8080,
+            self.inner.machine(),
+        ));
+        Ok(Some(snapshot))
     }
     fn debugger_step_t_state(&mut self) -> BackendResult<()> {
         self.debugger_step_one_t_state()

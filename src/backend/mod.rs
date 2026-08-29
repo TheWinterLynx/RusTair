@@ -14,7 +14,8 @@ use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
 pub use bus_teaching::{
-    BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
+    BusChassisSnapshot, BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy,
+    BusTeachingSnapshot, BusTState,
 };
 pub use crate::debugger_control::{DebugStopReason, MemoryWatchAccess};
 pub use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};

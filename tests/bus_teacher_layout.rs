@@ -57,3 +57,11 @@ fn bus_teacher_live_timing_fields_have_fixed_horizontal_geometry() {
         "live timing values must not use content-sized egui::Grid columns because changing machine-cycle text would shift neighboring fields",
     );
 }
+
+#[test]
+fn bus_teacher_keeps_frozen_cpu_sample_separate_from_live_chassis() {
+    assert!(BUS_TEACHER_SOURCE.contains("CURRENT CHASSIS / S-100 (NOW)"));
+    assert!(BUS_TEACHER_SOURCE.contains("Freeze locks LAST CPU SAMPLE only; CURRENT CHASSIS stays live."));
+    assert!(BUS_TEACHER_SOURCE.contains("let current_chassis = live.and_then(|snapshot| snapshot.current_chassis)"));
+    assert!(BUS_TEACHER_SOURCE.contains("state.frozen_snapshot.or(live)"));
+}

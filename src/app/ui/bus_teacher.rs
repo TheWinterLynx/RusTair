@@ -1,6 +1,6 @@
 use super::super::{egui, RusTairApp};
 use crate::backend::{
-    BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
+    BusChassisSnapshot, BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
 };
 use crate::decoder8080::decode_8080;
 
@@ -145,7 +145,7 @@ impl RusTairApp {
                     {
                         state.frozen_snapshot = if state.freeze_display { live } else { None };
                     }
-                    ui.weak("Freeze affects this viewport only.");
+                    ui.weak("Freeze locks LAST CPU SAMPLE only; CURRENT CHASSIS stays live.");
                 });
             });
     }
@@ -174,12 +174,37 @@ impl RusTairApp {
                 "POWER/RESET/READY/PINT/S-100 control state is known. CPU D0-D7, S-100 DI and S-100 DO are separate electrical domains; stable package levels are shown only where the lifecycle state determines them without inventing a numbered T-state.",
             ),
             _ if capabilities.exact_t_state_timing => ui.small(
-                "Cycle Accurate shows the last real CPU-board T-state sample. CPU D0-D7, S-100 DI0-DI7, S-100 DO0-DO7, status and CPU/control pins are captured as separate domains from the canonical backplane model.",
+                "LAST CPU SAMPLE is the retained real CPU-board T-state. CURRENT CHASSIS is shown separately and may already differ after debugger pause, HOLD/PINT changes or another host-side control mutation.",
             ),
             _ => ui.small(
                 "Fast 8080 is instruction-level: front-panel address/data and visible lamps are useful observations, while exact T-state, CPU D and directional S-100 DI/DO values remain unknown.",
             ),
         };
+    }
+
+    fn draw_current_chassis(ui: &mut egui::Ui, chassis: BusChassisSnapshot) {
+        let run = if !chassis.powered {
+            "POWER OFF"
+        } else if chassis.running {
+            "RUN"
+        } else {
+            "STOP"
+        };
+        let address = Self::hex16(chassis.address);
+        let cpu_data = Self::hex8(chassis.cpu_data);
+        let s100_di = Self::hex8(chassis.s100_di);
+        let s100_do = Self::hex8(chassis.s100_do);
+        let panel_data = Self::hex8(chassis.panel_data);
+        let status = Self::hex8(chassis.status_word);
+
+        ui.strong("CURRENT CHASSIS / S-100 (NOW)");
+        Self::draw_timing_row(ui, "RUN latch", run, "READY", Self::bool_signal(chassis.ready));
+        Self::draw_timing_row(ui, "INT/PINT", Self::bool_signal(chassis.interrupt), "HOLD", Self::bool_signal(chassis.hold));
+        Self::draw_timing_row(ui, "RESET", Self::bool_signal(chassis.reset), "EXT CLR", Self::bool_signal(chassis.ext_clear));
+        Self::draw_timing_row(ui, "S-100 address", &address, "Status", &status);
+        Self::draw_timing_row(ui, "CPU D0-D7", &cpu_data, "S-100 DI", &s100_di);
+        Self::draw_timing_row(ui, "S-100 DO", &s100_do, "Panel DATA", &panel_data);
+        ui.small("This block is the present chassis instant. It is refreshed even when LAST CPU SAMPLE is frozen, and is never projected backward onto the historical DIP-40 T-state.");
     }
 
     fn draw_bus_teacher_controls(&mut self, ui: &mut egui::Ui) {
@@ -631,9 +656,18 @@ impl RusTairApp {
         &mut self,
         ui: &mut egui::Ui,
         snapshot: Option<BusTeachingSnapshot>,
+        current_chassis: Option<BusChassisSnapshot>,
     ) {
         super::collapsible_section(ui, "Teaching source / accuracy", false, |ui| {
             self.draw_bus_teacher_source(ui, snapshot);
+        });
+        ui.separator();
+        super::collapsible_section(ui, "Current chassis / S-100 (now)", true, |ui| {
+            if let Some(chassis) = current_chassis {
+                Self::draw_current_chassis(ui, chassis);
+            } else {
+                ui.label("No current chassis state is available.");
+            }
         });
         ui.separator();
         super::collapsible_section(ui, "Execution stepping", true, |ui| {
@@ -711,6 +745,9 @@ impl RusTairApp {
         } else {
             state.frozen_snapshot = None;
         }
+        // The displayed CPU/T-state sample may be frozen. The present-time
+        // chassis plane is intentionally always taken from the fresh observation.
+        let current_chassis = live.and_then(|snapshot| snapshot.current_chassis);
         let snapshot = state.frozen_snapshot.or(live);
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -720,7 +757,7 @@ impl RusTairApp {
                 .show(ui, |ui| {
                     ui.columns(2, |columns| {
                         let (left_column, right_column) = columns.split_at_mut(1);
-                        self.draw_bus_teacher_left_column(&mut left_column[0], snapshot);
+                        self.draw_bus_teacher_left_column(&mut left_column[0], snapshot, current_chassis);
                         self.draw_bus_teacher_right_column(&mut right_column[0], snapshot, state);
                     });
                 });

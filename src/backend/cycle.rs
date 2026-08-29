@@ -317,6 +317,7 @@ impl CycleAccurateMachineBackend {
             instruction_t_states: Some(trace.instruction_t_states),
             instruction_complete: Some(trace.instruction_complete),
             visible_lamps: self.machine.panel_lamps(),
+            current_chassis: None,
         });
     }
 

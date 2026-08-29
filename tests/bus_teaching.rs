@@ -112,6 +112,21 @@ fn exact_sample_inputs_remain_historical_after_debugger_returns_to_pause() {
 }
 
 #[test]
+fn exact_sample_and_current_chassis_are_distinct_after_debugger_pause() {
+    let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
+    host.debugger_step_t_state();
+
+    let view = host.bus_teaching_snapshot().expect("dual-state teaching view");
+    let current = view.current_chassis.expect("current chassis plane");
+    assert_eq!(view.accuracy, BusTeachingAccuracy::Exact);
+    assert_eq!(view.t_state, BusTState::T1);
+    assert_eq!(view.ready, Some(true), "exact T1 retains sampled READY HIGH");
+    assert!(!current.running, "debugger has already returned the chassis to STOP");
+    assert_eq!(current.ready, Some(false), "present chassis READY follows STOP");
+    assert_eq!(current.reset, Some(false));
+}
+
+#[test]
 fn hold_request_after_exact_sample_does_not_rewrite_captured_input() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
     host.debugger_step_t_state();
@@ -125,6 +140,7 @@ fn hold_request_after_exact_sample_does_not_rewrite_captured_input() {
     let retained = host.bus_teaching_snapshot().expect("retained exact T1 sample");
     assert_eq!(retained.hold, Some(false), "HOLD is the value sampled at displayed T1, not a later request");
     assert_eq!(retained.t_state, BusTState::T1);
+    assert_eq!(retained.current_chassis.expect("current chassis").hold, Some(true), "live chassis must expose the later HOLD request separately");
     assert_eq!(host.intel8080_state().total_t_states, before_t_states, "live HOLD request must block debugger stepping before a new CPU sample is captured");
 
     host.request_hold(false);
