@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard};
 use crate::debugger_control::DebugExecutionControl;
-use crate::machine::{AltairMachine, CpuDiagnosticResult};
+use crate::machine::{CpuDiagnosticResult, FastAltairMachine};
 use crate::trace8080::{
     collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
     InstructionTraceBuffer, InstructionTraceMetadata,
@@ -15,7 +15,7 @@ use super::{
 };
 
 pub struct NativeMachineBackend {
-    machine: AltairMachine,
+    machine: FastAltairMachine,
     instruction_trace: InstructionTraceBuffer,
     debug_control: DebugExecutionControl,
 }
@@ -23,7 +23,7 @@ pub struct NativeMachineBackend {
 impl Default for NativeMachineBackend {
     fn default() -> Self {
         Self {
-            machine: AltairMachine::default(),
+            machine: FastAltairMachine::default(),
             instruction_trace: InstructionTraceBuffer::default(),
             debug_control: DebugExecutionControl::default(),
         }
@@ -31,16 +31,16 @@ impl Default for NativeMachineBackend {
 }
 
 impl NativeMachineBackend {
-    pub fn new(machine: AltairMachine) -> Self {
+    pub fn new(machine: FastAltairMachine) -> Self {
         Self {
             machine,
             instruction_trace: InstructionTraceBuffer::default(),
             debug_control: DebugExecutionControl::default(),
         }
     }
-    pub fn machine(&self) -> &AltairMachine { &self.machine }
-    pub fn machine_mut(&mut self) -> &mut AltairMachine { &mut self.machine }
-    pub fn into_machine(self) -> AltairMachine { self.machine }
+    pub fn machine(&self) -> &FastAltairMachine { &self.machine }
+    pub fn machine_mut(&mut self) -> &mut FastAltairMachine { &mut self.machine }
+    pub fn into_machine(self) -> FastAltairMachine { self.machine }
 
     fn snapshot_cpu(&self) -> CpuState {
         let cpu = &self.machine.cpu;
@@ -77,19 +77,12 @@ impl NativeMachineBackend {
         ]
     }
 
-    /// RESET, front-panel address injection and external program replacement
-    /// create a new execution context. Retaining the previous ring would let
-    /// inferred structures such as Call Stack claim frames that are no longer
-    /// live, so make those operations explicit trace-generation boundaries.
     fn reset_debugger_epoch(&mut self) {
         self.instruction_trace.clear();
         self.debug_control.clear_transient();
     }
 
     fn record_one_stopped_instruction(&mut self) {
-        // HLT dwell is not a guest instruction. The instruction-level CPU uses
-        // 4T chunks while halted, but the debugger must never decode the byte at
-        // the post-HLT PC and publish it as if that instruction had executed.
         if self.machine.cpu.halted {
             return;
         }
@@ -162,9 +155,6 @@ impl NativeMachineBackend {
                 break;
             }
 
-            // RESET suppresses opcode fetches while the physical RUN latch may
-            // remain set. Do not let an execute breakpoint fire merely because
-            // RESET left PC at the same numerical address.
             if self.machine.bus.cpu_control_lines().reset {
                 self.machine.run_cycles(t_state_budget - used);
                 break;
