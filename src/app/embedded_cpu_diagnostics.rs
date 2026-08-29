@@ -546,7 +546,7 @@ impl RusTairApp {
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                     ui.label("T-states"); ui.monospace(format_count(result.t_states));
-                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(result.t_states)); ui.monospace(format_diff(result.t_states, expected)); }
+                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(expected)); ui.monospace(format_diff(result.t_states, expected)); }
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                 });
