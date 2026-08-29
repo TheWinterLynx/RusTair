@@ -7,26 +7,37 @@ on:
       - agent/cycle-hardware-fidelity-audit
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  apply-cycle-fixes:
+  validate-hardware-audit:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Apply Cycle architecture cleanup
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-rust-${{ hashFiles('Cargo.lock') }}
+
+      - name: Canonical S-100 authority guard
         shell: pwsh
         run: |
-          if (-not (Test-Path .github/scripts/apply_cycle_architecture_cleanup.py)) { Write-Host "Cleanup already applied"; exit 0 }
-          python .github/scripts/apply_cycle_architecture_cleanup.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git config user.name "TheWinterLynx"
-          git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
-          git add -A
-          git commit -m "Propagate Cycle faults and preserve RAM reconfiguration state"
-          git push origin HEAD:agent/cycle-hardware-fidelity-audit
+          $legacyInte = Get-ChildItem src\machine -Recurse -Filter *.rs | Select-String -Pattern 'self\.cpu_inte|cpu_inte\s*:'
+          if ($legacyInte) { $legacyInte | ForEach-Object { Write-Error $_.Line }; throw "Legacy AltairBus cpu_inte mirror remains" }
+
+      - name: Hardware and architecture regressions
+        run: cargo test --test backend_authority --test backend_lifecycle_authority --test bus_teaching --test memory_wait_timing --test run_reset_timing --test cpu_pin_diagram --test cycle_memory_reconfigure
+
+      - name: Test all targets
+        run: cargo test --all-targets
