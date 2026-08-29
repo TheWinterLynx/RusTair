@@ -413,24 +413,16 @@ impl MachineBackend for CycleHostBackend {
 
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         let powered = self.inner.machine().powered;
-        let serial_board = self.inner.machine().serial_board();
-        let memory_profile = self
-            .inner
-            .machine()
-            .memory_board_profile(0)
-            .unwrap_or_default();
+        self.inner.machine_mut().configure_memory(size, init);
 
         if powered {
-            self.inner.machine_mut().configure_memory(size, init);
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
             self.teaching_reset_seen = true;
         } else {
-            let mut replacement = CycleAccurateMachineBackend::default();
-            replacement.machine_mut().configure_memory(size, init);
-            replacement.machine_mut().configure_memory_board_profile(memory_profile);
-            replacement.machine_mut().configure_serial_board(serial_board);
-            self.inner = replacement;
+            // Keep the existing chassis, serial-board choice, sense switches and
+            // memory-card timing profile. Replacing the whole backend here made
+            // a RAM-capacity setting an accidental machine factory reset.
             self.teaching_reset_seen = false;
         }
         self.reset_debugger_epoch();

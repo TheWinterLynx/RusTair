@@ -32,7 +32,6 @@ enum PinKind {
     Power(&'static str),
     Clock(&'static str),
     Ground,
-    Unmodeled(&'static str),
 }
 
 #[derive(Clone, Copy)]

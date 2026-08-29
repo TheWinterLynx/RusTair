@@ -3,12 +3,12 @@ use std::time::Duration;
 use crate::config::SerialBoard;
 use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{
-    Cpu8080Cycle, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
+    Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
 use crate::machine::{AltairMachine, Cycle8080S100Adapter, MemoryReadyPhase};
 
 use super::{
-    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
+    BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
     BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, CpuState, EmulationEngine,
     FrontPanelState, Intel8080State, MachineBackend,
 };
@@ -36,6 +36,9 @@ pub struct CycleAccurateMachineBackend {
     /// T1 captures the physical STOP latch, finish the real T2 -> TW handshake
     /// before host execution freezes.
     stop_wait_park_pending: bool,
+    /// Latched exact-core fault. Unlike a TickTrace observation this persists
+    /// until RESET/power recovery so callers cannot silently resume execution.
+    cpu_fault: Option<Cpu8080CycleFault>,
 }
 
 impl Default for CycleAccurateMachineBackend {
@@ -47,6 +50,7 @@ impl Default for CycleAccurateMachineBackend {
             instruction_address: 0,
             last_teaching_snapshot: None,
             stop_wait_park_pending: false,
+            cpu_fault: None,
         };
         backend.sync_machine_cpu();
         backend
@@ -88,6 +92,28 @@ impl CycleAccurateMachineBackend {
             lamps: self.machine.panel_lamps(),
             current_board_protected: self.machine.current_board_protected(),
             ext_clear_asserted: self.machine.ext_clear_asserted(),
+        }
+    }
+
+    fn backend_error_for_cycle_fault(
+        operation: &'static str,
+        fault: Cpu8080CycleFault,
+    ) -> BackendError {
+        BackendError::Operation {
+            operation,
+            detail: format!("cycle-accurate 8080 fault: {fault:?}"),
+        }
+    }
+
+    fn fail_if_cpu_fault(&mut self, operation: &'static str) -> BackendResult<()> {
+        if let Some(fault) = self.cpu_fault {
+            // A CPU fault is a stopped/error condition, not a successful short
+            // execution slice. Keep it latched until RESET or power recovery.
+            self.machine.cycle_set_running(false);
+            self.refresh_teaching_visible_lamps();
+            Err(Self::backend_error_for_cycle_fault(operation, fault))
+        } else {
+            Ok(())
         }
     }
 
@@ -373,6 +399,9 @@ impl CycleAccurateMachineBackend {
             hold: lines.hold,
             reset: lines.reset,
         });
+        if let Some(fault) = trace.fault {
+            self.cpu_fault = Some(fault);
+        }
         self.apply_trace_side_effects(&trace, record_instruction);
         let visible_data = self.drive_s100_t_state(
             &trace,
@@ -447,7 +476,10 @@ impl CycleAccurateMachineBackend {
         {
             return Ok(());
         }
-        let _ = self.tick_once(true);
+        let trace = self.tick_once(true);
+        if trace.fault.is_some() {
+            return self.fail_if_cpu_fault("debugger T-state step");
+        }
         // Debugger pause is not a physical STOP transition. Lower READY without
         // fabricating WAIT; retain the exact T-state the user just requested.
         self.machine.cycle_set_running(false);
@@ -504,7 +536,7 @@ impl CycleAccurateMachineBackend {
             let ready = self.machine.bus.cycle_front_panel_ready_input();
             let trace = self.tick_once(ready);
             if trace.fault.is_some() {
-                break;
+                return self.fail_if_cpu_fault("service execution");
             }
             if self.stop_wait_park_pending {
                 self.park_physical_stop_at_first_tw();
@@ -711,6 +743,8 @@ impl CycleAccurateMachineBackend {
     }
 
     fn reset_cycle_core_from_s100(&mut self) {
+        // RESET is the recovery boundary for a latched exact-core fault.
+        self.cpu_fault = None;
         self.machine.bus.refresh_interrupt_request_line();
         let lines = self.machine.bus.cpu_control_lines();
         let _ = self.cpu.tick(Cpu8080Inputs {
@@ -762,11 +796,13 @@ impl MachineBackend for CycleAccurateMachineBackend {
         }
         self.last_teaching_snapshot = None;
         self.stop_wait_park_pending = false;
+        self.cpu_fault = None;
         self.sync_machine_cpu();
         Ok(())
     }
 
     fn run(&mut self) -> BackendResult<()> {
+        self.fail_if_cpu_fault("run")?;
         self.machine.cycle_set_running(true);
         Ok(())
     }
@@ -779,12 +815,13 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn step(&mut self) -> BackendResult<()> {
+        self.fail_if_cpu_fault("single step")?;
         let lines = self.machine.bus.cpu_control_lines();
         if self.machine.powered && !self.machine.running && !lines.reset && !lines.hold {
             self.run_one_machine_cycle();
             self.park_single_step_at_next_psync_wait();
         }
-        Ok(())
+        self.fail_if_cpu_fault("single step")
     }
 
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
@@ -797,7 +834,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
                 let ready = self.machine.bus.cycle_front_panel_ready_input();
                 let trace = self.tick_once(ready);
                 if trace.fault.is_some() {
-                    break;
+                    return self.fail_if_cpu_fault("service execution");
                 }
                 if self.stop_wait_park_pending {
                     self.park_physical_stop_at_first_tw();
@@ -805,7 +842,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
                 }
             }
         }
-        Ok(())
+        self.fail_if_cpu_fault("service execution")
     }
 
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
@@ -825,6 +862,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
             && !self.cpu.is_holding()
         {
             self.advance_to_stop_sync();
+            self.fail_if_cpu_fault("RUN/STOP")?;
         }
         self.machine
             .cycle_assert_run_stop(run, self.cpu.is_halted(), self.cpu.is_holding());
@@ -843,7 +881,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
         if !run {
             self.refresh_teaching_visible_lamps();
         }
-        Ok(())
+        self.fail_if_cpu_fault("RUN/STOP")
     }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> {
         self.machine.release_run_stop(run);
@@ -874,12 +912,14 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
+        self.fail_if_cpu_fault("front-panel EXAMINE")?;
         self.execute_front_panel_examine(next);
-        Ok(())
+        self.fail_if_cpu_fault("front-panel EXAMINE")
     }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
+        self.fail_if_cpu_fault("front-panel DEPOSIT")?;
         self.execute_front_panel_deposit(next);
-        Ok(())
+        self.fail_if_cpu_fault("front-panel DEPOSIT")
     }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
         self.machine.front_panel_set_memory_protection_via_s100(protected);
@@ -967,6 +1007,21 @@ impl MachineBackend for CycleAccurateMachineBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cycle_fault_maps_to_explicit_backend_error() {
+        let error = CycleAccurateMachineBackend::backend_error_for_cycle_fault(
+            "test execution",
+            Cpu8080CycleFault::UnsupportedOpcode(0xdd),
+        );
+        assert_eq!(
+            error,
+            BackendError::Operation {
+                operation: "test execution",
+                detail: "cycle-accurate 8080 fault: UnsupportedOpcode(221)".into(),
+            }
+        );
+    }
 
     #[test]
     fn cycle_backend_executes_real_t_states_without_fast_cpu_execution() {
