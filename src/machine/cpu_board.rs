@@ -327,6 +327,15 @@ impl super::AltairMachine {
         }
     }
 
+    fn cycle_set_run_latch_during_reset(&mut self) {
+        debug_assert!(self.powered && self.bus.reset_asserted());
+        self.running = true;
+        self.bus.set_run(true);
+        // PRDY follows RUN even during PRESET. WAIT remains owned by the 8080
+        // and stays low while the processor is reset.
+        self.bus.cycle_set_ready_input(true);
+    }
+
     /// Cycle-accurate RUN/STOP entry point. STOP still records the physical
     /// switch level while HLT or HLDA suppresses PSYNC, but it must not mutate
     /// the R-S RUN latch until a real synchronization opportunity exists.
@@ -341,10 +350,12 @@ impl super::AltairMachine {
         self.stop_switch_asserted = !run;
 
         if run {
-            if !self.bus.reset_asserted() {
+            if self.bus.reset_asserted() {
+                self.cycle_set_run_latch_during_reset();
+            } else {
                 self.cycle_set_running(true);
             }
-        } else if self.bus.reset_asserted() || (!cpu_halted && !cpu_holding) {
+        } else if !self.bus.reset_asserted() && !cpu_halted && !cpu_holding {
             self.cycle_set_running(false);
         }
     }

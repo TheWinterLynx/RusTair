@@ -858,7 +858,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
         Ok(())
     }
     fn release_reset(&mut self) -> BackendResult<()> {
-        self.machine.release_front_panel_reset();
+        // Preserve a pending STOP until the first real post-reset PSYNC. The
+        // exact T1 sample will clear RUN through cycle_capture_pending_stop_at_psync().
+        self.machine.cycle_release_front_panel_reset();
         self.stop_wait_park_pending = false;
         self.sync_machine_cpu();
         Ok(())

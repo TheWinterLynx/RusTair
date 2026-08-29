@@ -475,7 +475,7 @@ impl S100BusState {
     /// Electrical state while the physical RESET switch is held. MITS' 1975
     /// checkout procedure specifies all ADDRESS/DATA lamps on and all status
     /// lamps off for this phase.
-    pub(super) fn assert_front_panel_reset(&mut self) {
+    pub(super) fn assert_front_panel_reset(&mut self, run: bool) {
         self.signals.reset = true;
         self.signals.owner = BusOwner::FrontPanel;
         self.signals.address = 0xffff;
@@ -486,9 +486,14 @@ impl S100BusState {
         self.signals.inte = false;
         self.signals.prot = false;
         self.signals.clear_status();
-        self.signals.front_panel_ready = false;
+        // PRESET/RESET belongs to the processor input path and does not clear
+        // the original Display/Control RUN/STOP R-S latch. PRDY therefore still
+        // follows RUN while RESET is physically held.
+        self.signals.run = run;
+        self.signals.front_panel_ready = run;
         self.signals.memory_ready = true;
-        self.signals.ready = false;
+        self.signals.ready = run;
+        // WAIT is an 8080 output and is inactive while RESET is asserted.
         self.signals.wait = false;
         self.signals.hlda = false;
         self.lamps.freeze(&self.signals);
@@ -860,5 +865,35 @@ mod ready_source_tests {
         assert!(bus.signals().ready);
         bus.set_ready_input(false);
         assert!(!bus.signals().ready);
+    }
+}
+
+
+#[cfg(test)]
+mod reset_run_ready_tests {
+    use super::*;
+
+    #[test]
+    fn run_latch_keeps_prdy_released_while_reset_is_held() {
+        let mut bus = S100BusState::default();
+        bus.assert_front_panel_reset(true);
+        let signals = bus.signals();
+        assert!(signals.reset);
+        assert!(signals.run);
+        assert!(signals.front_panel_ready);
+        assert!(signals.ready);
+        assert!(!signals.wait, "WAIT is an 8080 output and is inactive during RESET");
+    }
+
+    #[test]
+    fn stopped_latch_keeps_prdy_low_while_reset_is_held() {
+        let mut bus = S100BusState::default();
+        bus.assert_front_panel_reset(false);
+        let signals = bus.signals();
+        assert!(signals.reset);
+        assert!(!signals.run);
+        assert!(!signals.front_panel_ready);
+        assert!(!signals.ready);
+        assert!(!signals.wait);
     }
 }

@@ -289,10 +289,10 @@ impl AltairBus {
             .drive_power_on_state(address, data, protected, self.cpu_inte, run);
     }
 
-    fn assert_front_panel_reset_bus(&mut self) {
+    fn assert_front_panel_reset_bus(&mut self, run: bool) {
         self.memory.reset_timing();
         self.s100.set_memory_ready_input(true);
-        self.s100.assert_front_panel_reset();
+        self.s100.assert_front_panel_reset(run);
     }
 
     fn release_front_panel_reset_bus(&mut self, address: u16, run: bool) {
@@ -523,10 +523,20 @@ impl AltairMachine {
         self.stop_switch_asserted = !run;
 
         if run {
-            if !self.bus.reset_asserted() {
+            if self.bus.reset_asserted() {
+                // On the original D/C board RUN is the asynchronous SET input
+                // of the R-S latch. RESET does not gate it; the processor simply
+                // remains held in RESET until PRESET is released.
+                self.running = true;
+                self.bus.set_run(true);
+                self.bus.set_ready(true);
+            } else {
                 self.set_running(true);
             }
-        } else if self.bus.reset_asserted() || !self.cpu.halted {
+        } else if !self.bus.reset_asserted() && !self.cpu.halted {
+            // STOP needs a processor synchronization opportunity. While RESET
+            // is held there is no qualifying post-reset fetch yet, so retain the
+            // RUN latch and capture STOP when RESET is released.
             self.set_running(false);
         }
     }
@@ -544,23 +554,35 @@ impl AltairMachine {
         self.bus.cancel_cpu_diagnostic_meter();
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
-        if self.stop_switch_asserted {
-            self.running = false;
-            self.bus.set_run(false);
-        }
+        // RESET clears processor state but deliberately preserves the physical
+        // RUN/STOP latch. A pending STOP is captured only after RESET release.
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_hlda(false);
-        self.bus.assert_front_panel_reset_bus();
+        self.bus.assert_front_panel_reset_bus(self.running);
     }
 
-    pub fn release_front_panel_reset(&mut self) {
+    fn release_front_panel_reset_common(&mut self, fast_capture_pending_stop: bool) {
         if !self.powered { return; }
         self.cpu.reset();
+        if fast_capture_pending_stop && self.stop_switch_asserted {
+            // The instruction-level backend cannot expose the first post-reset
+            // PSYNC. Approximate that exact boundary here, not while RESET is held.
+            self.running = false;
+            self.bus.set_run(false);
+        }
         let address = self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_hlda(false);
         self.bus.release_front_panel_reset_bus(address, self.running);
+    }
+
+    pub fn release_front_panel_reset(&mut self) {
+        self.release_front_panel_reset_common(true);
+    }
+
+    pub(crate) fn cycle_release_front_panel_reset(&mut self) {
+        self.release_front_panel_reset_common(false);
     }
 
     pub fn front_panel_reset(&mut self) {
