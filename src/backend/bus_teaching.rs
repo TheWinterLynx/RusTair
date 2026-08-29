@@ -180,7 +180,19 @@ pub struct BusTeachingSnapshot {
     pub machine_cycle_index: Option<u8>,
     pub t_state: BusTState,
     pub address: Option<u16>,
+    /// Compatibility summary of the electrically active S-100 transfer byte.
+    /// Exact consumers should prefer `s100_di`, `s100_do` and `cpu_data` so a
+    /// read, write and processor-package value can never be conflated again.
     pub data: Option<u8>,
+    /// Intel 8080 package D0-D7 for the displayed observation.
+    pub cpu_data: Option<u8>,
+    /// S-100 DI0-DI7, defined by MITS as data travelling toward the processor.
+    pub s100_di: Option<u8>,
+    /// S-100 DO0-DO7, data travelling away from the processor.
+    pub s100_do: Option<u8>,
+    /// Electrical byte feeding the eight front-panel DATA lamps. On the 880-105
+    /// display board those lamps are wired to DI0-DI7, not DO0-DO7.
+    pub panel_data: Option<u8>,
     pub status_word: Option<u8>,
     pub pins: BusCpuPins,
     pub status: BusStatusLines,
@@ -206,6 +218,7 @@ impl BusTeachingSnapshot {
             CpuState::Intel8080(cpu) => (Some(cpu.pc), cpu.total_t_states),
             CpuState::Z80(cpu) => (Some(cpu.pc), cpu.total_t_states),
         };
+        let panel_data = panel.powered.then_some(panel.data);
         Self {
             accuracy: BusTeachingAccuracy::Reconstructed,
             engine,
@@ -215,7 +228,14 @@ impl BusTeachingSnapshot {
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
             address: if panel.powered { Some(panel.address) } else { None },
-            data: if panel.powered { Some(panel.data) } else { None },
+            // Fast mode has no exact direction/pin sample. Preserve the legacy
+            // front-panel observation in `data` while refusing to fabricate DI,
+            // DO or 8080 D0-D7 electrical ownership.
+            data: panel_data,
+            cpu_data: None,
+            s100_di: None,
+            s100_do: None,
+            panel_data,
             status_word: None,
             pins: BusCpuPins::default(),
             status: BusStatusLines::default(),
@@ -253,5 +273,24 @@ mod tests {
     #[test]
     fn exact_accuracy_label_is_explicitly_a_sample() {
         assert_eq!(BusTeachingAccuracy::Exact.label(), "EXACT T-STATE SAMPLE");
+    }
+
+    #[test]
+    fn reconstructed_fast_data_never_fabricates_split_bus_or_cpu_pin_truth() {
+        let panel = FrontPanelState {
+            powered: true,
+            data: 0x5a,
+            ..FrontPanelState::default()
+        };
+        let snapshot = BusTeachingSnapshot::reconstructed(
+            EmulationEngine::RustFast8080,
+            panel,
+            CpuState::default(),
+        );
+        assert_eq!(snapshot.data, Some(0x5a));
+        assert_eq!(snapshot.panel_data, Some(0x5a));
+        assert_eq!(snapshot.cpu_data, None);
+        assert_eq!(snapshot.s100_di, None);
+        assert_eq!(snapshot.s100_do, None);
     }
 }
