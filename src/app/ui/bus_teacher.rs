@@ -171,10 +171,10 @@ impl RusTairApp {
         });
         match snapshot.map(|snapshot| snapshot.accuracy) {
             Some(BusTeachingAccuracy::ControlState) => ui.small(
-                "POWER/RESET/READY/S-100 control state is known. Stable electrical levels are shown where that lifecycle state determines them; the Teacher never invents a numbered CPU T-state just to animate the diagram.",
+                "POWER/RESET/READY/PINT/S-100 control state is known. Stable electrical levels are shown where that lifecycle state determines them; the Teacher never invents a numbered CPU T-state just to animate the diagram.",
             ),
             _ if capabilities.exact_t_state_timing => ui.small(
-                "Cycle Accurate shows the last real CPU-board T-state sample. Machine cycle, CPU pins, latched S-100 state and READY/HOLD/RESET are the levels captured for that displayed tick; later host/chassis control changes do not rewrite the sample.",
+                "Cycle Accurate shows the last real CPU-board T-state sample. Machine cycle, CPU outputs, latched S-100 state and READY/INT(PINT)/HOLD/RESET are the levels captured for that displayed tick; later host/chassis control changes do not rewrite the sample.",
             ),
             _ => ui.small(
                 "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin/status-latch values remain unknown.",
@@ -311,10 +311,6 @@ impl RusTairApp {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "?".into());
 
-        // Do not use egui::Grid here. Grid column widths are content-driven and
-        // a live transition such as INSTRUCTION FETCH -> MEMORY READ would move
-        // the right-hand fields. These four fixed slots keep every X coordinate
-        // stable while only the text inside each slot changes.
         Self::draw_timing_row(
             ui,
             "Machine cycle",
@@ -375,6 +371,7 @@ impl RusTairApp {
         let right = [
             ("HLDA", Self::bool_signal(snapshot.pins.hlda), "bus-hold acknowledge in the displayed observation"),
             ("READY", Self::bool_signal(snapshot.ready), "S-100 READY sampled by the CPU for the displayed observation"),
+            ("INT/PINT", Self::bool_signal(snapshot.interrupt), "8080 INT input sampled from canonical S-100 PINT; distinct from the front-panel INT/SINTA acknowledge status"),
             ("HOLD", Self::bool_signal(snapshot.hold), "S-100 HOLD input sampled for the displayed observation"),
             ("RESET", Self::bool_signal(snapshot.reset), "CPU RESET input captured for the displayed observation"),
         ];
@@ -385,9 +382,9 @@ impl RusTairApp {
             Self::draw_pin_group(&mut right_column[0], "bus-teacher-pins-right", &right);
         });
         if snapshot.accuracy == BusTeachingAccuracy::Exact {
-            ui.small("Exact mode shows the electrical levels captured at the displayed T-state. Later debugger/chassis changes do not rewrite that historical CPU sample.");
+            ui.small("Exact mode shows the electrical levels captured at the displayed T-state. INT/PINT is an input sampled by the CPU; INT/SINTA below is the separate S-100 acknowledge status. Later debugger/chassis changes do not rewrite this historical CPU sample.");
         } else {
-            ui.small("Hover a pin name/value for its electrical meaning.");
+            ui.small("Hover a pin name/value for its electrical meaning. INT/PINT is the CPU request input, not the front-panel INT/SINTA acknowledge lamp.");
         }
     }
 
@@ -436,7 +433,7 @@ impl RusTairApp {
             ("HLTA", snapshot.status.hlta, lamps.hlta),
             ("STACK", snapshot.status.stack, lamps.stack),
             ("W/O", snapshot.status.wo, lamps.wo),
-            ("INT", snapshot.status.int_ack, lamps.int_ack),
+            ("INT/SINTA", snapshot.status.int_ack, lamps.int_ack),
             ("WAIT", snapshot.status.wait, lamps.wait),
             ("HLDA", snapshot.status.hlda, lamps.hlda),
         ];
@@ -455,7 +452,7 @@ impl RusTairApp {
             );
         });
         ui.small(
-            "RAW is the S-100 status/control state captured with the displayed observation. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
+            "RAW is the S-100 status/control state captured with the displayed observation. INT/SINTA is the CPU's interrupt-acknowledge status; it is not PINT. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
         );
     }
 
@@ -505,10 +502,10 @@ impl RusTairApp {
                 "Output write: the address bus encodes an I/O port and the processor drives the output byte."
                     .into(),
             ),
-            BusMachineCycle::InterruptAck | BusMachineCycle::InterruptAckWhileHalt => lines.push(
-                "Interrupt acknowledge: the CPU is accepting an externally supplied instruction/vector."
-                    .into(),
-            ),
+            BusMachineCycle::InterruptAck | BusMachineCycle::InterruptAckWhileHalt => {
+                lines.push("Interrupt acknowledge: PINT/INT was presented to the CPU while INTE allowed acceptance. The CPU clears INTE and emits the S-100 INT/SINTA acknowledge status; these are distinct electrical signals.".into());
+                lines.push("On the direct Altair interrupt path the interrupting source drives FFh (RST 7) onto the data bus during INTA, causing the CPU to push the return PC and vector to 0038h.".into());
+            }
             BusMachineCycle::HaltAck => {
                 lines.push("HALT acknowledge: the CPU has entered its halted bus sequence.".into())
             }
@@ -558,6 +555,12 @@ impl RusTairApp {
             BusTState::Unknown => lines.push(
                 "Exact T-state is unavailable in the instruction-level Fast core.".into(),
             ),
+        }
+        if snapshot.interrupt == Some(true) {
+            lines.push("INT/PINT is HIGH in the displayed observation: an S-100 device is actively requesting service from the 8080. This request can remain asserted after acknowledge until the device's level-sensitive condition is removed.".into());
+        }
+        if snapshot.status.int_ack == Some(true) {
+            lines.push("INT/SINTA is ON because the displayed S-100 status word is an interrupt-acknowledge cycle; this acknowledge does not itself mean PINT has gone away.".into());
         }
         if snapshot.status.m1 == Some(true) {
             lines.push("M1 is ON because the S-100 status latch captured in the displayed observation has M1 set.".into());
