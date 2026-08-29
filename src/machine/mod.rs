@@ -1,3 +1,4 @@
+mod chassis;
 mod cpu_board;
 mod front_panel;
 mod io_devices;
@@ -5,6 +6,7 @@ mod memory;
 mod panel_bus;
 mod serial;
 
+use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
 use rand::RngCore;
@@ -17,10 +19,15 @@ use io_devices::IoDevices;
 use memory::Memory;
 use panel_bus::S100BusState;
 
+pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub(crate) use memory::MemoryReadyPhase;
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
+
+/// Transitional compatibility name for code that means the CPU-independent
+/// physical machine. New architecture code should prefer `AltairChassis`.
+pub type AltairMachine = AltairChassis;
 
 pub const CLOCK_HZ: u32 = 2_000_000;
 
@@ -228,10 +235,6 @@ impl AltairBus {
         self.s100.set_interrupt_request(asserted);
     }
 
-    pub(crate) fn interrupt_requested(&self) -> bool {
-        self.s100.signals().interrupt
-    }
-
     pub(crate) fn direct_interrupt_opcode(&self) -> u8 {
         self.serial_interrupt_opcode()
     }
@@ -400,30 +403,41 @@ impl Bus for AltairBus {
     }
 }
 
-pub struct AltairMachine {
+/// Fast backend composition: validated instruction-level CPU plus the common
+/// CPU-independent Altair chassis. Cycle Accurate owns only `AltairChassis` and
+/// its separate `Cpu8080Cycle` authority.
+pub struct FastAltairMachine {
     pub cpu: Cpu8080,
-    pub bus: AltairBus,
-    pub powered: bool,
-    /// Mirrors the physical RUN/STOP R-S latch, not merely "CPU is executing".
-    pub running: bool,
-    stop_switch_asserted: bool,
-    run_switch_asserted: bool,
+    chassis: AltairChassis,
 }
 
-impl Default for AltairMachine {
+impl Deref for FastAltairMachine {
+    type Target = AltairChassis;
+
+    fn deref(&self) -> &Self::Target {
+        &self.chassis
+    }
+}
+
+impl DerefMut for FastAltairMachine {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.chassis
+    }
+}
+
+impl Default for FastAltairMachine {
     fn default() -> Self {
         Self {
             cpu: Cpu8080::new(),
-            bus: AltairBus::default(),
-            powered: false,
-            running: false,
-            stop_switch_asserted: false,
-            run_switch_asserted: false,
+            chassis: AltairChassis::default(),
         }
     }
 }
 
-impl AltairMachine {
+impl FastAltairMachine {
+    pub fn chassis(&self) -> &AltairChassis { &self.chassis }
+    pub fn chassis_mut(&mut self) -> &mut AltairChassis { &mut self.chassis }
+
     pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
         self.running = false;
         self.bus.set_run(false);
@@ -523,9 +537,6 @@ impl AltairMachine {
 
         if run {
             if self.bus.reset_asserted() {
-                // On the original D/C board RUN is the asynchronous SET input
-                // of the R-S latch. RESET does not gate it; the processor simply
-                // remains held in RESET until PRESET is released.
                 self.running = true;
                 self.bus.set_run(true);
                 self.bus.set_ready(true);
@@ -533,9 +544,6 @@ impl AltairMachine {
                 self.set_running(true);
             }
         } else if !self.bus.reset_asserted() && !self.cpu.halted {
-            // STOP needs a processor synchronization opportunity. While RESET
-            // is held there is no qualifying post-reset fetch yet, so retain the
-            // RUN latch and capture STOP when RESET is released.
             self.set_running(false);
         }
     }
@@ -553,8 +561,6 @@ impl AltairMachine {
         self.bus.cancel_cpu_diagnostic_meter();
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
-        // RESET clears processor state but deliberately preserves the physical
-        // RUN/STOP latch. A pending STOP is captured only after RESET release.
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_hlda(false);
@@ -565,8 +571,6 @@ impl AltairMachine {
         if !self.powered { return; }
         self.cpu.reset();
         if fast_capture_pending_stop && self.stop_switch_asserted {
-            // The instruction-level backend cannot expose the first post-reset
-            // PSYNC. Approximate that exact boundary here, not while RESET is held.
             self.running = false;
             self.bus.set_run(false);
         }
@@ -578,10 +582,6 @@ impl AltairMachine {
 
     pub fn release_front_panel_reset(&mut self) {
         self.release_front_panel_reset_common(true);
-    }
-
-    pub(crate) fn cycle_release_front_panel_reset(&mut self) {
-        self.release_front_panel_reset_common(false);
     }
 
     pub fn front_panel_reset(&mut self) {
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn reset_held_and_released_match_mits_checkout_sequence_when_stopped() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.bus.load(0, &[0xa5]);
 
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn physical_reset_preserves_run_latch() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.set_running(true);
         machine.assert_front_panel_reset();
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn stop_while_halted_requires_stop_plus_reset_recovery() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.set_running(true);
@@ -825,7 +825,7 @@ mod tests {
 
     #[test]
     fn front_panel_reset_preserves_serial_io_state() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.bus.serial_receive(b'R');
         machine.front_panel_reset();
@@ -835,7 +835,7 @@ mod tests {
 
     #[test]
     fn ext_clear_is_held_bus_signal_and_clears_io_without_touching_cpu() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.cpu.pc = 0x1234;
@@ -845,7 +845,7 @@ mod tests {
         assert!(machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
         assert_eq!(machine.bus.serial_rx_len(), 0);
-        assert!(!machine.bus.interrupt_requested());
+        assert!(!machine.bus.cpu_control_lines().interrupt);
 
         machine.release_front_panel_clear();
         assert!(!machine.ext_clear_asserted());
@@ -854,7 +854,7 @@ mod tests {
 
     #[test]
     fn safe_power_on_defaults_run_latch_to_stop() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         assert!(!machine.running);
         assert!(!machine.bus.s100.signals().run);
@@ -862,7 +862,7 @@ mod tests {
 
     #[test]
     fn hold_request_drives_hlda_through_bus_arbitration() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.set_running(true);
@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn examine_and_deposit_drive_front_panel_bus_with_physical_wo_polarity() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.bus.load(0, &[0x12]);
@@ -894,7 +894,7 @@ mod tests {
 
     #[test]
     fn cpu_board_control_lines_are_read_from_the_shared_s100_state() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.request_hold(true);
@@ -907,7 +907,7 @@ mod tests {
 
     #[test]
     fn serial_irq_projects_to_pint_and_fast_cpu_accepts_direct_rst7() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.cpu.sp = 0x0400;
@@ -933,7 +933,7 @@ mod tests {
 
     #[test]
     fn fast_pint_wakes_halted_cpu_when_inte_is_enabled() {
-        let mut machine = AltairMachine::default();
+        let mut machine = FastAltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.cpu.sp = 0x0400;
@@ -952,5 +952,12 @@ mod tests {
         assert!(!machine.cpu.inte);
         assert_eq!(machine.cpu.pc, 0x0038);
         assert_eq!(machine.cpu.sp, 0x03fe);
+    }
+
+    #[test]
+    fn fast_machine_composes_cpu_with_cpu_free_chassis() {
+        let machine = FastAltairMachine::default();
+        let _: &AltairChassis = machine.chassis();
+        assert!(!machine.powered);
     }
 }
