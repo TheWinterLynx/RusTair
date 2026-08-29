@@ -27,6 +27,27 @@ fn fast_bus_teacher_is_explicitly_reconstructed() {
 }
 
 #[test]
+fn cycle_power_on_inte_raw_s100_matches_cycle_cpu_authority_before_reset() {
+    let mut host = BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080)
+        .expect("built-in Cycle backend");
+    host.configure_memory(RamSize::K1, RamInit::Zeroed);
+    host.power(true);
+
+    let cpu = host.intel8080_state();
+    let snapshot = host.bus_teaching_snapshot().expect("Cycle power-on control state");
+    assert_eq!(snapshot.accuracy, BusTeachingAccuracy::ControlState);
+    assert_eq!(snapshot.machine_cycle, BusMachineCycle::PowerOnUndefined);
+    assert_eq!(snapshot.status.inte, Some(cpu.inte));
+    assert_eq!(snapshot.pins.inte, None, "undefined pre-RESET CPU pin timing must not be invented");
+
+    host.assert_front_panel_reset();
+    let cpu_after_reset = host.intel8080_state();
+    let reset = host.bus_teaching_snapshot().expect("RESET control state");
+    assert!(!cpu_after_reset.inte, "8080 RESET disables the interrupt flip-flop");
+    assert_eq!(reset.status.inte, Some(false));
+}
+
+#[test]
 fn cycle_teacher_exposes_reset_released_stop_before_first_t_state() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
     let snapshot = host.bus_teaching_snapshot().expect("Cycle control snapshot");
