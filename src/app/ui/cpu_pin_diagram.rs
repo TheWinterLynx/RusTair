@@ -218,15 +218,6 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             static_pin: true,
             released: false,
         },
-        PinKind::Unmodeled(note) => PinState {
-            level: None,
-            asserted: None,
-            state_text: if powered { "NOT WIRED / NOT MODELED".into() } else { "UNPOWERED".into() },
-            note,
-            modeled: false,
-            static_pin: false,
-            released: false,
-        },
     }
 }
 
