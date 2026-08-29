@@ -443,7 +443,17 @@ impl super::AltairMachine {
 pub(crate) struct Cycle8080S100Adapter;
 
 impl Cycle8080S100Adapter {
+    /// Compatibility entry used by ordinary Cycle transfers while the exact
+    /// front-panel-direct marker is migrated in the next checkpoint.
     pub(crate) fn sample(
+        trace: &TickTrace,
+        visible_data: Option<u8>,
+        ready: bool,
+    ) -> S100CpuSample {
+        Self::sample_with_front_panel_direct(trace, visible_data, false, ready)
+    }
+
+    pub(crate) fn sample_with_front_panel_direct(
         trace: &TickTrace,
         visible_data: Option<u8>,
         front_panel_direct: bool,
@@ -557,7 +567,7 @@ mod tests {
             instruction_t_states: 5,
         };
 
-        let sample = Cycle8080S100Adapter::sample(&trace, None, false, true);
+        let sample = Cycle8080S100Adapter::sample(&trace, None, true);
         assert_eq!(sample.address, Some(0x2000));
         assert_eq!(sample.cpu_data, Some(0x82));
         assert_eq!(sample.data_in, None);
@@ -585,12 +595,17 @@ mod tests {
             total_t_states: 7,
             instruction_t_states: 7,
         };
-        let memory = Cycle8080S100Adapter::sample(&trace, Some(0x5a), false, true);
+        let memory = Cycle8080S100Adapter::sample(&trace, Some(0x5a), true);
         assert_eq!(memory.cpu_data, Some(0x5a));
         assert_eq!(memory.data_in, Some(0x5a));
         assert_eq!(memory.data_out, None);
 
-        let jam = Cycle8080S100Adapter::sample(&trace, Some(0xc3), true, true);
+        let jam = Cycle8080S100Adapter::sample_with_front_panel_direct(
+            &trace,
+            Some(0xc3),
+            true,
+            true,
+        );
         assert_eq!(jam.cpu_data, Some(0xc3));
         assert_eq!(jam.data_in, None);
         assert_eq!(jam.data_out, Some(0xc3));
