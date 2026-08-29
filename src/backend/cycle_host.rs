@@ -288,6 +288,7 @@ impl CycleHostBackend {
             pins,
             status,
             ready: if powered { Some(lines.ready) } else { None },
+            interrupt: if powered { Some(lines.interrupt) } else { None },
             hold: if powered { Some(lines.hold) } else { None },
             reset: if powered { Some(lines.reset) } else { None },
             total_t_states: if powered { Some(self.inner.cpu().total_t_states()) } else { None },
@@ -756,17 +757,20 @@ mod tests {
         assert_eq!(off.accuracy, BusTeachingAccuracy::ControlState);
         assert_eq!(off.machine_cycle, BusMachineCycle::PowerOff);
         assert_eq!(off.t_state, BusTState::Unknown);
+        assert_eq!(off.interrupt, None);
 
         backend.power(true).unwrap();
         let powered = backend.bus_teaching_snapshot().unwrap().unwrap();
         assert_eq!(powered.machine_cycle, BusMachineCycle::PowerOnUndefined);
         assert_eq!(powered.accuracy, BusTeachingAccuracy::ControlState);
+        assert_eq!(powered.interrupt, Some(false));
         assert_eq!(powered.pins.sync, None, "undefined power-on outputs must not be invented");
 
         backend.assert_reset().unwrap();
         let held = backend.bus_teaching_snapshot().unwrap().unwrap();
         assert_eq!(held.machine_cycle, BusMachineCycle::ResetAsserted);
         assert_eq!(held.reset, Some(true));
+        assert_eq!(held.interrupt, Some(false));
         assert_eq!(held.t_state, BusTState::Unknown);
         assert_eq!(held.address, Some(0xffff));
         assert_eq!(held.data, Some(0xff));
@@ -779,6 +783,7 @@ mod tests {
         assert_eq!(released.machine_cycle, BusMachineCycle::ResetReleasedStopped);
         assert_eq!(released.reset, Some(false));
         assert_eq!(released.ready, Some(false));
+        assert_eq!(released.interrupt, Some(false));
         assert_eq!(released.instruction_address, Some(0x0000));
         assert_eq!(released.status_word, Some(0xa2));
         assert_eq!(released.status.memr, Some(true));
@@ -805,6 +810,7 @@ mod tests {
         assert_eq!(snapshot.status.m1, Some(true));
         assert_eq!(snapshot.status.wo, Some(true));
         assert_eq!(snapshot.status.wait, Some(true));
+        assert_eq!(snapshot.interrupt, Some(backend.inner.machine().bus.cpu_control_lines().interrupt));
     }
 
     #[test]
