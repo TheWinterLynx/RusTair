@@ -1037,7 +1037,10 @@ mod tests {
         // MVI A,5Ah is two machine cycles; STA 1F00h is four. SINGLE STEP on
         // the original 8800 advances one externally visible machine cycle at a
         // time and then clocks the next PSYNC/T2/TW stop handshake.
-        backend.load_bytes(0, &[0x3e, 0x5a, 0x32, 0x00, 0x1f]).unwrap();
+        // Seed the following opcode so the final STOP-WAIT DATA bus is stable.
+        backend
+            .load_bytes(0, &[0x3e, 0x5a, 0x32, 0x00, 0x1f, 0x00])
+            .unwrap();
         for _ in 0..6 {
             backend.step().unwrap();
         }
@@ -1049,10 +1052,11 @@ mod tests {
 
         backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
         let panel = backend.front_panel_state().unwrap();
-        assert_eq!(panel.address, 0x1f00);
-        assert_eq!(panel.data, 0x5a);
-        assert_eq!(panel.lamps.memr, 0.0);
-        assert_eq!(panel.lamps.wo, 0.0);
+        assert_eq!(panel.address, 0x0005);
+        assert_eq!(panel.data, 0x00);
+        assert_eq!(panel.lamps.memr, 1.0);
+        assert_eq!(panel.lamps.m1, 1.0);
+        assert_eq!(panel.lamps.wo, 1.0);
         assert_eq!(panel.lamps.wait, 1.0);
     }
 
