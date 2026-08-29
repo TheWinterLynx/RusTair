@@ -335,6 +335,13 @@ impl CycleAccurateMachineBackend {
         self.sync_machine_cpu();
         self.capture_teaching_snapshot(&trace, visible_data, ready);
 
+        // A T3 I/O transfer can itself create or remove a level-sensitive UART
+        // interrupt condition. Preserve the exact Teacher sample above at the
+        // PINT level the CPU saw for this tick, then project the post-transfer
+        // device condition to the current backplane immediately instead of
+        // leaving canonical PINT stale until the next CPU clock.
+        self.machine.bus.refresh_interrupt_request_line();
+
         // A STOP pressed while HLDA was active cannot be captured until the CPU
         // owns the bus again and emits the next PSYNC. Capture the R-S latch only
         // after recording that real T1. The service loop then clocks the genuine
@@ -1294,14 +1301,22 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0xdb, 0x01]).unwrap();
+        backend.machine.bus.debugger_output_port(0x00, 0x01); // enable 88-SIO RX IRQ
         backend.serial_receive(BackendSerialPort::Port0, b'R').unwrap();
+        assert!(backend.machine().bus.cpu_control_lines().interrupt);
         backend.run().unwrap();
 
         backend.service_execution(9).unwrap();
         assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 1);
+        assert!(backend.machine().bus.cpu_control_lines().interrupt);
 
         backend.service_execution(1).unwrap();
         assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 0);
+        assert!(!backend.machine().bus.cpu_control_lines().interrupt, "consuming the RX byte must immediately remove current PINT");
+        let teaching = backend.teaching_snapshot().expect("input T3 exact sample");
+        assert_eq!(teaching.machine_cycle, MachineCycle::InputRead.into());
+        assert_eq!(teaching.t_state, TState::T3.into());
+        assert_eq!(teaching.interrupt, Some(true), "exact sample must retain the PINT level seen by the CPU entering T3");
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.a, b'R');
         assert_eq!(state.pc, 2);
