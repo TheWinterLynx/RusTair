@@ -70,6 +70,27 @@ fn cycle_t_state_step_exposes_exact_m1_t1_sample() {
 }
 
 #[test]
+fn exact_sample_inputs_remain_historical_after_debugger_returns_to_pause() {
+    let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
+
+    host.debugger_step_t_state();
+
+    let sample = host.bus_teaching_snapshot().expect("exact T1 sample");
+    let panel = host.front_panel_state();
+    assert_eq!(sample.accuracy, BusTeachingAccuracy::Exact);
+    assert_eq!(sample.t_state, BusTState::T1);
+    assert_eq!(sample.ready, Some(true), "READY belongs to the captured T1 input sample");
+    assert_eq!(sample.hold, Some(false));
+    assert_eq!(sample.reset, Some(false));
+    assert_eq!(sample.pins.wait, Some(false));
+    assert!(!panel.running, "debugger stepping returns the live chassis to pause after capturing T1");
+
+    let same_sample = host.bus_teaching_snapshot().expect("retained exact T1 sample");
+    assert_eq!(same_sample.ready, Some(true));
+    assert_eq!(same_sample.t_state, BusTState::T1);
+}
+
+#[test]
 fn cycle_t_state_step_advances_one_t_state_at_a_time() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
     host.debugger_step_t_state();
