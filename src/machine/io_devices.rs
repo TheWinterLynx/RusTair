@@ -343,7 +343,7 @@ impl IoDevices {
     }
 
     pub(super) fn port1_tx_front(&self) -> Option<u8> {
-        self.serial[1].tx_front()
+        self.serial[1].tx_front().copied()
     }
 
     pub(super) fn port1_tx_complete(&mut self) -> Option<u8> {
@@ -402,6 +402,7 @@ impl IoDevices {
 impl AltairBus {
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         self.io.configure_serial_board(board);
+        self.refresh_interrupt_request_line();
     }
 
     pub fn serial_board(&self) -> SerialBoard {
@@ -410,6 +411,7 @@ impl AltairBus {
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
         self.io.port1_receive(byte);
+        self.refresh_interrupt_request_line();
     }
 
     pub fn serial_port1_rx_empty(&self) -> bool {
@@ -425,7 +427,9 @@ impl AltairBus {
     }
 
     pub fn serial_port1_tx_complete(&mut self) -> Option<u8> {
-        self.io.port1_tx_complete()
+        let completed = self.io.port1_tx_complete();
+        self.refresh_interrupt_request_line();
+        completed
     }
 
     pub fn serial_port1_tx_busy(&self) -> bool {
@@ -473,6 +477,7 @@ impl AltairBus {
         if port == 0xff {
             self.io.trace.record(IO_TRACE_IN, port, value);
         }
+        self.refresh_interrupt_request_line();
         value
     }
 
@@ -481,22 +486,37 @@ impl AltairBus {
         if port == 0xff {
             self.io.trace.record(IO_TRACE_OUT, port, value);
         }
+        self.refresh_interrupt_request_line();
     }
 
     pub fn debugger_inject_serial_rx(&mut self, data_port: u8, byte: u8) -> bool {
-        self.io.debugger_inject_rx(data_port, byte)
+        let changed = self.io.debugger_inject_rx(data_port, byte);
+        if changed {
+            self.refresh_interrupt_request_line();
+        }
+        changed
     }
 
     pub fn debugger_clear_serial_rx(&mut self, data_port: u8) -> bool {
-        self.io.debugger_clear_rx(data_port)
+        let changed = self.io.debugger_clear_rx(data_port);
+        if changed {
+            self.refresh_interrupt_request_line();
+        }
+        changed
     }
 
     pub fn debugger_clear_serial_tx(&mut self, data_port: u8) -> bool {
-        self.io.debugger_clear_tx(data_port)
+        let changed = self.io.debugger_clear_tx(data_port);
+        if changed {
+            self.refresh_interrupt_request_line();
+        }
+        changed
     }
 
     pub fn debugger_complete_serial_tx(&mut self, data_port: u8) -> Option<u8> {
-        self.io.debugger_complete_tx(data_port)
+        let completed = self.io.debugger_complete_tx(data_port);
+        self.refresh_interrupt_request_line();
+        completed
     }
 }
 
@@ -587,6 +607,32 @@ mod tests {
         io.output(SIO2_PORT1_DATA, b'1');
         assert_eq!(io.serial_tx_front(), Some(b'0'));
         assert_eq!(io.port1_tx_front(), Some(b'1'));
+    }
+
+    #[test]
+    fn port1_irq_projects_to_canonical_pint_immediately() {
+        let mut machine = AltairMachine::default();
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.bus.debugger_output_port(SIO2_PORT1_STATUS, 0x80);
+        assert!(!machine.bus.cpu_control_lines().interrupt);
+
+        machine.bus.serial_port1_receive(b'P');
+        assert!(machine.bus.cpu_control_lines().interrupt);
+
+        assert_eq!(machine.bus.debugger_input_port(SIO2_PORT1_DATA), b'P');
+        assert!(!machine.bus.cpu_control_lines().interrupt);
+    }
+
+    #[test]
+    fn debugger_uart_mutations_refresh_canonical_pint() {
+        let mut machine = AltairMachine::default();
+        machine.bus.debugger_output_port(SIO_STATUS_PORT, 0x01);
+        assert!(!machine.bus.cpu_control_lines().interrupt);
+
+        assert!(machine.bus.debugger_inject_serial_rx(SIO_DATA_PORT, b'D'));
+        assert!(machine.bus.cpu_control_lines().interrupt);
+        assert!(machine.bus.debugger_clear_serial_rx(SIO_DATA_PORT));
+        assert!(!machine.bus.cpu_control_lines().interrupt);
     }
 
     #[test]
