@@ -17,6 +17,7 @@ fn intel_8080a_dip40_pinout_keeps_reference_numbering() {
         "number: 2, label: \"GND\"",
         "number: 10, label: \"D0\"",
         "number: 12, label: \"RESET\"",
+        "number: 14, label: \"INT\"",
         "number: 18, label: \"/WR\"",
         "number: 19, label: \"SYNC\"",
         "number: 20, label: \"+5V\"",
@@ -37,7 +38,7 @@ fn pin_visualizer_distinguishes_level_assertion_power_clock_and_unmodeled_lines(
     assert!(source.contains("ControlPin::WrN => (snapshot.pins.wr_n, true"));
     assert!(source.contains("LOW ASSERTED"));
     assert!(source.contains("outer amber ring = signal ASSERTED"));
-    assert!(source.contains("label: \"INT\", kind: PinKind::Unmodeled"));
+    assert!(source.contains("label: \"INT\", kind: PinKind::Control(ControlPin::Interrupt)"));
     assert!(source.contains("label: \"PHI1\", kind: PinKind::Clock"));
     assert!(source.contains("label: \"PHI2\", kind: PinKind::Clock"));
     assert!(source.contains("CLOCK PRESENT - phase not modeled"));
@@ -80,6 +81,7 @@ fn reconstructed_fast_bus_is_explicitly_not_cpu_package_pin_truth() {
 fn cpu_control_pin_renderer_uses_backend_pin_truth_without_reconstructing_signals() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
     for expected in [
+        "ControlPin::Interrupt => (snapshot.interrupt",
         "ControlPin::Inte => (snapshot.pins.inte",
         "ControlPin::Dbin => (snapshot.pins.dbin",
         "ControlPin::WrN => (snapshot.pins.wr_n",
@@ -89,6 +91,7 @@ fn cpu_control_pin_renderer_uses_backend_pin_truth_without_reconstructing_signal
     ] {
         assert!(source.contains(expected), "control pin must come from backend snapshot: {expected}");
     }
+    assert!(source.contains("canonical S-100 PINT line"));
     assert!(source.contains("this UI never reconstructs a"));
     assert!(source.contains("signal from S-100 lamps, machine-cycle names or other presentation state"));
 }
@@ -98,5 +101,7 @@ fn bus_teacher_offers_package_and_precision_table_views() {
     let source = include_str!("../src/app/ui/bus_teacher.rs");
     assert!(source.contains("Package diagram"));
     assert!(source.contains("Signal table"));
+    assert!(source.contains("INT/PINT"));
+    assert!(source.contains("INT/SINTA"));
     assert!(source.contains("cpu_pin_diagram::draw_8080a_package"));
 }
