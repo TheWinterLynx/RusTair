@@ -44,22 +44,60 @@ fn assert_cycle_mirror_matches_authority(
     );
 }
 
-fn cycle_step_instruction(backend: &mut CycleAccurateMachineBackend) {
+/// Advance one exact 8080 machine cycle without using the Altair front-panel
+/// SINGLE STEP sequencer. Differential/core-authority tests compare CPU timing,
+/// so panel PSYNC/TW parking must not be counted as guest execution.
+fn cycle_step_machine_cycle(backend: &mut CycleAccurateMachineBackend) {
+    let start_cycle = backend.cpu().machine_cycle();
+    let start_index = backend.cpu().machine_cycle_index();
     let start_t_states = backend.cpu().total_t_states();
+    backend.run().expect("cycle backend must run");
 
-    // An 8080 instruction needs at most five machine cycles. Leave headroom so
-    // this helper fails loudly if the backend ever stops at the wrong boundary.
-    for _ in 0..8 {
-        backend.step().expect("cycle machine-cycle step must succeed");
+    for _ in 0..32 {
+        backend
+            .service_execution(1)
+            .expect("cycle T-state service must succeed");
         if backend.cpu().total_t_states() > start_t_states
-            && backend.cpu().machine_cycle() == MachineCycle::InstructionFetch
-            && backend.cpu().t_state() == TState::T1
+            && (backend.cpu().machine_cycle() != start_cycle
+                || backend.cpu().machine_cycle_index() != start_index
+                || backend.cpu().is_halted()
+                || backend.cpu().is_holding())
         {
+            backend.halt().expect("logical machine-cycle stop must succeed");
             return;
         }
     }
 
-    panic!("cycle backend did not reach the next instruction boundary");
+    backend.halt().expect("logical machine-cycle stop must succeed");
+    panic!("cycle backend did not finish one machine cycle");
+}
+
+fn cycle_step_instruction(backend: &mut CycleAccurateMachineBackend) {
+    let start_completed = backend.cpu().completed_instructions();
+    let start_t_states = backend.cpu().total_t_states();
+    backend.run().expect("cycle backend must run");
+
+    // No legal 8080 instruction approaches this many T-states. Leave generous
+    // headroom so this helper fails loudly if execution loses a boundary.
+    for _ in 0..128 {
+        backend
+            .service_execution(1)
+            .expect("cycle T-state service must succeed");
+        if backend.cpu().completed_instructions() > start_completed
+            || backend.cpu().is_halted()
+            || backend.cpu().is_holding()
+        {
+            backend.halt().expect("logical instruction stop must succeed");
+            assert!(
+                backend.cpu().total_t_states() > start_t_states,
+                "instruction step must consume at least one T-state"
+            );
+            return;
+        }
+    }
+
+    backend.halt().expect("logical instruction stop must succeed");
+    panic!("cycle backend did not reach the next instruction completion");
 }
 
 #[test]
@@ -126,13 +164,13 @@ fn cycle_backend_ignores_a_poisoned_fast_cpu_mirror_during_execution() {
         mirror.cycles = 0xdead_beef;
     }
 
-    backend.step().unwrap(); // M1 fetch only in the real Altair single-step path.
+    cycle_step_machine_cycle(&mut backend); // M1 fetch only, no panel parking.
     assert_eq!(backend.cpu().registers().pc, 1);
     assert_eq!(backend.cpu().registers().a, authoritative.a);
     assert_eq!(backend.cpu().total_t_states(), 4);
     assert_cycle_mirror_matches_authority(&backend, "after poisoned-mirror fetch");
 
-    backend.step().unwrap(); // M2 operand read completes MVI.
+    cycle_step_machine_cycle(&mut backend); // M2 operand read completes MVI.
     assert_eq!(backend.cpu().registers().pc, 2);
     assert_eq!(backend.cpu().registers().a, 0x5a);
     assert_eq!(backend.cpu().total_t_states(), 7);
@@ -153,7 +191,7 @@ fn cycle_backend_mirror_stays_synced_across_cpu_and_chassis_transitions() {
 
     backend.load_bytes(0, &[0x00, 0x00]).unwrap();
     backend.step().unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "single machine-cycle STEP");
+    assert_cycle_mirror_matches_authority(&backend, "physical SINGLE STEP");
     backend.run().unwrap();
     backend.service_execution(4).unwrap();
     assert_cycle_mirror_matches_authority(&backend, "RUN execution");
