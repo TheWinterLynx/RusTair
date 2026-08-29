@@ -135,7 +135,7 @@
 
 ### S-100 / memory fidelity
 
-- [ ] **[P1] Add a real S-100 interrupt-request path and interrupt-producing device model** before claiming interrupt-capable peripheral fidelity.
+- [x] ~~**[P1] Add a real S-100 interrupt-request path and interrupt-producing device model** before claiming interrupt-capable peripheral fidelity.~~ Canonical PINT plus 88-SIO/88-2SIO level-sensitive IRQ sources are implemented for both Rust backends.
 - [ ] **[P2] Replace the fixed logical 1 KiB protection-board assumption with explicit memory-board modelling** if/when board-level memory fidelity is pursued.
 - [ ] **[P2] Revisit unmapped/open-bus memory behavior** instead of always returning deterministic `00h`; make any historical/open-bus policy explicit and testable.
 
@@ -147,7 +147,7 @@
 - [ ] **[P1] Model RX overrun/error conditions** instead of treating endpoint queues as infinitely forgiving hardware.
 - [ ] **[P1] Expand the 88-2SIO / MC6850 model** beyond the BASIC-required subset: control word/framing, parity, stop bits, error flags, overrun and IRQ behavior.
 - [ ] **[P1] Audit 88-SIO revision-specific behavior/status semantics** against hardware documentation and make deliberate compatibility choices explicit.
-- [ ] **[P1] Connect serial IRQ generation to the future S-100 interrupt path.**
+- [x] ~~**[P1] Connect serial IRQ generation to the future S-100 interrupt path.~~ 88-SIO/88-2SIO IRQ conditions now drive canonical S-100 PINT and direct RST 7 acknowledge.
 - [ ] **[P2] Add explicit parity/framing configuration where historically meaningful**, separating physical ASR-33 limitations from modern external COM/TCP endpoints.
 - [ ] **[P2] Fix External TCP bind retry behavior** so a temporary bind failure is retried without requiring config change/restart.
 - [ ] **[P2] Avoid synchronous COM worker `join()` on the UI thread** during close/reconfigure.

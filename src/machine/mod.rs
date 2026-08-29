@@ -816,8 +816,9 @@ mod tests {
         machine.assert_run_stop(false);
         assert!(machine.running, "STOP cannot latch without PSYNC while halted");
         machine.assert_front_panel_reset();
-        assert!(!machine.running, "held STOP must latch when RESET supplies recovery");
+        assert!(machine.running, "RESET itself must preserve the physical RUN/STOP latch");
         machine.release_front_panel_reset();
+        assert!(!machine.running, "Fast must capture held STOP at its reconstructed first post-reset fetch boundary");
         machine.release_run_stop(false);
         assert!(machine.wait_led());
     }
