@@ -2,9 +2,6 @@ name: build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - agent/cycle-hardware-fidelity-audit
 
 permissions:
   contents: read
