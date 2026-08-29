@@ -19,18 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Complete memory READY timing migration
+      - name: Complete hardware-fidelity migrations
         shell: pwsh
         run: |
           python .github/scripts/complete_memory_ready.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/finish_memory_ready_v2.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/fix_run_reset_semantics.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/fix_run_reset_tests.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (git status --porcelain) {
             git config user.name "TheWinterLynx"
             git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
-            git add src/config/machine.rs src/config/mod.rs src/machine/panel_bus.rs src/machine/memory.rs src/machine/mod.rs src/machine/cpu_board.rs src/cpu8080.rs src/cpu8080_cycle/mod.rs src/backend/mod.rs src/backend/native.rs src/backend/cycle_host.rs src/backend/cycle.rs src/app/mod.rs src/app/runtime.rs src/app/persistence.rs tests/memory_wait_timing.rs
-            git commit -m "Complete memory READY card timing"
+            git add src/config/machine.rs src/config/mod.rs src/machine/panel_bus.rs src/machine/memory.rs src/machine/mod.rs src/machine/cpu_board.rs src/cpu8080.rs src/cpu8080_cycle/mod.rs src/backend/mod.rs src/backend/native.rs src/backend/cycle_host.rs src/backend/cycle.rs src/app/mod.rs src/app/runtime.rs src/app/persistence.rs tests/memory_wait_timing.rs tests/run_reset_timing.rs
+            git commit -m "Correct original RUN RESET latch semantics"
             git push origin HEAD:agent/cycle-hardware-fidelity-audit
             Start-Sleep -Seconds 10
           }
@@ -46,17 +50,20 @@ jobs:
       - name: CPU classic diagnostics quick set
         run: cargo test --test cpu8080_cycle_classic_diagnostics
 
+      - name: Memory-board READY timing
+        run: cargo test --test memory_wait_timing
+
+      - name: Original RUN RESET latch timing
+        run: cargo test --test run_reset_timing
+
+      - name: CPU DIP-40 pin contract
+        run: cargo test --test cpu_pin_diagram
+
       - name: CPU classic CPUTEST.COM reference run
         run: cargo test --release --test cpu8080_cycle_classic_diagnostics cycle_core_runs_cputest_with_reference_totals -- --ignored --exact
 
       - name: CPU classic 8080EXM.COM reference run
         run: cargo test --release --test cpu8080_cycle_classic_diagnostics cycle_core_runs_8080exm_with_reference_totals -- --ignored --exact
-
-      - name: CPU DIP-40 pin contract
-        run: cargo test --test cpu_pin_diagram
-
-      - name: Memory-board READY timing
-        run: cargo test --test memory_wait_timing
 
       - name: Test all targets
         run: cargo test --all-targets
