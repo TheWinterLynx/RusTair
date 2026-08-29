@@ -19,13 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Complete hardware-fidelity migrations
+      - name: Complete pending RUN RESET fidelity migration
         shell: pwsh
         run: |
-          python .github/scripts/complete_memory_ready.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python .github/scripts/finish_memory_ready_v2.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/fix_run_reset_semantics.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/fix_run_reset_tests.py
@@ -33,7 +29,7 @@ jobs:
           if (git status --porcelain) {
             git config user.name "TheWinterLynx"
             git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
-            git add src/config/machine.rs src/config/mod.rs src/machine/panel_bus.rs src/machine/memory.rs src/machine/mod.rs src/machine/cpu_board.rs src/cpu8080.rs src/cpu8080_cycle/mod.rs src/backend/mod.rs src/backend/native.rs src/backend/cycle_host.rs src/backend/cycle.rs src/app/mod.rs src/app/runtime.rs src/app/persistence.rs tests/memory_wait_timing.rs tests/run_reset_timing.rs
+            git add src/machine/panel_bus.rs src/machine/mod.rs src/machine/cpu_board.rs src/backend/cycle.rs tests/run_reset_timing.rs
             git commit -m "Correct original RUN RESET latch semantics"
             git push origin HEAD:agent/cycle-hardware-fidelity-audit
             Start-Sleep -Seconds 10
