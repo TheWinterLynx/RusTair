@@ -42,18 +42,36 @@ impl S100Cycle {
             _ => 3,
         }
     }
+
+    const fn reads_data_from_s100(self) -> bool {
+        matches!(
+            self,
+            Self::InstructionFetch
+                | Self::MemoryRead
+                | Self::StackRead
+                | Self::InputRead
+                | Self::InterruptAcknowledge
+                | Self::InterruptAcknowledgeWhileHalted
+        )
+    }
+
+    const fn writes_data_to_s100(self) -> bool {
+        matches!(self, Self::MemoryWrite | Self::StackWrite | Self::OutputWrite)
+    }
 }
 
 /// Common electrical contract between a CPU-board adapter and the S-100 bus.
 ///
-/// The front panel consumes only these samples; it never branches on which CPU
-/// engine produced them. `None` address/data represents a tri-stated or
-/// otherwise undriven bus. `status_word` is present only when the CPU board is
-/// updating the S-100 status latch.
+/// The original Altair CPU board turns the 8080's one bidirectional D0-D7 bus
+/// into two independent S-100 directions. Keeping all three domains here stops
+/// the front panel, debugger and CPU package view from silently treating one
+/// byte as three different electrical nets.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct S100CpuSample {
     pub address: Option<u16>,
-    pub data: Option<u8>,
+    pub cpu_data: Option<u8>,
+    pub data_in: Option<u8>,
+    pub data_out: Option<u8>,
     pub status_word: Option<u8>,
     pub inte: bool,
     pub ready: bool,
@@ -108,19 +126,25 @@ impl FrontPanelJamSequence {
 pub(super) struct Fast8080S100Adapter;
 
 impl Fast8080S100Adapter {
-    pub(super) fn for_each_sample(
+    fn for_each_sample_impl(
         address: u16,
         data: u8,
         cycle: S100Cycle,
         inte: bool,
         ready: bool,
         wait: bool,
+        front_panel_direct: bool,
         mut emit: impl FnMut(S100CpuSample),
     ) {
         let status = cycle.status_word();
+        // At the beginning of every machine cycle the 8080 places its status
+        // byte on D0-D7. The CPU-board output buffers also present that level on
+        // DO while the local 8212 latches the dedicated S-100 status outputs.
         emit(S100CpuSample {
             address: Some(address),
-            data: Some(status),
+            cpu_data: Some(status),
+            data_in: None,
+            data_out: Some(status),
             status_word: Some(status),
             inte,
             ready,
@@ -129,9 +153,23 @@ impl Fast8080S100Adapter {
         });
 
         for _ in 1..cycle.t_states() {
+            let (cpu_data, data_in, data_out) = if front_panel_direct {
+                // EXAMINE injects directly onto the processor D bus; it is not
+                // an S-100 DI source. The CPU-board DO buffers see that same D
+                // level while the Display/Control board owns the injection.
+                (Some(data), None, Some(data))
+            } else if cycle.reads_data_from_s100() {
+                (Some(data), Some(data), None)
+            } else if cycle.writes_data_to_s100() {
+                (Some(data), None, Some(data))
+            } else {
+                (None, None, None)
+            };
             emit(S100CpuSample {
                 address: Some(address),
-                data: Some(data),
+                cpu_data,
+                data_in,
+                data_out,
                 status_word: None,
                 inte,
                 ready,
@@ -139,6 +177,30 @@ impl Fast8080S100Adapter {
                 hlda: false,
             });
         }
+    }
+
+    pub(super) fn for_each_sample(
+        address: u16,
+        data: u8,
+        cycle: S100Cycle,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+        emit: impl FnMut(S100CpuSample),
+    ) {
+        Self::for_each_sample_impl(address, data, cycle, inte, ready, wait, false, emit);
+    }
+
+    pub(super) fn for_each_front_panel_jam_sample(
+        address: u16,
+        data: u8,
+        cycle: S100Cycle,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+        emit: impl FnMut(S100CpuSample),
+    ) {
+        Self::for_each_sample_impl(address, data, cycle, inte, ready, wait, true, emit);
     }
 }
 
@@ -157,14 +219,15 @@ impl<'a> FrontPanelJamBus<'a> {
     }
 
     fn jam_or_memory(&mut self, address: u16, cycle: S100Cycle) -> u8 {
-        let value = if let Some(value) = self.sequence.byte(self.index) {
+        if let Some(value) = self.sequence.byte(self.index) {
             self.index += 1;
+            self.bus.drive_front_panel_jam_cycle(address, value, cycle);
             value
         } else {
-            self.bus.memory.read(address)
-        };
-        self.bus.drive_cpu_cycle(address, value, cycle);
-        value
+            let value = self.bus.memory.read(address);
+            self.bus.drive_cpu_cycle(address, value, cycle);
+            value
+        }
     }
 }
 
@@ -204,6 +267,25 @@ impl super::AltairBus {
     pub(crate) fn cpu_board_front_panel_deposit(&mut self, address: u16, value: u8) {
         self.panel.set_address_latch(address);
         self.front_panel_deposit(address, value);
+    }
+
+    pub(super) fn drive_front_panel_jam_cycle(
+        &mut self,
+        address: u16,
+        data: u8,
+        cycle: S100Cycle,
+    ) {
+        let signals = self.s100.signals();
+        let inte = self.cpu_inte;
+        Fast8080S100Adapter::for_each_front_panel_jam_sample(
+            address,
+            data,
+            cycle,
+            inte,
+            signals.ready,
+            signals.wait,
+            |sample| self.drive_cpu_board_sample(sample),
+        );
     }
 
     /// Cycle Accurate mutates the external READY input independently of WAIT.
@@ -354,15 +436,17 @@ impl super::AltairMachine {
 
 /// Adapter for the T-state Intel 8080 core.
 ///
-/// Timing and output-control signals come directly from `TickTrace`. The
-/// backend supplies `visible_data` because read data originates on RAM/I/O
-/// boards rather than on the CPU's output pins.
+/// Timing and CPU output-control signals come directly from `TickTrace`. Read
+/// data originates on RAM/I/O boards and therefore appears on S-100 DI before
+/// reaching the package D bus. Front-panel EXAMINE injection is different: the
+/// D/C board strobes the processor D bus directly and bypasses S-100 DI.
 pub(crate) struct Cycle8080S100Adapter;
 
 impl Cycle8080S100Adapter {
     pub(crate) fn sample(
         trace: &TickTrace,
         visible_data: Option<u8>,
+        front_panel_direct: bool,
         ready: bool,
     ) -> S100CpuSample {
         let status_word = if trace.pins.hlda {
@@ -377,9 +461,25 @@ impl Cycle8080S100Adapter {
             None
         };
 
+        let (cpu_data, data_in, data_out) = if trace.pins.hlda {
+            (None, None, None)
+        } else if let Some(value) = trace.pins.data_out {
+            (Some(value), None, Some(value))
+        } else if let Some(value) = visible_data {
+            if front_panel_direct {
+                (Some(value), None, Some(value))
+            } else {
+                (Some(value), Some(value), None)
+            }
+        } else {
+            (None, None, None)
+        };
+
         S100CpuSample {
             address: trace.pins.address,
-            data: trace.pins.data_out.or(visible_data),
+            cpu_data,
+            data_in,
+            data_out,
             status_word,
             inte: trace.pins.inte,
             ready,
@@ -395,7 +495,7 @@ mod tests {
     use crate::cpu8080_cycle::{Cpu8080Pins, MachineCycle};
 
     #[test]
-    fn fast_adapter_emits_common_s100_samples_without_claiming_pin_truth() {
+    fn fast_adapter_routes_fetch_status_to_do_and_memory_data_to_di() {
         let mut samples = Vec::new();
         Fast8080S100Adapter::for_each_sample(
             0x1234,
@@ -409,14 +509,35 @@ mod tests {
 
         assert_eq!(samples.len(), 4);
         assert_eq!(samples[0].status_word, Some(0xA2));
-        assert_eq!(samples[0].data, Some(0xA2));
+        assert_eq!(samples[0].cpu_data, Some(0xA2));
+        assert_eq!(samples[0].data_in, None);
+        assert_eq!(samples[0].data_out, Some(0xA2));
         assert_eq!(samples[1].status_word, None);
-        assert_eq!(samples[1].data, Some(0x56));
+        assert_eq!(samples[1].cpu_data, Some(0x56));
+        assert_eq!(samples[1].data_in, Some(0x56));
+        assert_eq!(samples[1].data_out, None);
         assert!(samples.iter().all(|sample| sample.address == Some(0x1234)));
     }
 
     #[test]
-    fn cycle_adapter_maps_real_tick_pins_to_the_same_contract() {
+    fn fast_adapter_routes_memory_write_to_do_not_di() {
+        let mut samples = Vec::new();
+        Fast8080S100Adapter::for_each_sample(
+            0x2000,
+            0xa5,
+            S100Cycle::MemoryWrite,
+            false,
+            true,
+            false,
+            |sample| samples.push(sample),
+        );
+        assert_eq!(samples[1].cpu_data, Some(0xa5));
+        assert_eq!(samples[1].data_in, None);
+        assert_eq!(samples[1].data_out, Some(0xa5));
+    }
+
+    #[test]
+    fn cycle_adapter_maps_real_t1_status_to_cpu_d_and_do() {
         let trace = TickTrace {
             machine_cycle: MachineCycle::MemoryRead,
             machine_cycle_index: 2,
@@ -436,12 +557,43 @@ mod tests {
             instruction_t_states: 5,
         };
 
-        let sample = Cycle8080S100Adapter::sample(&trace, None, true);
+        let sample = Cycle8080S100Adapter::sample(&trace, None, false, true);
         assert_eq!(sample.address, Some(0x2000));
-        assert_eq!(sample.data, Some(0x82));
+        assert_eq!(sample.cpu_data, Some(0x82));
+        assert_eq!(sample.data_in, None);
+        assert_eq!(sample.data_out, Some(0x82));
         assert_eq!(sample.status_word, Some(0x82));
         assert!(sample.inte);
         assert!(sample.ready);
+    }
+
+    #[test]
+    fn cycle_adapter_distinguishes_normal_di_from_front_panel_direct_injection() {
+        let trace = TickTrace {
+            machine_cycle: MachineCycle::MemoryRead,
+            machine_cycle_index: 2,
+            t_state: TState::T3,
+            pins: Cpu8080Pins {
+                address: Some(0x2000),
+                dbin: true,
+                ..Cpu8080Pins::default()
+            },
+            opcode: Some(0x3A),
+            instruction_complete: false,
+            reset: false,
+            fault: None,
+            total_t_states: 7,
+            instruction_t_states: 7,
+        };
+        let memory = Cycle8080S100Adapter::sample(&trace, Some(0x5a), false, true);
+        assert_eq!(memory.cpu_data, Some(0x5a));
+        assert_eq!(memory.data_in, Some(0x5a));
+        assert_eq!(memory.data_out, None);
+
+        let jam = Cycle8080S100Adapter::sample(&trace, Some(0xc3), true, true);
+        assert_eq!(jam.cpu_data, Some(0xc3));
+        assert_eq!(jam.data_in, None);
+        assert_eq!(jam.data_out, Some(0xc3));
     }
 
     #[test]
@@ -459,7 +611,8 @@ mod tests {
         machine.power(true);
         machine.front_panel_reset();
         machine.bus.s100.drive_cpu_t_state(
-            Some(0), Some(0xa2), Some(0xa2), false, false, true, false, false,
+            Some(0), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
+            true, false, false,
         );
         machine.cycle_set_running(false);
         let stopped_request = machine.bus.s100.signals();
