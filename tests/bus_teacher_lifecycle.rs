@@ -33,8 +33,10 @@ fn cycle_control_snapshot_does_not_advance_the_cpu() {
 fn package_keeps_control_bus_and_cpu_bus_semantics_separate() {
     let diagram = include_str!("../src/app/ui/cpu_pin_diagram.rs");
     assert!(diagram.contains("cpu_bus_pin_levels_available"));
-    assert!(diagram.contains("snapshot.accuracy != BusTeachingAccuracy::ControlState"));
-    assert!(diagram.contains("S-100/front-panel bus"));
+    assert!(diagram.contains("snapshot.accuracy == BusTeachingAccuracy::Exact"));
+    assert!(diagram.contains("snapshot.accuracy == BusTeachingAccuracy::ControlState"));
+    assert!(diagram.contains("snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped"));
+    assert!(diagram.contains("S-100/front-panel observations"));
     assert!(diagram.contains("CLOCK PRESENT - phase not modeled"));
 }
 
