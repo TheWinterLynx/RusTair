@@ -162,7 +162,7 @@ impl RusTairApp {
             ui.separator();
             let accuracy = snapshot.map(|snapshot| snapshot.accuracy.label()).unwrap_or(
                 if capabilities.exact_t_state_timing {
-                    "EXACT - no sample yet"
+                    "EXACT T-STATE SAMPLE - no sample yet"
                 } else {
                     "RECONSTRUCTED / APPROXIMATE"
                 },
@@ -174,7 +174,7 @@ impl RusTairApp {
                 "POWER/RESET/READY/S-100 control state is known. Stable electrical levels are shown where that lifecycle state determines them; the Teacher never invents a numbered CPU T-state just to animate the diagram.",
             ),
             _ if capabilities.exact_t_state_timing => ui.small(
-                "Cycle Accurate exposes the real machine-cycle, T-state, 8080 pins and latched S-100 status driven by the CPU-board sample.",
+                "Cycle Accurate shows the last real CPU-board T-state sample. Machine cycle, CPU pins, latched S-100 state and READY/HOLD/RESET are the levels captured for that displayed tick; later host/chassis control changes do not rewrite the sample.",
             ),
             _ => ui.small(
                 "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin/status-latch values remain unknown.",
@@ -366,17 +366,17 @@ impl RusTairApp {
 
     fn draw_bus_teacher_pins(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
         let left = [
-            ("SYNC", Self::bool_signal(snapshot.pins.sync), "T1 status synchronization"),
-            ("DBIN", Self::bool_signal(snapshot.pins.dbin), "CPU is accepting input data"),
-            ("/WR", Self::wr_signal(snapshot.pins.wr_n), "active-low CPU write output"),
-            ("INTE", Self::bool_signal(snapshot.pins.inte), "interrupt-enable output"),
-            ("WAIT", Self::bool_signal(snapshot.pins.wait), "processor wait output"),
+            ("SYNC", Self::bool_signal(snapshot.pins.sync), "T1 status synchronization in the displayed observation"),
+            ("DBIN", Self::bool_signal(snapshot.pins.dbin), "CPU input-data strobe in the displayed observation"),
+            ("/WR", Self::wr_signal(snapshot.pins.wr_n), "active-low CPU write output in the displayed observation"),
+            ("INTE", Self::bool_signal(snapshot.pins.inte), "interrupt-enable output in the displayed observation"),
+            ("WAIT", Self::bool_signal(snapshot.pins.wait), "processor WAIT output in the displayed observation"),
         ];
         let right = [
-            ("HLDA", Self::bool_signal(snapshot.pins.hlda), "bus hold acknowledged"),
-            ("READY", Self::bool_signal(snapshot.ready), "S-100 READY presented to CPU"),
-            ("HOLD", Self::bool_signal(snapshot.hold), "S-100 HOLD request"),
-            ("RESET", Self::bool_signal(snapshot.reset), "CPU RESET input"),
+            ("HLDA", Self::bool_signal(snapshot.pins.hlda), "bus-hold acknowledge in the displayed observation"),
+            ("READY", Self::bool_signal(snapshot.ready), "S-100 READY sampled by the CPU for the displayed observation"),
+            ("HOLD", Self::bool_signal(snapshot.hold), "S-100 HOLD input sampled for the displayed observation"),
+            ("RESET", Self::bool_signal(snapshot.reset), "CPU RESET input captured for the displayed observation"),
         ];
 
         ui.columns(2, |columns| {
@@ -384,7 +384,11 @@ impl RusTairApp {
             Self::draw_pin_group(&mut left_column[0], "bus-teacher-pins-left", &left);
             Self::draw_pin_group(&mut right_column[0], "bus-teacher-pins-right", &right);
         });
-        ui.small("Hover a pin name/value for its electrical meaning.");
+        if snapshot.accuracy == BusTeachingAccuracy::Exact {
+            ui.small("Exact mode shows the electrical levels captured at the displayed T-state. Later debugger/chassis changes do not rewrite that historical CPU sample.");
+        } else {
+            ui.small("Hover a pin name/value for its electrical meaning.");
+        }
     }
 
     fn draw_status_group(
@@ -451,7 +455,7 @@ impl RusTairApp {
             );
         });
         ui.small(
-            "RAW is the captured S-100 status/control state. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
+            "RAW is the S-100 status/control state captured with the displayed observation. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
         );
     }
 
@@ -556,31 +560,31 @@ impl RusTairApp {
             ),
         }
         if snapshot.status.m1 == Some(true) {
-            lines.push("M1 is ON because the retained S-100 status latch currently has M1 set.".into());
+            lines.push("M1 is ON because the S-100 status latch captured in the displayed observation has M1 set.".into());
         }
         if snapshot.status.memr == Some(true) {
-            lines.push("MEMR is ON because the retained S-100 status latch currently has MEMR set.".into());
+            lines.push("MEMR is ON because the S-100 status latch captured in the displayed observation has MEMR set.".into());
         }
         if snapshot.status.inp == Some(true) {
-            lines.push("INP is ON because the retained S-100 status latch identifies an input-port cycle.".into());
+            lines.push("INP is ON because the displayed S-100 status observation identifies an input-port cycle.".into());
         }
         if snapshot.status.out == Some(true) {
-            lines.push("OUT is ON because the retained S-100 status latch identifies an output-port cycle.".into());
+            lines.push("OUT is ON because the displayed S-100 status observation identifies an output-port cycle.".into());
         }
         if snapshot.status.stack == Some(true) {
-            lines.push("STACK is ON because the retained S-100 status latch identifies stack activity.".into());
+            lines.push("STACK is ON because the displayed S-100 status observation identifies stack activity.".into());
         }
         if snapshot.status.wo == Some(false) {
-            lines.push("W/O is OFF: the physical /WO convention identifies a write/output cycle.".into());
+            lines.push("W/O is OFF in the displayed observation: the physical /WO convention identifies a write/output cycle.".into());
         }
         if snapshot.status.wait == Some(true) {
-            lines.push("WAIT is ON because the CPU/front-panel state is stopped/waiting on READY.".into());
+            lines.push("WAIT is ON in the displayed observation because the CPU was waiting on READY at that electrical instant.".into());
         }
         if snapshot.status.hlda == Some(true) {
-            lines.push("HLDA is ON because the CPU has granted the external HOLD request.".into());
+            lines.push("HLDA is ON in the displayed observation because the CPU had granted the external HOLD request.".into());
         }
         if snapshot.status.prot == Some(true) {
-            lines.push("PROT is ON because the currently latched S-100 address selects a write-protected 1 KiB memory block.".into());
+            lines.push("PROT is ON because the S-100 address captured in the displayed observation selects a write-protected 1 KiB memory block.".into());
         }
         lines
     }
@@ -648,7 +652,7 @@ impl RusTairApp {
                     state.pin_table_view = true;
                 }
                 ui.separator();
-                ui.weak("DIP-40 live electrical view");
+                ui.weak("DIP-40 sampled/control electrical view");
             });
             ui.separator();
             if let Some(snapshot) = snapshot {
