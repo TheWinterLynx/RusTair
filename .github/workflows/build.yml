@@ -21,7 +21,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Test
+      - name: CPU core unit tests
+        run: cargo test --lib cpu8080
+
+      - name: CPU Fast-Cycle differential
+        run: cargo test --test cpu8080_cycle_differential
+
+      - name: CPU classic diagnostics quick set
+        run: cargo test --test cpu8080_cycle_classic_diagnostics
+
+      - name: CPU classic CPUTEST.COM reference run
+        run: cargo test --release --test cpu8080_cycle_classic_diagnostics cycle_core_runs_cputest_with_reference_totals -- --ignored --exact
+
+      - name: CPU classic 8080EXM.COM reference run
+        run: cargo test --release --test cpu8080_cycle_classic_diagnostics cycle_core_runs_8080exm_with_reference_totals -- --ignored --exact
+
+      - name: CPU DIP-40 pin contract
+        run: cargo test --test cpu_pin_diagram
+
+      - name: Test all targets
         run: cargo test --all-targets
 
       - name: Build release
