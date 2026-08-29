@@ -118,13 +118,23 @@ impl AltairBus {
     pub fn board_index(address: u16) -> Option<usize> { Memory::board_index(address) }
     pub fn is_protected(&self, address: u16) -> bool { self.memory.is_protected(address) }
     pub fn set_protected(&mut self, address: u16, protected: bool) { self.memory.set_protected(address, protected); self.refresh_protect_line(); }
-    pub fn serial_receive(&mut self, byte: u8) { self.io.serial_receive(byte); }
+    pub fn serial_receive(&mut self, byte: u8) {
+        self.io.serial_receive(byte);
+        self.refresh_interrupt_request_line();
+    }
     pub fn serial_rx_empty(&self) -> bool { self.io.serial_rx_empty() }
     pub fn serial_rx_len(&self) -> usize { self.io.serial_rx_len() }
     pub fn serial_tx_front(&self) -> Option<u8> { self.io.serial_tx_front() }
-    pub fn serial_tx_complete(&mut self) -> Option<u8> { self.io.serial_tx_complete() }
+    pub fn serial_tx_complete(&mut self) -> Option<u8> {
+        let completed = self.io.serial_tx_complete();
+        self.refresh_interrupt_request_line();
+        completed
+    }
     pub fn tx_busy(&self) -> bool { self.io.serial_tx_busy() }
-    pub fn clear_serial(&mut self) { self.io.clear_serial(); }
+    pub fn clear_serial(&mut self) {
+        self.io.clear_serial();
+        self.refresh_interrupt_request_line();
+    }
 
     pub fn begin_cpu_diagnostic_meter(
         &mut self,
@@ -228,6 +238,19 @@ impl AltairBus {
     fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
+    pub(crate) fn refresh_interrupt_request_line(&mut self) {
+        let asserted = self.serial_interrupt_request();
+        self.s100.set_interrupt_request(asserted);
+    }
+
+    pub(crate) fn interrupt_requested(&self) -> bool {
+        self.s100.signals().interrupt
+    }
+
+    pub(crate) fn direct_interrupt_opcode(&self) -> u8 {
+        self.serial_interrupt_opcode()
+    }
+
     pub(crate) fn cpu_control_lines(&self) -> S100CpuControlLines {
         let signals = self.s100.signals();
         S100CpuControlLines {
@@ -293,6 +316,7 @@ impl AltairBus {
         // assertion; the GUI does not clear UART queues directly.
         if asserted && !was_asserted {
             self.io.clear_serial();
+            self.refresh_interrupt_request_line();
         }
     }
 
@@ -327,12 +351,18 @@ impl Bus for AltairBus {
     fn input(&mut self, port: u8) -> u8 {
         let value = match port { 0xff => self.panel.input(), _ => self.io.input(port) };
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::InputRead);
+        if port != 0xff {
+            self.refresh_interrupt_request_line();
+        }
         value
     }
 
     fn output(&mut self, port: u8, value: u8) {
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::OutputWrite);
-        if port != 0xff { self.io.output(port, value); }
+        if port != 0xff {
+            self.io.output(port, value);
+            self.refresh_interrupt_request_line();
+        }
     }
 
     fn set_inte(&mut self, enabled: bool) { self.sync_cpu_inte(enabled); }
@@ -594,6 +624,24 @@ impl AltairMachine {
         }
     }
 
+    fn service_fast_interrupt_if_requested(&mut self) -> u32 {
+        self.bus.refresh_interrupt_request_line();
+        if !self.bus.interrupt_requested() || !self.cpu.inte {
+            return 0;
+        }
+
+        let opcode = self.bus.direct_interrupt_opcode();
+        // On the real 8080, INTE drops as the interrupt is accepted, before the
+        // CPU-board emits SINTA. Keep the Fast adapter's synthetic INTA samples
+        // in the same electrical order without changing Cpu8080's public API.
+        self.bus.sync_cpu_inte(false);
+        let before = self.cpu.cycles;
+        let accepted = self.cpu.interrupt(&mut self.bus, opcode);
+        debug_assert!(accepted);
+        self.bus.sync_cpu_inte(self.cpu.inte);
+        self.cpu.cycles.saturating_sub(before) as u32
+    }
+
     pub fn step(&mut self) {
         if !self.powered || self.running || self.bus.reset_asserted() { return; }
         if self.bus.hold_requested() {
@@ -605,8 +653,11 @@ impl AltairMachine {
         self.bus.set_ready(true);
         self.bus.sync_cpu_inte(self.cpu.inte);
         // Limitation retained by design: the CPU core is instruction-level, so
-        // this executes one instruction rather than one physical machine cycle.
-        self.cpu.step(&mut self.bus);
+        // this executes one instruction or one accepted interrupt rather than
+        // one physical machine cycle.
+        if self.service_fast_interrupt_if_requested() == 0 {
+            self.cpu.step(&mut self.bus);
+        }
         self.bus.sync_cpu_inte(self.cpu.inte);
         let address = self.bus.panel_address();
         self.bus.panel.set_address_latch(address);
@@ -623,8 +674,21 @@ impl AltairMachine {
         }
         self.bus.set_hlda(false);
         self.bus.sync_cpu_inte(self.cpu.inte);
-        self.cpu.run_cycles(&mut self.bus, cycles);
-        self.bus.sync_cpu_inte(self.cpu.inte);
+
+        // The instruction-level core must still sample PINT at every instruction
+        // boundary. A single Cpu8080::run_cycles() call cannot see a serial-card
+        // IRQ that becomes active between two guest instructions, so keep the
+        // same budget semantics while polling the canonical S-100 input here.
+        let mut used = 0u32;
+        while used < cycles {
+            let interrupt_t_states = self.service_fast_interrupt_if_requested();
+            if interrupt_t_states != 0 {
+                used = used.saturating_add(interrupt_t_states);
+            } else {
+                used = used.saturating_add(self.cpu.step(&mut self.bus));
+            }
+            self.bus.sync_cpu_inte(self.cpu.inte);
+        }
     }
 
     pub fn request_hold(&mut self, hold: bool) {
@@ -801,6 +865,7 @@ mod tests {
         assert!(machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
         assert_eq!(machine.bus.serial_rx_len(), 0);
+        assert!(!machine.bus.interrupt_requested());
 
         machine.release_front_panel_clear();
         assert!(!machine.ext_clear_asserted());
@@ -857,5 +922,54 @@ mod tests {
         assert!(!lines.ready);
         assert!(lines.hold);
         assert!(!lines.reset);
+    }
+
+    #[test]
+    fn serial_irq_projects_to_pint_and_fast_cpu_accepts_direct_rst7() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.cpu.sp = 0x4000;
+        machine.bus.load(0, &[0xfb, 0x00, 0x00]); // EI; NOP; NOP
+        machine.bus.output(0x00, 0x01); // 88-SIO D0: enable receive IRQ
+        machine.set_running(true);
+
+        machine.run_cycles(8);
+        assert_eq!(machine.cpu.pc, 0x0002);
+        assert!(machine.cpu.inte);
+
+        machine.bus.serial_receive(b'I');
+        assert!(machine.bus.interrupt_requested());
+        machine.run_cycles(11);
+
+        assert_eq!(machine.cpu.pc, 0x0038);
+        assert_eq!(machine.cpu.sp, 0x3ffe);
+        assert!(!machine.cpu.inte);
+        assert_eq!(machine.bus.peek_memory(0x3ffe), Some(0x02));
+        assert_eq!(machine.bus.peek_memory(0x3fff), Some(0x00));
+        assert!(machine.bus.interrupt_requested(), "level-sensitive RX PINT remains until the ISR reads data");
+    }
+
+    #[test]
+    fn fast_pint_wakes_halted_cpu_when_inte_is_enabled() {
+        let mut machine = AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.cpu.sp = 0x4000;
+        machine.bus.load(0, &[0xfb, 0x76]); // EI; HLT enables INTE when HLT completes
+        machine.bus.output(0x00, 0x01);
+        machine.set_running(true);
+
+        machine.run_cycles(11);
+        assert!(machine.cpu.halted);
+        assert!(machine.cpu.inte);
+        assert_eq!(machine.cpu.pc, 0x0002);
+
+        machine.bus.serial_receive(b'W');
+        machine.run_cycles(11);
+        assert!(!machine.cpu.halted);
+        assert!(!machine.cpu.inte);
+        assert_eq!(machine.cpu.pc, 0x0038);
+        assert_eq!(machine.cpu.sp, 0x3ffe);
     }
 }
