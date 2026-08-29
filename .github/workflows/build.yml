@@ -30,10 +30,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python .github/scripts/remove_cpu_inte_mirror.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $legacyInte = Get-ChildItem src\machine -Recurse -Filter *.rs | Select-String -Pattern 'self\.cpu_inte|cpu_inte\s*:'
+          if ($legacyInte) { $legacyInte | ForEach-Object { Write-Error $_.Line }; throw "Legacy AltairBus cpu_inte mirror remains" }
           if (git status --porcelain) {
             git config user.name "TheWinterLynx"
             git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
-            git add src/machine/panel_bus.rs src/machine/mod.rs src/machine/cpu_board.rs src/backend/cycle.rs tests/run_reset_timing.rs tests/backend_authority.rs
+            git add src/machine/panel_bus.rs src/machine/mod.rs src/machine/cpu_board.rs src/machine/memory.rs src/backend/cycle.rs tests/run_reset_timing.rs tests/backend_authority.rs
             git commit -m "Finalize RUN RESET and canonicalize S100 INTE"
             git push origin HEAD:agent/cycle-hardware-fidelity-audit
             Start-Sleep -Seconds 10
