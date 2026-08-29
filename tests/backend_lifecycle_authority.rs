@@ -66,18 +66,35 @@ fn cycle_run_latch_drives_ready_wait_without_changing_reset_semantics() {
     assert_eq!(stopped.status.wait, Some(true));
     assert_eq!(stopped.pins.wait, Some(true));
 
-    // RUN is the physical R-S latch. With RESET released it releases READY and
-    // the stable STOP-WAIT condition disappears immediately.
+    // RUN sets the physical R-S latch and releases the external READY input
+    // immediately, but WAIT is an 8080 output. It must remain asserted until a
+    // real CPU clock lets the core leave the STOP-WAIT/TW state.
     host.assert_run_stop(true);
     let running_panel = host.front_panel_state();
-    let running = host
+    let before_clock = host
         .bus_teaching_snapshot()
         .expect("RUN control snapshot before first exact T-state");
     assert!(running_panel.running);
-    assert_eq!(running.machine_cycle, BusMachineCycle::ResetReleasedRunning);
-    assert_eq!(running.reset, Some(false));
-    assert_eq!(running.ready, Some(true));
-    assert_eq!(running.status.wait, Some(false));
+    assert_eq!(before_clock.machine_cycle, BusMachineCycle::ResetReleasedRunning);
+    assert_eq!(before_clock.reset, Some(false));
+    assert_eq!(before_clock.ready, Some(true));
+    assert_eq!(
+        before_clock.status.wait,
+        Some(true),
+        "raising READY must not fabricate the CPU WAIT output low"
+    );
+
+    host.run_cycles(1);
+    let after_clock = host
+        .bus_teaching_snapshot()
+        .expect("first exact T-state after RUN");
+    assert_eq!(after_clock.ready, Some(true));
+    assert_eq!(
+        after_clock.status.wait,
+        Some(false),
+        "the exact CPU sample must release WAIT after clocking out of the stopped wait state"
+    );
+    assert_eq!(after_clock.pins.wait, Some(false));
     host.release_run_stop(true);
 
     // Physical RESET does not clear the independent RUN/STOP latch. While RESET
