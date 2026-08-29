@@ -112,6 +112,25 @@ fn exact_sample_inputs_remain_historical_after_debugger_returns_to_pause() {
 }
 
 #[test]
+fn hold_request_after_exact_sample_does_not_rewrite_captured_input() {
+    let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
+    host.debugger_step_t_state();
+    let before = host.bus_teaching_snapshot().expect("exact T1 sample");
+    assert_eq!(before.hold, Some(false));
+    let before_t_states = host.intel8080_state().total_t_states;
+
+    host.request_hold(true);
+    host.debugger_step_t_state();
+
+    let retained = host.bus_teaching_snapshot().expect("retained exact T1 sample");
+    assert_eq!(retained.hold, Some(false), "HOLD is the value sampled at displayed T1, not a later request");
+    assert_eq!(retained.t_state, BusTState::T1);
+    assert_eq!(host.intel8080_state().total_t_states, before_t_states, "live HOLD request must block debugger stepping before a new CPU sample is captured");
+
+    host.request_hold(false);
+}
+
+#[test]
 fn cycle_t_state_step_advances_one_t_state_at_a_time() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
     host.debugger_step_t_state();
