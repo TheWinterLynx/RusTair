@@ -152,6 +152,24 @@ impl eframe::App for RusTairApp {
                             }
                         }
                         ui.separator();
+                        ui.menu_button("RAM board timing", |ui| {
+                            let current = self.config.machine.ram_board_profile;
+                            ui.label(format!("Installed timing profile: {}", current.label()));
+                            ui.separator();
+                            for profile in RamBoardProfile::ALL {
+                                if ui.selectable_label(current == profile, profile.label()).clicked() {
+                                    self.apply_memory_board_profile(profile);
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            ui.small("The original MITS 1K static board uses its Processor Slow Down circuit to pull PRDY low for two wait states on each addressed memory read.");
+                            ui.small("Cycle Accurate clocks both TW states explicitly; Fast 8080 adds the same wait T-states to guest elapsed time but cannot expose sub-instruction TW pin samples.");
+                            if self.machine.powered() {
+                                ui.small("Power OFF is required to swap the installed RAM-card timing profile.");
+                            }
+                        });
+                        ui.separator();
                         ui.menu_button("Power-on contents", |ui| {
                             for ram_init in RamInit::ALL {
                                 let selected = self.config.machine.ram_init == ram_init;

@@ -139,6 +139,7 @@ impl SavedSettings {
                 }
                 "machine.ram_size" => if let Some(v) = parse_ram_size(value) { saved.config.machine.ram_size = v; },
                 "machine.ram_init" => if let Some(v) = parse_ram_init(value) { saved.config.machine.ram_init = v; },
+                "machine.ram_board_profile" => if let Some(v) = parse_ram_board_profile(value) { saved.config.machine.ram_board_profile = v; },
                 "machine.serial_board" => if let Some(v) = parse_serial_board(value) { saved.config.machine.serial_board = v; },
                 "peripherals.asr33_speed" => if let Some(v) = parse_asr_speed(value) { saved.config.peripherals.asr33_speed = v; },
                 "peripherals.terminal_speed" => if let Some(v) = parse_terminal_speed(value) { saved.config.peripherals.terminal_speed = v; },
@@ -190,6 +191,7 @@ impl SavedSettings {
         let _ = writeln!(out, "machine.cpu_model=intel8080");
         let _ = writeln!(out, "machine.ram_size={}", ram_size_key(self.config.machine.ram_size));
         let _ = writeln!(out, "machine.ram_init={}", ram_init_key(self.config.machine.ram_init));
+        let _ = writeln!(out, "machine.ram_board_profile={}", ram_board_profile_key(self.config.machine.ram_board_profile));
         let _ = writeln!(out, "machine.serial_board={}", serial_board_key(self.config.machine.serial_board));
         let _ = writeln!(out, "peripherals.asr33_speed={}", asr_speed_key(self.config.peripherals.asr33_speed));
         let _ = writeln!(out, "peripherals.terminal_speed={}", terminal_speed_key(self.config.peripherals.terminal_speed));
@@ -307,6 +309,7 @@ impl RusTairApp {
             let _ = self.machine.replace_engine(engine);
         }
         self.machine.configure_memory(self.config.machine.ram_size, self.config.machine.ram_init);
+        self.machine.configure_memory_board_profile(self.config.machine.ram_board_profile);
         self.machine.configure_serial_board(self.config.machine.serial_board);
 
         self.serial_router.reset_for_board(self.config.machine.serial_board);
@@ -463,6 +466,8 @@ fn ram_size_key(v: RamSize) -> &'static str { match v { RamSize::Bytes256 => "25
 fn parse_ram_size(v: &str) -> Option<RamSize> { Some(match v { "256b" => RamSize::Bytes256, "1k" => RamSize::K1, "4k" => RamSize::K4, "8k" => RamSize::K8, "16k" => RamSize::K16, "32k" => RamSize::K32, "48k" => RamSize::K48, "64k" => RamSize::K64, _ => return None }) }
 fn ram_init_key(v: RamInit) -> &'static str { match v { RamInit::Random => "random", RamInit::Zeroed => "zeroed" } }
 fn parse_ram_init(v: &str) -> Option<RamInit> { Some(match v { "random" => RamInit::Random, "zeroed" => RamInit::Zeroed, _ => return None }) }
+fn ram_board_profile_key(v: RamBoardProfile) -> &'static str { match v { RamBoardProfile::FastNoWait => "fast-no-wait", RamBoardProfile::Mits1KStatic1975 => "mits-1k-static-1975" } }
+fn parse_ram_board_profile(v: &str) -> Option<RamBoardProfile> { Some(match v { "fast-no-wait" => RamBoardProfile::FastNoWait, "mits-1k-static-1975" => RamBoardProfile::Mits1KStatic1975, _ => return None }) }
 fn serial_board_key(v: SerialBoard) -> &'static str { match v { SerialBoard::Sio88 => "88-sio", SerialBoard::TwoSio88 => "88-2sio" } }
 fn parse_serial_board(v: &str) -> Option<SerialBoard> { Some(match v { "88-sio" => SerialBoard::Sio88, "88-2sio" => SerialBoard::TwoSio88, _ => return None }) }
 fn asr_speed_key(v: Asr33Speed) -> &'static str { match v { Asr33Speed::Authentic110 => "110", Asr33Speed::Accelerated2x => "2x", Asr33Speed::Accelerated4x => "4x", Asr33Speed::Instant => "instant" } }
@@ -507,6 +512,7 @@ mod tests {
         let mut saved = SavedSettings::default();
         saved.engine = EmulationEngine::RustCycleAccurate8080;
         saved.config.machine.ram_size = RamSize::K48;
+        saved.config.machine.ram_board_profile = RamBoardProfile::Mits1KStatic1975;
         saved.config.machine.serial_board = SerialBoard::TwoSio88;
         saved.config.preferences.emulation_speed = EmulationSpeed::X5;
         saved.external_tcp_connection = SerialConnection::Port0;
@@ -556,6 +562,7 @@ mod tests {
 
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("machine.ram_size=48k"));
+        assert!(text.contains("machine.ram_board_profile=fast-no-wait"));
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
         assert!(text.contains("asr33.tape_visual_order=8to1"));

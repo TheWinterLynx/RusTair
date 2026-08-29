@@ -74,7 +74,7 @@ impl Memory {
         Self::board_index(address).map(|index| self.board_profiles[index])
     }
 
-    fn read_wait_states(&self, address: u16) -> u8 {
+    pub(super) fn read_wait_states(&self, address: u16) -> u8 {
         self.board_profile(address)
             .map(RamBoardProfile::read_wait_states)
             .unwrap_or(0)
@@ -281,7 +281,18 @@ impl super::AltairBus {
 
     pub(crate) fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
         self.memory.configure_board_profile(profile);
+        self.fast_wait_t_states = 0;
         self.s100.set_memory_ready_input(true);
+    }
+
+    pub(crate) fn fast_account_memory_read_wait(&mut self, address: u16) {
+        self.fast_wait_t_states = self
+            .fast_wait_t_states
+            .saturating_add(u32::from(self.memory.read_wait_states(address)));
+    }
+
+    pub(crate) fn take_fast_memory_wait_t_states(&mut self) -> u32 {
+        std::mem::take(&mut self.fast_wait_t_states)
     }
 
     pub(crate) fn memory_board_profile(&self, address: u16) -> Option<RamBoardProfile> {

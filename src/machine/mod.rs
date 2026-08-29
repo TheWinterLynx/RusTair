@@ -82,6 +82,7 @@ pub struct AltairBus {
     panel: FrontPanelController,
     s100: S100BusState,
     cpu_inte: bool,
+    fast_wait_t_states: u32,
     diagnostic_meter: Option<CpuDiagnosticMeter>,
     diagnostic_result: Option<CpuDiagnosticResult>,
 }
@@ -94,6 +95,7 @@ impl Default for AltairBus {
             panel: FrontPanelController::default(),
             s100: S100BusState::default(),
             cpu_inte: false,
+            fast_wait_t_states: 0,
             diagnostic_meter: None,
             diagnostic_result: None,
         };
@@ -106,6 +108,7 @@ impl AltairBus {
     pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
         self.cancel_cpu_diagnostic_meter();
         self.memory.configure(size, init_mode);
+        self.fast_wait_t_states = 0;
         self.refresh_protect_line();
     }
 
@@ -327,6 +330,7 @@ impl AltairBus {
 
 impl Bus for AltairBus {
     fn read(&mut self, address: u16) -> u8 {
+        self.fast_account_memory_read_wait(address);
         let value = self.memory.read(address);
         self.drive_cpu_cycle(address, value, S100Cycle::MemoryRead);
         value
@@ -357,12 +361,14 @@ impl Bus for AltairBus {
     fn set_inte(&mut self, enabled: bool) { self.sync_cpu_inte(enabled); }
 
     fn opcode_fetch(&mut self, address: u16) -> u8 {
+        self.fast_account_memory_read_wait(address);
         let value = self.memory.read(address);
         self.drive_cpu_cycle(address, value, S100Cycle::InstructionFetch);
         value
     }
 
     fn stack_read(&mut self, address: u16) -> u8 {
+        self.fast_account_memory_read_wait(address);
         let value = self.memory.read(address);
         self.drive_cpu_cycle(address, value, S100Cycle::StackRead);
         value
@@ -375,6 +381,10 @@ impl Bus for AltairBus {
 
     fn halt_ack(&mut self, address: u16, opcode: u8) {
         self.drive_cpu_cycle(address, opcode, S100Cycle::HaltAcknowledge);
+    }
+
+    fn take_wait_states(&mut self) -> u32 {
+        self.take_fast_memory_wait_t_states()
     }
 
     fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {

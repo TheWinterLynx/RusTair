@@ -65,3 +65,29 @@ fn mits_1k_mvi_has_two_slow_reads_not_a_global_instruction_penalty() {
     // MITS 1K read contributes exactly two TW states, therefore 7 + 2 + 2 = 11.
     assert_eq!(cpu.total_t_states, Some(11));
 }
+
+
+#[test]
+fn running_cycle_backend_recovers_when_memory_ready_returns_high() {
+    let mut host = prepared(RamBoardProfile::Mits1KStatic1975, &[0x00, 0x00]);
+    host.set_running(true);
+    host.run_cycles(6);
+    let cpu = host.intel8080_state();
+    assert_eq!(cpu.pc, 0x0001, "continuous RUN must leave TW when the card releases PRDY");
+    assert_eq!(cpu.total_t_states, Some(6));
+}
+
+#[test]
+fn fast_backend_accounts_for_mits_1k_wait_t_states_at_instruction_level() {
+    let mut host = BackendHost::from_engine(EmulationEngine::RustFast8080)
+        .expect("built-in Fast backend");
+    host.configure_memory(RamSize::K1, RamInit::Zeroed);
+    host.configure_memory_board_profile(RamBoardProfile::Mits1KStatic1975);
+    host.power(true);
+    host.front_panel_reset();
+    host.load_bytes(0, &[0x3e, 0x42, 0x00]);
+    host.step();
+    let cpu = host.intel8080_state();
+    assert_eq!(cpu.a, 0x42);
+    assert_eq!(cpu.total_t_states, Some(11));
+}

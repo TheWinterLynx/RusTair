@@ -501,7 +501,7 @@ impl CycleAccurateMachineBackend {
                 }
             }
 
-            let ready = self.machine.bus.cpu_control_lines().ready;
+            let ready = self.machine.bus.cycle_front_panel_ready_input();
             let trace = self.tick_once(ready);
             if trace.fault.is_some() {
                 break;
@@ -699,7 +699,7 @@ impl CycleAccurateMachineBackend {
             return;
         }
         for _ in 0..64 {
-            let ready = self.machine.bus.cpu_control_lines().ready;
+            let ready = self.machine.bus.cycle_front_panel_ready_input();
             let trace = self.tick_once(ready);
             if trace.fault.is_some() || self.cpu.is_halted() || self.cpu.is_holding() {
                 break;
@@ -794,7 +794,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
                 if !self.machine.running {
                     break;
                 }
-                let ready = self.machine.bus.cpu_control_lines().ready;
+                let ready = self.machine.bus.cycle_front_panel_ready_input();
                 let trace = self.tick_once(ready);
                 if trace.fault.is_some() {
                     break;

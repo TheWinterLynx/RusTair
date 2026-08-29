@@ -24,6 +24,10 @@ pub trait Bus {
     fn stack_write(&mut self, address: u16, value: u8) { self.write(address, value); }
     fn halt_ack(&mut self, _address: u16, _opcode: u8) {}
     fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {}
+    /// Extra external wait T-states accumulated by instruction-level bus
+    /// devices during the current instruction. Exact Cycle mode does not use
+    /// this approximation because it clocks every TW explicitly.
+    fn take_wait_states(&mut self) -> u32 { 0 }
     fn instruction_complete(&mut self, _address: u16, _opcode: u8, _t_states: u32) {}
 }
 
@@ -293,7 +297,7 @@ impl Cpu8080 {
         let opcode_address = self.pc;
         let opcode = bus.opcode_fetch(opcode_address);
         self.pc = self.pc.wrapping_add(1);
-        let t = self.execute(bus, opcode);
+        let base_t = self.execute(bus, opcode);
         // EI enables interrupts only after the following instruction. If that
         // following instruction is DI, DI's immediate disable must win over the
         // pending enable rather than being undone at the end of the same step.
@@ -302,6 +306,7 @@ impl Cpu8080 {
             bus.set_inte(true);
         }
         self.f = (self.f & 0xd5) | FLAG_1;
+        let t = base_t.saturating_add(bus.take_wait_states());
         self.cycles += t as u64;
         bus.instruction_complete(opcode_address, opcode, t);
         t
@@ -320,7 +325,7 @@ impl Cpu8080 {
         self.inte = false;
         bus.set_inte(false);
         self.halted = false;
-        let t = self.execute(bus, opcode);
+        let t = self.execute(bus, opcode).saturating_add(bus.take_wait_states());
         self.cycles += t as u64;
         true
     }

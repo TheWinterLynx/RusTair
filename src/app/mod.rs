@@ -205,6 +205,10 @@ impl RusTairApp {
 
     fn apply_memory_board_profile(&mut self, profile: RamBoardProfile) {
         if self.config.machine.ram_board_profile == profile { return; }
+        if self.machine.powered() {
+            self.status = "Power OFF the Altair before changing the installed RAM card timing".into();
+            return;
+        }
         self.config.machine.ram_board_profile = profile;
         self.machine.configure_memory_board_profile(profile);
         self.last_tick = Instant::now();
