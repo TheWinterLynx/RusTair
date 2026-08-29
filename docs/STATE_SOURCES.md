@@ -1,8 +1,8 @@
 # RusTair runtime state authorities
 
 This document distinguishes authoritative emulated state from derived observations,
-presentation caches and remaining architectural mirrors. A UI snapshot is allowed to
-cache history, but it must never become an input that drives the emulated machine.
+presentation caches and remaining architectural duplication. A UI snapshot is allowed
+to cache history, but it must never become an input that drives the emulated machine.
 
 ## Authoritative runtime state
 
@@ -14,6 +14,33 @@ cache history, but it must never become an input that drives the emulated machin
 | Raw S-100 electrical/status state | `machine::panel_bus::S100BusState::signals` | front panel, CPU control inputs, Bus Teacher RAW state |
 | Front-panel switch register/address-control state | `FrontPanelController` plus the live S-100 bus where appropriate | physical panel controls and CPU-board injection paths |
 | UART / serial board runtime state | `IoDevices` / installed serial device model | guest I/O, ASR/terminal/TCP/COM endpoints, I/O Inspector |
+
+## CPU ownership after the Cycle mirror removal
+
+`AltairMachine` still contains a `Cpu8080` because that object is the real processor of
+the Fast backend. The same chassis container is currently embedded by the Cycle
+backend, so that field is physically present there too, but **it is dormant in Cycle**:
+
+- Cycle power-on generates its undefined register/INTE sample directly for
+  `Cpu8080Cycle` and passes only the required electrical values to the chassis.
+- Cycle RESET, RUN/STOP, HOLD/HLDA, EXAMINE, DEPOSIT, PROTECT and lamp integration do
+  not consult or update `AltairMachine::cpu`.
+- Cycle memory reconfiguration accesses the shared RAM/bus path directly instead of
+  invoking the Fast-oriented `AltairMachine::configure_memory` helper.
+- There is no `sync_machine_cpu()` path and no architectural-state copy from
+  `Cpu8080Cycle` into `Cpu8080`.
+
+Therefore the two Rust engines have independent and unambiguous CPU authorities:
+
+```text
+Fast  -> AltairMachine::cpu (Cpu8080)
+Cycle -> CycleAccurateMachineBackend::cpu (Cpu8080Cycle)
+```
+
+A later structural refactor may split `AltairMachine` into a CPU-agnostic chassis type
+plus the Fast CPU owner. That would remove the dormant field from the Cycle object
+graph entirely, but it is no longer a duplicated runtime CPU state or a source of
+truth used by Cycle.
 
 ## Deliberately derived state
 
@@ -40,21 +67,18 @@ raw electrical behaviour:
 5. App UI consumes backend contracts rather than concrete CPU/bus implementations.
 6. Historical snapshots may be stale by design and must be labelled as history or a
    frozen sample; they cannot drive execution.
+7. Cycle code must not read or write `AltairMachine::cpu`; its only CPU authority is
+   `Cpu8080Cycle`.
 
-## Remaining source-of-truth debt
+## Remaining source-of-truth / structural debt
 
-The following pre-existing mirrors still prevent a strict claim that *every* runtime
-bit exists in exactly one storage location:
+1. **RUN latch duplication.** `AltairMachine::running` and `S100Signals::run` are kept
+   synchronized. The physical S-100 RUN latch should ultimately be the canonical
+   storage location, with host-facing `running` derived from it.
+2. **CPU/chassis type composition.** The Fast CPU still lives inside `AltairMachine`,
+   which means a Cycle backend carries an unused `Cpu8080` field as part of that
+   shared container. This is structural baggage, not a Cycle CPU mirror. A future
+   `AltairChassis` extraction can remove it without changing either CPU core.
 
-1. **Cycle CPU mirror in `AltairMachine::cpu`.** Cycle Accurate execution is owned by
-   `Cpu8080Cycle`, and public Cycle CPU snapshots read that core directly, but the
-   common `AltairMachine` chassis still contains a passive `Cpu8080` mirror used by
-   some legacy chassis helpers. Remove it by making the chassis CPU-core agnostic.
-2. **RUN latch mirror.** `AltairMachine::running` and `S100Signals::run` are kept in
-   sync. The physical S-100 RUN latch should ultimately be the canonical source.
-3. **INTE mirror.** `AltairBus::cpu_inte` duplicates `S100Signals::inte` for the Fast
-   CPU-board adapter. The adapter should read the canonical S-100 value instead.
-
-Until these three items are removed, RusTair has a clear authoritative path for UI,
-memory and S-100 teaching, but it should not claim a mathematically strict
-single-storage-location architecture for all machine state.
+The previous `AltairBus::cpu_inte` duplicate has already been removed: canonical INTE
+is stored in `S100BusState::signals.inte`.
