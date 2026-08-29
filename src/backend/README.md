@@ -48,8 +48,27 @@ CPU INTE likewise originates in the active CPU. Fast projects its instruction-le
 
 Teacher is view-only. Exact mode consumes Cycle CPU samples plus canonical RAW S-100 state. Fast-mode cycle/T-state teaching remains explicitly approximate. LED persistence is presentation-only in both modes.
 
+### Temporal semantics of exact Teacher samples
+
+`BusTeachingAccuracy::Exact` means **an exact captured T-state sample**, not a promise that every field still describes the chassis at the later instant when the UI happens to render it.
+
+For an exact sample, machine-cycle, T-state, CPU output pins, S-100 status and the READY/HOLD/RESET inputs describe the electrical levels associated with that CPU tick. Host/debugger controls may subsequently change the chassis without clocking another 8080 T-state. For example, debugger `Step T` clocks one exact T-state with READY released and then returns the host to pause; the captured sample must retain the READY level the CPU actually saw rather than being rewritten after the fact.
+
+That distinction is intentional:
+
+```text
+captured CPU sample: immutable historical truth for one real T-state
+current chassis state: mutable RUN/STOP / READY / HOLD / RESET control state
+```
+
+A physical STOP is different from a debugger pause. The Cycle backend clocks the real next PSYNC, T2 and first TW before freezing execution, so the resulting exact sample genuinely contains READY low and CPU-generated WAIT high. Merely changing READY outside a CPU tick must never fabricate a WAIT transition.
+
+RESET is also different from a passive host pause: RESET changes the 8080 itself, so asserting it invalidates any retained exact T-state sample and the Teacher falls back to an explicit control-state observation until another real CPU T-state is clocked.
+
 ## Regression guards
 
-`tests/backend_authority.rs` enforces this contract at machine level. It verifies Fast ownership, deliberately desynchronizes the Cycle compatibility mirror to prove it cannot drive execution, checks mirror invariants across POWER/RESET/STEP/RUN/EXAMINE/DEPOSIT/HOLD/HLDA/HLT recovery, and runs the same program through Fast and Cycle while comparing architectural state, timing and memory after every instruction.
+`tests/backend_authority.rs` enforces the CPU/chassis authority contract at machine level. It verifies Fast ownership, deliberately desynchronizes the Cycle compatibility mirror to prove it cannot drive execution, checks mirror invariants across POWER/RESET/STEP/RUN/EXAMINE/DEPOSIT/HOLD/HLDA/HLT recovery, and runs the same program through Fast and Cycle while comparing architectural state, timing and memory after every instruction.
+
+`tests/bus_teaching.rs` additionally guards the temporal observation contract: exact READY/HOLD/RESET inputs cannot be retroactively rewritten by later debugger/chassis changes, RESET replaces stale exact samples with control-state observations, and power-on INTE remains consistent between the Cycle CPU authority and canonical RAW S-100 projection.
 
 This complements `tests/cpu8080_cycle_differential.rs`, which compares all 256 8080 opcodes directly between the two Rust CPU cores.
