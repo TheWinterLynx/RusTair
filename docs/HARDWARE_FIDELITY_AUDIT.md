@@ -1,6 +1,6 @@
 # RusTair hardware-fidelity audit
 
-Status snapshot: 2026-08-29, `feature/didactic-ram-debugger`.
+Status snapshot: 2026-08-29, `agent/cycle-hardware-fidelity-audit`.
 
 This document records verified architectural/electrical findings that should survive individual UI/debugger iterations. It deliberately distinguishes confirmed emulation errors from compatibility mirrors and from historically optional board-level fidelity.
 
@@ -14,6 +14,7 @@ The intended machine model is:
 - `S100BusState::signals()` is the raw chassis/S-100 electrical state.
 - `PanelLampIntegrator` is optical persistence/presentation only.
 - Bus/T-state Teacher snapshots are observations, never machine inputs.
+- External CPU-board inputs such as READY, HOLD, RESET and PINT must come from the canonical S-100/chassis contract rather than from backend-local shadow state.
 
 ## Confirmed fixes already made
 
@@ -27,45 +28,74 @@ Fast `Reconstructed` S-100/front-panel address/data observations are **not** pro
 
 ### POWER/RESET INTE coherence
 
-Cycle Accurate now seeds the cycle core from the same undefined power-on CPU sample used by the chassis, including the INTE flip-flop. RESET then establishes the documented disabled-interrupt state.
+Cycle Accurate seeds the cycle core from the same undefined power-on CPU sample used by the chassis, including the INTE flip-flop. RESET then establishes the documented disabled-interrupt state.
 
 ### HOLD/HLDA ownership
 
 HOLD is an external request. In Cycle Accurate mode, HLDA remains an 8080 output: releasing HOLD does not force HLDA low before the exact CPU core clocks out of THOLD.
 
-### STOP while HLDA is active
+### READY input versus WAIT output
 
-A held STOP request cannot clear RUN while HLDA suppresses useful PSYNC. It remains pending and is captured at the first real PSYNC after HOLD release (or by the documented STOP+RESET recovery path).
+The old generic `set_ready()` approximation remains intentionally available to the instruction-level Fast backend, but Cycle Accurate no longer uses it as electrical truth.
 
-## Confirmed remaining electrical error: READY versus WAIT
+Cycle has an input-only READY path. Lowering READY does **not** fabricate WAIT. The exact CPU core must clock the real transition through T2 into TW before WAIT goes high, and raising READY does not clear WAIT until the CPU itself leaves the wait state.
 
-Current `S100BusState::set_ready()` couples the two lines:
+This distinction is covered by Cycle regressions and is also preserved for debugger pause: a host/debugger pause can lower the execution request without pretending that the physical 8080 has already produced WAIT.
 
-```rust
-self.signals.ready = ready;
-self.signals.wait = !ready && !self.signals.reset;
-```
+Primary reference: Intel, *8080 Microcomputer Systems User's Manual*, State Transition Sequence / READY-WAIT timing (1975).
 
-That is only a convenient stopped/running approximation; it is not exact 8080 timing.
+### Physical STOP, STOP during HLDA, SINGLE STEP and EXAMINE parking
 
-Intel 8080 documentation defines:
+Physical STOP is captured at PSYNC and then clocks the real READY-low -> T2 -> first TW/WAIT transition before host execution freezes.
 
-- READY: CPU input used by memory/I/O to request wait states.
-- READY is sampled during T2/TW.
-- If READY is low, the processor enters TW at the end of T2.
-- WAIT: CPU output acknowledging that the processor is actually in the wait state.
+A held STOP request cannot clear RUN while HLDA suppresses useful PSYNC. It remains pending and is captured at the first real PSYNC after HOLD release (or by the documented STOP+RESET recovery path), followed by the same real T2 -> TW handshake.
 
-Therefore Cycle Accurate must not make raw WAIT an instantaneous inverse of READY. READY ownership must be external/chassis arbitration; WAIT ownership must remain the exact CPU state/output.
+Cycle Accurate SINGLE STEP releases READY for one real machine cycle, keeps it released across internal timing that has no PSYNC, then uses the next actual PSYNC to withdraw READY and parks on a CPU-generated TW.
 
-### Required migration
+EXAMINE/EXAMINE NEXT execute the real front-panel jammed JMP/NOP sequence through the CPU and likewise park on a clocked waiting fetch rather than assigning PC or synthesizing WAIT from the GUI.
 
-1. Separate an input-only READY mutation from Fast-mode approximation helpers.
-2. Ensure Cycle RUN/STOP changes READY without fabricating WAIT.
-3. On physical STOP/SINGLE STEP, let the exact CPU reach the T2 -> TW boundary before presenting stable WAIT.
-4. Preserve debugger pause semantics separately from the physical STOP switch; a debugger host pause is not automatically an Altair STOP electrical event.
-5. Add lifecycle tests proving the sequence PSYNC -> READY low -> T2 -> TW/WAIT high and the reverse when READY is released.
+Primary references: MITS, *Altair 8800 Theory of Operation Manual & Schematics* (1975), Display/Control board operation; Intel 8080 READY/WAIT timing.
 
-Primary reference: Intel, *8080 Microcomputer Systems User's Manual*, State Transition Sequence / READY-WAIT timing (1975), especially the description that TW is entered at the end of T2 and WAIT acknowledges entry into TW.
+### Serial interrupts now enter through canonical S-100 PINT
+
+The selected 88-SIO / 88-2SIO board now owns its UART interrupt-enable state and produces level-sensitive interrupt conditions. Those board conditions project onto canonical S-100 PINT rather than being injected directly into either CPU backend.
+
+Both Fast and Cycle consume the same `S100CpuControlLines.interrupt` input:
+
+- 88-SIO receive/transmit interrupt enables are modelled.
+- 88-2SIO ACIA receive/transmit interrupt enables are modelled for both ports.
+- Port 1 and debugger UART mutations refresh the canonical PINT line instead of waiting for a later unrelated CPU operation.
+- EXT CLR / serial reset removes the corresponding interrupt condition.
+
+The direct stock interrupt path supplies `FFh` (`RST 7`) during interrupt acknowledge, so the processor pushes the return PC and vectors to `0038h`.
+
+Cycle Accurate exposes the real acknowledge machine cycle:
+
+- `23h` status for normal interrupt acknowledge.
+- `2Bh` status for interrupt acknowledge while leaving HLT.
+- INTE is cleared by the CPU when the interrupt is accepted.
+- The interrupting device can keep PINT asserted after acknowledge until its level-sensitive UART condition is actually removed.
+
+Teacher/DIP-40 now explicitly distinguish:
+
+- **INT/PINT**: Intel 8080 pin 14, CPU input / service request.
+- **INTE**: Intel 8080 CPU output indicating interrupts enabled.
+- **INT/SINTA**: S-100/front-panel interrupt-acknowledge status, not the request itself.
+
+The package renderer remains view-only; pin 14 reads `BusTeachingSnapshot.interrupt` and never infers PINT from the front-panel INT lamp.
+
+## Confirmed small timing/observation gap: PINT mutation inside an I/O T3
+
+The interrupt request is refreshed before every Cycle CPU tick, so the 8080 receives the correct PINT level at the start of the T-state. A UART data read or control/data write can, however, create or remove its level-sensitive interrupt condition during T3.
+
+At present the canonical S-100 PINT projection may remain at the sampled pre-transfer level until the next Cycle tick. This is usually one T-state of host-model latency, not a wrong interrupt acceptance decision, but it matters for a strict distinction between:
+
+- the **PINT input sampled by the CPU for the exact T-state**, and
+- the **current post-transfer chassis PINT level** after the UART side effect.
+
+Required correction: preserve the sampled input in the exact Teacher snapshot, then refresh canonical PINT immediately after the T3 I/O side effect. This should become a regression where an RX interrupt is HIGH entering the `IN` T3, the exact sample still reports HIGH, and the current chassis PINT is LOW immediately after the receive buffer is consumed.
+
+This is also a concrete example of why the Teacher ultimately needs a dual-state contract instead of treating “latest exact sample” and “current chassis state” as the same instant.
 
 ## Confirmed machine-fidelity gap: original MITS 1K RAM wait states
 
@@ -93,22 +123,32 @@ RusTair currently collapses this into `S100Signals.data: u8` and `S100CpuSample.
 3. S-100 output data,
 4. front-panel visible/retained DATA value.
 
+The current `PanelLampIntegrator` also integrates that single field, and `drive_cpu_t_state()` does not retain a distinct DI/DO data owner. Therefore the split must migrate electrical state and presentation together rather than merely renaming one field.
+
 ### Required migration
 
 Split the data-domain contract before claiming full S-100 electrical fidelity. At minimum distinguish S-100 DI, S-100 DO and CPU D0-D7. Front-panel DATA LEDs must consume the historically correct S-100 source, while the CPU package diagram consumes CPU-pin truth.
+
+Regression coverage should separately prove at least:
+
+- memory/input read: peripheral/memory drives DI and CPU D-bus sees the returned byte;
+- memory/output write: CPU drives DO and no fake DI source is claimed;
+- interrupt acknowledge: interrupt source drives the external opcode toward the CPU;
+- front-panel DEPOSIT: Display/Control write data is represented as a front-panel/bus write source, not as ordinary CPU output data;
+- HOLD/HLDA: released CPU package data pins are not confused with retained front-panel DATA persistence.
 
 Primary reference: MITS, *Altair 8800 Theory of Operation Manual & Schematics* (1975), CPU Board Operation / 8800 System Bus Structure and schematics 880-101/880-105.
 
 ## Teacher contract gap: current chassis versus latest exact T-state
 
-The Bus/T-state Teacher currently retains the last exact `TickTrace` sample. This is essential for `Step T`: after one requested T-state, the user must be able to inspect exactly what happened even though host/front-panel control may immediately return the machine to a stopped condition.
+The Bus/T-state Teacher retains the last exact `TickTrace` sample. This is essential for `Step T`: after one requested T-state, the user must be able to inspect exactly what happened even though host/front-panel control may immediately return the machine to a stopped condition.
 
-At the same time, READY/HOLD/RESET/front-panel controls can change after that exact sample without another CPU tick. Therefore “latest exact T-state” and “current chassis state” can legitimately describe two adjacent instants.
+At the same time, READY/PINT/HOLD/RESET/front-panel controls can change after that exact sample without another CPU tick. Therefore “latest exact T-state” and “current chassis state” can legitimately describe two adjacent instants.
 
 Do not solve this by silently replacing the exact sample with a reconstructed/current one. The correct UI/contract is dual-state:
 
-- **Latest exact CPU sample**: machine cycle, T-state and exact package pins from `TickTrace`.
-- **Current chassis/control state**: current S-100/control inputs, RUN/STOP/READY/HOLD/RESET and stable lifecycle outputs.
+- **Latest exact CPU sample**: machine cycle, T-state, exact package pins and CPU inputs actually sampled for that tick.
+- **Current chassis/control state**: current S-100/control inputs, RUN/STOP/READY/PINT/HOLD/RESET and stable lifecycle outputs.
 
 The Freeze control may preserve either/both explicitly, but must never imply that a historical exact T-state is the current chassis instant.
 
@@ -132,13 +172,13 @@ This is a compatibility mirror used by the instruction-level CPU-board adapter. 
 
 MITS describes RUN/STOP as an R-S flip-flop, with STOP gated to the appropriate PSYNC condition. The current code prevents RUN assertion while RESET is held. Before changing that behavior, verify the exact original 8800 Display/Control schematic/latch gating (not only later variants or prose) and add a hardware-sequence regression test.
 
-## Recommended implementation order
+## Recommended implementation order from this checkpoint
 
-1. READY input / WAIT output separation in Cycle Accurate.
-2. Physical STOP and SINGLE STEP parking through the real T2 -> TW transition.
-3. Dual-state Teacher contract (current chassis + latest exact CPU sample).
-4. Split S-100 DI/DO and CPU D-bus domains.
-5. Explicit memory-board timing/READY contributors, including an authentic MITS 1K profile.
+1. Preserve sampled PINT while immediately refreshing current post-I/O PINT after T3 side effects.
+2. Introduce the dual-state Teacher contract (latest exact CPU sample + current chassis/control state).
+3. Split S-100 DI/DO and CPU D-bus domains, including front-panel DATA ownership/persistence.
+4. Add explicit memory-board timing/READY contributors, including an authentic MITS 1K profile.
+5. Verify original RUN-while-RESET latch semantics from the exact 8800 schematic before changing it.
 6. Remove synchronized compatibility mirrors only after their callers have migrated.
 
 These changes should be made without altering Fast-mode historical compatibility unless explicitly intended and tested.
