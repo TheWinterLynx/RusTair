@@ -188,11 +188,12 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    /// Data electrically visible on the S-100 data bus for this whole T-state.
-    /// CPU-driven status/write data comes directly from the pins. During reads,
-    /// T2/TW use a non-destructive preview and T3 uses the exact value consumed
-    /// by the core. A front-panel jam byte overrides RAM throughout the same
-    /// read window, matching the open-collector injection hardware.
+    /// Data electrically visible for this T-state before the CPU-board adapter
+    /// splits the 8080's D0-D7 into S-100 DI and DO. CPU-driven status/write data
+    /// comes from the pins. Reads preview the external source at T2/TW and use
+    /// the exact sampled byte at T3. Front-panel EXAMINE injection is explicitly
+    /// classified separately below because it drives the processor D bus
+    /// directly rather than entering through normal S-100 DI.
     fn visible_bus_data(
         &self,
         trace: &TickTrace,
@@ -247,24 +248,40 @@ impl CycleAccurateMachineBackend {
         ready: bool,
     ) -> Option<u8> {
         let visible_data = self.visible_bus_data(trace, sampled_data_in, front_panel_data);
-        let sample = Cycle8080S100Adapter::sample(trace, visible_data, ready);
+        let front_panel_direct = front_panel_data.is_some()
+            && matches!(
+                trace.machine_cycle,
+                MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+            );
+        let sample = Cycle8080S100Adapter::sample_with_front_panel_direct(
+            trace,
+            visible_data,
+            front_panel_direct,
+            ready,
+        );
 
         // The CPU-board sample is the only writer of the canonical raw S-100
-        // state. The Teacher deliberately owns no parallel status/protection
-        // latch; it reads the chassis state back after this call.
+        // state. The Teacher deliberately owns no parallel status/protection or
+        // data-direction latch; it reads the chassis state back after this call.
         self.machine.bus.drive_cpu_board_sample(sample);
         visible_data
     }
 
-    fn capture_teaching_snapshot(&mut self, trace: &TickTrace, visible_data: Option<u8>, ready: bool) {
-        // RAW status is read back from the same S100BusState that drives the
-        // physical front panel. PanelLampSnapshot remains presentation-only.
+    fn capture_teaching_snapshot(&mut self, trace: &TickTrace, _visible_data: Option<u8>, ready: bool) {
+        // RAW status and every data domain are read back from the same
+        // S100BusState that drives the physical front panel. PanelLampSnapshot
+        // remains presentation-only and is never reverse-engineered into pin
+        // truth.
         let status_word = Some(self.machine.bus.raw_s100_status_word());
         let mut status = BusStatusLines::from_status_word(status_word);
         status.inte = Some(self.machine.bus.raw_s100_inte());
         status.prot = Some(self.machine.bus.raw_s100_prot());
         status.wait = Some(self.machine.bus.raw_s100_wait());
         status.hlda = Some(self.machine.bus.raw_s100_hlda());
+        let cpu_data = self.machine.bus.raw_cpu_data();
+        let s100_di = self.machine.bus.raw_s100_data_in();
+        let s100_do = self.machine.bus.raw_s100_data_out();
+        let panel_data = Some(self.machine.bus.raw_panel_data());
         let lines = self.machine.bus.cpu_control_lines();
         self.last_teaching_snapshot = Some(BusTeachingSnapshot {
             accuracy: BusTeachingAccuracy::Exact,
@@ -275,7 +292,13 @@ impl CycleAccurateMachineBackend {
             machine_cycle_index: Some(trace.machine_cycle_index),
             t_state: trace.t_state.into(),
             address: trace.pins.address,
-            data: trace.pins.data_out.or(visible_data),
+            // Keep compatibility with older UI call sites, but make it follow
+            // the actual package D bus rather than a collapsed S-100 byte.
+            data: cpu_data,
+            cpu_data,
+            s100_di,
+            s100_do,
+            panel_data,
             status_word,
             pins: BusCpuPins {
                 sync: Some(trace.pins.sync),
@@ -1187,6 +1210,25 @@ mod tests {
     }
 
     #[test]
+    fn cycle_front_panel_jam_drives_cpu_d_directly_not_s100_di() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+
+        // T1 still carries the normal 8080 status byte. On the following T2 the
+        // Display/Control board has already forced C3h onto the processor D bus;
+        // that direct injection must not be mislabeled as memory/S-100 DI.
+        let _ = backend.tick_once_with_front_panel_data(true, Some(0xc3), false);
+        let _ = backend.tick_once_with_front_panel_data(true, Some(0xc3), false);
+        let sample = backend.teaching_snapshot().expect("front-panel jam T2 sample");
+        assert_eq!(sample.t_state, TState::T2.into());
+        assert_eq!(sample.cpu_data, Some(0xc3));
+        assert_eq!(sample.s100_di, None);
+        assert_eq!(sample.s100_do, Some(0xc3));
+    }
+
+    #[test]
     fn cycle_backend_deposit_uses_front_panel_write_without_assigning_pc() {
         let mut backend = CycleAccurateMachineBackend::default();
         backend.power(true).unwrap();
@@ -1317,6 +1359,9 @@ mod tests {
         assert_eq!(teaching.machine_cycle, MachineCycle::InputRead.into());
         assert_eq!(teaching.t_state, TState::T3.into());
         assert_eq!(teaching.interrupt, Some(true), "exact sample must retain the PINT level seen by the CPU entering T3");
+        assert_eq!(teaching.cpu_data, Some(b'R'));
+        assert_eq!(teaching.s100_di, Some(b'R'));
+        assert_eq!(teaching.s100_do, None);
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.a, b'R');
         assert_eq!(state.pc, 2);
@@ -1350,6 +1395,9 @@ mod tests {
         assert_eq!(sample.t_state, TState::T1.into());
         assert_eq!(sample.status_word, Some(0x23));
         assert_eq!(sample.status.int_ack, Some(true));
+        assert_eq!(sample.cpu_data, Some(0x23));
+        assert_eq!(sample.s100_di, None);
+        assert_eq!(sample.s100_do, Some(0x23));
         assert_eq!(sample.interrupt, Some(true));
         assert_eq!(sample.pins.inte, Some(false));
         assert!(!backend.cpu().interrupts_enabled());
@@ -1390,6 +1438,9 @@ mod tests {
         assert_eq!(sample.t_state, TState::T1.into());
         assert_eq!(sample.status_word, Some(0x2b));
         assert_eq!(sample.status.int_ack, Some(true));
+        assert_eq!(sample.cpu_data, Some(0x2b));
+        assert_eq!(sample.s100_di, None);
+        assert_eq!(sample.s100_do, Some(0x2b));
         assert_eq!(sample.interrupt, Some(true));
         assert_eq!(sample.pins.inte, Some(false));
         assert!(!backend.cpu().is_halted());
@@ -1416,6 +1467,10 @@ mod tests {
         assert_eq!(teaching.status.prot, Some(backend.machine().bus.raw_s100_prot()));
         assert_eq!(teaching.status.wait, Some(backend.machine().bus.raw_s100_wait()));
         assert_eq!(teaching.status.hlda, Some(backend.machine().bus.raw_s100_hlda()));
+        assert_eq!(teaching.cpu_data, backend.machine().bus.raw_cpu_data());
+        assert_eq!(teaching.s100_di, backend.machine().bus.raw_s100_data_in());
+        assert_eq!(teaching.s100_do, backend.machine().bus.raw_s100_data_out());
+        assert_eq!(teaching.panel_data, Some(backend.machine().bus.raw_panel_data()));
         assert_eq!(teaching.interrupt, Some(backend.machine().bus.cpu_control_lines().interrupt));
     }
 }
