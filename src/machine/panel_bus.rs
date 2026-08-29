@@ -354,6 +354,12 @@ impl S100BusState {
         self.lamps.snapshot
     }
 
+    #[cfg(test)]
+    pub(super) fn debug_set_snapshot(&mut self, snapshot: PanelLampSnapshot) {
+        self.lamps.clear_activity();
+        self.lamps.snapshot = snapshot;
+    }
+
     pub(super) fn power_off(&mut self) {
         self.signals = S100Signals::default();
         self.lamps.clear();
@@ -602,6 +608,13 @@ impl S100BusState {
 
     pub(super) fn commit(&mut self, dt: Duration, dynamic: bool) {
         self.lamps.commit(&self.signals, dt, dynamic);
+    }
+}
+
+#[cfg(test)]
+impl super::AltairBus {
+    pub(crate) fn debug_set_panel_lamp_snapshot_for_test(&mut self, snapshot: PanelLampSnapshot) {
+        self.s100.debug_set_snapshot(snapshot);
     }
 }
 
