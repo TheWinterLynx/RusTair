@@ -64,10 +64,7 @@ for name in [
     if p.exists():
         p.unlink()
 
-# Install the final short, read-only branch validation workflow. Long classic
-# CPU diagnostics were repeatedly certified during the audit and are no longer
-# part of every hardware-fidelity checkpoint.
-Path(".github/workflows/build.yml").write_text('''name: build\n\non:\n  workflow_dispatch:\n  push:\n    branches:\n      - agent/cycle-hardware-fidelity-audit\n\npermissions:\n  contents: read\n\nconcurrency:\n  group: build-${{ github.ref }}\n  cancel-in-progress: true\n\njobs:\n  build-windows:\n    runs-on: windows-latest\n    steps:\n      - uses: actions/checkout@v4\n\n      - uses: dtolnay/rust-toolchain@stable\n\n      - name: Canonical S-100 authority guard\n        shell: pwsh\n        run: |\n          $legacyInte = Get-ChildItem src\\machine -Recurse -Filter *.rs | Select-String -Pattern 'self\\.cpu_inte|cpu_inte\\s*:'\n          if ($legacyInte) { $legacyInte | ForEach-Object { Write-Error $_.Line }; throw "Legacy AltairBus cpu_inte mirror remains" }\n\n      - name: Hardware fidelity regressions\n        run: cargo test --test backend_authority --test bus_teaching --test memory_wait_timing --test run_reset_timing --test cpu_pin_diagram\n\n      - name: Test all targets\n        run: cargo test --all-targets\n\n      - name: Build release\n        run: cargo build --release\n\n      - name: Publish self-contained Windows test build\n        uses: actions/upload-artifact@v4\n        with:\n          name: RusTair-Windows\n          path: target/release/rustair.exe\n''', encoding="utf-8")
-
-# Remove this one-shot helper from the resulting commit too.
+# Remove this one-shot helper from the resulting commit too. The workflow is
+# updated separately through the GitHub API because Actions tokens are not
+# allowed to rewrite workflow files without the workflows permission.
 Path(__file__).unlink()
