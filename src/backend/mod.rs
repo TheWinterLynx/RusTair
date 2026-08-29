@@ -522,7 +522,7 @@ mod tests {
         let cpu = host.intel8080_state();
         let panel = host.front_panel_state();
         assert_eq!(cpu.pc, 1);
-        assert_eq!(cpu.total_t_states, Some(4));
+        assert_eq!(cpu.total_t_states, Some(7));
         assert!(panel.lamps.wait > 0.0);
     }
 }
