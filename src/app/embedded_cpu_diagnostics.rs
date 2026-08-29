@@ -293,7 +293,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     let wait_after_run_clock = machine.front_panel_state().lamps.wait > 0.5;
     let run_wait_transition_ok = match engine {
         EmulationEngine::RustCycleAccurate8080 => wait_before_run_clock && !wait_after_run_clock,
-        _ => !wait_before_run_clock && !wait_after_run_clock,
+        _ => !wait_after_run_clock,
     };
 
     machine.request_hold(true);
@@ -311,7 +311,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     let hlda_after_release_clock = machine.front_panel_state().lamps.hlda > 0.5;
     let hold_release_transition_ok = match engine {
         EmulationEngine::RustCycleAccurate8080 => hlda_before_release_clock && !hlda_after_release_clock,
-        _ => !hlda_before_release_clock && !hlda_after_release_clock,
+        _ => !hlda_after_release_clock,
     };
     machine.set_running(false);
 
@@ -546,7 +546,7 @@ impl RusTairApp {
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                     ui.label("T-states"); ui.monospace(format_count(result.t_states));
-                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(expected)); ui.monospace(format_diff(result.t_states, expected)); }
+                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(result.t_states)); ui.monospace(format_diff(result.t_states, expected)); }
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                 });
