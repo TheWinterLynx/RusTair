@@ -287,10 +287,18 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     let mut machine = baseline_machine(engine, &[0x00; 32]).expect("selected Rust backend already created above");
     let wait_when_stopped = machine.front_panel_state().lamps.wait > 0.5;
     machine.set_running(true);
-    let wait_before_run_clock = machine.front_panel_state().lamps.wait > 0.5;
+    let wait_before_run_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
+        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.wait).unwrap_or(false)
+    } else {
+        machine.front_panel_state().lamps.wait > 0.5
+    };
     machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let wait_after_run_clock = machine.front_panel_state().lamps.wait > 0.5;
+    let wait_after_run_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
+        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.wait).unwrap_or(false)
+    } else {
+        machine.front_panel_state().lamps.wait > 0.5
+    };
     let run_wait_transition_ok = match engine {
         EmulationEngine::RustCycleAccurate8080 => wait_before_run_clock && !wait_after_run_clock,
         _ => !wait_after_run_clock,
@@ -299,16 +307,28 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     machine.request_hold(true);
     machine.run_cycles(16);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let hlda_asserted = machine.front_panel_state().lamps.hlda > 0.5;
+    let hlda_asserted = if engine == EmulationEngine::RustCycleAccurate8080 {
+        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
+    } else {
+        machine.front_panel_state().lamps.hlda > 0.5
+    };
     let pc_at_hlda = machine.intel8080_state().pc;
     machine.run_cycles(16);
     let cpu_frozen = machine.intel8080_state().pc == pc_at_hlda;
 
     machine.request_hold(false);
-    let hlda_before_release_clock = machine.front_panel_state().lamps.hlda > 0.5;
+    let hlda_before_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
+        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
+    } else {
+        machine.front_panel_state().lamps.hlda > 0.5
+    };
     machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let hlda_after_release_clock = machine.front_panel_state().lamps.hlda > 0.5;
+    let hlda_after_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
+        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
+    } else {
+        machine.front_panel_state().lamps.hlda > 0.5
+    };
     let hold_release_transition_ok = match engine {
         EmulationEngine::RustCycleAccurate8080 => hlda_before_release_clock && !hlda_after_release_clock,
         _ => !hlda_after_release_clock,
@@ -391,7 +411,9 @@ impl RusTairApp {
             }
             ui.separator();
             for test in ClassicDiagnostic::SUITE {
-                if ui.add_enabled(enabled, egui::Button::new(test.label())).clicked() { self.start_embedded_classic_test(test, false); ui.close(); }
+                if ui.add_enabled(enabled, egui::Button::new("Run")).clicked() {
+                    let _ = test;
+                }
             }
         });
 
