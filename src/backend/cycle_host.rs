@@ -23,6 +23,7 @@ struct PendingInstructionTrace {
     bytes: [u8; 3],
     before: CpuSnapshot8080,
     start_t_states: u64,
+    start_completed_instructions: u64,
     effects: Vec<InstructionEffect8080>,
 }
 
@@ -107,6 +108,7 @@ impl CycleHostBackend {
             bytes,
             before,
             start_t_states: inner.cpu().total_t_states(),
+            start_completed_instructions: inner.cpu().completed_instructions(),
             effects,
         });
     }
@@ -128,10 +130,17 @@ impl CycleHostBackend {
             &pending_trace.effects,
         );
         pending_trace.effects.extend(post);
-        let delta = inner
+        let elapsed = inner
             .cpu()
             .total_t_states()
             .saturating_sub(pending_trace.start_t_states) as u32;
+        let instruction_completed =
+            inner.cpu().completed_instructions() > pending_trace.start_completed_instructions;
+        let delta = if instruction_completed {
+            inner.cpu().last_instruction_t_states().unwrap_or(elapsed)
+        } else {
+            elapsed
+        };
         if delta == 0 {
             return false;
         }
@@ -163,9 +172,9 @@ impl CycleHostBackend {
         let Some(pending) = self.pending_instruction_trace.as_ref() else {
             return false;
         };
-        let at_next_fetch = self.at_instruction_boundary()
-            && self.inner.cpu().total_t_states() > pending.start_t_states;
-        if !at_next_fetch && !self.inner.cpu().is_halted() {
+        let instruction_completed =
+            self.inner.cpu().completed_instructions() > pending.start_completed_instructions;
+        if !instruction_completed && !self.inner.cpu().is_halted() {
             return false;
         }
 
@@ -321,7 +330,22 @@ impl CycleHostBackend {
 
         self.debug_control.prepare_manual_step();
         self.begin_instruction_trace_if_needed();
-        self.inner.step()?;
+        let start_cycle = self.inner.cpu().machine_cycle();
+        let start_index = self.inner.cpu().machine_cycle_index();
+        let start_t_states = self.inner.cpu().total_t_states();
+        for _ in 0..32 {
+            self.inner.debugger_step_t_state_exact()?;
+            if self.inner.cpu().is_halted() || self.inner.cpu().is_holding() {
+                break;
+            }
+            if self.inner.cpu().machine_cycle() != start_cycle
+                || self.inner.cpu().machine_cycle_index() != start_index
+                || (self.inner.cpu().t_state() == TState::T1
+                    && self.inner.cpu().total_t_states() > start_t_states)
+            {
+                break;
+            }
+        }
         self.finish_instruction_trace_if_complete();
         Ok(())
     }
@@ -339,19 +363,18 @@ impl CycleHostBackend {
         }
 
         self.debug_control.prepare_manual_step();
-        let start_t_states = self.inner.cpu().total_t_states();
-        for _ in 0..16 {
-            self.begin_instruction_trace_if_needed();
-            self.inner.step()?;
-            let watch_stop = self.finish_instruction_trace_if_complete();
-
-            if watch_stop || self.inner.cpu().is_halted() || self.inner.cpu().is_holding() {
-                break;
-            }
-            if self.inner.cpu().total_t_states() > start_t_states && self.at_instruction_boundary() {
+        self.begin_instruction_trace_if_needed();
+        let start_completed = self.inner.cpu().completed_instructions();
+        for _ in 0..128 {
+            self.inner.debugger_step_t_state_exact()?;
+            if self.inner.cpu().completed_instructions() > start_completed
+                || self.inner.cpu().is_halted()
+                || self.inner.cpu().is_holding()
+            {
                 break;
             }
         }
+        self.finish_instruction_trace_if_complete();
         Ok(())
     }
 }
@@ -720,7 +743,9 @@ mod tests {
         let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
         let panel = backend.front_panel_state().unwrap();
         assert_eq!(cpu.pc, 1);
-        assert_eq!(cpu.total_t_states, Some(4));
+        assert_eq!(cpu.total_t_states, Some(7));
+        assert_eq!(backend.inner.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.inner.cpu().t_state(), TState::Tw);
         assert!(panel.lamps.wait > 0.0);
     }
 
@@ -853,6 +878,7 @@ mod tests {
         let history = backend.instruction_trace_snapshot().unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].address, 0x0002);
+        assert_eq!(history[0].t_states, 4, "panel parking waits are not guest instruction timing");
         let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(cpu.a, 0x22);
     }
