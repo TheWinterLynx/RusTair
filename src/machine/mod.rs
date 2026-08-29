@@ -866,7 +866,7 @@ mod tests {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
-        machine.cpu.sp = 0x4000;
+        machine.cpu.sp = 0x0400;
         machine.bus.load(0, &[0xfb, 0x00, 0x00]);
         machine.bus.output(0x00, 0x01);
         machine.set_running(true);
@@ -880,10 +880,10 @@ mod tests {
         machine.run_cycles(11);
 
         assert_eq!(machine.cpu.pc, 0x0038);
-        assert_eq!(machine.cpu.sp, 0x3ffe);
+        assert_eq!(machine.cpu.sp, 0x03fe);
         assert!(!machine.cpu.inte);
-        assert_eq!(machine.bus.peek_memory(0x3ffe), Some(0x02));
-        assert_eq!(machine.bus.peek_memory(0x3fff), Some(0x00));
+        assert_eq!(machine.bus.peek_memory(0x03fe), Some(0x02));
+        assert_eq!(machine.bus.peek_memory(0x03ff), Some(0x00));
         assert!(machine.bus.cpu_control_lines().interrupt);
     }
 
@@ -892,7 +892,7 @@ mod tests {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
-        machine.cpu.sp = 0x4000;
+        machine.cpu.sp = 0x0400;
         machine.bus.load(0, &[0xfb, 0x76]);
         machine.bus.output(0x00, 0x01);
         machine.set_running(true);
@@ -907,6 +907,6 @@ mod tests {
         assert!(!machine.cpu.halted);
         assert!(!machine.cpu.inte);
         assert_eq!(machine.cpu.pc, 0x0038);
-        assert_eq!(machine.cpu.sp, 0x3ffe);
+        assert_eq!(machine.cpu.sp, 0x03fe);
     }
 }
