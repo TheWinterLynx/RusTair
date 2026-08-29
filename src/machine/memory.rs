@@ -255,10 +255,28 @@ impl super::AltairBus {
         self.s100.signals().hlda
     }
 
+    pub(crate) fn raw_s100_data_in(&self) -> Option<u8> {
+        self.s100.signals().data_in
+    }
+
+    pub(crate) fn raw_s100_data_out(&self) -> Option<u8> {
+        self.s100.signals().data_out
+    }
+
+    pub(crate) fn raw_cpu_data(&self) -> Option<u8> {
+        self.s100.signals().cpu_data
+    }
+
+    pub(crate) fn raw_panel_data(&self) -> u8 {
+        self.s100.signals().panel_data
+    }
+
     pub(crate) fn cycle_drive_s100_t_state(
         &mut self,
         address: Option<u16>,
-        data: Option<u8>,
+        cpu_data: Option<u8>,
+        data_in: Option<u8>,
+        data_out: Option<u8>,
         status_word: Option<u8>,
         inte: bool,
         ready: bool,
@@ -271,7 +289,9 @@ impl super::AltairBus {
         self.cpu_inte = inte;
         self.s100.drive_cpu_t_state(
             address,
-            data,
+            cpu_data,
+            data_in,
+            data_out,
             status_word,
             protected,
             inte,
@@ -340,18 +360,33 @@ mod tests {
         assert_eq!(bus.peek_memory(0x0011), Some(0xa5));
         let after = bus.s100.signals();
         assert_eq!(after.address, before.address);
-        assert_eq!(after.data, before.data);
+        assert_eq!(after.cpu_data, before.cpu_data);
+        assert_eq!(after.data_in, before.data_in);
+        assert_eq!(after.data_out, before.data_out);
+        assert_eq!(after.panel_data, before.panel_data);
         assert_eq!(after.memr, before.memr);
         assert_eq!(after.m1, before.m1);
     }
 
     #[test]
-    fn raw_s100_status_word_reads_the_electrical_latch_not_led_persistence() {
+    fn raw_s100_status_and_data_domains_read_electrical_state_not_led_persistence() {
         let mut bus = super::super::AltairBus::default();
         bus.cycle_drive_s100_t_state(
-            Some(0x1234), Some(0xa2), Some(0xa2), false, true, false, false,
+            Some(0x1234),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.raw_s100_status_word(), 0xa2);
+        assert_eq!(bus.raw_cpu_data(), Some(0xa2));
+        assert_eq!(bus.raw_s100_data_in(), None);
+        assert_eq!(bus.raw_s100_data_out(), Some(0xa2));
+        assert_eq!(bus.raw_panel_data(), 0x00);
         assert!(!bus.raw_s100_inte());
         assert!(!bus.raw_s100_prot());
         assert!(!bus.raw_s100_wait());
