@@ -43,9 +43,36 @@ fn panel_lamp_integrator_remains_presentation_only() {
 }
 
 #[test]
-fn remaining_cpu_run_and_inte_mirrors_are_explicit_debt_not_hidden() {
+fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
+    assert!(
+        !CYCLE.contains("sync_machine_cpu"),
+        "Cycle must never restore the legacy Cpu8080 mirror synchronization path"
+    );
+    assert!(
+        !CYCLE.contains("machine.cpu"),
+        "Cycle backend must not read or write AltairMachine.cpu"
+    );
+    assert!(
+        !CYCLE.contains("cycle_registers_from_fast"),
+        "Cycle power-on state must not be seeded through the Fast CPU"
+    );
+    assert!(
+        CYCLE.contains("random_power_on_cpu_state"),
+        "Cycle should own its undefined power-on CPU sample"
+    );
+}
+
+#[test]
+fn cycle_memory_configuration_bypasses_fast_machine_cpu_helper() {
+    assert!(CYCLE_HOST.contains("machine_mut().bus.configure_memory(size, init)"));
+    assert!(!CYCLE_HOST.contains("machine_mut().configure_memory(size, init)"));
+}
+
+#[test]
+fn remaining_state_debt_is_documented_without_claiming_removed_mirrors() {
     let doc = include_str!("../docs/STATE_SOURCES.md");
-    assert!(doc.contains("Cycle CPU mirror"));
-    assert!(doc.contains("RUN latch mirror"));
-    assert!(doc.contains("INTE mirror"));
+    assert!(doc.contains("RUN latch duplication"));
+    assert!(doc.contains("CPU/chassis type composition"));
+    assert!(doc.contains("There is no `sync_machine_cpu()` path"));
+    assert!(doc.contains("previous `AltairBus::cpu_inte` duplicate has already been removed"));
 }
