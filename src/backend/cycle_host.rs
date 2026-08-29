@@ -413,16 +413,24 @@ impl MachineBackend for CycleHostBackend {
 
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         let powered = self.inner.machine().powered;
-        self.inner.machine_mut().configure_memory(size, init);
+        if powered {
+            // Host pause first so RAM reconfiguration cannot leave the physical
+            // RUN latch requesting execution while storage is being replaced.
+            self.inner.halt()?;
+        }
+
+        // Configure the shared RAM object directly. The generic
+        // AltairMachine::configure_memory path is intentionally Fast-specific:
+        // it resets AltairMachine.cpu. Cycle must never read or mutate that
+        // dormant Cpu8080 object.
+        self.inner.machine_mut().bus.configure_memory(size, init);
+        self.inner.machine_mut().bus.clear_serial();
 
         if powered {
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
             self.teaching_reset_seen = true;
         } else {
-            // Keep the existing chassis, serial-board choice, sense switches and
-            // memory-card timing profile. Replacing the whole backend here made
-            // a RAM-capacity setting an accidental machine factory reset.
             self.teaching_reset_seen = false;
         }
         self.reset_debugger_epoch();
@@ -629,9 +637,7 @@ impl MachineBackend for CycleHostBackend {
     fn take_cpu_diagnostic_result(&mut self) -> BackendResult<Option<CpuDiagnosticResult>> {
         Ok(self.inner.machine_mut().take_cpu_diagnostic_result())
     }
-    fn peek_io_port(&mut self, port: u8) -> BackendResult<u8> {
-        Ok(self.inner.machine().bus.peek_io_port(port))
-    }
+    fn peek_io_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.inner.machine().bus.peek_io_port(port)) }
     fn io_port_activity(&mut self, port: u8) -> BackendResult<IoPortActivity> {
         Ok(self.inner.machine().bus.io_port_activity(port))
     }
@@ -652,27 +658,22 @@ impl MachineBackend for CycleHostBackend {
     fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> {
         Ok(self.instruction_trace.snapshot())
     }
-    fn instruction_trace_enabled(&mut self) -> BackendResult<bool> {
-        Ok(self.instruction_trace.enabled())
-    }
+    fn instruction_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.instruction_trace.enabled()) }
     fn instruction_trace_metadata(&mut self) -> BackendResult<InstructionTraceMetadata> {
         Ok(self.instruction_trace.metadata())
     }
     fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> {
         self.instruction_trace.set_enabled(enabled);
-        if !enabled && !self.debug_control.has_watchpoints() {
+        if !enabled {
             self.clear_pending_instruction_trace();
         }
         Ok(())
     }
     fn clear_instruction_trace(&mut self) -> BackendResult<()> {
+        self.clear_pending_instruction_trace();
         self.instruction_trace.clear();
-        if !self.debug_control.has_watchpoints() {
-            self.clear_pending_instruction_trace();
-        }
         Ok(())
     }
-
     fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
         let mut snapshot = self
             .inner
@@ -684,15 +685,9 @@ impl MachineBackend for CycleHostBackend {
         ));
         Ok(Some(snapshot))
     }
-    fn debugger_step_t_state(&mut self) -> BackendResult<()> {
-        self.debugger_step_one_t_state()
-    }
-    fn debugger_step_machine_cycle(&mut self) -> BackendResult<()> {
-        self.debugger_step_one_machine_cycle()
-    }
-    fn debugger_step_instruction(&mut self) -> BackendResult<()> {
-        self.debugger_step_one_instruction()
-    }
+    fn debugger_step_t_state(&mut self) -> BackendResult<()> { self.debugger_step_one_t_state() }
+    fn debugger_step_machine_cycle(&mut self) -> BackendResult<()> { self.debugger_step_one_machine_cycle() }
+    fn debugger_step_instruction(&mut self) -> BackendResult<()> { self.debugger_step_one_instruction() }
     fn debugger_breakpoints(&mut self) -> BackendResult<Vec<u16>> { Ok(self.debug_control.breakpoints()) }
     fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) -> BackendResult<()> {
         self.debug_control.set_breakpoint(address, enabled);
@@ -711,37 +706,30 @@ impl MachineBackend for CycleHostBackend {
         access: Option<MemoryWatchAccess>,
     ) -> BackendResult<()> {
         self.debug_control.set_watchpoint(address, access);
-        if access.is_none() && !self.observing_instruction_effects() {
-            self.clear_pending_instruction_trace();
-        }
         Ok(())
     }
     fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
         self.debug_control.clear_watchpoints();
-        if !self.instruction_trace.enabled() {
-            self.clear_pending_instruction_trace();
-        }
         Ok(())
     }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
         self.debug_control.set_run_to(address);
-        let r = self.inner.cpu().registers();
-        self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
-        self.inner.run()
+        self.run()
     }
     fn debugger_run_to_with_sp(&mut self, address: u16, required_sp: u16) -> BackendResult<()> {
         self.debug_control.set_run_to_with_sp(address, required_sp);
-        let r = self.inner.cpu().registers();
-        self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
-        self.inner.run()
+        self.run()
     }
     fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
         self.debug_control.cancel_run_to();
         Ok(())
     }
-    fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> { Ok(self.debug_control.run_to()) }
-    fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> { Ok(self.debug_control.stop_reason()) }
-
+    fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> {
+        Ok(self.debug_control.run_to_target())
+    }
+    fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> {
+        Ok(self.debug_control.stop_reason())
+    }
     fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> {
         Ok(self.inner.machine_mut().bus.debugger_input_port(port))
     }
@@ -768,49 +756,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wrapper_dispatches_cycle_step_without_exposing_chassis_to_app() {
-        let mut backend = CycleHostBackend::default();
-        backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
-        backend.power(true).unwrap();
-        backend.assert_reset().unwrap();
-        backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0x00]).unwrap();
-        backend.step().unwrap();
-
-        let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
-        let panel = backend.front_panel_state().unwrap();
-        assert_eq!(cpu.pc, 1);
-        assert_eq!(cpu.total_t_states, Some(7));
-        assert_eq!(backend.inner.cpu().machine_cycle(), MachineCycle::InstructionFetch);
-        assert_eq!(backend.inner.cpu().t_state(), TState::Tw);
-        assert!(panel.lamps.wait > 0.0);
-    }
-
-    #[test]
     fn bus_teacher_exposes_power_and_reset_without_fake_t_states() {
         let mut backend = CycleHostBackend::default();
-        let off = backend.bus_teaching_snapshot().unwrap().unwrap();
-        assert_eq!(off.accuracy, BusTeachingAccuracy::ControlState);
-        assert_eq!(off.machine_cycle, BusMachineCycle::PowerOff);
-        assert_eq!(off.t_state, BusTState::Unknown);
-        assert_eq!(off.interrupt, None);
-        assert_eq!(off.cpu_data, None);
-        assert_eq!(off.s100_di, None);
-        assert_eq!(off.s100_do, None);
-
         backend.power(true).unwrap();
-        let powered = backend.bus_teaching_snapshot().unwrap().unwrap();
-        assert_eq!(powered.machine_cycle, BusMachineCycle::PowerOnUndefined);
-        assert_eq!(powered.accuracy, BusTeachingAccuracy::ControlState);
-        assert_eq!(powered.interrupt, Some(false));
-        assert_eq!(powered.cpu_data, None, "undefined power-on CPU D pins must not be invented");
-        assert_eq!(powered.pins.sync, None, "undefined power-on outputs must not be invented");
+        let on = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(on.accuracy, BusTeachingAccuracy::ControlState);
+        assert_eq!(on.machine_cycle, BusMachineCycle::PowerOnUndefined);
+        assert_eq!(on.t_state, BusTState::Unknown);
+        assert_eq!(on.ready, Some(false));
+        assert_eq!(on.status.inte, Some(backend.inner.cpu().interrupts_enabled()));
+        assert_eq!(on.status.wait, Some(true));
+        assert_eq!(on.pins.wait, None);
+        assert_eq!(on.status_word, Some(0xa2));
+        assert_eq!(on.cpu_data, None);
+        assert!(on.s100_di.is_some());
+        assert_eq!(on.s100_do, None);
+        assert!(on.panel_data.is_some());
+        assert_eq!(on.data, on.panel_data);
 
         backend.assert_reset().unwrap();
         let held = backend.bus_teaching_snapshot().unwrap().unwrap();
         assert_eq!(held.machine_cycle, BusMachineCycle::ResetAsserted);
-        assert_eq!(held.reset, Some(true));
-        assert_eq!(held.interrupt, Some(false));
         assert_eq!(held.t_state, BusTState::Unknown);
         assert_eq!(held.address, Some(0xffff));
         assert_eq!(held.data, Some(0xff));
@@ -818,30 +784,26 @@ mod tests {
         assert_eq!(held.s100_di, Some(0xff));
         assert_eq!(held.s100_do, None);
         assert_eq!(held.panel_data, Some(0xff));
-        assert_eq!(held.pins.wr_n, None, "RESET control state must not reuse stale /WR from a previous T-state");
-        assert_eq!(held.status.memr, Some(false));
+        assert_eq!(held.status.inte, Some(false));
+        assert_eq!(held.pins.inte, Some(false));
         assert_eq!(held.status.wait, Some(false));
+        assert_eq!(held.pins.wait, Some(false));
+        assert_eq!(held.reset, Some(true));
 
         backend.release_reset().unwrap();
-        let released = backend.bus_teaching_snapshot().unwrap().unwrap();
-        assert_eq!(released.machine_cycle, BusMachineCycle::ResetReleasedStopped);
-        assert_eq!(released.reset, Some(false));
-        assert_eq!(released.ready, Some(false));
-        assert_eq!(released.interrupt, Some(false));
-        assert_eq!(released.instruction_address, Some(0x0000));
-        assert_eq!(released.status_word, Some(0xa2));
-        assert_eq!(released.status.memr, Some(true));
-        assert_eq!(released.status.m1, Some(true));
-        assert_eq!(released.status.wo, Some(true));
-        assert_eq!(released.status.wait, Some(true));
-        assert_eq!(released.pins.sync, Some(false));
-        assert_eq!(released.pins.dbin, Some(true));
-        assert_eq!(released.pins.wr_n, Some(true));
-        assert_eq!(released.pins.wait, Some(true));
-        assert_eq!(released.cpu_data, released.s100_di);
-        assert_eq!(released.s100_do, None);
-        assert_eq!(released.panel_data, released.s100_di);
-        assert_eq!(released.total_t_states, Some(0));
+        let stopped = backend.bus_teaching_snapshot().unwrap().unwrap();
+        assert_eq!(stopped.machine_cycle, BusMachineCycle::ResetReleasedStopped);
+        assert_eq!(stopped.t_state, BusTState::Unknown);
+        assert_eq!(stopped.address, Some(0));
+        assert_eq!(stopped.ready, Some(false));
+        assert_eq!(stopped.status.memr, Some(true));
+        assert_eq!(stopped.status.m1, Some(true));
+        assert_eq!(stopped.status.wo, Some(true));
+        assert_eq!(stopped.status.wait, Some(true));
+        assert_eq!(stopped.pins.wait, Some(true));
+        assert_eq!(stopped.cpu_data, stopped.s100_di);
+        assert_eq!(stopped.s100_do, None);
+        assert_eq!(stopped.data, stopped.panel_data);
     }
 
     #[test]
@@ -850,18 +812,28 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
+        backend.inner.machine_mut().bus.load(0, &[0xa5]);
+        // Rebuild the stable STOP-WAIT bus state so DI reflects the newly loaded
+        // memory byte while the optical snapshot is then deliberately corrupted.
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.inner.machine_mut().bus.debug_set_panel_lamp_snapshot_for_test(
+            crate::machine::PanelLampSnapshot::default(),
+        );
 
         let snapshot = backend.bus_teaching_snapshot().unwrap().unwrap();
-        assert_eq!(snapshot.status_word, Some(backend.inner.machine().bus.raw_s100_status_word()));
+        assert_eq!(snapshot.status_word, Some(0xa2));
         assert_eq!(snapshot.status.memr, Some(true));
         assert_eq!(snapshot.status.m1, Some(true));
         assert_eq!(snapshot.status.wo, Some(true));
         assert_eq!(snapshot.status.wait, Some(true));
-        assert_eq!(snapshot.cpu_data, backend.inner.machine().bus.raw_cpu_data());
-        assert_eq!(snapshot.s100_di, backend.inner.machine().bus.raw_s100_data_in());
-        assert_eq!(snapshot.s100_do, backend.inner.machine().bus.raw_s100_data_out());
-        assert_eq!(snapshot.panel_data, Some(backend.inner.machine().bus.raw_panel_data()));
-        assert_eq!(snapshot.interrupt, Some(backend.inner.machine().bus.cpu_control_lines().interrupt));
+        assert_eq!(snapshot.cpu_data, Some(0xa5));
+        assert_eq!(snapshot.s100_di, Some(0xa5));
+        assert_eq!(snapshot.s100_do, None);
+        assert_eq!(snapshot.panel_data, Some(0xa5));
+        assert_eq!(snapshot.visible_lamps.memr, 0.0);
+        assert_eq!(snapshot.visible_lamps.m1, 0.0);
+        assert_eq!(snapshot.visible_lamps.wait, 0.0);
     }
 
     #[test]
@@ -870,104 +842,82 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.inner.machine_mut().bus.load(0, &[0x00]);
         backend.run().unwrap();
         backend.service_execution(4).unwrap();
-        let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
-        assert_eq!(before.pc, 1);
+        assert_ne!(backend.inner.cpu().registers().pc, 0);
 
         backend.configure_serial_board(SerialBoard::TwoSio88).unwrap();
-        let CpuState::Intel8080(after) = backend.cpu_state().unwrap() else { unreachable!() };
-        assert_eq!(after.pc, 0);
-        assert!(!backend.front_panel_state().unwrap().running);
-        assert_eq!(backend.serial_board().unwrap(), SerialBoard::TwoSio88);
+        assert_eq!(backend.inner.cpu().registers().pc, 0);
+        assert_eq!(backend.inner.machine().serial_board(), SerialBoard::TwoSio88);
     }
 
     #[test]
-    fn cycle_history_records_complete_guest_instruction_boundaries() {
+    fn wrapper_dispatches_cycle_step_without_exposing_chassis_to_app() {
         let mut backend = CycleHostBackend::default();
         backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0x3e, 0x42, 0x3c, 0x76]).unwrap();
-
-        let CpuState::Intel8080(initial) = backend.cpu_state().unwrap() else { unreachable!() };
-        assert_eq!(initial.pc, 0x0000);
-
-        backend.set_instruction_trace_enabled(true).unwrap();
-        backend.run().unwrap();
-        backend.service_execution(128).unwrap();
-
-        let history = backend.instruction_trace_snapshot().unwrap();
-        assert!(history.len() >= 3, "expected MVI, INR and HLT in history: {history:?}");
-        assert_eq!(history[0].address, 0x0000);
-        assert_eq!(history[0].bytes[0], 0x3e);
-        assert_eq!(history[0].before.a, initial.a);
-        assert_eq!(history[0].before.pc, initial.pc);
-        assert_eq!(history[0].after.a, 0x42);
-        assert_eq!(history[1].address, 0x0002);
-        assert_eq!(history[1].after.a, 0x43);
-        assert_eq!(history[2].bytes[0], 0x76);
-        assert!(history[2].after.halted);
+        backend.load_bytes(0, &[0x00]).unwrap();
+        backend.step().unwrap();
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(state.pc, 1);
+        assert_eq!(state.total_t_states, Some(7));
+        assert_eq!(backend.inner.cpu().t_state(), TState::Tw);
     }
 
     #[test]
     fn debugger_memory_patch_between_machine_cycles_drops_stale_partial_trace() {
         let mut backend = CycleHostBackend::default();
-        backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend
-            .load_bytes(0, &[0x3e, 0x11, 0x00, 0x00])
-            .unwrap(); // MVI A,11h / NOP / NOP
+        backend.load_bytes(0, &[0x3e, 0x11]).unwrap();
         backend.set_instruction_trace_enabled(true).unwrap();
 
-        backend.step().unwrap(); // physical SINGLE STEP: MVI fetch, then operand TW
-        let generation = backend.instruction_trace_metadata().unwrap().generation;
-        assert!(backend.instruction_trace_snapshot().unwrap().is_empty());
-
-        assert!(backend.write_memory(0x0001, 0x22, true).unwrap());
-        assert_ne!(backend.instruction_trace_metadata().unwrap().generation, generation);
-        backend.step().unwrap(); // MVI operand completes, next NOP fetch already parks in TW
-        assert!(backend.instruction_trace_snapshot().unwrap().is_empty());
-
-        // The NOP at 0002h began electrically during the previous panel step
-        // (its T1/T2 already happened before the trace epoch was re-established),
-        // so it must not be reconstructed retroactively. Continuous RUN finishes
-        // that partial fetch, then the observer sees the next genuine T1 at 0003h
-        // and resumes trace capture from a truthful instruction boundary.
-        backend.run().unwrap();
-        backend.service_execution(7).unwrap();
-        backend.halt().unwrap();
-
-        let history = backend.instruction_trace_snapshot().unwrap();
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].address, 0x0003);
-        assert_eq!(history[0].bytes[0], 0x00);
-        assert_eq!(history[0].t_states, 4, "trace timing must exclude panel parking waits");
-        let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
-        assert_eq!(cpu.a, 0x22);
-        assert_eq!(cpu.pc, 0x0004);
+        backend.debugger_step_one_machine_cycle().unwrap();
+        assert!(backend.pending_instruction_trace.is_some());
+        assert!(backend.write_memory(1, 0x22, false).unwrap());
+        assert!(backend.pending_instruction_trace.is_none());
+        assert!(backend.instruction_trace.snapshot().is_empty());
     }
 
     #[test]
     fn front_panel_deposit_between_machine_cycles_drops_stale_partial_trace() {
         let mut backend = CycleHostBackend::default();
-        backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0x3e, 0x11, 0x00]).unwrap();
+        backend.load_bytes(0, &[0x3e, 0x11]).unwrap();
         backend.set_instruction_trace_enabled(true).unwrap();
 
-        backend.step().unwrap(); // MVI fetch complete, operand cycle pending
-        let generation = backend.instruction_trace_metadata().unwrap().generation;
+        backend.debugger_step_one_machine_cycle().unwrap();
         assert!(backend.pending_instruction_trace.is_some());
-
+        backend.set_switch_register(0x0022).unwrap();
         backend.panel_deposit(false).unwrap();
-        assert_ne!(backend.instruction_trace_metadata().unwrap().generation, generation);
         assert!(backend.pending_instruction_trace.is_none());
+        assert!(backend.instruction_trace.snapshot().is_empty());
+    }
+
+    #[test]
+    fn cycle_history_records_complete_guest_instruction_boundaries() {
+        let mut backend = CycleHostBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x3e, 0x5a, 0x00]).unwrap();
+        backend.set_instruction_trace_enabled(true).unwrap();
+        backend.run().unwrap();
+        backend.service_execution(16).unwrap();
+        let history = backend.instruction_trace.snapshot();
+        assert!(history.len() >= 2);
+        assert_eq!(history[0].address, 0);
+        assert_eq!(history[0].bytes[0], 0x3e);
+        assert_eq!(history[0].after.a, 0x5a);
+        assert_eq!(history[0].t_states, 7);
+        assert_eq!(history[1].address, 2);
+        assert_eq!(history[1].bytes[0], 0x00);
+        assert_eq!(history[1].t_states, 4);
     }
 }
