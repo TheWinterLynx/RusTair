@@ -101,9 +101,12 @@ replace_once(
         let inte = signals.inte;
         Fast8080S100Adapter::for_each_front_panel_jam_sample(''',
 )
-replace_once(
-    "src/machine/memory.rs",
-    '''        self.cpu_inte = inte;
-        self.s100.drive_cpu_t_state(''',
-    '''        self.s100.drive_cpu_t_state(''',
-)
+
+# This assignment sits immediately before the canonical drive call, so the
+# generic "new text already exists" shortcut cannot be used here: the new text
+# is necessarily a substring of the old block.
+p = Path("src/machine/memory.rs")
+text = p.read_text(encoding="utf-8")
+legacy_assignment = "        self.cpu_inte = inte;\n"
+if legacy_assignment in text:
+    p.write_text(text.replace(legacy_assignment, "", 1), encoding="utf-8")
