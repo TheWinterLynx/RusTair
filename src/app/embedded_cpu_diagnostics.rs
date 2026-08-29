@@ -287,8 +287,15 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     let mut machine = baseline_machine(engine, &[0x00; 32]).expect("selected Rust backend already created above");
     let wait_when_stopped = machine.front_panel_state().lamps.wait > 0.5;
     machine.set_running(true);
+    let wait_before_run_clock = machine.front_panel_state().lamps.wait > 0.5;
+    machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let ready_when_running = machine.front_panel_state().lamps.wait < 0.5;
+    let wait_after_run_clock = machine.front_panel_state().lamps.wait > 0.5;
+    let run_wait_transition_ok = match engine {
+        EmulationEngine::RustCycleAccurate8080 => wait_before_run_clock && !wait_after_run_clock,
+        _ => !wait_before_run_clock && !wait_after_run_clock,
+    };
+
     machine.request_hold(true);
     machine.run_cycles(16);
     machine.commit_panel_activity(Duration::from_secs(1));
@@ -296,16 +303,36 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     let pc_at_hlda = machine.intel8080_state().pc;
     machine.run_cycles(16);
     let cpu_frozen = machine.intel8080_state().pc == pc_at_hlda;
+
     machine.request_hold(false);
-    machine.set_running(false);
+    let hlda_before_release_clock = machine.front_panel_state().lamps.hlda > 0.5;
+    machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let hlda_released = machine.front_panel_state().lamps.hlda < 0.5;
+    let hlda_after_release_clock = machine.front_panel_state().lamps.hlda > 0.5;
+    let hold_release_transition_ok = match engine {
+        EmulationEngine::RustCycleAccurate8080 => hlda_before_release_clock && !hlda_after_release_clock,
+        _ => !hlda_before_release_clock && !hlda_after_release_clock,
+    };
+    machine.set_running(false);
+
     checks.push(ControlCheck {
         name: "READY/WAIT + HOLD/HLDA baseline",
-        passed: wait_when_stopped && ready_when_running && hlda_asserted && cpu_frozen && hlda_released,
+        passed: wait_when_stopped
+            && run_wait_transition_ok
+            && hlda_asserted
+            && cpu_frozen
+            && hold_release_transition_ok,
         detail: format!(
-            "engine={} · WAIT@STOP={} · READY@RUN={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA released={}",
-            engine.label(), wait_when_stopped, ready_when_running, hlda_asserted, pc_at_hlda, cpu_frozen, hlda_released
+            "engine={} · WAIT@STOP={} · WAIT before RUN clock={} · WAIT after RUN clock={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA before release clock={} · HLDA after release clock={}",
+            engine.label(),
+            wait_when_stopped,
+            wait_before_run_clock,
+            wait_after_run_clock,
+            hlda_asserted,
+            pc_at_hlda,
+            cpu_frozen,
+            hlda_before_release_clock,
+            hlda_after_release_clock
         ),
     });
 
