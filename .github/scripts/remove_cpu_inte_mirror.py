@@ -101,3 +101,9 @@ replace_once(
         let inte = signals.inte;
         Fast8080S100Adapter::for_each_front_panel_jam_sample(''',
 )
+replace_once(
+    "src/machine/memory.rs",
+    '''        self.cpu_inte = inte;
+        self.s100.drive_cpu_t_state(''',
+    '''        self.s100.drive_cpu_t_state(''',
+)
