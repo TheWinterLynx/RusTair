@@ -13,7 +13,7 @@ pub enum BusTeachingAccuracy {
 impl BusTeachingAccuracy {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Exact => "EXACT",
+            Self::Exact => "EXACT T-STATE SAMPLE",
             Self::ControlState => "CONTROL STATE / NO T-STATE SAMPLE",
             Self::Reconstructed => "RECONSTRUCTED / APPROXIMATE",
         }
@@ -184,6 +184,9 @@ pub struct BusTeachingSnapshot {
     pub status_word: Option<u8>,
     pub pins: BusCpuPins,
     pub status: BusStatusLines,
+    /// For `Exact`, these are CPU input levels captured with the exact T-state.
+    /// They are intentionally historical if the host/debugger changes chassis
+    /// controls after the tick without clocking another CPU T-state.
     pub ready: Option<bool>,
     pub hold: Option<bool>,
     pub reset: Option<bool>,
@@ -240,5 +243,10 @@ mod tests {
     #[test]
     fn unknown_cycle_label_does_not_claim_reconstruction_for_exact_backend_control_states() {
         assert_eq!(BusMachineCycle::Unknown.label(), "UNSAMPLED / UNKNOWN");
+    }
+
+    #[test]
+    fn exact_accuracy_label_is_explicitly_a_sample() {
+        assert_eq!(BusTeachingAccuracy::Exact.label(), "EXACT T-STATE SAMPLE");
     }
 }
