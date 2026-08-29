@@ -171,13 +171,13 @@ impl RusTairApp {
         });
         match snapshot.map(|snapshot| snapshot.accuracy) {
             Some(BusTeachingAccuracy::ControlState) => ui.small(
-                "POWER/RESET/READY/PINT/S-100 control state is known. Stable electrical levels are shown where that lifecycle state determines them; the Teacher never invents a numbered CPU T-state just to animate the diagram.",
+                "POWER/RESET/READY/PINT/S-100 control state is known. CPU D0-D7, S-100 DI and S-100 DO are separate electrical domains; stable package levels are shown only where the lifecycle state determines them without inventing a numbered T-state.",
             ),
             _ if capabilities.exact_t_state_timing => ui.small(
-                "Cycle Accurate shows the last real CPU-board T-state sample. Machine cycle, CPU outputs, latched S-100 state and READY/INT(PINT)/HOLD/RESET are the levels captured for that displayed tick; later host/chassis control changes do not rewrite the sample.",
+                "Cycle Accurate shows the last real CPU-board T-state sample. CPU D0-D7, S-100 DI0-DI7, S-100 DO0-DO7, status and CPU/control pins are captured as separate domains from the canonical backplane model.",
             ),
             _ => ui.small(
-                "Fast 8080 is instruction-level: address/data and visible lamps are useful observations, while exact T-state/pin/status-latch values remain unknown.",
+                "Fast 8080 is instruction-level: front-panel address/data and visible lamps are useful observations, while exact T-state, CPU D and directional S-100 DI/DO values remain unknown.",
             ),
         };
     }
@@ -300,7 +300,10 @@ impl RusTairApp {
             )
         };
         let address = Self::hex16(snapshot.address);
-        let data = Self::hex8(snapshot.data);
+        let cpu_data = Self::hex8(snapshot.cpu_data);
+        let s100_di = Self::hex8(snapshot.s100_di);
+        let s100_do = Self::hex8(snapshot.s100_do);
+        let panel_data = Self::hex8(snapshot.panel_data);
         let status = Self::hex8(snapshot.status_word);
         let total_t_states = snapshot
             .total_t_states
@@ -318,14 +321,9 @@ impl RusTairApp {
             "T-state",
             snapshot.t_state.label(),
         );
-        Self::draw_timing_row(ui, "S-100 address", &address, "S-100 data", &data);
-        Self::draw_timing_row(
-            ui,
-            "Latched status",
-            &status,
-            "Complete",
-            Self::bool_signal(snapshot.instruction_complete),
-        );
+        Self::draw_timing_row(ui, "S-100 address", &address, "Status", &status);
+        Self::draw_timing_row(ui, "CPU D0-D7", &cpu_data, "S-100 DI", &s100_di);
+        Self::draw_timing_row(ui, "S-100 DO", &s100_do, "Panel DATA", &panel_data);
         Self::draw_timing_row(
             ui,
             "Total T-states",
@@ -333,6 +331,14 @@ impl RusTairApp {
             "In instruction",
             &instruction_t_states,
         );
+        Self::draw_timing_row(
+            ui,
+            "Complete",
+            Self::bool_signal(snapshot.instruction_complete),
+            "",
+            "",
+        );
+        ui.small("DI means data into/toward the processor; DO means data out/away from it. CPU D0-D7 is the 8080 package bus. Panel DATA is kept separate so front-panel presentation/retention is never used as CPU pin truth.");
     }
 
     fn draw_pin_group(
@@ -452,7 +458,7 @@ impl RusTairApp {
             );
         });
         ui.small(
-            "RAW is the S-100 status/control state captured with the displayed observation. INT/SINTA is the CPU's interrupt-acknowledge status; it is not PINT. LED is optical persistence, so it may remain non-zero after RAW changes. W/O ON means read/input; OFF means write/output.",
+            "RAW is the S-100 status/control state captured with the displayed observation. INT/SINTA is the CPU's interrupt-acknowledge status; it is not PINT. LED is optical persistence, so it may remain non-zero after RAW changes. DATA presentation is likewise separate from CPU D/DI/DO truth. W/O ON means read/input; OFF means write/output.",
         );
     }
 
@@ -464,15 +470,15 @@ impl RusTairApp {
             ),
             BusMachineCycle::PowerOnUndefined => {
                 lines.push("POWER ON: the +5 V, +12 V and -5 V rails and CPU clocks are present.".into());
-                lines.push("Before RESET, the Intel 8080 power-on internal state is undefined; RusTair deliberately does not turn that uncertainty into fake pin values.".into());
+                lines.push("Before RESET, the Intel 8080 power-on internal state is undefined; RusTair deliberately does not turn that uncertainty into fake package pin values.".into());
             }
             BusMachineCycle::ResetAsserted => {
                 lines.push("RESET is HIGH / ASSERTED. The CPU reset path forces PC to 0000h, disables INTE and leaves normal instruction execution suspended.".into());
-                lines.push("The Altair Display/Control board drives the documented RESET checkout display (ADDRESS/DATA all ones, status lamps off); those S-100 values are not mislabeled as CPU A/D output pins.".into());
+                lines.push("The Altair Display/Control board drives the documented RESET checkout display (ADDRESS/DATA all ones, status lamps off); those chassis/display values are not mislabeled as CPU A/D output pins.".into());
             }
             BusMachineCycle::ResetReleasedStopped => {
                 lines.push("RESET is LOW again. The CPU is prepared at PC=0000h while the RUN/STOP latch remains STOP, so READY is LOW and the machine is held in the read wait associated with the first M1 instruction fetch.".into());
-                lines.push("STOP-WAIT is electrically stable even though no numbered T-state sample is fabricated: the CPU owns ADDRESS at 0000h, DBIN remains HIGH through the wait, memory drives the current S-100 DATA byte onto D0-D7, /WR is HIGH/inactive, SYNC is LOW and WAIT is HIGH.".into());
+                lines.push("STOP-WAIT is electrically stable even without inventing a numbered T-state: memory drives the opcode byte on S-100 DI, the CPU-board input buffer presents it on 8080 D0-D7 while DBIN is active, and DO is not the read-data source.".into());
             }
             BusMachineCycle::ResetReleasedRunning => {
                 lines.push("RESET is LOW and the RUN latch is active. The processor is ready to begin at PC=0000h.".into());
@@ -482,29 +488,31 @@ impl RusTairApp {
                 lines.push("M1 fetch: the processor is obtaining an opcode from memory.".into())
             }
             BusMachineCycle::MemoryRead => lines.push(
-                "Memory read: the processor is obtaining an operand/data byte from memory.".into(),
+                "Memory read: memory drives the operand/data byte on S-100 DI toward the processor board."
+                    .into(),
             ),
             BusMachineCycle::MemoryWrite => lines.push(
-                "Memory write: the processor is transferring a data byte to memory.".into(),
+                "Memory write: the processor-board output path drives the byte on S-100 DO toward memory."
+                    .into(),
             ),
             BusMachineCycle::StackRead => lines.push(
-                "Stack read: the processor is reading through SP, typically for POP/RET.".into(),
+                "Stack read: data returns through S-100 DI while the processor reads through SP, typically for POP/RET.".into(),
             ),
             BusMachineCycle::StackWrite => lines.push(
-                "Stack write: the processor is writing through SP, typically for PUSH/CALL/RST."
+                "Stack write: CPU data leaves the processor board through S-100 DO, typically for PUSH/CALL/RST."
                     .into(),
             ),
             BusMachineCycle::InputRead => lines.push(
-                "Input read: the address bus encodes an I/O port and the peripheral supplies the data byte."
+                "Input read: the peripheral supplies the byte on S-100 DI and the CPU-board input buffer presents it to D0-D7."
                     .into(),
             ),
             BusMachineCycle::OutputWrite => lines.push(
-                "Output write: the address bus encodes an I/O port and the processor drives the output byte."
+                "Output write: the 8080 byte passes through the CPU-board output buffer onto S-100 DO toward the selected port."
                     .into(),
             ),
             BusMachineCycle::InterruptAck | BusMachineCycle::InterruptAckWhileHalt => {
                 lines.push("Interrupt acknowledge: PINT/INT was presented to the CPU while INTE allowed acceptance. The CPU clears INTE and emits the S-100 INT/SINTA acknowledge status; these are distinct electrical signals.".into());
-                lines.push("On the direct Altair interrupt path the interrupting source drives FFh (RST 7) onto the data bus during INTA, causing the CPU to push the return PC and vector to 0038h.".into());
+                lines.push("On the direct Altair interrupt path the selected source provides FFh (RST 7) for the CPU to consume, causing it to push the return PC and vector to 0038h.".into());
             }
             BusMachineCycle::HaltAck => {
                 lines.push("HALT acknowledge: the CPU has entered its halted bus sequence.".into())
@@ -526,7 +534,7 @@ impl RusTairApp {
         }
         match snapshot.t_state {
             BusTState::T1 => lines.push(
-                "T1: address is presented and SYNC/status identify the new machine cycle.".into(),
+                "T1: address is presented and the 8080 status byte appears on its D bus/CPU-board output path while SYNC identifies the new machine cycle.".into(),
             ),
             BusTState::T2 => lines.push(
                 "T2: bus control settles; READY determines whether execution can continue or must enter TW."
@@ -536,7 +544,8 @@ impl RusTairApp {
                 "TW: the CPU is waiting because READY was not accepted high for this transfer.".into(),
             ),
             BusTState::T3 => lines.push(
-                "T3: the memory/I/O data transfer is sampled or committed.".into(),
+                "T3: the memory/I/O data transfer is sampled or committed on its actual DI/DO direction."
+                    .into(),
             ),
             BusTState::T4 | BusTState::T5 => lines.push(format!(
                 "{}: internal completion work for the current instruction/fetch cycle.",
@@ -550,11 +559,20 @@ impl RusTairApp {
                 "THOLD: the processor has relinquished the bus after acknowledging HOLD.".into(),
             ),
             BusTState::Unknown if snapshot.accuracy == BusTeachingAccuracy::ControlState => {
-                lines.push("No numbered T-state sample is shown because this is a control/lifecycle observation; stable bus and pin levels may still be electrically determined without inventing a clock step.".into())
+                lines.push("No numbered T-state sample is shown because this is a control/lifecycle observation; stable chassis and package levels may still be electrically determined without inventing a clock step.".into())
             }
             BusTState::Unknown => lines.push(
                 "Exact T-state is unavailable in the instruction-level Fast core.".into(),
             ),
+        }
+        if snapshot.s100_di.is_some() {
+            lines.push("S-100 DI is driven in this observation: the active byte is travelling toward the processor board. This is distinct from DO and from front-panel optical persistence.".into());
+        }
+        if snapshot.s100_do.is_some() {
+            lines.push("S-100 DO is driven in this observation: the active byte is travelling away from the processor board. DO is not projected onto the front-panel DATA display or CPU pins by assumption.".into());
+        }
+        if snapshot.cpu_data.is_none() && snapshot.accuracy == BusTeachingAccuracy::Exact {
+            lines.push("8080 D0-D7 are electrically released/HI-Z in this exact T-state even if another chassis/display domain still retains a byte.".into());
         }
         if snapshot.interrupt == Some(true) {
             lines.push("INT/PINT is HIGH in the displayed observation: an S-100 device is actively requesting service from the 8080. This request can remain asserted after acknowledge until the device's level-sensitive condition is removed.".into());
