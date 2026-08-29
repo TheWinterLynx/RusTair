@@ -343,7 +343,7 @@ impl IoDevices {
     }
 
     pub(super) fn port1_tx_front(&self) -> Option<u8> {
-        self.serial[1].tx_front().copied()
+        self.serial[1].tx_front()
     }
 
     pub(super) fn port1_tx_complete(&mut self) -> Option<u8> {
