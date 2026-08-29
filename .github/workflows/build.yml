@@ -7,7 +7,7 @@ on:
       - agent/cycle-hardware-fidelity-audit
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-${{ github.ref }}
@@ -18,6 +18,19 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Complete pending dual-state migration
+        shell: pwsh
+        run: |
+          python .github/scripts/complete_dual_state.py
+          if (git status --porcelain) {
+            git config user.name "TheWinterLynx"
+            git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
+            git add src/backend/cycle.rs src/backend/cycle_host.rs src/backend/mod.rs src/app/ui/bus_teacher.rs tests/bus_teaching.rs tests/bus_teacher_layout.rs
+            git commit -m "Complete dual-state Teacher migration"
+            git push origin HEAD:agent/cycle-hardware-fidelity-audit
+            Start-Sleep -Seconds 10
+          }
 
       - uses: dtolnay/rust-toolchain@stable
 
