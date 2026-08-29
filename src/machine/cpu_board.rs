@@ -61,14 +61,13 @@ pub(crate) struct S100CpuSample {
     pub hlda: bool,
 }
 
-/// S-100/front-panel control lines presented to a CPU board.
-///
-/// Interrupt request is intentionally not included yet: RusTair does not have
-/// an S-100 interrupt-controller source wired into the chassis abstraction.
-/// Adding it belongs here rather than in a CPU-specific backend.
+/// S-100/front-panel control lines presented to a CPU board. These are inputs
+/// to the processor board and therefore remain distinct from CPU outputs such
+/// as WAIT, HLDA, INTE and SINTA/status. `interrupt` is canonical PINT (pin 73).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct S100CpuControlLines {
     pub ready: bool,
+    pub interrupt: bool,
     pub hold: bool,
     pub reset: bool,
 }
