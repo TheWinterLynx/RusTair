@@ -1,12 +1,21 @@
 use rand::RngCore;
 
-use crate::config::{RamInit, RamSize};
+use crate::config::{RamBoardProfile, RamInit, RamSize};
 
 /// Default installed RAM, preserving RusTair's behaviour before configurable RAM.
 pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
 pub const MEMORY_BOARD_SIZE: usize = 1024;
 pub const MEMORY_BOARD_COUNT: usize = MAX_MEM_SIZE / MEMORY_BOARD_SIZE;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MemoryReadyPhase {
+    T1,
+    T2,
+    Tw,
+    T3,
+    Other,
+}
 
 /// Physical RAM backing store plus the front-panel write-protection latches.
 ///
@@ -18,6 +27,9 @@ pub(super) struct Memory {
     protected: [bool; MEMORY_BOARD_COUNT],
     installed_size: usize,
     init_mode: RamInit,
+    board_profiles: [RamBoardProfile; MEMORY_BOARD_COUNT],
+    read_wait_active: bool,
+    read_wait_remaining: u8,
     basic32_probe_guard: bool,
     basic32_probe_write: Option<u8>,
 }
@@ -29,6 +41,9 @@ impl Default for Memory {
             protected: [false; MEMORY_BOARD_COUNT],
             installed_size: MEM_SIZE,
             init_mode: RamInit::Random,
+            board_profiles: [RamBoardProfile::FastNoWait; MEMORY_BOARD_COUNT],
+            read_wait_active: false,
+            read_wait_remaining: 0,
             basic32_probe_guard: false,
             basic32_probe_write: None,
         }
@@ -40,7 +55,72 @@ impl Memory {
         self.installed_size = size.bytes();
         self.init_mode = init_mode;
         self.clear_protection();
+        self.reset_timing();
         self.initialize();
+    }
+
+    pub(super) fn configure_board_profile(&mut self, profile: RamBoardProfile) {
+        // Storage is per 1 KiB slot even though the current UI applies one
+        // profile to all installed slots. This deliberately leaves room for
+        // mixed-card Altair configurations without another memory rewrite.
+        self.board_profiles.fill(profile);
+        self.reset_timing();
+    }
+
+    pub(super) fn board_profile(&self, address: u16) -> Option<RamBoardProfile> {
+        if address as usize >= self.installed_size {
+            return None;
+        }
+        Self::board_index(address).map(|index| self.board_profiles[index])
+    }
+
+    fn read_wait_states(&self, address: u16) -> u8 {
+        self.board_profile(address)
+            .map(RamBoardProfile::read_wait_states)
+            .unwrap_or(0)
+    }
+
+    pub(super) fn reset_timing(&mut self) {
+        self.read_wait_active = false;
+        self.read_wait_remaining = 0;
+    }
+
+    /// Return the memory-card PRDY contribution for the current 8080 T-state.
+    /// The MITS 1K board starts its slowdown pulse with PSYNC and produces two
+    /// actual TW cycles on reads. Writes and uninstalled addresses never wait.
+    pub(super) fn ready_for_t_state(
+        &mut self,
+        address: u16,
+        memory_read: bool,
+        phase: MemoryReadyPhase,
+    ) -> bool {
+        if !memory_read {
+            self.reset_timing();
+            return true;
+        }
+
+        match phase {
+            MemoryReadyPhase::T1 => {
+                self.read_wait_remaining = self.read_wait_states(address);
+                self.read_wait_active = self.read_wait_remaining != 0;
+                !self.read_wait_active
+            }
+            MemoryReadyPhase::T2 => !self.read_wait_active,
+            MemoryReadyPhase::Tw if self.read_wait_active => {
+                if self.read_wait_remaining > 1 {
+                    self.read_wait_remaining -= 1;
+                    false
+                } else {
+                    self.reset_timing();
+                    true
+                }
+            }
+            MemoryReadyPhase::Tw => true,
+            MemoryReadyPhase::T3 | MemoryReadyPhase::Other => {
+                self.reset_timing();
+                true
+            }
+        }
     }
 
     pub(super) fn installed_size(&self) -> usize {
@@ -197,6 +277,34 @@ impl super::AltairBus {
     ) -> bool {
         self.memory
             .debugger_write(address, value, respect_protection)
+    }
+
+    pub(crate) fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
+        self.memory.configure_board_profile(profile);
+        self.s100.set_memory_ready_input(true);
+    }
+
+    pub(crate) fn memory_board_profile(&self, address: u16) -> Option<RamBoardProfile> {
+        self.memory.board_profile(address)
+    }
+
+    pub(crate) fn cycle_memory_ready(
+        &mut self,
+        address: u16,
+        memory_read: bool,
+        phase: MemoryReadyPhase,
+    ) -> bool {
+        let ready = self.memory.ready_for_t_state(address, memory_read, phase);
+        self.s100.set_memory_ready_input(ready);
+        ready
+    }
+
+    /// Host freezes physical STOP at the first TW instead of burning millions of
+    /// identical wait clocks. A real memory-board one-shot would expire during
+    /// the operator pause, so settle that transient PRDY source before resume.
+    pub(crate) fn cycle_settle_memory_ready_after_panel_freeze(&mut self) {
+        self.memory.reset_timing();
+        self.s100.set_memory_ready_input(true);
     }
 
     pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 {
@@ -391,5 +499,34 @@ mod tests {
         assert!(!bus.raw_s100_prot());
         assert!(!bus.raw_s100_wait());
         assert!(!bus.raw_s100_hlda());
+    }
+}
+
+#[cfg(test)]
+mod timing_tests {
+    use super::*;
+
+    #[test]
+    fn mits_1k_read_timing_yields_two_wait_cycles() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K1, RamInit::Zeroed);
+        memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
+
+        assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T1));
+        assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T2));
+        assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::Tw));
+        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::Tw));
+        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T3));
+    }
+
+    #[test]
+    fn mits_1k_write_and_fast_profile_do_not_stretch_ready() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K1, RamInit::Zeroed);
+        memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
+        assert!(memory.ready_for_t_state(0x0000, false, MemoryReadyPhase::T1));
+        memory.configure_board_profile(RamBoardProfile::FastNoWait);
+        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T1));
+        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T2));
     }
 }

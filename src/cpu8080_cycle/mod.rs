@@ -144,6 +144,10 @@ impl Cpu8080Cycle {
         self.machine_cycle_index
     }
 
+    pub const fn cycle_address(&self) -> u16 {
+        self.cycle_address
+    }
+
     pub const fn t_state(&self) -> TState {
         self.t_state
     }

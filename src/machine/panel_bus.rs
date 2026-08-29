@@ -62,7 +62,12 @@ pub(super) struct S100Signals {
     pub prot: bool,
     /// Q output of the Display/Control RUN/STOP R-S latch (S-100 pin 71).
     pub run: bool,
+    /// Effective PRDY level seen by the CPU after all S-100 contributors.
     pub ready: bool,
+    /// Display/Control contribution to PRDY (RUN/SINGLE STEP/EXAMINE side).
+    pub front_panel_ready: bool,
+    /// Selected memory-card contribution to PRDY. Slow RAM may pull this low.
+    pub memory_ready: bool,
     pub wait: bool,
     /// PINT, S-100 pin 73. Internal booleans use `true` for asserted even
     /// though the physical line is active-low on the original backplane.
@@ -95,6 +100,8 @@ impl Default for S100Signals {
             prot: false,
             run: false,
             ready: false,
+            front_panel_ready: false,
+            memory_ready: true,
             wait: false,
             interrupt: false,
             hold: false,
@@ -360,19 +367,32 @@ impl S100BusState {
         self.signals.run = run;
     }
 
+    fn recompute_ready(&mut self) {
+        self.signals.ready = self.signals.front_panel_ready && self.signals.memory_ready;
+    }
+
     /// Instruction-level/Fast compatibility helper. That backend has no exact
     /// T2->TW transition to supply WAIT, so it deliberately approximates WAIT as
     /// the inverse of READY while stopped.
     pub(super) fn set_ready(&mut self, ready: bool) {
-        self.signals.ready = ready;
-        self.signals.wait = !ready && !self.signals.reset;
+        self.signals.front_panel_ready = ready;
+        self.signals.memory_ready = true;
+        self.recompute_ready();
+        self.signals.wait = !self.signals.ready && !self.signals.reset;
     }
 
-    /// Exact CPU-board path: READY is an input to the 8080 and must be mutable
-    /// without also fabricating the CPU's WAIT output. Cycle Accurate publishes
-    /// WAIT only through a real `Cpu8080Cycle` T-state sample.
+    /// Exact CPU-board path: mutate only the Display/Control contribution to
+    /// PRDY. Memory cards keep their own wired-AND contribution.
     pub(super) fn set_ready_input(&mut self, ready: bool) {
-        self.signals.ready = ready;
+        self.signals.front_panel_ready = ready;
+        self.recompute_ready();
+    }
+
+    /// Memory-board PRDY contribution. `true` means the selected card is ready;
+    /// `false` means a slow card is actively stretching the read cycle.
+    pub(super) fn set_memory_ready_input(&mut self, ready: bool) {
+        self.signals.memory_ready = ready;
+        self.recompute_ready();
     }
 
     pub(super) fn set_interrupt_request(&mut self, asserted: bool) {
@@ -466,6 +486,8 @@ impl S100BusState {
         self.signals.inte = false;
         self.signals.prot = false;
         self.signals.clear_status();
+        self.signals.front_panel_ready = false;
+        self.signals.memory_ready = true;
         self.signals.ready = false;
         self.signals.wait = false;
         self.signals.hlda = false;
@@ -495,6 +517,8 @@ impl S100BusState {
         self.signals.run = run;
         self.signals.clear_status();
         self.signals.apply_status_word(STATUS_INSTRUCTION_FETCH);
+        self.signals.front_panel_ready = run;
+        self.signals.memory_ready = true;
         self.signals.ready = run;
         self.signals.wait = !run;
         self.signals.hlda = false;
@@ -529,6 +553,8 @@ impl S100BusState {
             self.set_ready(true);
         } else {
             self.signals.apply_status_word(STATUS_INSTRUCTION_FETCH);
+            self.signals.front_panel_ready = false;
+            self.signals.memory_ready = true;
             self.signals.ready = false;
             self.signals.wait = true;
         }
@@ -816,5 +842,23 @@ mod tests {
         assert_eq!(integrator.total_weight, VISUAL_SAMPLE_TSTATES);
         integrator.sample(&signals, 1000);
         assert_eq!(integrator.total_weight, VISUAL_SAMPLE_TSTATES);
+    }
+}
+
+#[cfg(test)]
+mod ready_source_tests {
+    use super::*;
+
+    #[test]
+    fn memory_ready_is_wired_with_front_panel_ready() {
+        let mut bus = S100BusState::default();
+        bus.set_ready_input(true);
+        assert!(bus.signals().ready);
+        bus.set_memory_ready_input(false);
+        assert!(!bus.signals().ready);
+        bus.set_memory_ready_input(true);
+        assert!(bus.signals().ready);
+        bus.set_ready_input(false);
+        assert!(!bus.signals().ready);
     }
 }

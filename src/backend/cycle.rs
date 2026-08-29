@@ -5,7 +5,7 @@ use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
-use crate::machine::{AltairMachine, Cycle8080S100Adapter};
+use crate::machine::{AltairMachine, Cycle8080S100Adapter, MemoryReadyPhase};
 
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
@@ -327,6 +327,23 @@ impl CycleAccurateMachineBackend {
         }
     }
 
+    fn memory_ready_for_current_t_state(&mut self) -> bool {
+        let memory_read = matches!(
+            self.cpu.machine_cycle(),
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+        );
+        let phase = match self.cpu.t_state() {
+            TState::T1 => MemoryReadyPhase::T1,
+            TState::T2 => MemoryReadyPhase::T2,
+            TState::Tw => MemoryReadyPhase::Tw,
+            TState::T3 => MemoryReadyPhase::T3,
+            _ => MemoryReadyPhase::Other,
+        };
+        self.machine
+            .bus
+            .cycle_memory_ready(self.cpu.cycle_address(), memory_read, phase)
+    }
+
     fn tick_once_with_front_panel_data(
         &mut self,
         ready: bool,
@@ -343,21 +360,28 @@ impl CycleAccurateMachineBackend {
         // every real 8080 clock boundary. Refresh the canonical backplane line
         // before both the T3 data source and the CPU input are evaluated.
         self.machine.bus.refresh_interrupt_request_line();
+        let memory_ready = self.memory_ready_for_current_t_state();
+        let effective_ready = ready && memory_ready;
         let data_in = self.data_in_for_current_t_state(front_panel_data);
         let lines = self.machine.bus.cpu_control_lines();
         let trace = self.cpu.tick(Cpu8080Inputs {
             data_in,
-            // SINGLE STEP and the EXM sequencer may momentarily override the
-            // stopped READY line. HOLD, PINT and RESET always arrive through S-100.
-            ready,
+            // SINGLE STEP/EXM may override the front-panel contribution, but a
+            // selected slow RAM card can still pull the effective PRDY low.
+            ready: effective_ready,
             interrupt: lines.interrupt,
             hold: lines.hold,
             reset: lines.reset,
         });
         self.apply_trace_side_effects(&trace, record_instruction);
-        let visible_data = self.drive_s100_t_state(&trace, data_in, front_panel_data, ready);
+        let visible_data = self.drive_s100_t_state(
+            &trace,
+            data_in,
+            front_panel_data,
+            effective_ready,
+        );
         self.sync_machine_cpu();
-        self.capture_teaching_snapshot(&trace, visible_data, ready);
+        self.capture_teaching_snapshot(&trace, visible_data, effective_ready);
 
         // A T3 I/O transfer can itself create or remove a level-sensitive UART
         // interrupt condition. Preserve the exact Teacher sample above at the
@@ -408,6 +432,7 @@ impl CycleAccurateMachineBackend {
                 break;
             }
         }
+        self.machine.bus.cycle_settle_memory_ready_after_panel_freeze();
         self.refresh_teaching_visible_lamps();
     }
 
@@ -587,6 +612,7 @@ impl CycleAccurateMachineBackend {
             // following PSYNC. This path deliberately does not synthesize WAIT.
             self.machine.cycle_set_running(false);
         }
+        self.machine.bus.cycle_settle_memory_ready_after_panel_freeze();
         self.refresh_teaching_visible_lamps();
     }
 
@@ -607,6 +633,7 @@ impl CycleAccurateMachineBackend {
                 }
             }
         }
+        self.machine.bus.cycle_settle_memory_ready_after_panel_freeze();
         self.refresh_teaching_visible_lamps();
     }
 

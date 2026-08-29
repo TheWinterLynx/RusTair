@@ -11,6 +11,7 @@ pub use external_serial::{
 };
 pub use machine::{
     AppConfig, Asr33Speed, CompatibilityConfig, CpuModel, EmulationSpeed, MachineConfig,
-    PeripheralConfig, PreferencesConfig, RamInit, RamSize, SerialBoard, TerminalSpeed,
+    PeripheralConfig, PreferencesConfig, RamBoardProfile, RamInit, RamSize, SerialBoard,
+    TerminalSpeed,
 };
 pub use terminal::TerminalDuplex;

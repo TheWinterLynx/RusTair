@@ -158,6 +158,43 @@ impl Default for RamInit {
     }
 }
 
+/// Electrical/timing profile of the installed S-100 RAM cards.
+///
+/// Capacity and initial contents are deliberately separate from card timing: an
+/// Altair can have the same number of bytes implemented by very different boards.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RamBoardProfile {
+    /// Compatibility profile for later/fast memory: no PRDY stretching.
+    FastNoWait,
+    /// Original MITS 1K Static Memory Board using Intel 8101 RAMs. The 1975
+    /// Theory of Operation specifies two wait cycles (1 us at 2 MHz) on reads.
+    Mits1KStatic1975,
+}
+
+impl RamBoardProfile {
+    pub const ALL: [Self; 2] = [Self::FastNoWait, Self::Mits1KStatic1975];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FastNoWait => "Fast / no wait states",
+            Self::Mits1KStatic1975 => "MITS 1K Static RAM (1975, 2 read waits)",
+        }
+    }
+
+    pub const fn read_wait_states(self) -> u8 {
+        match self {
+            Self::FastNoWait => 0,
+            Self::Mits1KStatic1975 => 2,
+        }
+    }
+}
+
+impl Default for RamBoardProfile {
+    fn default() -> Self {
+        Self::FastNoWait
+    }
+}
+
 /// MITS serial interface installed in the emulated Altair.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SerialBoard {
@@ -313,6 +350,7 @@ pub struct MachineConfig {
     pub cpu_model: CpuModel,
     pub ram_size: RamSize,
     pub ram_init: RamInit,
+    pub ram_board_profile: RamBoardProfile,
     pub serial_board: SerialBoard,
 }
 
@@ -414,5 +452,17 @@ mod tests {
         assert_eq!((board.status_port(), board.data_port()), (0x10, 0x11));
         assert_eq!(board.port1_status_port(), Some(0x12));
         assert_eq!(board.port1_data_port(), Some(0x13));
+    }
+}
+
+#[cfg(test)]
+mod memory_board_profile_tests {
+    use super::*;
+
+    #[test]
+    fn original_mits_1k_profile_has_two_read_wait_states() {
+        assert_eq!(RamBoardProfile::Mits1KStatic1975.read_wait_states(), 2);
+        assert_eq!(RamBoardProfile::FastNoWait.read_wait_states(), 0);
+        assert_eq!(AppConfig::default().machine.ram_board_profile, RamBoardProfile::FastNoWait);
     }
 }

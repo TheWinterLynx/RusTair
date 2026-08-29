@@ -27,7 +27,8 @@ use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
-    AppConfig, Asr33Speed, EmulationSpeed, RamInit, RamSize, SerialBoard, TerminalSpeed,
+    AppConfig, Asr33Speed, EmulationSpeed, RamBoardProfile, RamInit, RamSize, SerialBoard,
+    TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::machine::CLOCK_HZ;
@@ -173,6 +174,8 @@ impl RusTairApp {
                     self.config.machine.ram_size,
                     self.config.machine.ram_init,
                 );
+                self.machine
+                    .configure_memory_board_profile(self.config.machine.ram_board_profile);
                 self.machine.configure_serial_board(self.config.machine.serial_board);
                 self.asr33.tx_started = None;
                 self.asr33.answerback.clear();
@@ -198,6 +201,14 @@ impl RusTairApp {
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
         self.status = format!("Memory configured: {} — {}; machine reset", ram_size.label(), ram_init.label());
+    }
+
+    fn apply_memory_board_profile(&mut self, profile: RamBoardProfile) {
+        if self.config.machine.ram_board_profile == profile { return; }
+        self.config.machine.ram_board_profile = profile;
+        self.machine.configure_memory_board_profile(profile);
+        self.last_tick = Instant::now();
+        self.status = format!("Memory card timing: {}", profile.label());
     }
 
     fn apply_serial_board_configuration(&mut self, serial_board: SerialBoard) {

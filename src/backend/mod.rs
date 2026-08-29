@@ -9,7 +9,7 @@ pub mod simh;
 use std::fmt;
 use std::time::Duration;
 
-use crate::config::{RamInit, RamSize, SerialBoard};
+use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard};
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
@@ -187,6 +187,9 @@ pub trait MachineBackend {
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState>;
     fn configure_memory(&mut self, _size: RamSize, _init: RamInit) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "configure memory", engine: self.engine() })
+    }
+    fn configure_memory_board_profile(&mut self, _profile: RamBoardProfile) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure memory board profile", engine: self.engine() })
     }
     fn power(&mut self, on: bool) -> BackendResult<()>;
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()>;
@@ -404,6 +407,7 @@ impl BackendHost {
     pub fn powered(&mut self) -> bool { self.front_panel_state().powered }
     pub fn running(&mut self) -> bool { self.front_panel_state().running }
     pub fn configure_memory(&mut self, size: RamSize, init: RamInit) { Self::call(self.backend.configure_memory(size, init)); }
+    pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) { Self::call(self.backend.configure_memory_board_profile(profile)); }
     pub fn configure_serial_board(&mut self, board: SerialBoard) { Self::call(self.backend.configure_serial_board(board)); }
     pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
     pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }

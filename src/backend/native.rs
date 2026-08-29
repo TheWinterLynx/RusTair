@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{RamInit, RamSize, SerialBoard};
+use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard};
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
 use crate::trace8080::{
@@ -209,6 +209,11 @@ impl MachineBackend for NativeMachineBackend {
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         self.machine.configure_memory(size, init);
+        self.reset_debugger_epoch();
+        Ok(())
+    }
+    fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) -> BackendResult<()> {
+        self.machine.configure_memory_board_profile(profile);
         self.reset_debugger_epoch();
         Ok(())
     }

@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{RamInit, RamSize, SerialBoard};
+use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard};
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::CpuDiagnosticResult;
@@ -414,6 +414,11 @@ impl MachineBackend for CycleHostBackend {
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         let powered = self.inner.machine().powered;
         let serial_board = self.inner.machine().serial_board();
+        let memory_profile = self
+            .inner
+            .machine()
+            .memory_board_profile(0)
+            .unwrap_or_default();
 
         if powered {
             self.inner.machine_mut().configure_memory(size, init);
@@ -423,9 +428,22 @@ impl MachineBackend for CycleHostBackend {
         } else {
             let mut replacement = CycleAccurateMachineBackend::default();
             replacement.machine_mut().configure_memory(size, init);
+            replacement.machine_mut().configure_memory_board_profile(memory_profile);
             replacement.machine_mut().configure_serial_board(serial_board);
             self.inner = replacement;
             self.teaching_reset_seen = false;
+        }
+        self.reset_debugger_epoch();
+        Ok(())
+    }
+
+    fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) -> BackendResult<()> {
+        let powered = self.inner.machine().powered;
+        self.inner.machine_mut().configure_memory_board_profile(profile);
+        if powered {
+            self.inner.assert_reset()?;
+            self.inner.release_reset()?;
+            self.teaching_reset_seen = true;
         }
         self.reset_debugger_epoch();
         Ok(())

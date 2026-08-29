@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use rand::RngCore;
 
-use crate::config::{RamInit, RamSize};
+use crate::config::{RamBoardProfile, RamInit, RamSize};
 use crate::cpu8080::{Bus, Cpu8080};
 use cpu_board::{Fast8080S100Adapter, S100Cycle};
 use front_panel::FrontPanelController;
@@ -18,6 +18,7 @@ use memory::Memory;
 use panel_bus::S100BusState;
 
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
+pub(crate) use memory::MemoryReadyPhase;
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
 
@@ -286,6 +287,8 @@ impl AltairBus {
     }
 
     fn assert_front_panel_reset_bus(&mut self) {
+        self.memory.reset_timing();
+        self.s100.set_memory_ready_input(true);
         self.s100.assert_front_panel_reset();
     }
 
@@ -313,6 +316,7 @@ impl AltairBus {
     }
 
     fn power_off_s100(&mut self) {
+        self.memory.reset_timing();
         self.s100.power_off();
         self.cpu_inte = false;
     }
@@ -427,6 +431,12 @@ impl AltairMachine {
     }
 
     pub fn installed_ram_bytes(&self) -> usize { self.bus.installed_ram_bytes() }
+    pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
+        self.bus.configure_memory_board_profile(profile);
+    }
+    pub fn memory_board_profile(&self, address: u16) -> Option<RamBoardProfile> {
+        self.bus.memory_board_profile(address)
+    }
     pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { self.bus.arm_basic32_full_memory_probe_guard() }
 
     pub fn begin_cpu_diagnostic_meter(
