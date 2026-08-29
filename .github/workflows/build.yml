@@ -23,7 +23,9 @@ jobs:
         shell: pwsh
         run: |
           python .github/scripts/complete_memory_ready.py
-          python .github/scripts/finish_memory_ready.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python .github/scripts/finish_memory_ready_v2.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (git status --porcelain) {
             git config user.name "TheWinterLynx"
             git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
