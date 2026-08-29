@@ -405,7 +405,6 @@ impl super::AltairBus {
         let protected = address
             .map(|address| self.memory.is_protected(address))
             .unwrap_or(false);
-        self.cpu_inte = inte;
         self.s100.drive_cpu_t_state(
             address,
             cpu_data,
