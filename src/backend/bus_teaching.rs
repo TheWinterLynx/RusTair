@@ -170,10 +170,6 @@ impl BusStatusLines {
     }
 }
 
-/// Current chassis/backplane observation. Unlike `BusTeachingSnapshot`, this
-/// structure is never a historical CPU T-state: it answers what the machine's
-/// control/backplane state is *now*, even if the last exact CPU sample happened
-/// immediately before a debugger pause or another host-side control mutation.
 #[derive(Clone, Copy, Debug)]
 pub struct BusChassisSnapshot {
     pub accuracy: BusTeachingAccuracy,
@@ -196,9 +192,6 @@ pub struct BusChassisSnapshot {
 }
 
 impl BusChassisSnapshot {
-    /// Exact/current chassis projection used by the built-in Cycle backend.
-    /// Every electrical field is read from the canonical S100BusState rather
-    /// than copied from the retained Teacher T-state sample.
     pub(crate) fn from_altair_machine(
         engine: EmulationEngine,
         machine: &AltairMachine,
@@ -234,9 +227,6 @@ impl BusChassisSnapshot {
         }
     }
 
-    /// Conservative fallback for backends that can expose a front panel but not
-    /// RusTair's canonical raw S-100 state. Do not fabricate directional data or
-    /// current electrical control lines from an instruction-level observation.
     pub fn reconstructed(engine: EmulationEngine, panel: FrontPanelState) -> Self {
         let panel_data = panel.powered.then_some(panel.data);
         Self {
@@ -263,8 +253,8 @@ impl BusChassisSnapshot {
 
 /// Last teaching observation. `Exact` snapshots deliberately retain the CPU
 /// inputs and outputs of the displayed T-state even when current chassis state
-/// subsequently changes without another CPU clock. Use `BusChassisSnapshot` for
-/// the current machine instant instead of rewriting this historical sample.
+/// subsequently changes without another CPU clock. `current_chassis` is a
+/// separate plane and is refreshed by the backend whenever the snapshot is read.
 #[derive(Clone, Copy, Debug)]
 pub struct BusTeachingSnapshot {
     pub accuracy: BusTeachingAccuracy,
@@ -275,29 +265,15 @@ pub struct BusTeachingSnapshot {
     pub machine_cycle_index: Option<u8>,
     pub t_state: BusTState,
     pub address: Option<u16>,
-    /// Compatibility summary of the electrically active transfer byte. Exact
-    /// consumers must prefer `cpu_data`, `s100_di` and `s100_do` below.
     pub data: Option<u8>,
-    /// Intel 8080 package bidirectional D0-D7 at the displayed observation.
     pub cpu_data: Option<u8>,
-    /// S-100 DI0-DI7: data travelling toward the processor board.
     pub s100_di: Option<u8>,
-    /// S-100 DO0-DO7: data travelling away from the processor board.
     pub s100_do: Option<u8>,
-    /// Byte associated with the front-panel DATA display path. This is kept
-    /// separate from CPU D and DO so optical/presentation retention cannot be
-    /// mistaken for a processor-package level.
     pub panel_data: Option<u8>,
     pub status_word: Option<u8>,
     pub pins: BusCpuPins,
     pub status: BusStatusLines,
-    /// For `Exact`, these are CPU input levels captured with the exact T-state.
-    /// They are intentionally historical if the host/debugger changes chassis
-    /// controls after the tick without clocking another CPU T-state.
     pub ready: Option<bool>,
-    /// Intel 8080 pin 14 INT input. On the Altair this is sourced from the
-    /// canonical S-100 PINT line. It is deliberately distinct from the front-
-    /// panel INT lamp / SINTA acknowledgement status bit.
     pub interrupt: Option<bool>,
     pub hold: Option<bool>,
     pub reset: Option<bool>,
@@ -305,6 +281,10 @@ pub struct BusTeachingSnapshot {
     pub instruction_t_states: Option<u32>,
     pub instruction_complete: Option<bool>,
     pub visible_lamps: PanelLampSnapshot,
+    /// Present-time chassis/backplane state. This is deliberately not part of
+    /// the exact T-state sample above and must not be used as CPU pin truth for
+    /// that historical tick.
+    pub current_chassis: Option<BusChassisSnapshot>,
 }
 
 impl BusTeachingSnapshot {
@@ -314,6 +294,7 @@ impl BusTeachingSnapshot {
             CpuState::Z80(cpu) => (Some(cpu.pc), cpu.total_t_states),
         };
         let panel_data = if panel.powered { Some(panel.data) } else { None };
+        let current_chassis = Some(BusChassisSnapshot::reconstructed(engine, panel));
         Self {
             accuracy: BusTeachingAccuracy::Reconstructed,
             engine,
@@ -339,6 +320,7 @@ impl BusTeachingSnapshot {
             instruction_t_states: None,
             instruction_complete: None,
             visible_lamps: panel.lamps,
+            current_chassis,
         }
     }
 }
