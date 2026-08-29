@@ -157,7 +157,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
         }
         PinKind::Data(bit) => {
             let level = if cpu_bus_pin_levels_available(snapshot) {
-                snapshot.data.map(|value| value & (1u8 << bit) != 0)
+                snapshot.cpu_data.map(|value| value & (1u8 << bit) != 0)
             } else {
                 None
             };
@@ -170,7 +170,7 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 } else {
                     level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
                 },
-                note: "8080 bidirectional data pin. During RESET RELEASED / STOP-WAIT the CPU is held in a read wait: DBIN is active and memory drives the same S-100 data byte onto D0-D7. In an exact sample with no external transfer the pin can instead be HI-Z/released; an optically persistent panel LED alone is never used as pin truth.",
+                note: "Intel 8080 bidirectional D0-D7 package pin. This level comes only from the backend's CPU-data domain, never from S-100 DI/DO or optical DATA-lamp persistence. During STOP-WAIT, memory DI passes through the CPU-board input buffer onto the processor D bus while DBIN is active.",
                 modeled: level.is_some() || released,
                 static_pin: false,
                 released,
@@ -228,34 +228,6 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             static_pin: false,
             released: false,
         },
-    }
-}
-
-fn data_bus_context(snapshot: BusTeachingSnapshot) -> (&'static str, &'static str) {
-    if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
-        return ("HI-Z / released", "NO DATA TRANSFER THIS T-STATE");
-    }
-    if snapshot.t_state == BusTState::T1 && snapshot.pins.sync == Some(true) {
-        return ("CPU -> S-100", "STATUS BYTE");
-    }
-    match snapshot.machine_cycle {
-        BusMachineCycle::PowerOff => ("off", "UNPOWERED"),
-        BusMachineCycle::PowerOnUndefined => ("S-100 chassis", "POWER-ON BUS / CPU UNDEFINED"),
-        BusMachineCycle::ResetAsserted => ("front panel", "RESET CHECKOUT BUS"),
-        BusMachineCycle::ResetReleasedStopped => ("S-100 -> CPU", "STOP-WAIT OPCODE / MEMORY DATA"),
-        BusMachineCycle::ResetReleasedRunning => ("S-100 chassis", "RESET-RELEASE BUS"),
-        BusMachineCycle::InstructionFetch => ("S-100 -> CPU", "OPCODE"),
-        BusMachineCycle::MemoryRead => ("S-100 -> CPU", "MEMORY DATA"),
-        BusMachineCycle::StackRead => ("S-100 -> CPU", "STACK DATA"),
-        BusMachineCycle::InputRead => ("S-100 -> CPU", "INPUT PORT DATA"),
-        BusMachineCycle::InterruptAck | BusMachineCycle::InterruptAckWhileHalt => {
-            ("S-100 -> CPU", "INTERRUPT OPCODE")
-        }
-        BusMachineCycle::MemoryWrite => ("CPU -> S-100", "MEMORY DATA"),
-        BusMachineCycle::StackWrite => ("CPU -> S-100", "STACK DATA"),
-        BusMachineCycle::OutputWrite => ("CPU -> S-100", "OUTPUT PORT DATA"),
-        BusMachineCycle::HaltAck | BusMachineCycle::Internal => ("released / internal", "NO EXTERNAL DATA"),
-        BusMachineCycle::Unknown => ("?", "UNKNOWN"),
     }
 }
 
@@ -380,14 +352,14 @@ fn draw_pin(
         });
 }
 
+fn hex8(value: Option<u8>) -> String {
+    value
+        .map(|value| format!("${value:02X}  {value:08b}"))
+        .unwrap_or_else(|| "--  --------".into())
+}
+
 fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
     let address = snapshot.address.map(|value| format!("${value:04X}  {value:016b}")).unwrap_or_else(|| "----  ----------------".into());
-    let data = if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
-        "HI-Z  --------".into()
-    } else {
-        snapshot.data.map(|value| format!("${value:02X}  {value:08b}")).unwrap_or_else(|| "--  --------".into())
-    };
-    let (data_direction, data_purpose) = data_bus_context(snapshot);
 
     ui.add_space(3.0);
     ui.horizontal(|ui| {
@@ -400,21 +372,36 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
         ui.weak(address_bus_context(snapshot));
     });
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("DATA").strong()));
-        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(data).monospace()));
-        ui.add_sized([118.0, 20.0], egui::Label::new(egui::RichText::new(data_direction).monospace()));
-        ui.weak(data_purpose);
+        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("CPU D").strong()));
+        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.cpu_data)).monospace()));
+        ui.weak("Intel 8080 package D0-D7");
     });
+    ui.horizontal(|ui| {
+        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("S-100 DI").strong()));
+        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.s100_di)).monospace()));
+        ui.weak("toward processor / memory or I/O -> CPU board");
+    });
+    ui.horizontal(|ui| {
+        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("S-100 DO").strong()));
+        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.s100_do)).monospace()));
+        ui.weak("away from processor / CPU board -> memory or I/O");
+    });
+    ui.horizontal(|ui| {
+        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("PANEL DATA").strong()));
+        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.panel_data)).monospace()));
+        ui.weak("front-panel DATA display path; presentation may retain/integrate activity");
+    });
+
     if snapshot.accuracy == BusTeachingAccuracy::ControlState {
         if snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped {
-            ui.small("CONTROL STATE: this is a stable STOP-WAIT read condition. A0-A15 follow the CPU-owned S-100 address and memory drives the S-100 byte onto the bidirectional D0-D7 pins while DBIN is active. No numbered T-state is fabricated.");
+            ui.small("CONTROL STATE: stable STOP-WAIT. Memory drives S-100 DI, the CPU-board input buffer presents that byte on 8080 D0-D7 while DBIN is active, and DO is not the read-data source. No numbered T-state is fabricated.");
         } else {
-            ui.small("CONTROL STATE: ADDRESS/DATA above are the S-100/front-panel bus. CPU package pins are shown only where the electrical level is physically determined without inventing a T-state sample.");
+            ui.small("CONTROL STATE: S-100/control levels above are current chassis observations. CPU package D0-D7 are shown only where that lifecycle state determines them without inventing a T-state.");
         }
     } else if snapshot.accuracy == BusTeachingAccuracy::Reconstructed {
-        ui.small("RECONSTRUCTED: ADDRESS/DATA are useful S-100/front-panel observations only. They are deliberately not projected onto 8080 A0-A15/D0-D7 package pins because Fast mode has no exact T-state pin sample.");
-    } else if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.data.is_none() {
-        ui.small("Exact sample: CPU D0-D7 are HI-Z/released now. The front-panel DATA display can still show the preceding bus byte because its display/lamp model retains and integrates recent bus activity.");
+        ui.small("RECONSTRUCTED: Fast mode can show the front-panel DATA observation, but DI, DO and 8080 D0-D7 remain unknown rather than being inferred from it.");
+    } else if snapshot.accuracy == BusTeachingAccuracy::Exact && snapshot.cpu_data.is_none() {
+        ui.small("Exact sample: 8080 D0-D7 are HI-Z/released now. S-100 DI/DO and the front-panel DATA presentation are separate domains and may legitimately show different values or retention.");
     } else {
         ui.small("Bright lead = HIGH, dim lead = LOW, Z = HI-Z/released, outer amber ring = signal ASSERTED. /WR demonstrates why LOW can still mean asserted. Gray '?' pins are deliberately not fabricated.");
     }
@@ -456,6 +443,7 @@ pub(super) fn draw_8080a_package(
         egui::StrokeKind::Inside,
     );
 
+    // DIP orientation notch and pin-1 locator echo the physical 8080A package.
     let notch = egui::pos2(body.center().x, body.top());
     painter.circle_filled(notch, 12.0, visuals.panel_fill);
     painter.circle_stroke(
