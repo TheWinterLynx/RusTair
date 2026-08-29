@@ -225,10 +225,10 @@ fn cycle_backend_mirror_stays_synced_across_cpu_and_chassis_transitions() {
     assert!(!backend.cpu().is_holding());
     assert_cycle_mirror_matches_authority(&backend, "HOLD/HLDA released");
 
-    // HLT is the historical corner case where STOP cannot latch until RESET
-    // supplies a recovery condition. assert_run_stop() first synchronizes the
-    // passive mirror specifically so the common chassis helper observes the
-    // authoritative HALT state.
+    // HLT is the historical corner case where STOP cannot latch because no
+    // qualifying PSYNC is produced. RESET restarts the processor, but RESET
+    // itself does not clear the Display/Control RUN/STOP R-S latch: the held
+    // STOP is captured by the first real post-reset T1/PSYNC.
     backend.halt().unwrap();
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
@@ -247,13 +247,25 @@ fn cycle_backend_mirror_stays_synced_across_cpu_and_chassis_transitions() {
 
     backend.assert_reset().unwrap();
     assert!(
-        !backend.front_panel_state().unwrap().running,
-        "held STOP must latch when RESET supplies recovery"
+        backend.front_panel_state().unwrap().running,
+        "RESET itself must preserve the physical RUN/STOP latch"
     );
-    assert_cycle_mirror_matches_authority(&backend, "STOP+RESET recovery");
+    assert_cycle_mirror_matches_authority(&backend, "RESET asserted with STOP held");
+
     backend.release_reset().unwrap();
+    assert!(
+        backend.front_panel_state().unwrap().running,
+        "RUN remains set until the first post-reset PSYNC is actually clocked"
+    );
+    assert_cycle_mirror_matches_authority(&backend, "RESET released before STOP capture");
+
+    backend.service_execution(1).unwrap();
+    assert!(
+        !backend.front_panel_state().unwrap().running,
+        "held STOP must latch at the first real post-reset PSYNC"
+    );
+    assert_cycle_mirror_matches_authority(&backend, "post-reset PSYNC STOP capture");
     backend.release_run_stop(false).unwrap();
-    assert_cycle_mirror_matches_authority(&backend, "RESET/STOP released");
 }
 
 #[test]

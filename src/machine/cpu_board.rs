@@ -276,7 +276,7 @@ impl super::AltairBus {
         cycle: S100Cycle,
     ) {
         let signals = self.s100.signals();
-        let inte = self.cpu_inte;
+        let inte = signals.inte;
         Fast8080S100Adapter::for_each_front_panel_jam_sample(
             address,
             data,

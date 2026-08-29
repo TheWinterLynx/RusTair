@@ -81,7 +81,6 @@ pub struct AltairBus {
     io: IoDevices,
     panel: FrontPanelController,
     s100: S100BusState,
-    cpu_inte: bool,
     fast_wait_t_states: u32,
     diagnostic_meter: Option<CpuDiagnosticMeter>,
     diagnostic_result: Option<CpuDiagnosticResult>,
@@ -94,7 +93,6 @@ impl Default for AltairBus {
             io: IoDevices::default(),
             panel: FrontPanelController::default(),
             s100: S100BusState::default(),
-            cpu_inte: false,
             fast_wait_t_states: 0,
             diagnostic_meter: None,
             diagnostic_result: None,
@@ -211,7 +209,6 @@ impl AltairBus {
     fn panel_data(&self) -> u8 { self.s100.signals().panel_data }
 
     fn sync_cpu_inte(&mut self, enabled: bool) {
-        self.cpu_inte = enabled;
         self.s100.set_inte(enabled);
     }
 
@@ -270,7 +267,7 @@ impl AltairBus {
 
     fn drive_cpu_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
         let signals = self.s100.signals();
-        let inte = self.cpu_inte;
+        let inte = signals.inte;
         Fast8080S100Adapter::for_each_sample(
             address,
             data,
@@ -285,8 +282,9 @@ impl AltairBus {
     fn drive_power_on_state(&mut self, address: u16, run: bool) {
         let data = self.memory.peek(address).unwrap_or(0);
         let protected = self.memory.is_protected(address);
+        let inte = self.s100.signals().inte;
         self.s100
-            .drive_power_on_state(address, data, protected, self.cpu_inte, run);
+            .drive_power_on_state(address, data, protected, inte, run);
     }
 
     fn assert_front_panel_reset_bus(&mut self, run: bool) {
@@ -298,8 +296,9 @@ impl AltairBus {
     fn release_front_panel_reset_bus(&mut self, address: u16, run: bool) {
         let data = self.memory.peek(address).unwrap_or(0);
         let protected = self.memory.is_protected(address);
+        let inte = self.s100.signals().inte;
         self.s100
-            .release_front_panel_reset(address, data, protected, self.cpu_inte, run);
+            .release_front_panel_reset(address, data, protected, inte, run);
     }
 
     fn set_ext_clear(&mut self, asserted: bool) {
@@ -313,7 +312,8 @@ impl AltairBus {
 
     fn front_panel_deposit(&mut self, address: u16, value: u8) {
         let protected = self.memory.is_protected(address);
-        self.s100.drive_front_panel_deposit(address, value, protected, self.cpu_inte);
+        let inte = self.s100.signals().inte;
+        self.s100.drive_front_panel_deposit(address, value, protected, inte);
         self.memory.write(address, value);
         self.refresh_protect_line();
     }
@@ -321,7 +321,6 @@ impl AltairBus {
     fn power_off_s100(&mut self) {
         self.memory.reset_timing();
         self.s100.power_off();
-        self.cpu_inte = false;
     }
 
     #[inline]
