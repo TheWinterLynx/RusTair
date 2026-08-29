@@ -14,6 +14,7 @@ const PIN_RADIUS: f32 = 3.6;
 enum ControlPin {
     Reset,
     Hold,
+    Interrupt,
     Inte,
     Dbin,
     WrN,
@@ -56,7 +57,7 @@ const LEFT_PINS: [PinDef; 20] = [
     PinDef { number: 11, label: "-5V", kind: PinKind::Power("-5 V supply rail") },
     PinDef { number: 12, label: "RESET", kind: PinKind::Control(ControlPin::Reset) },
     PinDef { number: 13, label: "HOLD", kind: PinKind::Control(ControlPin::Hold) },
-    PinDef { number: 14, label: "INT", kind: PinKind::Unmodeled("Interrupt input is not wired to the current S-100 peripheral model yet.") },
+    PinDef { number: 14, label: "INT", kind: PinKind::Control(ControlPin::Interrupt) },
     PinDef { number: 15, label: "PHI2", kind: PinKind::Clock("Clock phase PHI2 is physically present when powered, but phase edges are below the emulator's T-state abstraction.") },
     PinDef { number: 16, label: "INTE", kind: PinKind::Control(ControlPin::Inte) },
     PinDef { number: 17, label: "DBIN", kind: PinKind::Control(ControlPin::Dbin) },
@@ -105,6 +106,7 @@ fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool
     match pin {
         ControlPin::Reset => (snapshot.reset, false, "RESET input; active HIGH."),
         ControlPin::Hold => (snapshot.hold, false, "HOLD input requests that the 8080 relinquish the bus; active HIGH."),
+        ControlPin::Interrupt => (snapshot.interrupt, false, "INT is the active-HIGH 8080 interrupt-request input. On the Altair it is driven by the canonical S-100 PINT line; it is distinct from the front-panel INT/SINTA interrupt-acknowledge status."),
         ControlPin::Inte => (snapshot.pins.inte, false, "INTE output indicates that maskable interrupts are enabled; active HIGH."),
         ControlPin::Dbin => (snapshot.pins.dbin, false, "DBIN output indicates that the CPU is accepting data from the external data bus; it remains HIGH through TW during a read wait."),
         ControlPin::WrN => (snapshot.pins.wr_n, true, "/WR is the active-LOW CPU write output. LOW means the write signal is asserted."),
@@ -454,7 +456,6 @@ pub(super) fn draw_8080a_package(
         egui::StrokeKind::Inside,
     );
 
-    // DIP orientation notch and pin-1 locator echo the physical 8080A package.
     let notch = egui::pos2(body.center().x, body.top());
     painter.circle_filled(notch, 12.0, visuals.panel_fill);
     painter.circle_stroke(
