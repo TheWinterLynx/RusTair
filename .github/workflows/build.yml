@@ -23,11 +23,12 @@ jobs:
         shell: pwsh
         run: |
           python .github/scripts/complete_memory_ready.py
+          python .github/scripts/finish_memory_ready.py
           if (git status --porcelain) {
             git config user.name "TheWinterLynx"
             git config user.email "64207335+TheWinterLynx@users.noreply.github.com"
-            git add src/config/machine.rs src/config/mod.rs src/machine/panel_bus.rs src/machine/memory.rs src/machine/mod.rs src/cpu8080_cycle/mod.rs src/backend/mod.rs src/backend/native.rs src/backend/cycle_host.rs src/backend/cycle.rs src/app/mod.rs tests/memory_wait_timing.rs
-            git commit -m "Model MITS 1K memory READY timing"
+            git add src/config/machine.rs src/config/mod.rs src/machine/panel_bus.rs src/machine/memory.rs src/machine/mod.rs src/machine/cpu_board.rs src/cpu8080.rs src/cpu8080_cycle/mod.rs src/backend/mod.rs src/backend/native.rs src/backend/cycle_host.rs src/backend/cycle.rs src/app/mod.rs src/app/runtime.rs src/app/persistence.rs tests/memory_wait_timing.rs
+            git commit -m "Complete memory READY card timing"
             git push origin HEAD:agent/cycle-hardware-fidelity-audit
             Start-Sleep -Seconds 10
           }
