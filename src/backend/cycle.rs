@@ -493,32 +493,81 @@ impl CycleAccurateMachineBackend {
     }
 
     /// The original 8800 SINGLE STEP circuit releases READY for one machine
-    /// cycle and removes it again at the following PSYNC. Unlike the fast core,
-    /// this backend can reproduce that boundary directly.
+    /// cycle. The SGL STP flip-flop is not reset by an abstract internal timing
+    /// phase: it is reset by the next real PSYNC. Keep READY high through any
+    /// intervening internal cycles, expose that next T1/SYNC, then pull READY
+    /// low and clock the exact T2 -> first TW transition.
     fn run_one_machine_cycle(&mut self) {
         self.run_one_machine_cycle_with_front_panel_data(None, true);
     }
 
-    /// Stop in the waiting portion of the next instruction fetch. The address is
-    /// still driven by the 8080; memory supplies the displayed byte. We advance
-    /// through T1/T2 only far enough for READY=0 to select TW, then host execution
-    /// stops rather than inventing an arbitrary number of repeated wait states.
-    fn park_at_waiting_fetch(&mut self) {
-        if self.cpu.machine_cycle() == MachineCycle::InstructionFetch {
-            for _ in 0..8 {
-                if self.cpu.t_state() == TState::Tw {
+    fn park_single_step_at_next_psync_wait(&mut self) {
+        let mut saw_psync = false;
+        for _ in 0..64 {
+            if self.cpu.is_halted() || self.cpu.is_holding() {
+                break;
+            }
+
+            if self.cpu.t_state() == TState::T1
+                && self.cpu.machine_cycle().status_word().is_some()
+            {
+                let psync = self.tick_once_with_front_panel_data(true, None, true);
+                if psync.fault.is_some() {
                     break;
                 }
+                debug_assert!(psync.pins.sync);
+                saw_psync = true;
+
+                // The next PSYNC resets SGL STP on the original D/C board. RUN
+                // remains low; only the READY input is withdrawn here. WAIT is
+                // still owned by the CPU and appears only when TW is clocked.
+                self.machine.cycle_set_running(false);
+                for _ in 0..8 {
+                    let trace = self.tick_once_with_front_panel_data(false, None, false);
+                    if trace.fault.is_some() || self.cpu.is_halted() || self.cpu.is_holding() {
+                        break;
+                    }
+                    if trace.t_state == TState::Tw {
+                        break;
+                    }
+                }
+                break;
+            }
+
+            // Internal 8080 timing phases have no status word/PSYNC and cannot
+            // reset the SGL STP flip-flop. The hardware therefore continues
+            // clocking them with READY released until the next external cycle.
+            let trace = self.tick_once_with_front_panel_data(true, None, true);
+            if trace.fault.is_some() {
+                break;
+            }
+        }
+
+        if !saw_psync {
+            // Restore the stopped READY input even if a fault/HALT prevented a
+            // following PSYNC. This path deliberately does not synthesize WAIT.
+            self.machine.cycle_set_running(false);
+        }
+        self.refresh_teaching_visible_lamps();
+    }
+
+    /// Stop in the waiting portion of the next instruction fetch. The address is
+    /// still driven by the 8080; memory supplies the displayed byte. READY is a
+    /// front-panel input; WAIT is emitted only after the core has actually
+    /// clocked the first TW sample.
+    fn park_at_waiting_fetch(&mut self) {
+        self.machine.cycle_set_running(false);
+        if self.cpu.machine_cycle() == MachineCycle::InstructionFetch {
+            for _ in 0..8 {
                 let trace = self.tick_once_with_front_panel_data(false, None, false);
                 if trace.fault.is_some() || self.cpu.is_halted() || self.cpu.is_holding() {
                     break;
                 }
+                if trace.t_state == TState::Tw {
+                    break;
+                }
             }
         }
-        // EXAMINE has its own historical sequencer and still uses the established
-        // stable STOP-WAIT approximation. Its T-state parking is audited
-        // separately from the physical RUN/STOP correction above.
-        self.machine.set_running(false);
         self.refresh_teaching_visible_lamps();
     }
 
@@ -665,11 +714,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
         let lines = self.machine.bus.cpu_control_lines();
         if self.machine.powered && !self.machine.running && !lines.reset && !lines.hold {
             self.run_one_machine_cycle();
-            // SINGLE STEP has a separate front-panel sequencer. Preserve its
-            // established behavior in this commit; its next-PSYNC/TW parking is
-            // audited independently from physical RUN/STOP.
-            self.machine.set_running(false);
-            self.refresh_teaching_visible_lamps();
+            self.park_single_step_at_next_psync_wait();
         }
         Ok(())
     }
@@ -859,9 +904,16 @@ mod tests {
             panic!("expected Intel 8080 state")
         };
         assert_eq!(state.pc, 1);
-        assert_eq!(state.total_t_states, Some(4));
+        assert_eq!(state.total_t_states, Some(7));
         assert_eq!(backend.machine().cpu.pc, 1, "legacy field must only mirror the cycle core");
-        assert!(backend.machine().wait_led(), "STEP must return to the stopped WAIT state");
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
+        assert!(backend.machine().wait_led(), "STEP must end on a CPU-generated TW/WAIT sample");
+        let teaching = backend.teaching_snapshot().expect("SINGLE STEP must publish its exact TW");
+        assert_eq!(teaching.accuracy, BusTeachingAccuracy::Exact);
+        assert_eq!(teaching.t_state, TState::Tw.into());
+        assert_eq!(teaching.ready, Some(false));
+        assert_eq!(teaching.pins.wait, Some(true));
     }
 
     #[test]
@@ -877,16 +929,43 @@ mod tests {
         let CpuState::Intel8080(after_fetch) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(after_fetch.pc, 1);
         assert_eq!(after_fetch.a, before.a, "MVI operand cycle must not have executed yet");
-        assert_eq!(after_fetch.total_t_states, Some(4));
+        assert_eq!(after_fetch.total_t_states, Some(7));
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
         assert_eq!(backend.cpu().machine_cycle_index(), 2);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
 
         backend.step().unwrap();
         let CpuState::Intel8080(after_operand) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(after_operand.pc, 2);
         assert_eq!(after_operand.a, 0x5a);
-        assert_eq!(after_operand.total_t_states, Some(7));
+        assert_eq!(after_operand.total_t_states, Some(12));
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
         assert!(backend.machine().wait_led());
+    }
+
+    #[test]
+    fn cycle_backend_single_step_waits_for_real_psync_after_internal_timing() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x09, 0x00]).unwrap(); // DAD B; NOP
+
+        backend.step().unwrap();
+
+        // DAD's six post-fetch T-states are internal and emit no status/PSYNC,
+        // so the physical SGL STP latch cannot reset there. It remains released
+        // until the next real instruction-fetch PSYNC and then parks in TW.
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        assert_eq!(state.pc, 1);
+        assert_eq!(state.total_t_states, Some(13));
+        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(backend.cpu().t_state(), TState::Tw);
+        let teaching = backend.teaching_snapshot().expect("internal timing must end at next exact PSYNC wait");
+        assert_eq!(teaching.t_state, TState::Tw.into());
+        assert_eq!(teaching.ready, Some(false));
+        assert_eq!(teaching.pins.wait, Some(true));
     }
 
     #[test]
@@ -956,7 +1035,8 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         // MVI A,5Ah is two machine cycles; STA 1F00h is four. SINGLE STEP on
-        // the original 8800 advances one machine cycle at a time.
+        // the original 8800 advances one externally visible machine cycle at a
+        // time and then clocks the next PSYNC/T2/TW stop handshake.
         backend.load_bytes(0, &[0x3e, 0x5a, 0x32, 0x00, 0x1f]).unwrap();
         for _ in 0..6 {
             backend.step().unwrap();
@@ -965,7 +1045,7 @@ mod tests {
         assert_eq!(backend.peek_memory(0x2000).unwrap(), None);
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.pc, 5);
-        assert_eq!(state.total_t_states, Some(20));
+        assert_eq!(state.total_t_states, Some(33));
 
         backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
         let panel = backend.front_panel_state().unwrap();
@@ -1054,9 +1134,14 @@ mod tests {
         backend.panel_examine(false).unwrap();
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(state.pc, 0x0123);
-        assert_eq!(state.total_t_states, Some(before + 12));
+        assert_eq!(state.total_t_states, Some(before + 13));
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
         assert_eq!(backend.cpu().t_state(), TState::Tw);
+        let teaching = backend.teaching_snapshot().expect("EXAMINE must end on a clocked TW sample");
+        assert_eq!(teaching.accuracy, BusTeachingAccuracy::Exact);
+        assert_eq!(teaching.t_state, TState::Tw.into());
+        assert_eq!(teaching.ready, Some(false));
+        assert_eq!(teaching.pins.wait, Some(true));
 
         let panel = backend.front_panel_state().unwrap();
         assert_eq!(panel.address, 0x0123);
@@ -1071,6 +1156,10 @@ mod tests {
         assert_eq!(next.pc, 0x0124);
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
         assert_eq!(backend.cpu().t_state(), TState::Tw);
+        let teaching = backend.teaching_snapshot().expect("EXAMINE NEXT must end on a clocked TW sample");
+        assert_eq!(teaching.t_state, TState::Tw.into());
+        assert_eq!(teaching.ready, Some(false));
+        assert_eq!(teaching.pins.wait, Some(true));
         let panel = backend.front_panel_state().unwrap();
         assert_eq!(panel.address, 0x0124);
         assert_eq!(panel.data, 0x5a);
