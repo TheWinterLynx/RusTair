@@ -320,13 +320,12 @@ impl CycleAccurateMachineBackend {
         self.machine.bus.refresh_interrupt_request_line();
         let data_in = self.data_in_for_current_t_state(front_panel_data);
         let lines = self.machine.bus.cpu_control_lines();
-        let interrupt = self.machine.bus.interrupt_requested();
         let trace = self.cpu.tick(Cpu8080Inputs {
             data_in,
             // SINGLE STEP and the EXM sequencer may momentarily override the
             // stopped READY line. HOLD, PINT and RESET always arrive through S-100.
             ready,
-            interrupt,
+            interrupt: lines.interrupt,
             hold: lines.hold,
             reset: lines.reset,
         });
@@ -657,7 +656,7 @@ impl CycleAccurateMachineBackend {
         let lines = self.machine.bus.cpu_control_lines();
         let _ = self.cpu.tick(Cpu8080Inputs {
             ready: lines.ready,
-            interrupt: self.machine.bus.interrupt_requested(),
+            interrupt: lines.interrupt,
             hold: lines.hold,
             reset: lines.reset,
             ..Cpu8080Inputs::default()
@@ -1327,12 +1326,12 @@ mod tests {
         assert!(backend.cpu().interrupts_enabled());
 
         backend.serial_receive(BackendSerialPort::Port0, b'I').unwrap();
-        assert!(backend.machine().bus.interrupt_requested());
+        assert!(backend.machine().bus.cpu_control_lines().interrupt);
         backend.service_execution(1).unwrap();
 
         let sample = backend.teaching_snapshot().expect("INTA T1 must be visible to the Teacher");
-        assert_eq!(sample.machine_cycle, BusMachineCycle::InterruptAck);
-        assert_eq!(sample.t_state, BusTState::T1);
+        assert_eq!(sample.machine_cycle, MachineCycle::InterruptAck.into());
+        assert_eq!(sample.t_state, TState::T1.into());
         assert_eq!(sample.status_word, Some(0x23));
         assert_eq!(sample.status.int_ack, Some(true));
         assert_eq!(sample.pins.inte, Some(false));
@@ -1344,7 +1343,7 @@ mod tests {
         assert_eq!(backend.cpu().registers().sp, 0x3ffe);
         assert_eq!(backend.peek_memory(0x3ffe).unwrap(), Some(0x02));
         assert_eq!(backend.peek_memory(0x3fff).unwrap(), Some(0x00));
-        assert!(backend.machine().bus.interrupt_requested());
+        assert!(backend.machine().bus.cpu_control_lines().interrupt);
     }
 
     #[test]
@@ -1370,8 +1369,8 @@ mod tests {
         backend.service_execution(1).unwrap();
 
         let sample = backend.teaching_snapshot().expect("halt interrupt acknowledge must be sampled");
-        assert_eq!(sample.machine_cycle, BusMachineCycle::InterruptAckWhileHalt);
-        assert_eq!(sample.t_state, BusTState::T1);
+        assert_eq!(sample.machine_cycle, MachineCycle::InterruptAckWhileHalt.into());
+        assert_eq!(sample.t_state, TState::T1.into());
         assert_eq!(sample.status_word, Some(0x2b));
         assert_eq!(sample.status.int_ack, Some(true));
         assert_eq!(sample.pins.inte, Some(false));
