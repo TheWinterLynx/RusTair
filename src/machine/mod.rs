@@ -204,7 +204,7 @@ impl AltairBus {
     fn toggle_panel_switch(&mut self, bit: usize) { self.panel.toggle_switch(bit); }
     fn panel_lamps(&self) -> PanelLampSnapshot { self.s100.snapshot() }
     fn panel_address(&self) -> u16 { self.s100.signals().address }
-    fn panel_data(&self) -> u8 { self.s100.signals().data }
+    fn panel_data(&self) -> u8 { self.s100.signals().panel_data }
 
     fn sync_cpu_inte(&mut self, enabled: bool) {
         self.cpu_inte = enabled;
@@ -248,7 +248,9 @@ impl AltairBus {
     pub(crate) fn drive_cpu_board_sample(&mut self, sample: S100CpuSample) {
         self.cycle_drive_s100_t_state(
             sample.address,
-            sample.data,
+            sample.cpu_data,
+            sample.data_in,
+            sample.data_out,
             sample.status_word,
             sample.inte,
             sample.ready,
