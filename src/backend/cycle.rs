@@ -1,7 +1,9 @@
 use std::time::Duration;
 
+use rand::RngCore;
+
 use crate::config::SerialBoard;
-use crate::cpu8080::{Bus, Cpu8080};
+use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
@@ -43,17 +45,14 @@ pub struct CycleAccurateMachineBackend {
 
 impl Default for CycleAccurateMachineBackend {
     fn default() -> Self {
-        let machine = AltairMachine::default();
-        let mut backend = Self {
-            machine,
+        Self {
+            machine: AltairMachine::default(),
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
             last_teaching_snapshot: None,
             stop_wait_park_pending: false,
             cpu_fault: None,
-        };
-        backend.sync_machine_cpu();
-        backend
+        }
     }
 }
 
@@ -117,40 +116,25 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    fn cycle_registers_from_fast(cpu: &Cpu8080) -> Registers {
-        Registers {
-            a: cpu.a,
-            b: cpu.b,
-            c: cpu.c,
-            d: cpu.d,
-            e: cpu.e,
-            h: cpu.h,
-            l: cpu.l,
-            f: cpu.f,
-            sp: cpu.sp,
-            pc: cpu.pc,
-        }
-    }
-
-    /// `AltairMachine` still owns the common chassis/front-panel helpers. Keep
-    /// its legacy CPU field as a passive mirror so those helpers see the real
-    /// cycle-core PC/HALT state without ever executing the fast CPU.
-    fn sync_machine_cpu(&mut self) {
-        let r = self.cpu.registers();
-        let cpu = &mut self.machine.cpu;
-        cpu.a = r.a;
-        cpu.b = r.b;
-        cpu.c = r.c;
-        cpu.d = r.d;
-        cpu.e = r.e;
-        cpu.h = r.h;
-        cpu.l = r.l;
-        cpu.f = r.f;
-        cpu.pc = r.pc;
-        cpu.sp = r.sp;
-        cpu.inte = self.cpu.interrupts_enabled();
-        cpu.halted = self.cpu.is_halted();
-        cpu.cycles = self.cpu.total_t_states();
+    /// Create the undefined Intel 8080 power-on sample owned by the Cycle core.
+    /// Fast has its own Cpu8080 randomizer; neither backend copies CPU state into
+    /// the other. RESET remains deterministic only for PC/INTE/HALT as on silicon.
+    fn random_power_on_cpu_state() -> (Registers, bool) {
+        let mut rng = rand::rng();
+        let registers = Registers {
+            a: rng.next_u32() as u8,
+            b: rng.next_u32() as u8,
+            c: rng.next_u32() as u8,
+            d: rng.next_u32() as u8,
+            e: rng.next_u32() as u8,
+            h: rng.next_u32() as u8,
+            l: rng.next_u32() as u8,
+            f: ((rng.next_u32() as u8) & 0xd5) | 0x02,
+            sp: rng.next_u32() as u16,
+            pc: rng.next_u32() as u16,
+        };
+        let inte = rng.next_u32() & 1 != 0;
+        (registers, inte)
     }
 
     fn cycle_accepts_front_panel_data(&self) -> bool {
@@ -409,7 +393,6 @@ impl CycleAccurateMachineBackend {
             front_panel_data,
             effective_ready,
         );
-        self.sync_machine_cpu();
         self.capture_teaching_snapshot(&trace, visible_data, effective_ready);
 
         // A T3 I/O transfer can itself create or remove a level-sensitive UART
@@ -696,7 +679,6 @@ impl CycleAccurateMachineBackend {
             }
         }
         self.park_at_waiting_fetch();
-        self.sync_machine_cpu();
     }
 
     /// DEP directly pulses the memory write line with the low eight switch bits
@@ -717,7 +699,6 @@ impl CycleAccurateMachineBackend {
         self.machine
             .bus
             .cpu_board_front_panel_deposit(address, value);
-        self.sync_machine_cpu();
     }
 
     /// STOP is latched by the display/control hardware at PSYNC. If the switch
@@ -755,7 +736,6 @@ impl CycleAccurateMachineBackend {
             ..Cpu8080Inputs::default()
         });
         self.stop_wait_park_pending = false;
-        self.sync_machine_cpu();
     }
 }
 
@@ -785,19 +765,20 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
-        self.machine.power_with_historical_run_latch(on, historical);
         if on {
-            let registers = Self::cycle_registers_from_fast(&self.machine.cpu);
-            let inte = self.machine.cpu.inte;
+            let (registers, inte) = Self::random_power_on_cpu_state();
+            let run = historical && (rand::rng().next_u32() & 1 != 0);
+            self.machine
+                .cycle_power_chassis(true, run, registers.pc, inte);
             self.cpu = Cpu8080Cycle::new();
             self.cpu.initialize_power_on_state(registers, inte);
         } else {
+            self.machine.cycle_power_chassis(false, false, 0, false);
             self.cpu = Cpu8080Cycle::new();
         }
         self.last_teaching_snapshot = None;
         self.stop_wait_park_pending = false;
         self.cpu_fault = None;
-        self.sync_machine_cpu();
         Ok(())
     }
 
@@ -846,14 +827,13 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
-        self.sync_machine_cpu();
-        self.machine.commit_panel_activity(dt);
+        self.machine
+            .cycle_commit_panel_activity(dt, self.cpu.is_halted());
         self.refresh_teaching_visible_lamps();
         Ok(())
     }
 
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
-        self.sync_machine_cpu();
         let was_running = self.machine.running;
         if !run
             && self.machine.powered
@@ -891,16 +871,15 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn assert_reset(&mut self) -> BackendResult<()> {
         self.last_teaching_snapshot = None;
         self.stop_wait_park_pending = false;
-        self.machine.assert_front_panel_reset();
+        self.machine.cycle_assert_front_panel_reset_from_cpu();
         self.reset_cycle_core_from_s100();
         Ok(())
     }
     fn release_reset(&mut self) -> BackendResult<()> {
         // Preserve a pending STOP until the first real post-reset PSYNC. The
         // exact T1 sample will clear RUN through cycle_capture_pending_stop_at_psync().
-        self.machine.cycle_release_front_panel_reset();
+        self.machine.cycle_release_front_panel_reset_from_cpu();
         self.stop_wait_park_pending = false;
-        self.sync_machine_cpu();
         Ok(())
     }
     fn assert_clear(&mut self) -> BackendResult<()> { self.machine.assert_front_panel_clear(); Ok(()) }
@@ -922,7 +901,11 @@ impl MachineBackend for CycleAccurateMachineBackend {
         self.fail_if_cpu_fault("front-panel DEPOSIT")
     }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
-        self.machine.front_panel_set_memory_protection_via_s100(protected);
+        self.machine.cycle_front_panel_set_memory_protection(
+            protected,
+            self.cpu.is_halted(),
+            self.cpu.is_holding(),
+        );
         Ok(())
     }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
@@ -1037,7 +1020,6 @@ mod tests {
         };
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(7));
-        assert_eq!(backend.machine().cpu.pc, 1, "legacy field must only mirror the cycle core");
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
         assert_eq!(backend.cpu().t_state(), TState::Tw);
         assert!(backend.machine().wait_led(), "STEP must end on a CPU-generated TW/WAIT sample");
@@ -1462,7 +1444,6 @@ mod tests {
         let mut registers = backend.cpu.registers();
         registers.sp = 0x0400;
         backend.cpu.set_registers(registers);
-        backend.sync_machine_cpu();
         backend.load_bytes(0, &[0xfb, 0x00, 0x00]).unwrap(); // EI; NOP; NOP
         backend.machine.bus.debugger_output_port(0x00, 0x01); // enable 88-SIO RX IRQ
         backend.run().unwrap();
@@ -1505,7 +1486,6 @@ mod tests {
         let mut registers = backend.cpu.registers();
         registers.sp = 0x0400;
         backend.cpu.set_registers(registers);
-        backend.sync_machine_cpu();
         backend.load_bytes(0, &[0xfb, 0x76]).unwrap(); // EI; HLT
         backend.machine.bus.debugger_output_port(0x00, 0x01);
         backend.run().unwrap();
