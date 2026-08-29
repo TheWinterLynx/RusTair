@@ -132,6 +132,12 @@ impl IoTrace {
 pub(super) struct IoDevices {
     serial: [SerialPort; 2],
     serial_board: SerialBoard,
+    /// Original 88-SIO control channel. D0 enables receive interrupts and D1
+    /// enables transmit-ready interrupts. The previous model ignored writes to
+    /// port 00h entirely, which made authentic interrupt-driven software
+    /// impossible even before PINT was wired through the chassis.
+    sio_control: u8,
+    /// Motorola 6850 control register image for each 88-2SIO port.
     two_sio_control: [u8; 2],
     trace: IoTrace,
 }
@@ -141,6 +147,7 @@ impl Default for IoDevices {
         Self {
             serial: [SerialPort::default(), SerialPort::default()],
             serial_board: SerialBoard::default(),
+            sio_control: 0,
             two_sio_control: [0; 2],
             trace: IoTrace::default(),
         }
@@ -187,6 +194,33 @@ impl IoDevices {
         if value & 0x03 == 0x03 {
             self.serial[index].clear();
         }
+    }
+
+    /// Raw interrupt condition produced by the selected serial board before
+    /// motherboard/vector-board routing. Direct PINT operation supplies RST 7;
+    /// a future 88-VI/RTC model can consume these same per-board conditions and
+    /// replace the direct vectoring policy without changing the UART model.
+    pub(super) fn interrupt_request(&self) -> bool {
+        match self.serial_board {
+            SerialBoard::Sio88 => {
+                let rx_irq = self.sio_control & 0x01 != 0 && !self.serial[0].rx_empty();
+                let tx_irq = self.sio_control & 0x02 != 0 && !self.serial[0].tx_busy();
+                rx_irq || tx_irq
+            }
+            SerialBoard::TwoSio88 => (0..2).any(|index| {
+                let control = self.two_sio_control[index];
+                let rx_irq = control & 0x80 != 0 && !self.serial[index].rx_empty();
+                // MC6850 transmitter-control bits CR6:CR5 = 01 enable the
+                // transmitter-empty interrupt while keeping RTS asserted.
+                let tx_irq = control & 0x60 == 0x20 && !self.serial[index].tx_busy();
+                rx_irq || tx_irq
+            }),
+        }
+    }
+
+    pub(super) const fn direct_interrupt_opcode(&self) -> u8 {
+        // The stock direct-PINT Altair interrupt path forces RST 7 (0038h).
+        0xff
     }
 
     fn input_raw(&mut self, port: u8) -> u8 {
@@ -243,11 +277,11 @@ impl IoDevices {
 
     fn output_raw(&mut self, port: u8, value: u8) {
         match self.serial_board {
-            SerialBoard::Sio88 => {
-                if port == SIO_DATA_PORT {
-                    self.serial[0].write_tx(value);
-                }
-            }
+            SerialBoard::Sio88 => match port {
+                SIO_STATUS_PORT => self.sio_control = value & 0x03,
+                SIO_DATA_PORT => self.serial[0].write_tx(value),
+                _ => {}
+            },
             SerialBoard::TwoSio88 => match port {
                 SIO2_PORT0_STATUS => self.write_two_sio_control(0, value),
                 SIO2_PORT0_DATA => self.serial[0].write_tx(value),
@@ -328,6 +362,7 @@ impl IoDevices {
     pub(super) fn clear_serial(&mut self) {
         self.serial[0].clear();
         self.serial[1].clear();
+        self.sio_control = 0;
         self.two_sio_control.fill(0);
     }
 
@@ -395,6 +430,14 @@ impl AltairBus {
 
     pub fn serial_port1_tx_busy(&self) -> bool {
         self.io.port1_tx_busy()
+    }
+
+    pub(crate) fn serial_interrupt_request(&self) -> bool {
+        self.io.interrupt_request()
+    }
+
+    pub(crate) fn serial_interrupt_opcode(&self) -> u8 {
+        self.io.direct_interrupt_opcode()
     }
 
     pub fn peek_io_port(&self, port: u8) -> u8 {
@@ -492,6 +535,45 @@ mod tests {
         assert!(!io.port1_tx_busy());
         io.output(SIO_DATA_PORT, b'S');
         assert_eq!(io.serial_tx_front(), Some(b'S'));
+    }
+
+    #[test]
+    fn sio_control_port_enables_level_sensitive_rx_and_tx_interrupt_sources() {
+        let mut io = IoDevices::default();
+        assert!(!io.interrupt_request());
+
+        io.output(SIO_STATUS_PORT, 0x01); // D0: receive interrupt enable
+        io.serial_receive(b'R');
+        assert!(io.interrupt_request());
+        assert_eq!(io.input(SIO_DATA_PORT), b'R');
+        assert!(!io.interrupt_request(), "reading the receive buffer removes the RX interrupt condition");
+
+        io.output(SIO_STATUS_PORT, 0x02); // D1: transmit-ready interrupt enable
+        assert!(io.interrupt_request(), "an empty transmitter is ready and therefore requests service");
+        io.output(SIO_DATA_PORT, b'T');
+        assert!(!io.interrupt_request(), "loading the transmitter removes the ready condition");
+        assert_eq!(io.serial_tx_complete(), Some(b'T'));
+        assert!(io.interrupt_request(), "completed transmission restores the ready interrupt condition");
+        assert_eq!(io.direct_interrupt_opcode(), 0xff);
+    }
+
+    #[test]
+    fn two_sio_acia_control_bits_drive_rx_and_tx_interrupt_conditions() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+
+        io.output(SIO2_PORT0_STATUS, 0x80); // CR7: RX IRQ enable
+        io.serial_receive(b'R');
+        assert!(io.interrupt_request());
+        assert_eq!(io.input(SIO2_PORT0_DATA), b'R');
+        assert!(!io.interrupt_request());
+
+        io.output(SIO2_PORT0_STATUS, 0x20); // CR6:CR5 = 01: TX empty IRQ enable
+        assert!(io.interrupt_request());
+        io.output(SIO2_PORT0_DATA, b'T');
+        assert!(!io.interrupt_request());
+        assert_eq!(io.serial_tx_complete(), Some(b'T'));
+        assert!(io.interrupt_request());
     }
 
     #[test]
