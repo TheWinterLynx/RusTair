@@ -862,25 +862,37 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0x3e, 0x11, 0x00]).unwrap(); // MVI A,11h / NOP
+        backend
+            .load_bytes(0, &[0x3e, 0x11, 0x00, 0x00])
+            .unwrap(); // MVI A,11h / NOP / NOP
         backend.set_instruction_trace_enabled(true).unwrap();
 
-        backend.step().unwrap(); // physical SINGLE STEP: fetch M1 only
+        backend.step().unwrap(); // physical SINGLE STEP: MVI fetch, then operand TW
         let generation = backend.instruction_trace_metadata().unwrap().generation;
         assert!(backend.instruction_trace_snapshot().unwrap().is_empty());
 
         assert!(backend.write_memory(0x0001, 0x22, true).unwrap());
         assert_ne!(backend.instruction_trace_metadata().unwrap().generation, generation);
-        backend.step().unwrap(); // operand M2 completes MVI, but stale partial trace is gone
+        backend.step().unwrap(); // MVI operand completes, next NOP fetch already parks in TW
         assert!(backend.instruction_trace_snapshot().unwrap().is_empty());
 
-        backend.step().unwrap(); // next NOP is captured normally
+        // The NOP at 0002h began electrically during the previous panel step
+        // (its T1/T2 already happened before the trace epoch was re-established),
+        // so it must not be reconstructed retroactively. Continuous RUN finishes
+        // that partial fetch, then the observer sees the next genuine T1 at 0003h
+        // and resumes trace capture from a truthful instruction boundary.
+        backend.run().unwrap();
+        backend.service_execution(7).unwrap();
+        backend.halt().unwrap();
+
         let history = backend.instruction_trace_snapshot().unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].address, 0x0002);
-        assert_eq!(history[0].t_states, 4, "panel parking waits are not guest instruction timing");
+        assert_eq!(history[0].address, 0x0003);
+        assert_eq!(history[0].bytes[0], 0x00);
+        assert_eq!(history[0].t_states, 4, "trace timing must exclude panel parking waits");
         let CpuState::Intel8080(cpu) = backend.cpu_state().unwrap() else { unreachable!() };
         assert_eq!(cpu.a, 0x22);
+        assert_eq!(cpu.pc, 0x0004);
     }
 
     #[test]
