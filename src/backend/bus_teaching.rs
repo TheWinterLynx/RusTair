@@ -180,11 +180,19 @@ pub struct BusTeachingSnapshot {
     pub machine_cycle_index: Option<u8>,
     pub t_state: BusTState,
     pub address: Option<u16>,
-    /// Transitional compatibility view. The canonical machine model now keeps
-    /// 8080 D0-D7, S-100 DI, S-100 DO and the DI-wired front-panel DATA source
-    /// distinct. This single field remains until the Teacher migration lands in
-    /// the next checkpoint; it must not be treated as new electrical authority.
+    /// Compatibility summary of the electrically active transfer byte. Exact
+    /// consumers must prefer `cpu_data`, `s100_di` and `s100_do` below.
     pub data: Option<u8>,
+    /// Intel 8080 package bidirectional D0-D7 at the displayed observation.
+    pub cpu_data: Option<u8>,
+    /// S-100 DI0-DI7: data travelling toward the processor board.
+    pub s100_di: Option<u8>,
+    /// S-100 DO0-DO7: data travelling away from the processor board.
+    pub s100_do: Option<u8>,
+    /// Byte associated with the front-panel DATA display path. This is kept
+    /// separate from CPU D and DO so optical/presentation retention cannot be
+    /// mistaken for a processor-package level.
+    pub panel_data: Option<u8>,
     pub status_word: Option<u8>,
     pub pins: BusCpuPins,
     pub status: BusStatusLines,
@@ -210,6 +218,7 @@ impl BusTeachingSnapshot {
             CpuState::Intel8080(cpu) => (Some(cpu.pc), cpu.total_t_states),
             CpuState::Z80(cpu) => (Some(cpu.pc), cpu.total_t_states),
         };
+        let panel_data = if panel.powered { Some(panel.data) } else { None };
         Self {
             accuracy: BusTeachingAccuracy::Reconstructed,
             engine,
@@ -219,7 +228,13 @@ impl BusTeachingSnapshot {
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
             address: if panel.powered { Some(panel.address) } else { None },
-            data: if panel.powered { Some(panel.data) } else { None },
+            // Fast mode has no exact directional/pin sample. Preserve the useful
+            // front-panel observation without fabricating DI, DO or CPU D truth.
+            data: panel_data,
+            cpu_data: None,
+            s100_di: None,
+            s100_do: None,
+            panel_data,
             status_word: None,
             pins: BusCpuPins::default(),
             status: BusStatusLines::default(),
