@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 
 use crate::config::SerialBoard;
 use crate::cpu8080::Bus;
+use crate::mc6850::Mc6850;
 
 use super::memory::{MemoryReadyPhase, S100_OPEN_BUS_VALUE};
 use super::serial::SerialPort;
@@ -131,15 +132,17 @@ impl IoTrace {
 }
 
 pub(super) struct IoDevices {
+    /// Byte-level model retained exclusively for the older 88-SIO while that
+    /// revision-sensitive card is audited separately.
     serial: [SerialPort; 2],
+    /// The 88-2SIO contains two independent Motorola 6850 ACIAs. Keeping the
+    /// actual chip state here prevents ASR/terminal presentation queues from
+    /// masquerading as UART registers.
+    two_sio: [Mc6850; 2],
     serial_board: SerialBoard,
     /// Original 88-SIO control channel. D0 enables receive interrupts and D1
-    /// enables transmit-ready interrupts. The previous model ignored writes to
-    /// port 00h entirely, which made authentic interrupt-driven software
-    /// impossible even before PINT was wired through the chassis.
+    /// enables transmit-ready interrupts in the current pre-revision-audit model.
     sio_control: u8,
-    /// Motorola 6850 control register image for each 88-2SIO port.
-    two_sio_control: [u8; 2],
     trace: IoTrace,
 }
 
@@ -147,9 +150,9 @@ impl Default for IoDevices {
     fn default() -> Self {
         Self {
             serial: [SerialPort::default(), SerialPort::default()],
+            two_sio: [Mc6850::default(), Mc6850::default()],
             serial_board: SerialBoard::default(),
             sio_control: 0,
-            two_sio_control: [0; 2],
             trace: IoTrace::default(),
         }
     }
@@ -206,8 +209,7 @@ impl IoDevices {
     /// Exact PRDY contribution of the 88-2SIO input wait generator. SINP clocks
     /// the board's V flip-flop, holding PRDY low through the READY sampling point
     /// in T2. The resulting PWAIT clears V, so PRDY is high in the first TW and
-    /// the processor advances to T3 on the following clock. No persistent host
-    /// timer is involved: this is a one-T-state hardware handshake.
+    /// the processor advances to T3 on the following clock.
     pub(super) fn ready_for_input_t_state(
         &self,
         port: u8,
@@ -220,23 +222,19 @@ impl IoDevices {
         !matches!(phase, MemoryReadyPhase::T1 | MemoryReadyPhase::T2)
     }
 
-    fn two_sio_status(&self, index: usize) -> u8 {
-        let serial = &self.serial[index];
-        (if serial.rx_empty() { 0 } else { 0x01 })
-            | (if serial.tx_busy() { 0 } else { 0x02 })
-    }
-
-    fn write_two_sio_control(&mut self, index: usize, value: u8) {
-        self.two_sio_control[index] = value;
-        if value & 0x03 == 0x03 {
-            self.serial[index].clear();
-        }
+    fn two_sio_start_transmitter_if_idle(&mut self, index: usize) {
+        // Register ownership is now authentic: guest writes fill TDR, then the
+        // ACIA transfers TDR to its separate shift register and TDRE reflects
+        // TDR availability rather than endpoint completion. The transfer is
+        // presently started at the write boundary; the next closeout slice will
+        // put the one-bit transfer delay and full frame duration under the card's
+        // emulated baud clock instead of this zero-delay start approximation.
+        let _ = self.two_sio[index].transfer_tdr_to_shift_if_idle();
     }
 
     /// Raw interrupt condition produced by the selected serial board before
     /// motherboard/vector-board routing. Direct PINT operation supplies RST 7;
-    /// a future 88-VI/RTC model can consume these same per-board conditions and
-    /// replace the direct vectoring policy without changing the UART model.
+    /// a future 88-VI/RTC model can consume these same per-board conditions.
     pub(super) fn interrupt_request(&self) -> bool {
         match self.serial_board {
             SerialBoard::Sio88 => {
@@ -244,14 +242,7 @@ impl IoDevices {
                 let tx_irq = self.sio_control & 0x02 != 0 && !self.serial[0].tx_busy();
                 rx_irq || tx_irq
             }
-            SerialBoard::TwoSio88 => (0..2).any(|index| {
-                let control = self.two_sio_control[index];
-                let rx_irq = control & 0x80 != 0 && !self.serial[index].rx_empty();
-                // MC6850 transmitter-control bits CR6:CR5 = 01 enable the
-                // transmitter-empty interrupt while keeping RTS asserted.
-                let tx_irq = control & 0x60 == 0x20 && !self.serial[index].tx_busy();
-                rx_irq || tx_irq
-            }),
+            SerialBoard::TwoSio88 => self.two_sio.iter().any(Mc6850::interrupt_request),
         }
     }
 
@@ -272,10 +263,10 @@ impl IoDevices {
                 _ => S100_OPEN_BUS_VALUE,
             },
             SerialBoard::TwoSio88 => match port {
-                SIO2_PORT0_STATUS => self.two_sio_status(0),
-                SIO2_PORT0_DATA => self.serial[0].read_rx().unwrap_or(0),
-                SIO2_PORT1_STATUS => self.two_sio_status(1),
-                SIO2_PORT1_DATA => self.serial[1].read_rx().unwrap_or(0),
+                SIO2_PORT0_STATUS => self.two_sio[0].read_status(),
+                SIO2_PORT0_DATA => self.two_sio[0].read_data(),
+                SIO2_PORT1_STATUS => self.two_sio[1].read_status(),
+                SIO2_PORT1_DATA => self.two_sio[1].read_data(),
                 _ => S100_OPEN_BUS_VALUE,
             },
         }
@@ -293,10 +284,10 @@ impl IoDevices {
                 _ => S100_OPEN_BUS_VALUE,
             },
             SerialBoard::TwoSio88 => match port {
-                SIO2_PORT0_STATUS => self.two_sio_status(0),
-                SIO2_PORT0_DATA => self.serial[0].rx_front().unwrap_or(0),
-                SIO2_PORT1_STATUS => self.two_sio_status(1),
-                SIO2_PORT1_DATA => self.serial[1].rx_front().unwrap_or(0),
+                SIO2_PORT0_STATUS => self.two_sio[0].peek_status(),
+                SIO2_PORT0_DATA => self.two_sio[0].peek_data(),
+                SIO2_PORT1_STATUS => self.two_sio[1].peek_status(),
+                SIO2_PORT1_DATA => self.two_sio[1].peek_data(),
                 _ => S100_OPEN_BUS_VALUE,
             },
         }
@@ -316,10 +307,16 @@ impl IoDevices {
                 _ => {}
             },
             SerialBoard::TwoSio88 => match port {
-                SIO2_PORT0_STATUS => self.write_two_sio_control(0, value),
-                SIO2_PORT0_DATA => self.serial[0].write_tx(value),
-                SIO2_PORT1_STATUS => self.write_two_sio_control(1, value),
-                SIO2_PORT1_DATA => self.serial[1].write_tx(value),
+                SIO2_PORT0_STATUS => self.two_sio[0].write_control(value),
+                SIO2_PORT0_DATA => {
+                    self.two_sio[0].write_data(value);
+                    self.two_sio_start_transmitter_if_idle(0);
+                }
+                SIO2_PORT1_STATUS => self.two_sio[1].write_control(value),
+                SIO2_PORT1_DATA => {
+                    self.two_sio[1].write_data(value);
+                    self.two_sio_start_transmitter_if_idle(1);
+                }
                 _ => {}
             },
         }
@@ -331,25 +328,40 @@ impl IoDevices {
     }
 
     pub(super) fn serial_receive(&mut self, byte: u8) {
-        self.serial[0].receive(byte);
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[0].receive(byte),
+            SerialBoard::TwoSio88 => self.two_sio[0].receive_character(byte, false, false),
+        }
         let port = self.data_port_for_index(0);
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
     }
 
     pub(super) fn serial_rx_empty(&self) -> bool {
-        self.serial[0].rx_empty()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[0].rx_empty(),
+            SerialBoard::TwoSio88 => self.two_sio[0].receive_len() == 0,
+        }
     }
 
     pub(super) fn serial_rx_len(&self) -> usize {
-        self.serial[0].rx_len()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[0].rx_len(),
+            SerialBoard::TwoSio88 => self.two_sio[0].receive_len(),
+        }
     }
 
     pub(super) fn serial_tx_front(&self) -> Option<u8> {
-        self.serial[0].tx_front()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[0].tx_front(),
+            SerialBoard::TwoSio88 => self.two_sio[0].tx_shift_front(),
+        }
     }
 
     pub(super) fn serial_tx_complete(&mut self) -> Option<u8> {
-        let completed = self.serial[0].complete_tx();
+        let completed = match self.serial_board {
+            SerialBoard::Sio88 => self.serial[0].complete_tx(),
+            SerialBoard::TwoSio88 => self.two_sio[0].complete_tx_shift(),
+        };
         if let Some(byte) = completed {
             let port = self.data_port_for_index(0);
             self.trace.record(IO_TRACE_TX_COMPLETE, port, byte);
@@ -358,29 +370,47 @@ impl IoDevices {
     }
 
     pub(super) fn serial_tx_busy(&self) -> bool {
-        self.serial[0].tx_busy()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[0].tx_busy(),
+            SerialBoard::TwoSio88 => self.two_sio[0].transmit_busy(),
+        }
     }
 
     pub(super) fn port1_receive(&mut self, byte: u8) {
-        self.serial[1].receive(byte);
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[1].receive(byte),
+            SerialBoard::TwoSio88 => self.two_sio[1].receive_character(byte, false, false),
+        }
         let port = self.data_port_for_index(1);
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
     }
 
     pub(super) fn port1_rx_empty(&self) -> bool {
-        self.serial[1].rx_empty()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[1].rx_empty(),
+            SerialBoard::TwoSio88 => self.two_sio[1].receive_len() == 0,
+        }
     }
 
     pub(super) fn port1_rx_len(&self) -> usize {
-        self.serial[1].rx_len()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[1].rx_len(),
+            SerialBoard::TwoSio88 => self.two_sio[1].receive_len(),
+        }
     }
 
     pub(super) fn port1_tx_front(&self) -> Option<u8> {
-        self.serial[1].tx_front()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[1].tx_front(),
+            SerialBoard::TwoSio88 => self.two_sio[1].tx_shift_front(),
+        }
     }
 
     pub(super) fn port1_tx_complete(&mut self) -> Option<u8> {
-        let completed = self.serial[1].complete_tx();
+        let completed = match self.serial_board {
+            SerialBoard::Sio88 => self.serial[1].complete_tx(),
+            SerialBoard::TwoSio88 => self.two_sio[1].complete_tx_shift(),
+        };
         if let Some(byte) = completed {
             let port = self.data_port_for_index(1);
             self.trace.record(IO_TRACE_TX_COMPLETE, port, byte);
@@ -389,21 +419,27 @@ impl IoDevices {
     }
 
     pub(super) fn port1_tx_busy(&self) -> bool {
-        self.serial[1].tx_busy()
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[1].tx_busy(),
+            SerialBoard::TwoSio88 => self.two_sio[1].transmit_busy(),
+        }
     }
 
     pub(super) fn clear_serial(&mut self) {
         self.serial[0].clear();
         self.serial[1].clear();
+        self.two_sio = [Mc6850::default(), Mc6850::default()];
         self.sio_control = 0;
-        self.two_sio_control.fill(0);
     }
 
     fn debugger_inject_rx(&mut self, port: u8, byte: u8) -> bool {
         let Some(index) = self.data_port_index(port) else {
             return false;
         };
-        self.serial[index].receive(byte);
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[index].receive(byte),
+            SerialBoard::TwoSio88 => self.two_sio[index].receive_character(byte, false, false),
+        }
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
         true
     }
@@ -412,7 +448,10 @@ impl IoDevices {
         let Some(index) = self.data_port_index(port) else {
             return false;
         };
-        self.serial[index].clear_rx();
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[index].clear_rx(),
+            SerialBoard::TwoSio88 => self.two_sio[index].clear_receive_for_debugger(),
+        }
         true
     }
 
@@ -420,13 +459,19 @@ impl IoDevices {
         let Some(index) = self.data_port_index(port) else {
             return false;
         };
-        self.serial[index].clear_tx();
+        match self.serial_board {
+            SerialBoard::Sio88 => self.serial[index].clear_tx(),
+            SerialBoard::TwoSio88 => self.two_sio[index].clear_transmit_for_debugger(),
+        }
         true
     }
 
     fn debugger_complete_tx(&mut self, port: u8) -> Option<u8> {
         let index = self.data_port_index(port)?;
-        let byte = self.serial[index].complete_tx()?;
+        let byte = match self.serial_board {
+            SerialBoard::Sio88 => self.serial[index].complete_tx()?,
+            SerialBoard::TwoSio88 => self.two_sio[index].complete_tx_shift()?,
+        };
         self.trace.record(IO_TRACE_TX_COMPLETE, port, byte);
         Some(byte)
     }
@@ -443,9 +488,11 @@ impl AltairBus {
     }
 
     pub(crate) fn fast_account_io_input_wait(&mut self, port: u8) {
-        self.fast_wait_t_states = self
-            .fast_wait_t_states
-            .saturating_add(u32::from(self.io.input_wait_states(port)));
+        // Derive the instruction-level approximation from the same card PRDY
+        // predicate used by Cycle. This keeps the two engines from acquiring
+        // separate hard-coded 88-2SIO wait policies.
+        let wait_states = u32::from(!self.cycle_io_ready(port, true, MemoryReadyPhase::T2));
+        self.fast_wait_t_states = self.fast_wait_t_states.saturating_add(wait_states);
     }
 
     pub(crate) fn cycle_io_ready(
@@ -649,18 +696,18 @@ mod tests {
         let mut io = IoDevices::default();
         assert!(!io.interrupt_request());
 
-        io.output(SIO_STATUS_PORT, 0x01); // D0: receive interrupt enable
+        io.output(SIO_STATUS_PORT, 0x01);
         io.serial_receive(b'R');
         assert!(io.interrupt_request());
         assert_eq!(io.input(SIO_DATA_PORT), b'R');
-        assert!(!io.interrupt_request(), "reading the receive buffer removes the RX interrupt condition");
+        assert!(!io.interrupt_request());
 
-        io.output(SIO_STATUS_PORT, 0x02); // D1: transmit-ready interrupt enable
-        assert!(io.interrupt_request(), "an empty transmitter is ready and therefore requests service");
+        io.output(SIO_STATUS_PORT, 0x02);
+        assert!(io.interrupt_request());
         io.output(SIO_DATA_PORT, b'T');
-        assert!(!io.interrupt_request(), "loading the transmitter removes the ready condition");
+        assert!(!io.interrupt_request());
         assert_eq!(io.serial_tx_complete(), Some(b'T'));
-        assert!(io.interrupt_request(), "completed transmission restores the ready interrupt condition");
+        assert!(io.interrupt_request());
         assert_eq!(io.direct_interrupt_opcode(), 0xff);
     }
 
@@ -669,18 +716,36 @@ mod tests {
         let mut io = IoDevices::default();
         io.configure_serial_board(SerialBoard::TwoSio88);
 
-        io.output(SIO2_PORT0_STATUS, 0x80); // CR7: RX IRQ enable
+        io.output(SIO2_PORT0_STATUS, 0x80);
         io.serial_receive(b'R');
         assert!(io.interrupt_request());
         assert_eq!(io.input(SIO2_PORT0_DATA), b'R');
         assert!(!io.interrupt_request());
 
-        io.output(SIO2_PORT0_STATUS, 0x20); // CR6:CR5 = 01: TX empty IRQ enable
+        io.output(SIO2_PORT0_STATUS, 0x20);
         assert!(io.interrupt_request());
         io.output(SIO2_PORT0_DATA, b'T');
-        assert!(!io.interrupt_request());
+        assert_eq!(io.serial_tx_front(), Some(b'T'));
+        assert!(io.serial_tx_busy());
+        assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x82, 0x82,
+            "TDRE/IRQ describe the empty TDR even while TSR still shifts T");
         assert_eq!(io.serial_tx_complete(), Some(b'T'));
         assert!(io.interrupt_request());
+    }
+
+    #[test]
+    fn two_sio_has_finite_receive_register_and_reports_delayed_overrun() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        io.output(SIO2_PORT0_STATUS, 0x94); // RX IRQ + 8N1 / divide 1
+
+        io.serial_receive(b'A');
+        io.serial_receive(b'B');
+        assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x21, 0x01);
+        assert_eq!(io.input(SIO2_PORT0_DATA), b'A');
+        assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x21, 0x21);
+        assert_eq!(io.input(SIO2_PORT0_DATA), b'A');
+        assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x21, 0x00);
     }
 
     #[test]
@@ -738,6 +803,14 @@ mod tests {
         assert_eq!(machine.bus.peek_io_port(SIO_DATA_PORT), b'Y');
         assert_eq!(machine.bus.serial_rx_len(), 1);
         assert_eq!(machine.bus.input(SIO_DATA_PORT), b'Y');
+        assert_eq!(machine.bus.serial_rx_len(), 0);
+
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x14);
+        machine.bus.serial_receive(b'Z');
+        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_DATA), b'Z');
+        assert_eq!(machine.bus.serial_rx_len(), 1);
+        assert_eq!(machine.bus.input(SIO2_PORT0_DATA), b'Z');
         assert_eq!(machine.bus.serial_rx_len(), 0);
     }
 }
