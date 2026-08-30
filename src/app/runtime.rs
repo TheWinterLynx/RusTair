@@ -136,15 +136,21 @@ impl eframe::App for RusTairApp {
 
                         ui.separator();
                         ui.label("Emulator speed");
-                        for speed in SELECTABLE_EMULATION_SPEEDS {
-                            let label = emulation_speed_label(speed, board);
-                            if ui.selectable_label(self.config.preferences.emulation_speed == speed, label).clicked() {
-                                self.set_emulation_speed(speed);
-                                ui.close();
+                        let external_diagnostic_running = self.cpu_diagnostic_run_speed_label.is_some();
+                        ui.add_enabled_ui(!external_diagnostic_running, |ui| {
+                            for speed in SELECTABLE_EMULATION_SPEEDS {
+                                let label = emulation_speed_label(speed, board);
+                                if ui.selectable_label(self.config.preferences.emulation_speed == speed, label).clicked() {
+                                    self.set_emulation_speed(speed);
+                                    ui.close();
+                                }
                             }
-                        }
+                        });
                         if self.config.preferences.emulation_speed == EmulationSpeed::X2 {
                             ui.small("Loaded legacy 2× preference. Select Authentic, 5×, 10× or Unlimited to replace it.");
+                        }
+                        if let Some(speed) = self.cpu_diagnostic_run_speed_label.as_deref() {
+                            ui.small(format!("Speed locked while external CPU diagnostic runs: {speed}"));
                         }
                         ui.small("Acceleration changes host execution rate only; it does not alter the installed CPU board hardware clock.");
                     });
