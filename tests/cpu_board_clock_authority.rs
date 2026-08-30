@@ -25,12 +25,17 @@ fn runtime_scheduling_uses_installed_cpu_board_clock() {
 }
 
 #[test]
-fn classic_8080_diagnostic_time_is_explicitly_a_reference_clock() {
-    assert!(APP.contains(
-        "const CLOCK_HZ: u32 = crate::config::CpuBoard::Mits8080.clock_hz();"
-    ));
-    assert!(CPU_DIAGNOSTICS.contains("Equivalent 8080 time at 2 MHz"));
-    assert!(EMBEDDED_DIAGNOSTICS.contains("Equivalent 8080 time at 2 MHz"));
+fn cpu_diagnostics_report_execution_mode_without_a_fixed_reference_clock() {
+    assert!(
+        !APP.contains("const CLOCK_HZ"),
+        "application diagnostics must not restore a fixed 2 MHz clock constant"
+    );
+    for source in [CPU_DIAGNOSTICS, EMBEDDED_DIAGNOSTICS] {
+        assert!(source.contains("Test speed: {speed_label}"));
+        assert!(!source.contains("Equivalent 8080 time at 2 MHz"));
+        assert!(!source.contains("format_2mhz_duration"));
+        assert!(!source.contains("CLOCK_HZ"));
+    }
 }
 
 #[test]
