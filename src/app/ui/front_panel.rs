@@ -359,6 +359,9 @@ impl RusTairApp {
         let historical_power_on = self.config.compatibility.historical_undefined_run_latch_power_on;
         self.machine
             .power_with_historical_run_latch(on, historical_power_on);
+        let now = Instant::now();
+        self.execution_clock.reset_at(now);
+        self.last_tick = now;
         self.asr33.tx_started = None;
         self.audio.play_once("assets/powerbtn.mp3");
         if on {
@@ -381,8 +384,8 @@ impl RusTairApp {
         }
     }
 
-    pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui) {
-        self.machine.commit_panel_activity(PANEL_FRAME);
+    pub(in crate::app) fn draw_altair(&mut self, ui: &mut egui::Ui, frame_dt: Duration) {
+        self.machine.commit_panel_activity(frame_dt);
         self.draw_led_visual_controls(ui.ctx());
         let led_settings = led_display_settings();
         let panel = self.machine.front_panel_state();
@@ -419,6 +422,7 @@ impl RusTairApp {
         let run_stop = self.momentary_switch(ui, origin, scale, SWITCH_RUN_STOP, "STOP / RUN");
         if let Some(run) = run_stop.pressed {
             self.machine.assert_run_stop(run);
+            self.execution_clock.reset_at(Instant::now());
             let cpu = self.machine.intel8080_state();
             let panel = self.machine.front_panel_state();
             self.status = if !run && cpu.halted.unwrap_or(false) && panel.running {
@@ -458,6 +462,7 @@ impl RusTairApp {
                 self.status = "CLR held: S-100 EXT CLR asserted; installed I/O boards cleared".into();
             } else {
                 self.machine.assert_front_panel_reset();
+                self.execution_clock.reset_at(Instant::now());
                 self.status = "RESET held: ADDRESS/DATA on, status lamps off; RUN/STOP latch preserved".into();
             }
             ui.ctx().request_repaint();
@@ -468,6 +473,7 @@ impl RusTairApp {
                 self.status = "CLR released: S-100 EXT CLR inactive".into();
             } else {
                 self.machine.release_front_panel_reset();
+                self.execution_clock.reset_at(Instant::now());
                 self.status = if self.machine.running() {
                     "RESET released: RUN latch preserved; execution resumes from 0000h".into()
                 } else {
