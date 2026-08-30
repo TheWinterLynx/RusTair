@@ -1,0 +1,289 @@
+use std::collections::VecDeque;
+
+use crate::mc6850::Mc6850;
+
+/// Physical baud-generator tap selected by the 88-2SIO board strap. The MITS
+/// manual exposes these eight taps independently for each ACIA.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TwoSioBaudTap {
+    Baud110,
+    Baud150,
+    Baud300,
+    Baud1200,
+    Baud1800,
+    Baud2400,
+    Baud4800,
+    Baud9600,
+}
+
+impl TwoSioBaudTap {
+    pub(super) const fn baud(self) -> u32 {
+        match self {
+            Self::Baud110 => 110,
+            Self::Baud150 => 150,
+            Self::Baud300 => 300,
+            Self::Baud1200 => 1_200,
+            Self::Baud1800 => 1_800,
+            Self::Baud2400 => 2_400,
+            Self::Baud4800 => 4_800,
+            Self::Baud9600 => 9_600,
+        }
+    }
+}
+
+/// One of the two independent MC6850 channels on the MITS 88-2SIO.
+///
+/// `wire_tx` is downstream of the ACIA: a byte reaches it only after the
+/// transmit shift register has consumed a complete configured serial frame.
+/// Host presentation may drain that queue slowly without changing TDRE or the
+/// ACIA's transmitter state.
+pub(super) struct TwoSioPort {
+    acia: Mc6850,
+    baud_tap: TwoSioBaudTap,
+    bit_phase_numerator: u64,
+    tx_bits_remaining: u8,
+    wire_tx: VecDeque<u8>,
+    rx_shift: Option<(u8, bool, bool)>,
+    rx_bits_remaining: u8,
+    wire_rx: VecDeque<(u8, bool, bool)>,
+}
+
+impl TwoSioPort {
+    pub(super) fn new(baud_tap: TwoSioBaudTap) -> Self {
+        Self {
+            acia: Mc6850::default(),
+            baud_tap,
+            bit_phase_numerator: 0,
+            tx_bits_remaining: 0,
+            wire_tx: VecDeque::new(),
+            rx_shift: None,
+            rx_bits_remaining: 0,
+            wire_rx: VecDeque::new(),
+        }
+    }
+
+    pub(super) fn reset(&mut self) {
+        let baud_tap = self.baud_tap;
+        *self = Self::new(baud_tap);
+    }
+
+    pub(super) fn read_status(&mut self) -> u8 { self.acia.read_status() }
+    pub(super) fn peek_status(&self) -> u8 { self.acia.peek_status() }
+    pub(super) fn read_data(&mut self) -> u8 { self.acia.read_data() }
+    pub(super) fn peek_data(&self) -> u8 { self.acia.peek_data() }
+    pub(super) fn interrupt_request(&self) -> bool { self.acia.interrupt_request() }
+    pub(super) fn receive_len(&self) -> usize { self.acia.receive_len() }
+
+    pub(super) fn write_control(&mut self, value: u8) {
+        self.acia.write_control(value);
+        if value & 0x03 == 0x03 {
+            // Reset aborts the character currently inside the ACIA. Bytes that
+            // already left the shift register remain on the external wire queue.
+            self.bit_phase_numerator = 0;
+            self.tx_bits_remaining = 0;
+            self.rx_shift = None;
+            self.rx_bits_remaining = 0;
+        }
+    }
+
+    pub(super) fn write_data(&mut self, value: u8) {
+        // Do not move TDR to TSR here. Motorola specifies that the transfer is
+        // synchronized by the transmitter clock and occurs within one bit time
+        // when the transmitter is idle. The next bit boundary below owns it.
+        self.acia.write_data(value);
+    }
+
+    pub(super) fn queue_received_character(&mut self, value: u8) {
+        self.wire_rx.push_back((value, false, false));
+        self.start_receiver_if_idle();
+    }
+
+    pub(super) fn clear_receive_for_debugger(&mut self) {
+        self.acia.clear_receive_for_debugger();
+        self.rx_shift = None;
+        self.rx_bits_remaining = 0;
+        self.wire_rx.clear();
+    }
+
+    pub(super) fn clear_transmit_for_debugger(&mut self) {
+        self.acia.clear_transmit_for_debugger();
+        self.tx_bits_remaining = 0;
+        self.wire_tx.clear();
+    }
+
+    pub(super) fn endpoint_tx_front(&self) -> Option<u8> {
+        self.wire_tx.front().copied()
+    }
+
+    pub(super) fn endpoint_tx_complete(&mut self) -> Option<u8> {
+        self.wire_tx.pop_front()
+    }
+
+    pub(super) fn endpoint_tx_pending_or_hardware_busy(&self) -> bool {
+        !self.wire_tx.is_empty() || self.acia.transmit_busy()
+    }
+
+    pub(super) fn baud_tap(&self) -> TwoSioBaudTap { self.baud_tap }
+
+    pub(super) fn set_baud_tap(&mut self, baud_tap: TwoSioBaudTap) {
+        if self.baud_tap == baud_tap { return; }
+        self.baud_tap = baud_tap;
+        // Moving a physical baud strap changes the oscillator source immediately.
+        // Retain register/wire contents but begin a fresh fractional clock phase.
+        self.bit_phase_numerator = 0;
+    }
+
+    fn start_receiver_if_idle(&mut self) {
+        if self.rx_shift.is_some() { return; }
+        let Some(next) = self.wire_rx.pop_front() else { return; };
+        self.rx_shift = Some(next);
+        self.rx_bits_remaining = self.acia.frame_bits();
+    }
+
+    fn transmitter_bit_boundary(&mut self) {
+        if self.acia.tx_shift_front().is_none() {
+            if self.acia.transfer_tdr_to_shift_if_idle() {
+                self.tx_bits_remaining = self.acia.frame_bits();
+            }
+            return;
+        }
+
+        if self.tx_bits_remaining > 1 {
+            self.tx_bits_remaining -= 1;
+            return;
+        }
+
+        if self.tx_bits_remaining == 1 {
+            self.tx_bits_remaining = 0;
+            if let Some(byte) = self.acia.complete_tx_shift() {
+                self.wire_tx.push_back(byte);
+            }
+            if self.acia.tx_shift_front().is_some() {
+                // `complete_tx_shift` promotes a waiting TDR at exactly the
+                // previous character boundary, so back-to-back characters have
+                // no fictitious idle gap.
+                self.tx_bits_remaining = self.acia.frame_bits();
+            }
+        }
+    }
+
+    fn receiver_bit_boundary(&mut self) {
+        self.start_receiver_if_idle();
+        let Some((value, framing_error, parity_error)) = self.rx_shift else { return; };
+
+        if self.rx_bits_remaining > 1 {
+            self.rx_bits_remaining -= 1;
+            return;
+        }
+
+        if self.rx_bits_remaining == 1 {
+            self.rx_bits_remaining = 0;
+            self.rx_shift = None;
+            self.acia
+                .receive_character(value, framing_error, parity_error);
+            // A physically back-to-back next start bit can begin at this same
+            // character boundary.
+            self.start_receiver_if_idle();
+        }
+    }
+
+    /// Advance this card channel by elapsed Altair CPU-clock T-states. The baud
+    /// generator is independent hardware, but expressing elapsed chassis time in
+    /// CPU-clock quanta gives both emulator engines one deterministic time unit.
+    ///
+    /// MITS' tap produces 16x the labelled baud. The ACIA then divides that clock
+    /// by CR1:CR0 (/1, /16 or /64). Accumulating `tap*16` against
+    /// `cpu_clock*divider` preserves fractional rates such as 27.5 baud exactly.
+    pub(super) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
+        if t_states == 0 || cpu_clock_hz == 0 { return; }
+        let Some(divider) = self.acia.clock_divider() else {
+            // CR1:CR0=11 is master-reset mode: serial clocks do not advance ACIA
+            // characters until software programs a non-reset clock selection.
+            self.bit_phase_numerator = 0;
+            return;
+        };
+
+        let numerator_per_t_state = u64::from(self.baud_tap.baud()) * 16;
+        let threshold = u64::from(cpu_clock_hz) * u64::from(divider);
+        let added = t_states.saturating_mul(numerator_per_t_state);
+        let total = self.bit_phase_numerator.saturating_add(added);
+        let boundaries = total / threshold;
+        self.bit_phase_numerator = total % threshold;
+
+        for _ in 0..boundaries {
+            self.transmitter_bit_boundary();
+            self.receiver_bit_boundary();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TWO_MHZ: u32 = 2_000_000;
+
+    #[test]
+    fn tx_tdr_waits_for_next_bit_clock_then_tdre_returns_before_character_finishes() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.write_control(0x15); // 8N1, /16 => 9600 baud
+        port.write_data(b'A');
+        assert_eq!(port.peek_status() & 0x02, 0);
+        assert_eq!(port.endpoint_tx_front(), None);
+
+        // 9600 baud: one bit = 208.333... CPU T-states at 2 MHz.
+        port.advance_t_states(208, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x02, 0);
+        port.advance_t_states(1, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x02, 0x02);
+        assert_eq!(port.endpoint_tx_front(), None);
+
+        // Ten frame bits after TDR->TSR before the external endpoint receives A.
+        port.advance_t_states(2_083, TWO_MHZ);
+        assert_eq!(port.endpoint_tx_front(), Some(b'A'));
+    }
+
+    #[test]
+    fn endpoint_drain_does_not_control_acia_tdre_or_shift_completion() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.write_control(0x35); // 8N1, TX-empty IRQ, /16
+        port.write_data(b'A');
+        port.advance_t_states(2_292, TWO_MHZ);
+        assert_eq!(port.endpoint_tx_front(), Some(b'A'));
+        assert!(port.interrupt_request(), "TDR is empty regardless of endpoint presentation delay");
+
+        // Leaving the completed byte queued cannot make the ACIA transmitter busy.
+        port.advance_t_states(20_000, TWO_MHZ);
+        assert_eq!(port.endpoint_tx_front(), Some(b'A'));
+        assert!(port.interrupt_request());
+        assert_eq!(port.endpoint_tx_complete(), Some(b'A'));
+    }
+
+    #[test]
+    fn receive_character_reaches_rdr_only_after_full_card_timed_frame() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x95); // RX IRQ, 8N1, /16 => 110 baud
+        port.queue_received_character(b'R');
+        assert_eq!(port.peek_status() & 0x81, 0);
+
+        // 10/110 seconds * 2 MHz = 181,818.18... T-states.
+        port.advance_t_states(181_818, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x81, 0);
+        port.advance_t_states(1, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x81, 0x81);
+        assert_eq!(port.read_data(), b'R');
+    }
+
+    #[test]
+    fn divide_64_preserves_fractional_27_point_5_baud_exactly() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x16); // 8N1, /64 => 27.5 baud
+        port.write_data(b'Z');
+
+        // First bit boundary is 2MHz / 27.5 = 72,727.272... T-states.
+        port.advance_t_states(72_727, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x02, 0);
+        port.advance_t_states(1, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x02, 0x02);
+    }
+}
