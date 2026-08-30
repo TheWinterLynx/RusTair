@@ -1,18 +1,19 @@
 use std::time::Duration;
 
-use super::AltairBus;
+use crate::config::{RamBoardProfile, SerialBoard};
+
+use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 
 /// CPU-independent physical state of the Altair 8800 chassis.
 ///
 /// This type deliberately owns no processor implementation and no processor
-/// registers. During the migration the Fast `AltairMachine` remains untouched;
-/// Cycle will eventually own this chassis beside its exact processor core.
-/// Ownership stays explicit: no deref-based compatibility layer is used.
-pub(crate) struct AltairChassis {
-    pub(crate) bus: AltairBus,
-    pub(crate) powered: bool,
+/// registers. Fast keeps the existing `AltairMachine`; Cycle owns this chassis
+/// beside its exact processor core. Ownership stays explicit and field-based.
+pub struct AltairChassis {
+    pub bus: AltairBus,
+    pub powered: bool,
     /// Physical Display/Control RUN/STOP R-S latch.
-    pub(crate) running: bool,
+    pub running: bool,
     stop_switch_asserted: bool,
     run_switch_asserted: bool,
 }
@@ -30,6 +31,111 @@ impl Default for AltairChassis {
 }
 
 impl AltairChassis {
+    pub fn installed_ram_bytes(&self) -> usize {
+        self.bus.installed_ram_bytes()
+    }
+
+    pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
+        self.bus.configure_memory_board_profile(profile);
+    }
+
+    pub fn memory_board_profile(&self, address: u16) -> Option<RamBoardProfile> {
+        self.bus.memory_board_profile(address)
+    }
+
+    pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
+        self.bus.arm_basic32_full_memory_probe_guard()
+    }
+
+    pub fn begin_cpu_diagnostic_meter(
+        &mut self,
+        name: String,
+        bdos_start: u16,
+        bdos_len: usize,
+        expected_instructions: Option<u64>,
+        expected_t_states: Option<u64>,
+    ) {
+        self.bus.begin_cpu_diagnostic_meter(
+            name,
+            bdos_start,
+            bdos_len,
+            expected_instructions,
+            expected_t_states,
+        );
+    }
+
+    pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> {
+        self.bus.take_cpu_diagnostic_result()
+    }
+
+    /// Select only the physical serial board. Any processor reset caused by a
+    /// board change belongs to the backend that owns that processor core.
+    pub fn configure_serial_board(&mut self, board: SerialBoard) {
+        if self.bus.serial_board() == board {
+            return;
+        }
+        self.bus.configure_serial_board(board);
+        self.bus.clear_transient_memory_guards();
+    }
+
+    pub fn serial_board(&self) -> SerialBoard {
+        self.bus.serial_board()
+    }
+
+    pub fn release_run_stop(&mut self, run: bool) {
+        if run {
+            self.run_switch_asserted = false;
+        } else {
+            self.stop_switch_asserted = false;
+        }
+    }
+
+    pub fn assert_front_panel_clear(&mut self) {
+        if !self.powered {
+            return;
+        }
+        self.bus.set_ext_clear(true);
+    }
+
+    pub fn release_front_panel_clear(&mut self) {
+        if !self.powered {
+            return;
+        }
+        self.bus.set_ext_clear(false);
+    }
+
+    pub fn current_board_protected(&self) -> bool {
+        self.powered && self.bus.s100.signals().prot
+    }
+
+    pub fn panel_switches(&self) -> u16 {
+        self.bus.panel_switches()
+    }
+
+    pub fn toggle_sense_switch(&mut self, bit: usize) {
+        self.bus.toggle_panel_switch(bit);
+    }
+
+    pub fn address_leds(&self) -> u16 {
+        self.bus.panel_address()
+    }
+
+    pub fn data_leds(&self) -> u8 {
+        self.bus.panel_data()
+    }
+
+    pub fn panel_lamps(&self) -> PanelLampSnapshot {
+        self.bus.panel_lamps()
+    }
+
+    pub fn wait_led(&self) -> bool {
+        self.powered && self.bus.s100.signals().wait
+    }
+
+    pub fn ext_clear_asserted(&self) -> bool {
+        self.powered && self.bus.ext_clear_asserted()
+    }
+
     /// Power only physical chassis/S-100 state. Processor power-on state belongs
     /// to the backend-owned CPU core and is supplied here only as bus-visible
     /// address/INTE inputs.
