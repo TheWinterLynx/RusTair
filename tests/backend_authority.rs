@@ -145,8 +145,14 @@ fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
     assert_eq!(backend.peek_memory(0x0123).unwrap(), Some(0x5a));
     assert_eq!(backend.cpu().registers().pc, 0x0123);
 
-    backend.request_hold(true).unwrap();
+    // HOLD/HLDA has an already validated timing contract when entered from a
+    // normal post-RESET instruction fetch. Re-establish that state here rather
+    // than coupling this ownership test to the preceding EXAMINE/DEPOSIT wait.
+    backend.assert_reset().unwrap();
+    backend.release_reset().unwrap();
+    backend.load_bytes(0, &[0x00, 0x00]).unwrap();
     backend.run().unwrap();
+    backend.request_hold(true).unwrap();
     backend.service_execution(5).unwrap();
     assert!(backend.cpu().is_holding());
     backend
