@@ -4,6 +4,7 @@ use rustair::backend::EmulationEngine;
 
 const BACKEND: &str = include_str!("../src/backend/mod.rs");
 const BUS_TEACHING: &str = include_str!("../src/backend/bus_teaching.rs");
+const APP: &str = include_str!("../src/app/mod.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const BACKEND_README: &str = include_str!("../src/backend/README.md");
@@ -21,6 +22,7 @@ fn retired_backend_surface_is_absent() {
     assert!(!BACKEND.contains("Simh"), "backend API must not expose retired backend variants or modules");
     assert!(!BACKEND.contains("Z80State"), "retired Z80 state must not remain in the common backend API");
     assert!(!BUS_TEACHING.contains("CpuState::Z80"), "Bus Teacher must not retain the removed Z80 CPU-state branch");
+    assert!(!APP.contains("SIMH"), "application control paths must not retain retired backend fallbacks");
     assert!(!PERSISTENCE.contains("SimhAltair"), "persistence must not retain removed engine variants");
     assert!(!PERSISTENCE.contains("simh-altair"), "persistence must not serialize removed engine keys");
     assert!(!RUNTIME.contains("SIMH"), "runtime UI must not advertise the retired integration");
