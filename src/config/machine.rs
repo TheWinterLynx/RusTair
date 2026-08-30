@@ -3,7 +3,7 @@ use std::time::Duration;
 /// Processor model carried by an installed S-100 CPU board.
 ///
 /// Do not add a processor here until RusTair has a real core for it. The
-/// physical machine configuration stores a `CpuBoard`, not a bare processor.
+/// physical board identity is exposed separately through `CpuBoard`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuModel {
     Intel8080,
@@ -384,11 +384,27 @@ impl Default for TerminalSpeed {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct MachineConfig {
-    pub cpu_board: CpuBoard,
+    /// Persisted processor identity retained for backwards-compatible config.ini
+    /// files. `cpu_board()` is the physical configuration view used by new code.
+    pub cpu_model: CpuModel,
     pub ram_size: RamSize,
     pub ram_init: RamInit,
     pub ram_board_profile: RamBoardProfile,
     pub serial_board: SerialBoard,
+}
+
+impl MachineConfig {
+    /// Physical CPU board implied by the current persisted processor setting.
+    ///
+    /// Today the mapping is intentionally one-to-one. When a real Z80 core and
+    /// a specific historical Z80 S-100 board are implemented, persistence can
+    /// migrate from `cpu_model` to an explicit board key without inventing a
+    /// dormant Z80 state in advance.
+    pub const fn cpu_board(self) -> CpuBoard {
+        match self.cpu_model {
+            CpuModel::Intel8080 => CpuBoard::Mits8080,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
@@ -435,8 +451,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classic_altair_installs_mits_8080_board_at_two_megahertz() {
-        let board = AppConfig::default().machine.cpu_board;
+    fn classic_altair_maps_to_mits_8080_board_at_two_megahertz() {
+        let config = AppConfig::default();
+        let board = config.machine.cpu_board();
+        assert_eq!(config.machine.cpu_model, CpuModel::Intel8080);
         assert_eq!(board, CpuBoard::Mits8080);
         assert_eq!(board.cpu_model(), CpuModel::Intel8080);
         assert_eq!(board.clock_hz(), 2_000_000);
