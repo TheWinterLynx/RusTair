@@ -363,7 +363,7 @@ impl IoDevices {
         let Some(index) = self.data_port_index(port) else { return false; };
         match self.serial_board {
             SerialBoard::Sio88 => self.serial[index].receive(byte),
-            SerialBoard::TwoSio88 => self.two_sio[index].queue_received_character(byte),
+            SerialBoard::TwoSio88 => self.two_sio[index].debugger_inject_received_character(byte),
         }
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
         true
@@ -391,7 +391,7 @@ impl IoDevices {
         let index = self.data_port_index(port)?;
         let byte = match self.serial_board {
             SerialBoard::Sio88 => self.serial[index].complete_tx()?,
-            SerialBoard::TwoSio88 => self.two_sio[index].endpoint_tx_complete()?,
+            SerialBoard::TwoSio88 => self.two_sio[index].debugger_complete_one_tx()?,
         };
         self.trace.record(IO_TRACE_TX_COMPLETE, port, byte);
         Some(byte)
@@ -570,6 +570,36 @@ mod tests {
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x81, 0x81);
         assert_eq!(io.input(SIO2_PORT0_DATA), b'A');
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x01, 0);
+    }
+
+    #[test]
+    fn port1_card_timed_rx_irq_projects_to_canonical_pint() {
+        let mut machine = AltairMachine::default();
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.bus.debugger_output_port(SIO2_PORT1_STATUS, 0x95); // RX IRQ, 8N1, /16
+        assert!(!machine.bus.cpu_control_lines().interrupt);
+
+        machine.bus.serial_port1_receive(b'P');
+        assert!(!machine.bus.cpu_control_lines().interrupt, "wire start must not set RDRF/PINT before a full frame");
+        machine.bus.advance_serial_hardware_time(2_084);
+        assert!(machine.bus.cpu_control_lines().interrupt);
+
+        assert_eq!(machine.bus.debugger_input_port(SIO2_PORT1_DATA), b'P');
+        assert!(!machine.bus.cpu_control_lines().interrupt);
+    }
+
+    #[test]
+    fn debugger_rx_injection_is_immediate_but_still_obeys_mc6850_overrun() {
+        let mut machine = AltairMachine::default();
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x95);
+        assert!(machine.bus.debugger_inject_serial_rx(SIO2_PORT0_DATA, b'A'));
+        assert!(machine.bus.cpu_control_lines().interrupt);
+        assert!(machine.bus.debugger_inject_serial_rx(SIO2_PORT0_DATA, b'B'));
+        assert_eq!(machine.bus.debugger_input_port(SIO2_PORT0_DATA), b'A');
+        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_STATUS) & 0x21, 0x21);
+        assert!(machine.bus.debugger_clear_serial_rx(SIO2_PORT0_DATA));
+        assert!(!machine.bus.cpu_control_lines().interrupt);
     }
 
     #[test]
