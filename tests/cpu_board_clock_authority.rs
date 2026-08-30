@@ -1,5 +1,6 @@
 const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
+const EXECUTION_CLOCK: &str = include_str!("../src/app/execution_clock.rs");
 const CONFIG: &str = include_str!("../src/config/machine.rs");
 const CPU_DIAGNOSTICS: &str = include_str!("../src/app/cpu_diagnostics.rs");
 const EMBEDDED_DIAGNOSTICS: &str = include_str!("../src/app/embedded_cpu_diagnostics.rs");
@@ -11,12 +12,20 @@ fn runtime_scheduling_uses_installed_cpu_board_clock() {
         "runtime must resolve the installed CPU board before scheduling execution"
     );
     assert!(
-        RUNTIME.contains("board.clock_hz() as f64 * dt.as_secs_f64()"),
-        "authentic execution budget must derive from the installed CPU board clock"
+        RUNTIME.contains(".budget(now, running, board.clock_hz(), speed)"),
+        "runtime must pass the installed CPU board clock into the lossless execution scheduler"
+    );
+    assert!(
+        EXECUTION_CLOCK.contains("clock_hz: u32"),
+        "execution scheduler must receive its clock rate from the installed physical board"
     );
     assert!(
         !RUNTIME.contains("CLOCK_HZ"),
         "runtime must not consume any fixed/reference CPU clock"
+    );
+    assert!(
+        !EXECUTION_CLOCK.contains("const CLOCK_HZ"),
+        "execution scheduler must not restore a hidden fixed CPU clock"
     );
     assert!(
         !APP.contains("use crate::machine::CLOCK_HZ"),
