@@ -4,6 +4,7 @@ mod authentic_loader;
 mod commands;
 mod cpu_diagnostics;
 mod embedded_cpu_diagnostics;
+mod execution_clock;
 mod external_com;
 mod external_serial;
 mod runtime;
@@ -20,6 +21,7 @@ use self::asr33_state::Asr33State;
 use self::authentic_loader::AuthenticLoaderState;
 use self::cpu_diagnostics::DiagnosticFileDialog;
 use self::embedded_cpu_diagnostics::EmbeddedDiagnosticsState;
+use self::execution_clock::ExecutionClock;
 use self::external_com::ExternalComState;
 use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
@@ -120,6 +122,7 @@ struct RusTairApp {
     terminal: TerminalState,
     audio: AudioEngine,
     last_tick: Instant,
+    execution_clock: ExecutionClock,
     status: String,
 }
 
@@ -157,6 +160,7 @@ impl RusTairApp {
             terminal,
             audio: AudioEngine::new(),
             last_tick: now,
+            execution_clock: ExecutionClock::new(now),
             status,
         }
     }
@@ -185,7 +189,9 @@ impl RusTairApp {
     fn set_emulation_speed(&mut self, speed: EmulationSpeed) {
         if self.config.preferences.emulation_speed == speed { return; }
         self.config.preferences.emulation_speed = speed;
-        self.last_tick = Instant::now();
+        let now = Instant::now();
+        self.last_tick = now;
+        self.execution_clock.reset_at(now);
         self.status = format!(
             "CPU emulation speed: {}",
             emulation_speed_label(speed, self.config.machine.cpu_board())
@@ -213,7 +219,9 @@ impl RusTairApp {
                 self.terminal.tx_started = None;
                 self.external_serial.reset_line_timing();
                 self.external_com.reset_line_timing();
-                self.last_tick = Instant::now();
+                let now = Instant::now();
+                self.last_tick = now;
+                self.execution_clock.reset_at(now);
                 self.status = format!("Emulation engine selected: {} — machine remains POWER OFF", engine.label());
             }
             Err(error) => {
@@ -227,6 +235,7 @@ impl RusTairApp {
         self.config.machine.ram_size = ram_size;
         self.config.machine.ram_init = ram_init;
         self.machine.configure_memory(ram_size, ram_init);
+        self.execution_clock.reset_at(Instant::now());
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
@@ -242,7 +251,9 @@ impl RusTairApp {
         }
         self.config.machine.ram_board_profile = profile;
         self.machine.configure_memory_board_profile(profile);
-        self.last_tick = Instant::now();
+        let now = Instant::now();
+        self.last_tick = now;
+        self.execution_clock.reset_at(now);
         self.status = format!("Memory card timing: {}", profile.label());
     }
 
@@ -250,6 +261,7 @@ impl RusTairApp {
         if self.config.machine.serial_board == serial_board { return; }
         self.config.machine.serial_board = serial_board;
         self.machine.configure_serial_board(serial_board);
+        self.execution_clock.reset_at(Instant::now());
         self.serial_router.reset_for_board(serial_board);
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
