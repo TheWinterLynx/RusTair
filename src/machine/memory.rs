@@ -314,7 +314,22 @@ impl super::AltairBus {
         memory_read: bool,
         phase: MemoryReadyPhase,
     ) -> bool {
-        let ready = self.memory.ready_for_t_state(address, memory_read, phase);
+        let memory_ready = self.memory.ready_for_t_state(address, memory_read, phase);
+
+        // PRDY is a wired-AND S-100 input, not a property of RAM alone. The
+        // Cycle backend already asks this arbitration point before every exact
+        // T-state. Once an IN T1 has latched SINP in the canonical status latch,
+        // the selected 88-2SIO contributes its documented 500 ns low pulse at
+        // the following T2 READY sample. PWAIT then releases the card for the
+        // first TW. T1 deliberately ignores the previously latched INP status so
+        // a following OUT/internal cycle cannot inherit a stale I/O wait.
+        let input_read = !memory_read
+            && phase != MemoryReadyPhase::T1
+            && self.s100.signals().inp;
+        let io_ready = self
+            .io
+            .ready_for_input_t_state(address as u8, input_read, phase);
+        let ready = memory_ready && io_ready;
         self.s100.set_memory_ready_input(ready);
         ready
     }
