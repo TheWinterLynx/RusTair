@@ -339,6 +339,9 @@ impl Bus for AltairBus {
     }
 
     fn input(&mut self, port: u8) -> u8 {
+        if port != 0xff {
+            self.fast_account_io_input_wait(port);
+        }
         let value = match port { 0xff => self.panel.input(), _ => self.io.input(port) };
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::InputRead);
         if port != 0xff {
