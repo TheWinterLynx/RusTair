@@ -8,6 +8,7 @@ const BOOT_ADDRESS: usize = 0x0080;
 const CPM_BDOS_PAGE_BYTES: usize = 0x0100;
 const CPM_STACK_GUARD_BYTES: usize = 0x0100;
 const DIAGNOSTIC_RESULT_DIALOG_ID: &str = "rustair-cpu-diagnostic-result-dialog";
+const DIAGNOSTIC_RESULT_SPEED_ID: &str = "rustair-cpu-diagnostic-result-speed";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::app) enum DiagnosticSerialPort { Port0, Port1 }
@@ -181,6 +182,7 @@ impl RusTairApp {
 
     fn poll_cpu_diagnostic_result(&mut self, ctx: &egui::Context) {
         let id = egui::Id::new(DIAGNOSTIC_RESULT_DIALOG_ID);
+        let speed_id = egui::Id::new(DIAGNOSTIC_RESULT_SPEED_ID);
         if let Some(result) = self.machine.take_cpu_diagnostic_result() {
             let instruction_match = result.expected_instructions.map(|expected| expected == result.instructions);
             let timing_match = result.expected_t_states.map(|expected| expected == result.t_states);
@@ -190,7 +192,16 @@ impl RusTairApp {
                 Some(false) => format!("CPU diagnostic complete: {} — REFERENCE MISMATCH — {} instructions — {} T-states", result.name, format_count(result.instructions), format_count(result.t_states)),
                 None => format!("CPU diagnostic complete: {} — {} instructions — {} T-states (no registered reference)", result.name, format_count(result.instructions), format_count(result.t_states)),
             };
-            ctx.data_mut(|data| data.insert_temp(id, result));
+            let speed_label = self.cpu_diagnostic_run_speed_label.take().unwrap_or_else(|| {
+                emulation_speed_label(
+                    self.config.preferences.emulation_speed,
+                    self.config.machine.cpu_board(),
+                )
+            });
+            ctx.data_mut(|data| {
+                data.insert_temp(id, result);
+                data.insert_temp(speed_id, speed_label);
+            });
         }
 
         let Some(result) = ctx.data(|data| data.get_temp::<crate::machine::CpuDiagnosticResult>(id)) else { return; };
@@ -198,10 +209,12 @@ impl RusTairApp {
             (Some(expected_i), Some(expected_t)) => Some(result.instructions == expected_i && result.t_states == expected_t),
             _ => None,
         };
-        let speed_label = emulation_speed_label(
-            self.config.preferences.emulation_speed,
-            self.config.machine.cpu_board(),
-        );
+        let speed_label = ctx.data(|data| data.get_temp::<String>(speed_id)).unwrap_or_else(|| {
+            emulation_speed_label(
+                self.config.preferences.emulation_speed,
+                self.config.machine.cpu_board(),
+            )
+        });
         let mut dismissed = false;
         egui::Window::new("CPU diagnostic complete")
             .id(egui::Id::new("rustair-cpu-diagnostic-result-window"))
@@ -232,7 +245,12 @@ impl RusTairApp {
                 ui.add_space(10.0);
                 if ui.button("OK").clicked() { dismissed = true; }
             });
-        if dismissed { ctx.data_mut(|data| data.remove::<crate::machine::CpuDiagnosticResult>(id)); }
+        if dismissed {
+            ctx.data_mut(|data| {
+                data.remove::<crate::machine::CpuDiagnosticResult>(id);
+                data.remove::<String>(speed_id);
+            });
+        }
     }
 
     fn load_cpu_diagnostic(&mut self, path: &std::path::Path, bytes: &[u8], port: DiagnosticSerialPort) {
@@ -299,13 +317,14 @@ impl RusTairApp {
             None => {}
         }
 
-        self.machine.set_running(true);
-        let endpoint = self.serial_router.device_on(connection).map(Self::serial_device_name).unwrap_or("no endpoint connected");
-        let reference_label = if reference.is_some() { "reference totals armed" } else { "measurement only" };
         let speed_label = emulation_speed_label(
             self.config.preferences.emulation_speed,
             self.config.machine.cpu_board(),
         );
+        self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());
+        self.machine.set_running(true);
+        let endpoint = self.serial_router.device_on(connection).map(Self::serial_device_name).unwrap_or("no endpoint connected");
+        let reference_label = if reference.is_some() { "reference totals armed" } else { "measurement only" };
         self.status = format!(
             "CPU diagnostic running: {} at 0100h — {} — clean reset/RAM — mini-BDOS {:04X}h functions 2/9 — {} — output via {} → {}",
             path.display(), speed_label, environment.bdos_base, reference_label, port.label(board), endpoint
