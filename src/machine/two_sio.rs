@@ -39,6 +39,10 @@ impl TwoSioBaudTap {
 /// ACIA's transmitter state.
 pub(super) struct TwoSioPort {
     acia: Mc6850,
+    /// Mirror of the physical ACIA control-register pins needed by the board's
+    /// clock-generator wrapper. The ACIA remains authority for all status/data
+    /// semantics; this board layer only needs CR1:CR0 to select /1,/16,/64/reset.
+    control: u8,
     baud_tap: TwoSioBaudTap,
     bit_phase_numerator: u64,
     tx_bits_remaining: u8,
@@ -52,6 +56,7 @@ impl TwoSioPort {
     pub(super) fn new(baud_tap: TwoSioBaudTap) -> Self {
         Self {
             acia: Mc6850::default(),
+            control: 0,
             baud_tap,
             bit_phase_numerator: 0,
             tx_bits_remaining: 0,
@@ -75,6 +80,7 @@ impl TwoSioPort {
     pub(super) fn receive_len(&self) -> usize { self.acia.receive_len() }
 
     pub(super) fn write_control(&mut self, value: u8) {
+        self.control = value;
         self.acia.write_control(value);
         if value & 0x03 == 0x03 {
             // Reset aborts the character currently inside the ACIA. Bytes that
@@ -133,6 +139,15 @@ impl TwoSioPort {
         self.bit_phase_numerator = 0;
     }
 
+    fn clock_divider(&self) -> Option<u8> {
+        match self.control & 0x03 {
+            0 => Some(1),
+            1 => Some(16),
+            2 => Some(64),
+            _ => None,
+        }
+    }
+
     fn start_receiver_if_idle(&mut self) {
         if self.rx_shift.is_some() { return; }
         let Some(next) = self.wire_rx.pop_front() else { return; };
@@ -168,7 +183,6 @@ impl TwoSioPort {
     }
 
     fn receiver_bit_boundary(&mut self) {
-        self.start_receiver_if_idle();
         let Some((value, framing_error, parity_error)) = self.rx_shift else { return; };
 
         if self.rx_bits_remaining > 1 {
@@ -196,9 +210,7 @@ impl TwoSioPort {
     /// `cpu_clock*divider` preserves fractional rates such as 27.5 baud exactly.
     pub(super) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
         if t_states == 0 || cpu_clock_hz == 0 { return; }
-        let Some(divider) = self.acia.clock_divider() else {
-            // CR1:CR0=11 is master-reset mode: serial clocks do not advance ACIA
-            // characters until software programs a non-reset clock selection.
+        let Some(divider) = self.clock_divider() else {
             self.bit_phase_numerator = 0;
             return;
         };
@@ -231,14 +243,12 @@ mod tests {
         assert_eq!(port.peek_status() & 0x02, 0);
         assert_eq!(port.endpoint_tx_front(), None);
 
-        // 9600 baud: one bit = 208.333... CPU T-states at 2 MHz.
         port.advance_t_states(208, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x02, 0);
         port.advance_t_states(1, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x02, 0x02);
         assert_eq!(port.endpoint_tx_front(), None);
 
-        // Ten frame bits after TDR->TSR before the external endpoint receives A.
         port.advance_t_states(2_083, TWO_MHZ);
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
     }
@@ -252,7 +262,6 @@ mod tests {
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
         assert!(port.interrupt_request(), "TDR is empty regardless of endpoint presentation delay");
 
-        // Leaving the completed byte queued cannot make the ACIA transmitter busy.
         port.advance_t_states(20_000, TWO_MHZ);
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
         assert!(port.interrupt_request());
@@ -266,7 +275,6 @@ mod tests {
         port.queue_received_character(b'R');
         assert_eq!(port.peek_status() & 0x81, 0);
 
-        // 10/110 seconds * 2 MHz = 181,818.18... T-states.
         port.advance_t_states(181_818, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x81, 0);
         port.advance_t_states(1, TWO_MHZ);
@@ -280,7 +288,6 @@ mod tests {
         port.write_control(0x16); // 8N1, /64 => 27.5 baud
         port.write_data(b'Z');
 
-        // First bit boundary is 2MHz / 27.5 = 72,727.272... T-states.
         port.advance_t_states(72_727, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x02, 0);
         port.advance_t_states(1, TWO_MHZ);
