@@ -7,7 +7,7 @@ use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
-use crate::machine::{AltairMachine, Cycle8080S100Adapter, MemoryReadyPhase};
+use crate::machine::{AltairChassis as AltairMachine, Cycle8080S100Adapter, MemoryReadyPhase};
 
 use super::{
     BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
