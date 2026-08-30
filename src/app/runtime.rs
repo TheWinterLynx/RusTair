@@ -47,11 +47,22 @@ impl eframe::App for RusTairApp {
             let authentic_cycles = (CLOCK_HZ as f64 * dt.as_secs_f64()) as u32;
             let authentic_cycles = authentic_cycles.clamp(1, 40_000);
             let speed = self.effective_emulation_speed();
-            self.machine.run_cycles(speed.cycle_budget(authentic_cycles));
-            if speed == EmulationSpeed::Unlimited {
-                ctx.request_repaint();
-            } else {
-                ctx.request_repaint_after(PANEL_FRAME);
+            match self.machine.try_run_cycles(speed.cycle_budget(authentic_cycles)) {
+                Ok(()) => {
+                    if speed == EmulationSpeed::Unlimited {
+                        ctx.request_repaint();
+                    } else {
+                        ctx.request_repaint_after(PANEL_FRAME);
+                    }
+                }
+                Err(error) => {
+                    // Cycle core faults are latched by the backend and lower RUN
+                    // before reaching this boundary. Preserve the diagnostic in
+                    // the application instead of converting it into a panic or a
+                    // machine that merely appears to have stopped silently.
+                    self.status = format!("CPU ERROR — {error}");
+                    ctx.request_repaint();
+                }
             }
         }
 
