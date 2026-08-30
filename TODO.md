@@ -124,7 +124,7 @@
 
 ## P1 — CPU / machine / backend architecture
 
-- [ ] **[P1] Remove the duplicate Fast `Cpu8080` state that remains as a mirror inside the Cycle Accurate machine integration**, making the chassis truly CPU-core agnostic.
+- [x] ~~**[P1] Remove the duplicate Fast `Cpu8080` state that remains as a mirror inside the Cycle Accurate machine integration**, making the chassis truly CPU-core agnostic.~~ Completed and locally validated: Cycle now physically owns `AltairChassis + Cpu8080Cycle`; Fast alone owns `AltairMachine + Cpu8080`, with regression guards against reintroducing the dormant Fast CPU, alias or `Deref` wrapper.
 - [ ] **[P1] Propagate Cycle Accurate core faults to the application as explicit errors/diagnostics** instead of allowing execution to appear silently stopped.
 - [ ] **[P1] Rework Cycle memory reconfiguration so it does not rebuild the backend and accidentally discard unrelated chassis state.**
 - [ ] **[P1] Harden `BackendHost` error handling** so backend errors are surfaced rather than converted into application `panic!` paths.
