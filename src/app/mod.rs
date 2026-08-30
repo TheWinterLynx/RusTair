@@ -27,8 +27,8 @@ use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
-    AppConfig, Asr33Speed, EmulationSpeed, RamBoardProfile, RamInit, RamSize, SerialBoard,
-    TerminalSpeed,
+    AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamBoardProfile, RamInit, RamSize,
+    SerialBoard, TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::peripherals::asr33::{
@@ -47,13 +47,27 @@ const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
 const PRINT_HEAD_CARRIAGE_RETURN_TIME: Duration = Duration::from_millis(160);
 const PAPER_FEED_TIME: Duration = Duration::from_millis(74);
 
-/// Normalization clock used only by the classic Intel 8080 diagnostic reports.
-///
-/// Their published/reference T-state totals are displayed as the equivalent
-/// elapsed time of the original MITS 8080 CPU board at 2 MHz. This is not the
-/// runtime scheduler clock: execution timing is owned by the installed
-/// `CpuBoard` and `runtime.rs` must never consume this reference constant.
-const CLOCK_HZ: u32 = crate::config::CpuBoard::Mits8080.clock_hz();
+/// Speeds exposed for new user selections. X2 remains readable from historical
+/// config files, but it is intentionally no longer offered in the UI.
+const SELECTABLE_EMULATION_SPEEDS: [EmulationSpeed; 4] = [
+    EmulationSpeed::Authentic,
+    EmulationSpeed::X5,
+    EmulationSpeed::X10,
+    EmulationSpeed::Unlimited,
+];
+
+fn emulation_speed_label(speed: EmulationSpeed, board: CpuBoard) -> String {
+    match speed {
+        EmulationSpeed::Authentic => format!(
+            "Authentic hardware clock — {:.1} MHz",
+            board.clock_hz() as f32 / 1_000_000.0
+        ),
+        EmulationSpeed::X2 => "2× (legacy configuration)".into(),
+        EmulationSpeed::X5 => "5×".into(),
+        EmulationSpeed::X10 => "10×".into(),
+        EmulationSpeed::Unlimited => "Unlimited".into(),
+    }
+}
 
 const ADDR_LED_X: [f32; 16] = [
     1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0, 1052.7, 953.6, 884.8,
@@ -170,7 +184,10 @@ impl RusTairApp {
         if self.config.preferences.emulation_speed == speed { return; }
         self.config.preferences.emulation_speed = speed;
         self.last_tick = Instant::now();
-        self.status = format!("CPU emulation speed: {}", speed.label());
+        self.status = format!(
+            "CPU emulation speed: {}",
+            emulation_speed_label(speed, self.config.machine.cpu_board())
+        );
     }
 
     fn select_emulation_engine(&mut self, engine: EmulationEngine) {
