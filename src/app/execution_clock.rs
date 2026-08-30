@@ -15,6 +15,7 @@ const UNLIMITED_CHUNK_T_STATES: u32 = 1_000_000;
 pub(super) struct ExecutionClock {
     last_accounted: Instant,
     balance_units: i128,
+    rate: Option<(u32, EmulationSpeed)>,
 }
 
 impl ExecutionClock {
@@ -22,12 +23,14 @@ impl ExecutionClock {
         Self {
             last_accounted: now,
             balance_units: 0,
+            rate: None,
         }
     }
 
     pub(super) fn reset_at(&mut self, now: Instant) {
         self.last_accounted = now;
         self.balance_units = 0;
+        self.rate = None;
     }
 
     fn wall_clock_multiplier(speed: EmulationSpeed) -> Option<u32> {
@@ -52,9 +55,10 @@ impl ExecutionClock {
     /// Return the bounded T-state budget for this UI update.
     ///
     /// Stopped time is discarded rather than becoming catch-up debt. Throttled
-    /// speeds preserve all elapsed time and fractional T-states. Unlimited is
-    /// intentionally detached from wall clock and simply supplies one bounded
-    /// chunk per repaint.
+    /// speeds preserve all elapsed time and fractional T-states. A clock/speed
+    /// change starts a fresh debt epoch so work accrued under one rate can never
+    /// leak into another. Unlimited is intentionally detached from wall clock
+    /// and simply supplies one bounded chunk per repaint.
     pub(super) fn budget(
         &mut self,
         now: Instant,
@@ -64,6 +68,12 @@ impl ExecutionClock {
     ) -> u32 {
         let elapsed = now.saturating_duration_since(self.last_accounted);
         self.last_accounted = now;
+
+        let rate = (clock_hz, speed);
+        if self.rate != Some(rate) {
+            self.balance_units = 0;
+            self.rate = Some(rate);
+        }
 
         if !running {
             self.balance_units = 0;
@@ -165,6 +175,7 @@ mod tests {
     fn fast_backend_overshoot_is_repaid_instead_of_drifting_fast() {
         let t0 = Instant::now();
         let mut clock = ExecutionClock::new(t0);
+        assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic), 0);
         let t1 = t0 + Duration::from_micros(2); // four T-states at 2 MHz
         assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic), 4);
 
@@ -199,9 +210,26 @@ mod tests {
     fn accelerated_modes_scale_clock_and_chunk_without_losing_debt() {
         let t0 = Instant::now();
         let mut clock = ExecutionClock::new(t0);
+        assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::X10), 0);
         let t1 = t0 + Duration::from_millis(100);
         assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::X10), 400_000);
         assert_eq!(clock.whole_t_state_balance(), 2_000_000);
+    }
+
+    #[test]
+    fn changing_effective_speed_discards_old_rate_debt() {
+        let t0 = Instant::now();
+        let mut clock = ExecutionClock::new(t0);
+        assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic), 0);
+        let t1 = t0 + Duration::from_millis(100);
+        assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic), 40_000);
+        assert_eq!(clock.whole_t_state_balance(), 200_000);
+
+        // A diagnostic changing to 10x starts a new timing epoch. The 1x debt
+        // must not be multiplied or inherited at the new rate.
+        let t2 = t1 + Duration::from_millis(10);
+        assert_eq!(clock.budget(t2, true, TWO_MHZ, EmulationSpeed::X10), 200_000);
+        assert_eq!(clock.whole_t_state_balance(), 200_000);
     }
 
     #[test]
