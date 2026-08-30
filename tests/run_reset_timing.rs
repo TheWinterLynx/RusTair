@@ -79,7 +79,6 @@ fn stop_held_during_reset_waits_for_the_first_post_reset_fetch() {
                 assert_eq!(sample.pins.wait, Some(true));
                 assert_eq!(sample.ready, Some(false));
             }
-            _ => unreachable!(),
         }
 
         host.release_run_stop(false);

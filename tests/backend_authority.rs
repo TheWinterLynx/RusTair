@@ -4,10 +4,8 @@ use rustair::backend::{
 use rustair::machine::AltairChassis;
 
 fn intel_state<B: MachineBackend>(backend: &mut B) -> Intel8080State {
-    match backend.cpu_state().expect("CPU state must be available") {
-        CpuState::Intel8080(state) => state,
-        CpuState::Z80(_) => panic!("expected Intel 8080 backend"),
-    }
+    let CpuState::Intel8080(state) = backend.cpu_state().expect("CPU state must be available");
+    state
 }
 
 /// Advance one exact 8080 machine cycle without using the Altair front-panel

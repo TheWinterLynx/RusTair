@@ -1015,9 +1015,7 @@ mod tests {
         backend.load_bytes(0, &[0x00]).unwrap();
         backend.step().unwrap();
 
-        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else {
-            panic!("expected Intel 8080 state")
-        };
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(7));
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
@@ -1037,10 +1035,10 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
-        let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(before) = backend.cpu_state().unwrap();
 
         backend.step().unwrap();
-        let CpuState::Intel8080(after_fetch) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(after_fetch) = backend.cpu_state().unwrap();
         assert_eq!(after_fetch.pc, 1);
         assert_eq!(after_fetch.a, before.a, "MVI operand cycle must not have executed yet");
         assert_eq!(after_fetch.total_t_states, Some(7));
@@ -1049,7 +1047,7 @@ mod tests {
         assert_eq!(backend.cpu().t_state(), TState::Tw);
 
         backend.step().unwrap();
-        let CpuState::Intel8080(after_operand) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(after_operand) = backend.cpu_state().unwrap();
         assert_eq!(after_operand.pc, 2);
         assert_eq!(after_operand.a, 0x5a);
         assert_eq!(after_operand.total_t_states, Some(12));
@@ -1071,7 +1069,7 @@ mod tests {
         // DAD's six post-fetch T-states are internal and emit no status/PSYNC,
         // so the physical SGL STP latch cannot reset there. It remains released
         // until the next real instruction-fetch PSYNC and then parks in TW.
-        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(13));
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
@@ -1156,7 +1154,7 @@ mod tests {
         }
         assert_eq!(backend.peek_memory(0x1f00).unwrap(), Some(0x5a));
         assert_eq!(backend.peek_memory(0x2000).unwrap(), None);
-        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 5);
         assert_eq!(state.total_t_states, Some(33));
 
@@ -1177,7 +1175,7 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x3e, 0x5a, 0x00]).unwrap();
-        let CpuState::Intel8080(before) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(before) = backend.cpu_state().unwrap();
         backend.run().unwrap();
 
         backend.service_execution(2).unwrap();
@@ -1195,7 +1193,7 @@ mod tests {
         assert_eq!(teaching.pins.wait, Some(true));
         assert_eq!(teaching.ready, Some(false));
 
-        let CpuState::Intel8080(stopped) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(stopped) = backend.cpu_state().unwrap();
         assert_eq!(stopped.pc, 1);
         assert_eq!(stopped.a, before.a);
         assert_eq!(stopped.total_t_states, Some(7));
@@ -1206,7 +1204,7 @@ mod tests {
         assert!(backend.machine().wait_led());
         backend.release_run_stop(true).unwrap();
         backend.service_execution(2).unwrap();
-        let CpuState::Intel8080(resumed) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(resumed) = backend.cpu_state().unwrap();
         assert_eq!(resumed.pc, 2);
         assert_eq!(resumed.a, 0x5a);
         assert_eq!(resumed.total_t_states, Some(9));
@@ -1243,7 +1241,7 @@ mod tests {
 
         let before = backend.cpu().total_t_states();
         backend.panel_examine(false).unwrap();
-        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 0x0123);
         assert_eq!(state.total_t_states, Some(before + 13));
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
@@ -1263,7 +1261,7 @@ mod tests {
         assert_eq!(panel.lamps.wait, 1.0);
 
         backend.panel_examine(true).unwrap();
-        let CpuState::Intel8080(next) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(next) = backend.cpu_state().unwrap();
         assert_eq!(next.pc, 0x0124);
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
         assert_eq!(backend.cpu().t_state(), TState::Tw);
@@ -1429,7 +1427,7 @@ mod tests {
         assert_eq!(teaching.cpu_data, Some(b'R'));
         assert_eq!(teaching.s100_di, Some(b'R'));
         assert_eq!(teaching.s100_do, None);
-        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.a, b'R');
         assert_eq!(state.pc, 2);
         assert_eq!(state.total_t_states, Some(10));

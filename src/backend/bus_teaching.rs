@@ -317,10 +317,9 @@ pub struct BusTeachingSnapshot {
 
 impl BusTeachingSnapshot {
     pub fn reconstructed(engine: EmulationEngine, panel: FrontPanelState, cpu: CpuState) -> Self {
-        let (instruction_address, total_t_states) = match cpu {
-            CpuState::Intel8080(cpu) => (Some(cpu.pc), cpu.total_t_states),
-            CpuState::Z80(cpu) => (Some(cpu.pc), cpu.total_t_states),
-        };
+        let CpuState::Intel8080(cpu) = cpu;
+        let instruction_address = Some(cpu.pc);
+        let total_t_states = cpu.total_t_states;
         let panel_data = if panel.powered { Some(panel.data) } else { None };
         let current_chassis = Some(BusChassisSnapshot::reconstructed(engine, panel));
         Self {
