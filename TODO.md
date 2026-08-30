@@ -133,6 +133,20 @@
 - [ ] **[P1] Add an architectural regression test** that fails if `src/app` starts depending directly on `AltairMachine`/concrete CPU/bus internals again.
 - [ ] **[P2] Remove the historical `BackendHost::native()` alias** once all callers use explicit engine naming.
 
+### Future S-100 CPU boards / Z80
+
+> Design contract: a future Z80 enters RusTair as a historically documented physical S-100 CPU board, not as a SIMH/external backend and not as a dormant `Z80State`. See `docs/CPU_BOARD_ARCHITECTURE.md`.
+
+- [x] ~~**[P2] Introduce an explicit physical `CpuBoard` identity distinct from the emulator engine.**~~ Current configuration exposes the MITS 8080 CPU Board, its Intel 8080 processor mapping and its authentic 2 MHz board clock without adding placeholder Z80 runtime state.
+- [ ] **[P2] Select and document the exact historical Z80 S-100 CPU board from primary sources before implementation.** Cromemco ZPU is the leading candidate; clocking, signal adaptation and board-specific behaviour must be verified rather than guessed.
+- [ ] **[P2] Implement/integrate a real Rust Z80 core independently of the S-100 chassis**, then add `CpuModel::ZilogZ80`; do not reserve a fake enum/state before the core exists.
+- [ ] **[P2] Implement the selected Z80 CPU-board adapter against the existing S-100 electrical authority**, preserving chassis/RAM/serial/front-panel ownership and modelling the board’s real signal translation.
+- [ ] **[P2] Move runtime scheduling from the global 2 MHz assumption to the installed CPU board’s `clock_hz()` before a second CPU board becomes selectable.**
+- [ ] **[P2] Migrate persistence from the legacy processor-only key to an explicit CPU-board key when the second real board exists**, while continuing to load old Intel-8080 configurations safely.
+- [ ] **[P2] Add board/core compatibility checks and require POWER OFF for CPU-board replacement.** Never migrate live CPU registers or hidden execution state between different boards.
+- [ ] **[P2] Add Z80 CPU state, disassembly/debugger/teaching support only with the real core**, keeping 8080 and Z80 architecture-specific views explicit where their registers/instructions differ.
+- [ ] **[P2] Validate the Z80 board electrically and functionally**: reset, memory/I/O cycles, interrupts, wait/bus arbitration behaviour, front-panel observations, 8080-compatible software and Z80-specific instruction suites.
+
 ### S-100 / memory fidelity
 
 - [x] ~~**[P1] Add a real S-100 interrupt-request path and interrupt-producing device model** before claiming interrupt-capable peripheral fidelity.~~ Canonical PINT plus 88-SIO/88-2SIO level-sensitive IRQ sources are implemented for both Rust backends.
