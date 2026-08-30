@@ -7,6 +7,13 @@ pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
 pub const MEMORY_BOARD_SIZE: usize = 1024;
 pub const MEMORY_BOARD_COUNT: usize = MAX_MEM_SIZE / MEMORY_BOARD_SIZE;
+/// Value observed by the processor when no S-100 memory device drives DI.
+///
+/// Contemporary MITS documentation describes execution through non-existent
+/// memory as executing octal 377 (RST 7). Keep this as a bus-visible policy;
+/// `peek()` still returns `None` so host/debugger code can distinguish absent
+/// hardware from an installed byte whose stored value happens to be FFh.
+pub(crate) const S100_OPEN_BUS_VALUE: u8 = 0xff;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MemoryReadyPhase {
@@ -20,8 +27,9 @@ pub(crate) enum MemoryReadyPhase {
 /// Physical RAM backing store plus the front-panel write-protection latches.
 ///
 /// The backing store covers the full 8080 address space, while `installed_size`
-/// models how much RAM is actually fitted to the emulated Altair. Reads from
-/// uninstalled addresses return zero and writes are ignored.
+/// models how much RAM is actually fitted to the emulated Altair. Physical
+/// inspection of an uninstalled address returns `None`; guest-visible reads see
+/// the released S-100 data bus as `S100_OPEN_BUS_VALUE`. Writes are ignored.
 pub(super) struct Memory {
     bytes: [u8; MAX_MEM_SIZE],
     protected: [bool; MEMORY_BOARD_COUNT],
@@ -173,11 +181,12 @@ impl Memory {
 
     /// Preview exactly the byte a guest memory read would receive without
     /// consuming any transient hardware/compatibility state. This differs from
-    /// `peek`: uninstalled RAM reads as 00h and the BASIC 3.2 FFFFh sentinel is
-    /// represented exactly as the next real guest read would see it.
+    /// `peek`: uninstalled RAM leaves S-100 DI undriven and therefore reads as
+    /// FFh, while the BASIC 3.2 FFFFh sentinel is represented exactly as the
+    /// next real guest read would see it.
     pub(super) fn preview_read(&self, address: u16) -> u8 {
         if address as usize >= self.installed_size {
-            return 0;
+            return S100_OPEN_BUS_VALUE;
         }
         if address == u16::MAX && self.basic32_probe_guard {
             if let Some(written) = self.basic32_probe_write {
@@ -233,7 +242,7 @@ impl Memory {
 
     pub(super) fn read(&mut self, address: u16) -> u8 {
         if address as usize >= self.installed_size {
-            return 0;
+            return S100_OPEN_BUS_VALUE;
         }
 
         if address == u16::MAX && self.basic32_probe_guard {
@@ -323,7 +332,9 @@ impl super::AltairBus {
     }
 
     pub(crate) fn cycle_peek_memory(&self, address: u16) -> u8 {
-        self.memory.peek(address).unwrap_or(0)
+        self.memory
+            .peek(address)
+            .unwrap_or(S100_OPEN_BUS_VALUE)
     }
 
     pub(crate) fn cycle_write_memory(&mut self, address: u16, value: u8) {
@@ -425,12 +436,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn peek_distinguishes_uninstalled_memory() {
+    fn peek_distinguishes_uninstalled_memory_from_open_bus() {
         let mut memory = Memory::default();
         memory.configure(RamSize::Bytes256, RamInit::Zeroed);
         assert_eq!(memory.peek(0x00ff), Some(0));
         assert_eq!(memory.peek(0x0100), None);
-        assert_eq!(memory.preview_read(0x0100), 0x00);
+        assert_eq!(memory.preview_read(0x0100), S100_OPEN_BUS_VALUE);
+        assert_eq!(memory.read(0x0100), S100_OPEN_BUS_VALUE);
     }
 
     #[test]
@@ -453,6 +465,7 @@ mod tests {
         memory.configure(RamSize::Bytes256, RamInit::Zeroed);
         assert!(!memory.debugger_write(0x0100, 0x5a, false));
         assert_eq!(memory.peek(0x0100), None);
+        assert_eq!(memory.read(0x0100), S100_OPEN_BUS_VALUE);
     }
 
     #[test]
@@ -527,6 +540,15 @@ mod timing_tests {
         assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::Tw));
         assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::Tw));
         assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T3));
+    }
+
+    #[test]
+    fn uninstalled_address_never_stretches_ready() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::Bytes256, RamInit::Zeroed);
+        memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
+        assert!(memory.ready_for_t_state(0x0100, true, MemoryReadyPhase::T1));
+        assert!(memory.ready_for_t_state(0x0100, true, MemoryReadyPhase::T2));
     }
 
     #[test]
