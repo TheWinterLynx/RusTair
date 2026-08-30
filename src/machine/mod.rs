@@ -84,6 +84,11 @@ pub struct AltairBus {
     panel: FrontPanelController,
     s100: S100BusState,
     fast_wait_t_states: u32,
+    /// True only for the chassis owned by the exact Cycle backend. Every call to
+    /// `drive_cpu_board_sample` is then one real 8080 clock T-state and may advance
+    /// independent card oscillators without making the Fast adapter double-count
+    /// its reconstructed samples.
+    exact_t_state_clock_owner: bool,
     diagnostic_meter: Option<CpuDiagnosticMeter>,
     diagnostic_result: Option<CpuDiagnosticResult>,
 }
@@ -96,6 +101,7 @@ impl Default for AltairBus {
             panel: FrontPanelController::default(),
             s100: S100BusState::default(),
             fast_wait_t_states: 0,
+            exact_t_state_clock_owner: false,
             diagnostic_meter: None,
             diagnostic_result: None,
         };
@@ -105,6 +111,10 @@ impl Default for AltairBus {
 }
 
 impl AltairBus {
+    pub(crate) fn set_exact_t_state_clock_owner(&mut self, enabled: bool) {
+        self.exact_t_state_clock_owner = enabled;
+    }
+
     pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
         self.cancel_cpu_diagnostic_meter();
         self.memory.configure(size, init_mode);
@@ -251,6 +261,13 @@ impl AltairBus {
             sample.wait,
             sample.hlda,
         );
+        if self.exact_t_state_clock_owner {
+            // Advance the independent 88-2SIO oscillator by exactly this real
+            // CPU-clock quantum, but leave PINT projection to Cycle's existing
+            // post-sample refresh so the Teacher snapshot keeps the interrupt
+            // level the processor actually saw on this tick.
+            self.io.advance_t_states(1);
+        }
     }
 
     fn refresh_protect_line(&mut self) {
