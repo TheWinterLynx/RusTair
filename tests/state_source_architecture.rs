@@ -1,5 +1,7 @@
 const CYCLE: &str = include_str!("../src/backend/cycle.rs");
 const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
+const MACHINE: &str = include_str!("../src/machine/mod.rs");
+const CHASSIS: &str = include_str!("../src/machine/chassis.rs");
 const MEMORY: &str = include_str!("../src/machine/memory.rs");
 const PANEL_BUS: &str = include_str!("../src/machine/panel_bus.rs");
 
@@ -60,6 +62,28 @@ fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
         CYCLE.contains("random_power_on_cpu_state"),
         "Cycle should own its undefined power-on CPU sample"
     );
+}
+
+#[test]
+fn cycle_physically_owns_cpu_free_chassis_while_fast_keeps_its_cpu() {
+    assert!(CHASSIS.contains("pub struct AltairChassis"));
+    assert!(CHASSIS.contains("pub bus: AltairBus"));
+    assert!(!CHASSIS.contains("Cpu8080"), "physical chassis must not contain a Fast CPU");
+    assert!(!CHASSIS.contains("Deref"), "chassis ownership must remain explicit");
+    assert!(!CHASSIS.contains("DerefMut"), "chassis ownership must remain explicit");
+
+    assert!(
+        CYCLE.contains("AltairChassis as AltairMachine"),
+        "Cycle must bind its machine field to the CPU-free chassis"
+    );
+    assert!(
+        !CYCLE.contains("use crate::machine::{AltairMachine,"),
+        "Cycle must not import the Fast AltairMachine as its physical container"
+    );
+
+    assert!(MACHINE.contains("pub struct AltairMachine"));
+    assert!(MACHINE.contains("pub cpu: Cpu8080"));
+    assert!(MACHINE.contains("pub use chassis::AltairChassis"));
 }
 
 #[test]
