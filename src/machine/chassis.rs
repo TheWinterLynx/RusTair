@@ -69,11 +69,16 @@ impl AltairChassis {
     }
 
     /// Select only the physical serial board. Any processor reset caused by a
-    /// board change belongs to the backend that owns that processor core.
+    /// board change belongs to the backend that owns that processor core. A real
+    /// card swap is a machine reconfiguration, so Cycle mirrors Fast by dropping
+    /// the RUN latch before the backend performs its processor RESET sequence.
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         if self.bus.serial_board() == board {
             return;
         }
+        self.running = false;
+        self.bus.set_run(false);
+        self.bus.cycle_set_ready_input(false);
         self.bus.configure_serial_board(board);
         self.bus.clear_transient_memory_guards();
     }
