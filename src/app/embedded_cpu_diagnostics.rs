@@ -8,15 +8,22 @@ const CPM_BDOS_PAGE_BYTES: usize = 0x0100;
 const CPM_STACK_GUARD_BYTES: usize = 0x0100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DiagnosticRunSpeed { Unlimited, Authentic2MHz }
+enum DiagnosticRunSpeed { Authentic, X5, X10, Unlimited }
 
 impl DiagnosticRunSpeed {
-    const ALL: [Self; 2] = [Self::Unlimited, Self::Authentic2MHz];
-    const fn label(self) -> &'static str {
-        match self { Self::Unlimited => "Unlimited", Self::Authentic2MHz => "Authentic 2 MHz" }
+    const ALL: [Self; 4] = [Self::Authentic, Self::X5, Self::X10, Self::Unlimited];
+
+    fn label(self, board: CpuBoard) -> String {
+        emulation_speed_label(self.emulation_speed(), board)
     }
+
     const fn emulation_speed(self) -> EmulationSpeed {
-        match self { Self::Unlimited => EmulationSpeed::Unlimited, Self::Authentic2MHz => EmulationSpeed::Authentic }
+        match self {
+            Self::Authentic => EmulationSpeed::Authentic,
+            Self::X5 => EmulationSpeed::X5,
+            Self::X10 => EmulationSpeed::X10,
+            Self::Unlimited => EmulationSpeed::Unlimited,
+        }
     }
 }
 impl Default for DiagnosticRunSpeed { fn default() -> Self { Self::Unlimited } }
@@ -69,9 +76,27 @@ struct ControlLineReport { engine: EmulationEngine, checks: Vec<ControlCheck> }
 impl ControlLineReport { fn passed(&self) -> bool { self.checks.iter().all(|check| check.passed) } }
 
 #[derive(Clone, Debug)]
-struct SuiteRun { next_index: usize, control: ControlLineReport, results: Vec<CpuDiagnosticResult> }
+struct CompletedDiagnostic {
+    result: CpuDiagnosticResult,
+    speed: DiagnosticRunSpeed,
+    cpu_board: CpuBoard,
+}
+
 #[derive(Clone, Debug)]
-struct SuiteReport { control: ControlLineReport, results: Vec<CpuDiagnosticResult> }
+struct SuiteRun {
+    next_index: usize,
+    control: ControlLineReport,
+    results: Vec<CpuDiagnosticResult>,
+    speed: DiagnosticRunSpeed,
+    cpu_board: CpuBoard,
+}
+#[derive(Clone, Debug)]
+struct SuiteReport {
+    control: ControlLineReport,
+    results: Vec<CpuDiagnosticResult>,
+    speed: DiagnosticRunSpeed,
+    cpu_board: CpuBoard,
+}
 impl SuiteReport {
     fn passed(&self) -> bool {
         self.control.passed() && self.results.len() == ClassicDiagnostic::SUITE.len()
@@ -84,7 +109,7 @@ pub(in crate::app) struct EmbeddedDiagnosticsState {
     port: cpu_diagnostics::DiagnosticSerialPort,
     active_test: Option<ClassicDiagnostic>,
     suite: Option<SuiteRun>,
-    individual_result: Option<CpuDiagnosticResult>,
+    individual_result: Option<CompletedDiagnostic>,
     control_report: Option<ControlLineReport>,
     suite_report: Option<SuiteReport>,
 }
@@ -188,16 +213,6 @@ fn format_count(value: u64) -> String {
 fn format_diff(actual: u64, expected: u64) -> String {
     let diff = actual as i128 - expected as i128;
     if diff > 0 { format!("+{diff}") } else { diff.to_string() }
-}
-fn format_2mhz_duration(t_states: u64) -> String {
-    let total_millis = t_states.saturating_mul(1_000) / u64::from(CLOCK_HZ);
-    let hours = total_millis / 3_600_000;
-    let minutes = (total_millis / 60_000) % 60;
-    let seconds = (total_millis / 1_000) % 60;
-    let millis = total_millis % 1_000;
-    if hours > 0 { format!("{hours}h {minutes:02}m {seconds:02}.{millis:03}s") }
-    else if minutes > 0 { format!("{minutes}m {seconds:02}.{millis:03}s") }
-    else { format!("{seconds}.{millis:03}s") }
 }
 
 fn baseline_machine(engine: EmulationEngine, program: &[u8]) -> Result<BackendHost, String> {
@@ -373,18 +388,20 @@ impl RusTairApp {
 
         let picker_open = self.diagnostic_file_dialog.is_some();
         let running = self.embedded_diagnostics.active_test.is_some() || self.embedded_diagnostics.suite.is_some();
+        let speed_locked = running || self.embedded_diagnostics.individual_result.is_some() || self.embedded_diagnostics.suite_report.is_some();
         let busy = picker_open || running;
+        let cpu_board = self.config.machine.cpu_board();
         ui.small("Embedded Intel 8080 tests execute as real guest code through the selected backend. The RusTair baseline also runs through the currently selected Rust engine and covers EI/DI, HALT, I/O and bus-arbitration behaviour.");
         ui.separator();
 
         ui.menu_button("Test speed", |ui| {
-            ui.add_enabled_ui(!running, |ui| {
+            ui.add_enabled_ui(!speed_locked, |ui| {
                 for speed in DiagnosticRunSpeed::ALL {
-                    if ui.selectable_label(self.embedded_diagnostics.speed == speed, speed.label()).clicked() { self.embedded_diagnostics.speed = speed; }
+                    if ui.selectable_label(self.embedded_diagnostics.speed == speed, speed.label(cpu_board)).clicked() { self.embedded_diagnostics.speed = speed; }
                 }
             });
         });
-        ui.small(format!("Selected speed: {}", self.embedded_diagnostics.speed.label()));
+        ui.small(format!("Selected speed: {}", self.embedded_diagnostics.speed.label(cpu_board)));
 
         ui.menu_button("Serial output", |ui| {
             let board = self.config.machine.serial_board;
@@ -419,7 +436,7 @@ impl RusTairApp {
         if ui.add_enabled(!busy, egui::Button::new("Load external .COM…")).clicked() {
             self.start_cpu_diagnostic_dialog(self.embedded_diagnostics.port); ui.close();
         }
-        ui.small("External .COM files continue to use the normal emulator speed preference and the existing generic result reporter.");
+        ui.small("External .COM files use the normal emulator speed selected under Configuration → CPU.");
         if running && !picker_open {
             ui.separator();
             if ui.button("Abort running diagnostic / suite").clicked() { self.abort_embedded_cpu_diagnostics(); ui.close(); }
@@ -442,10 +459,18 @@ impl RusTairApp {
             return;
         }
         let control = run_control_line_baseline(self.machine.engine());
+        let speed = self.embedded_diagnostics.speed;
+        let cpu_board = self.config.machine.cpu_board();
         self.embedded_diagnostics.individual_result = None;
         self.embedded_diagnostics.control_report = None;
         self.embedded_diagnostics.suite_report = None;
-        self.embedded_diagnostics.suite = Some(SuiteRun { next_index: 1, control, results: Vec::with_capacity(ClassicDiagnostic::SUITE.len()) });
+        self.embedded_diagnostics.suite = Some(SuiteRun {
+            next_index: 1,
+            control,
+            results: Vec::with_capacity(ClassicDiagnostic::SUITE.len()),
+            speed,
+            cpu_board,
+        });
         if !self.start_embedded_classic_test(ClassicDiagnostic::SUITE[0], true) { self.embedded_diagnostics.suite = None; }
     }
 
@@ -513,7 +538,14 @@ impl RusTairApp {
         }
         self.machine.set_running(true);
         let endpoint = self.serial_router.device_on(connection).map(Self::serial_device_name).unwrap_or("no endpoint connected");
-        self.status = format!("Embedded CPU diagnostic running: {} — {} — output via {} → {}", test.filename(), self.embedded_diagnostics.speed.label(), port_label(board, port), endpoint);
+        let cpu_board = self.config.machine.cpu_board();
+        self.status = format!(
+            "Embedded CPU diagnostic running: {} — {} — output via {} → {}",
+            test.filename(),
+            self.embedded_diagnostics.speed.label(cpu_board),
+            port_label(board, port),
+            endpoint
+        );
         true
     }
 
@@ -528,7 +560,12 @@ impl RusTairApp {
                 if !self.start_embedded_classic_test(next_test, true) { self.embedded_diagnostics.suite = None; }
                 return;
             }
-            let report = SuiteReport { control: suite.control, results: suite.results };
+            let report = SuiteReport {
+                control: suite.control,
+                results: suite.results,
+                speed: suite.speed,
+                cpu_board: suite.cpu_board,
+            };
             let passed = report.passed();
             self.embedded_diagnostics.suite_report = Some(report);
             self.status = if passed { "Embedded CPU diagnostic suite complete — ALL TESTS PASS / REFERENCE MATCH".into() }
@@ -536,7 +573,11 @@ impl RusTairApp {
         } else {
             let matched = reference_match(&result);
             self.status = if matched { format!("{} complete — REFERENCE MATCH", result.name) } else { format!("{} complete — REFERENCE MISMATCH", result.name) };
-            self.embedded_diagnostics.individual_result = Some(result);
+            self.embedded_diagnostics.individual_result = Some(CompletedDiagnostic {
+                result,
+                speed: self.embedded_diagnostics.speed,
+                cpu_board: self.config.machine.cpu_board(),
+            });
         }
     }
 
@@ -549,8 +590,10 @@ impl RusTairApp {
     }
 
     fn draw_embedded_individual_result(&mut self, ctx: &egui::Context) {
-        let Some(result) = self.embedded_diagnostics.individual_result.as_ref() else { return; };
+        let Some(completed) = self.embedded_diagnostics.individual_result.as_ref() else { return; };
+        let result = &completed.result;
         let matched = reference_match(result);
+        let speed_label = completed.speed.label(completed.cpu_board);
         let mut dismiss = false;
         egui::Window::new("CPU diagnostic complete").id(egui::Id::new("embedded-cpu-diagnostic-result"))
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).resizable(false).default_width(560.0)
@@ -570,7 +613,8 @@ impl RusTairApp {
                     else { ui.label("—"); ui.label("—"); }
                     ui.end_row();
                 });
-                ui.add_space(8.0); ui.label(format!("Equivalent 8080 time at 2 MHz: {}", format_2mhz_duration(result.t_states)));
+                ui.add_space(8.0);
+                ui.label(format!("Test speed: {speed_label}"));
                 if ui.button("OK").clicked() { dismiss = true; }
             });
         if dismiss { self.embedded_diagnostics.individual_result = None; }
@@ -601,6 +645,7 @@ impl RusTairApp {
     fn draw_suite_report(&mut self, ctx: &egui::Context) {
         let Some(report) = self.embedded_diagnostics.suite_report.as_ref() else { return; };
         let passed = report.passed();
+        let speed_label = report.speed.label(report.cpu_board);
         let mut dismiss = false;
         egui::Window::new("CPU diagnostic suite complete").id(egui::Id::new("embedded-cpu-suite-result"))
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).resizable(true).default_width(780.0)
@@ -608,6 +653,7 @@ impl RusTairApp {
                 if passed { ui.heading("ALL TESTS PASS"); ui.strong("All classic instruction/T-state references match exactly."); }
                 else { ui.heading("SUITE FAILURE"); ui.strong("Inspect the failing row or control-line check below."); }
                 ui.add_space(8.0);
+                ui.label(format!("Test speed: {speed_label}"));
                 ui.label(format!("RusTair control-line baseline ({}): {}", report.control.engine.label(), if report.control.passed() { "PASS" } else { "FAIL" }));
                 for check in &report.control.checks {
                     ui.small(format!("{}  {} — {}", if check.passed { "PASS" } else { "FAIL" }, check.name, check.detail));
@@ -643,6 +689,23 @@ mod tests {
         assert_eq!(ClassicDiagnostic::Tst8080.expected_t_states(), 4_924);
         assert_eq!(ClassicDiagnostic::CpuTest.expected_t_states(), 255_653_383);
         assert_eq!(ClassicDiagnostic::ExerciserModified.expected_t_states(), 23_803_381_171);
+    }
+
+    #[test]
+    fn diagnostic_speed_choices_match_supported_user_modes() {
+        assert_eq!(
+            DiagnosticRunSpeed::ALL,
+            [
+                DiagnosticRunSpeed::Authentic,
+                DiagnosticRunSpeed::X5,
+                DiagnosticRunSpeed::X10,
+                DiagnosticRunSpeed::Unlimited,
+            ]
+        );
+        assert_eq!(DiagnosticRunSpeed::Authentic.emulation_speed(), EmulationSpeed::Authentic);
+        assert_eq!(DiagnosticRunSpeed::X5.emulation_speed(), EmulationSpeed::X5);
+        assert_eq!(DiagnosticRunSpeed::X10.emulation_speed(), EmulationSpeed::X10);
+        assert_eq!(DiagnosticRunSpeed::Unlimited.emulation_speed(), EmulationSpeed::Unlimited);
     }
 
     #[test]
