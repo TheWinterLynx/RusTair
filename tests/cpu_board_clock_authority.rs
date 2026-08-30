@@ -1,6 +1,8 @@
 const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const CONFIG: &str = include_str!("../src/config/machine.rs");
+const CPU_DIAGNOSTICS: &str = include_str!("../src/app/cpu_diagnostics.rs");
+const EMBEDDED_DIAGNOSTICS: &str = include_str!("../src/app/embedded_cpu_diagnostics.rs");
 
 #[test]
 fn runtime_scheduling_uses_installed_cpu_board_clock() {
@@ -13,13 +15,22 @@ fn runtime_scheduling_uses_installed_cpu_board_clock() {
         "authentic execution budget must derive from the installed CPU board clock"
     );
     assert!(
-        !RUNTIME.contains("CLOCK_HZ as f64"),
-        "runtime must not fall back to the historical global 2 MHz constant"
+        !RUNTIME.contains("CLOCK_HZ"),
+        "runtime must not consume any fixed/reference CPU clock"
     );
     assert!(
         !APP.contains("use crate::machine::CLOCK_HZ"),
-        "application code must not import the MITS-8080-specific global clock"
+        "application code must not import the historical global 2 MHz machine clock"
     );
+}
+
+#[test]
+fn classic_8080_diagnostic_time_is_explicitly_a_reference_clock() {
+    assert!(APP.contains(
+        "const CLOCK_HZ: u32 = crate::config::CpuBoard::Mits8080.clock_hz();"
+    ));
+    assert!(CPU_DIAGNOSTICS.contains("Equivalent 8080 time at 2 MHz"));
+    assert!(EMBEDDED_DIAGNOSTICS.contains("Equivalent 8080 time at 2 MHz"));
 }
 
 #[test]
