@@ -3,6 +3,8 @@ use std::path::Path;
 use rustair::backend::EmulationEngine;
 
 const BACKEND: &str = include_str!("../src/backend/mod.rs");
+const BUS_TEACHING: &str = include_str!("../src/backend/bus_teaching.rs");
+const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 
 #[test]
@@ -16,6 +18,9 @@ fn product_exposes_only_the_two_rust_8080_engines() {
 fn simh_backend_surface_is_absent() {
     assert!(!BACKEND.contains("Simh"), "backend API must not expose SIMH variants or modules");
     assert!(!BACKEND.contains("Z80State"), "SIMH-only Z80 state must not remain in the common backend API");
+    assert!(!BUS_TEACHING.contains("CpuState::Z80"), "Bus Teacher must not retain the removed Z80 CPU-state branch");
+    assert!(!PERSISTENCE.contains("SimhAltair"), "persistence must not retain removed SIMH engine variants");
+    assert!(!PERSISTENCE.contains("simh-altair"), "persistence must not serialize removed SIMH engine keys");
     assert!(!RUNTIME.contains("SIMH"), "runtime UI must not advertise the removed SIMH integration");
 }
 
