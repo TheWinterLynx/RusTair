@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 use crate::mc6850::Mc6850;
 
 /// Physical baud-generator tap selected by the 88-2SIO board strap. The MITS
-/// manual exposes these eight taps independently for each ACIA.
+/// manual exposes these eight taps independently for each ACIA. The complete set
+/// is retained here before the Configuration UI wires all physical strap choices.
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TwoSioBaudTap {
     Baud110,
@@ -99,9 +101,18 @@ impl TwoSioPort {
         self.acia.write_data(value);
     }
 
+    /// A normal endpoint puts a character on the serial line. It must traverse
+    /// a complete configured receive frame before the MC6850 can set RDRF.
     pub(super) fn queue_received_character(&mut self, value: u8) {
         self.wire_rx.push_back((value, false, false));
         self.start_receiver_if_idle();
+    }
+
+    /// The I/O Inspector explicitly says “directly into UART RX”. This debugger
+    /// operation intentionally bypasses cable/baud timing while preserving the
+    /// real one-byte RDR and overrun semantics of the ACIA itself.
+    pub(super) fn debugger_inject_received_character(&mut self, value: u8) {
+        self.acia.receive_character(value, false, false);
     }
 
     pub(super) fn clear_receive_for_debugger(&mut self) {
@@ -117,26 +128,37 @@ impl TwoSioPort {
         self.wire_tx.clear();
     }
 
+    /// Force one debugger-visible UART TX completion. Prefer an already
+    /// completed wire byte; otherwise finish the active hardware character (or
+    /// first promote a waiting TDR) without leaving a duplicate for an endpoint.
+    pub(super) fn debugger_complete_one_tx(&mut self) -> Option<u8> {
+        if let Some(byte) = self.wire_tx.pop_front() {
+            return Some(byte);
+        }
+        if self.acia.tx_shift_front().is_none() {
+            let _ = self.acia.transfer_tdr_to_shift_if_idle();
+        }
+        let byte = self.acia.complete_tx_shift()?;
+        self.tx_bits_remaining = if self.acia.tx_shift_front().is_some() {
+            self.acia.frame_bits()
+        } else {
+            0
+        };
+        Some(byte)
+    }
+
     pub(super) fn endpoint_tx_front(&self) -> Option<u8> {
         self.wire_tx.front().copied()
     }
 
+    /// Endpoint acknowledgement removes only a byte that has already completed
+    /// on the emulated wire. It never changes TDR/TSR or TDRE.
     pub(super) fn endpoint_tx_complete(&mut self) -> Option<u8> {
         self.wire_tx.pop_front()
     }
 
     pub(super) fn endpoint_tx_pending_or_hardware_busy(&self) -> bool {
         !self.wire_tx.is_empty() || self.acia.transmit_busy()
-    }
-
-    pub(super) fn baud_tap(&self) -> TwoSioBaudTap { self.baud_tap }
-
-    pub(super) fn set_baud_tap(&mut self, baud_tap: TwoSioBaudTap) {
-        if self.baud_tap == baud_tap { return; }
-        self.baud_tap = baud_tap;
-        // Moving a physical baud strap changes the oscillator source immediately.
-        // Retain register/wire contents but begin a fresh fractional clock phase.
-        self.bit_phase_numerator = 0;
     }
 
     fn clock_divider(&self) -> Option<u8> {
@@ -193,8 +215,7 @@ impl TwoSioPort {
         if self.rx_bits_remaining == 1 {
             self.rx_bits_remaining = 0;
             self.rx_shift = None;
-            self.acia
-                .receive_character(value, framing_error, parity_error);
+            self.acia.receive_character(value, framing_error, parity_error);
             // A physically back-to-back next start bit can begin at this same
             // character boundary.
             self.start_receiver_if_idle();
@@ -280,6 +301,27 @@ mod tests {
         port.advance_t_states(1, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x81, 0x81);
         assert_eq!(port.read_data(), b'R');
+    }
+
+    #[test]
+    fn debugger_injection_bypasses_wire_time_but_keeps_finite_rdr() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x95);
+        port.debugger_inject_received_character(b'A');
+        assert_eq!(port.peek_status() & 0x81, 0x81);
+        port.debugger_inject_received_character(b'B');
+        assert_eq!(port.read_data(), b'A');
+        assert_eq!(port.peek_status() & 0x21, 0x21);
+    }
+
+    #[test]
+    fn debugger_tx_completion_does_not_leave_duplicate_endpoint_byte() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.write_control(0x15);
+        port.write_data(b'D');
+        assert_eq!(port.debugger_complete_one_tx(), Some(b'D'));
+        assert_eq!(port.endpoint_tx_front(), None);
+        assert!(!port.endpoint_tx_pending_or_hardware_busy());
     }
 
     #[test]
