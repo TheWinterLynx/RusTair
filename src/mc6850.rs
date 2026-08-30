@@ -21,25 +21,14 @@ pub(crate) struct WordFormat {
 #[derive(Clone, Debug)]
 pub(crate) struct Mc6850 {
     control: u8,
-
-    // Receive Data Register plus its character-associated error flags. The 6850
-    // RDR is one byte deep; the receiver shift register is represented by the
-    // completed-character event entering `receive_character`.
     rdr: u8,
     rdr_full: bool,
     framing_error: bool,
     parity_error: bool,
     overrun_pending: bool,
     overrun_visible: bool,
-
-    // The transmitter really contains both a TDR and a shift register. TDRE
-    // describes only the TDR, not whether a character is still shifting out.
     tdr: Option<u8>,
     tx_shift: Option<u8>,
-
-    // MC6850 modem inputs are active low. These booleans store the status-register
-    // sense: true means the external input is high/inactive and therefore the
-    // corresponding status bit reads as one.
     cts_high: bool,
     dcd_input_high: bool,
     dcd_status_latched: bool,
@@ -73,11 +62,13 @@ impl Default for Mc6850 {
 }
 
 impl Mc6850 {
-    pub(crate) fn control(&self) -> u8 {
+    #[cfg(test)]
+    fn control(&self) -> u8 {
         self.control
     }
 
-    pub(crate) fn clock_divider(&self) -> Option<u8> {
+    #[cfg(test)]
+    fn clock_divider(&self) -> Option<u8> {
         match self.control & 0x03 {
             0x00 => Some(1),
             0x01 => Some(16),
@@ -107,12 +98,13 @@ impl Mc6850 {
         self.control & 0x60 == 0x20
     }
 
-    /// Active-low RTS output expressed as an asserted boolean.
-    pub(crate) fn rts_asserted(&self) -> bool {
+    #[cfg(test)]
+    fn rts_asserted(&self) -> bool {
         matches!(self.control & 0x60, 0x00 | 0x20 | 0x60)
     }
 
-    pub(crate) fn break_active(&self) -> bool {
+    #[cfg(test)]
+    fn break_active(&self) -> bool {
         self.control & 0x60 == 0x60
     }
 
@@ -235,10 +227,11 @@ impl Mc6850 {
             self.overrun_pending = true;
             return;
         }
-        self.rdr = if self.word_format().data_bits == 7 { value & 0x7f } else { value };
+        let format = self.word_format();
+        self.rdr = if format.data_bits == 7 { value & 0x7f } else { value };
         self.rdr_full = true;
         self.framing_error = framing_error;
-        self.parity_error = self.word_format().parity != Parity::None && parity_error;
+        self.parity_error = format.parity != Parity::None && parity_error;
     }
 
     pub(crate) fn clear_receive_for_debugger(&mut self) {
@@ -293,11 +286,13 @@ impl Mc6850 {
         self.tx_shift = None;
     }
 
-    pub(crate) fn set_cts_high(&mut self, high: bool) {
+    #[cfg(test)]
+    fn set_cts_high(&mut self, high: bool) {
         self.cts_high = high;
     }
 
-    pub(crate) fn set_dcd_high(&mut self, high: bool) {
+    #[cfg(test)]
+    fn set_dcd_high(&mut self, high: bool) {
         if high && !self.dcd_input_high {
             self.dcd_status_latched = true;
             self.dcd_irq_pending = true;
@@ -367,7 +362,7 @@ mod tests {
         let mut acia = Mc6850::default();
         acia.write_control(0x14);
         acia.receive_character(b'A', false, false);
-        acia.receive_character(b'B', false, false); // lost in receiver overrun
+        acia.receive_character(b'B', false, false);
 
         assert_eq!(acia.peek_status() & 0x21, 0x01, "OVRN is latent while A is unread");
         assert_eq!(acia.read_data(), b'A');
@@ -379,7 +374,7 @@ mod tests {
     #[test]
     fn receive_and_transmit_interrupts_follow_rdrf_tdre_not_endpoint_busy() {
         let mut acia = Mc6850::default();
-        acia.write_control(0xa0); // RX IRQ + TX-empty IRQ, divide 1
+        acia.write_control(0xa0);
         assert!(acia.interrupt_request(), "empty TDR requests TX service");
 
         acia.write_data(b'T');
@@ -388,7 +383,7 @@ mod tests {
         assert!(acia.interrupt_request(), "TDRE returns while TSR is still transmitting");
         assert_eq!(acia.tx_shift_front(), Some(b'T'));
 
-        acia.write_control(0x80); // RX IRQ only
+        acia.write_control(0x80);
         assert!(!acia.interrupt_request());
         acia.receive_character(b'R', false, false);
         assert!(acia.interrupt_request());
@@ -434,7 +429,7 @@ mod tests {
         assert!(acia.interrupt_request());
 
         acia.set_dcd_high(false);
-        assert_eq!(acia.peek_status() & 0x84, 0x84, "DCD status remains latched after carrier returns");
+        assert_eq!(acia.peek_status() & 0x84, 0x84);
         let _ = acia.read_status();
         assert!(acia.interrupt_request());
         let _ = acia.read_data();
@@ -446,7 +441,7 @@ mod tests {
     fn master_reset_clears_internal_status_but_preserves_upper_control_and_external_cts() {
         let mut acia = Mc6850::default();
         acia.set_cts_high(true);
-        acia.write_control(0xbc); // upper control bits plus master reset
+        acia.write_control(0xbc);
         assert_eq!(acia.control(), 0xbc);
         assert_eq!(acia.clock_divider(), None);
         assert_eq!(acia.peek_status() & 0x08, 0x08);
