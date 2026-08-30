@@ -260,7 +260,8 @@ fn exercise_memory_write_watchpoint_without_history(engine: EmulationEngine) {
 
 fn exercise_uninstalled_memory_read_watchpoint(engine: EmulationEngine) {
     // Only 256 bytes are installed. MOV A,M still performs a guest-visible
-    // read at 0100h and the Altair bus returns 00h.
+    // read at 0100h; no memory card responds, so the released S-100 DI bus
+    // resolves high and the 8080 observes FFh.
     let mut host = prepared_host_with_ram(
         engine,
         RamSize::Bytes256,
@@ -273,14 +274,14 @@ fn exercise_uninstalled_memory_read_watchpoint(engine: EmulationEngine) {
 
     let cpu = host.intel8080_state();
     assert!(!host.running(), "{engine:?}: unmapped read watchpoint must stop execution");
-    assert_eq!(cpu.a, 0x00, "{engine:?}: uninstalled RAM must read as 00h");
+    assert_eq!(cpu.a, 0xff, "{engine:?}: uninstalled RAM must resolve through open bus as FFh");
     assert_eq!(cpu.pc, 0x0004, "{engine:?}");
     assert_eq!(
         host.debugger_stop_reason(),
         Some(DebugStopReason::MemoryReadWatchpoint {
             instruction_pc: 0x0003,
             address: 0x0100,
-            value: 0x00,
+            value: 0xff,
         }),
         "{engine:?}",
     );
