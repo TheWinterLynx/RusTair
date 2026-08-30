@@ -56,9 +56,11 @@ impl ExecutionClock {
     ///
     /// Stopped time is discarded rather than becoming catch-up debt. Throttled
     /// speeds preserve all elapsed time and fractional T-states. A clock/speed
-    /// change starts a fresh debt epoch so work accrued under one rate can never
-    /// leak into another. Unlimited is intentionally detached from wall clock
-    /// and simply supplies one bounded chunk per repaint.
+    /// change starts a fresh debt epoch at `now`: the preceding host interval
+    /// cannot be attributed safely to either side of an observed rate change,
+    /// so it is deliberately not replayed at the new rate. Unlimited is
+    /// intentionally detached from wall clock and simply supplies one bounded
+    /// chunk per repaint.
     pub(super) fn budget(
         &mut self,
         now: Instant,
@@ -73,6 +75,13 @@ impl ExecutionClock {
         if self.rate != Some(rate) {
             self.balance_units = 0;
             self.rate = Some(rate);
+            if !running {
+                return 0;
+            }
+            return match Self::wall_clock_multiplier(speed) {
+                Some(_) => 0,
+                None => UNLIMITED_CHUNK_T_STATES,
+            };
         }
 
         if !running {
@@ -217,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_effective_speed_discards_old_rate_debt() {
+    fn changing_effective_speed_starts_new_epoch_without_retiming_prior_interval() {
         let t0 = Instant::now();
         let mut clock = ExecutionClock::new(t0);
         assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic), 0);
@@ -225,10 +234,15 @@ mod tests {
         assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic), 40_000);
         assert_eq!(clock.whole_t_state_balance(), 200_000);
 
-        // A diagnostic changing to 10x starts a new timing epoch. The 1x debt
-        // must not be multiplied or inherited at the new rate.
+        // If a diagnostic changes to 10x before this observation, the 10 ms
+        // since the last observation cannot rigorously be assigned to 1x or 10x.
+        // Start the new rate at t2 instead of retroactively multiplying it.
         let t2 = t1 + Duration::from_millis(10);
-        assert_eq!(clock.budget(t2, true, TWO_MHZ, EmulationSpeed::X10), 200_000);
+        assert_eq!(clock.budget(t2, true, TWO_MHZ, EmulationSpeed::X10), 0);
+        assert_eq!(clock.whole_t_state_balance(), 0);
+
+        let t3 = t2 + Duration::from_millis(10);
+        assert_eq!(clock.budget(t3, true, TWO_MHZ, EmulationSpeed::X10), 200_000);
         assert_eq!(clock.whole_t_state_balance(), 200_000);
     }
 
