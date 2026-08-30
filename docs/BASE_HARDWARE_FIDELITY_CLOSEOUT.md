@@ -42,59 +42,64 @@ The 1975 MITS *Altair 8800 Theory of Operation Manual & Schematics* documents tr
 
 The normal local `cargo test` suite passed on 2026-08-30 after the old `00h` debugger expectation was corrected. Subsequent timing work does not change the open-bus contract and keeps these regressions in the normal suite.
 
-## 2. Front-panel LED electrical duty and optical persistence — IMPLEMENTED, LOCAL VALIDATION REQUIRED
+## 2. Front-panel LED electrical duty and optical persistence — PASS
 
-Implemented closeout work:
+Electrical activity and presentation are now separate layers:
 
-- removed the former 32,000-T-state first-window cap, so accelerated execution no longer biases duty toward the first samples of a host frame;
-- added a deterministic raw electrical-duty snapshot separate from the wall-clock-persistent visible snapshot;
+- the former 32,000-T-state first-window cap is gone, so accelerated execution cannot bias duty toward the first samples of a host frame;
+- `raw_panel_lamp_duty()` exposes deterministic electrical duty independently of optical persistence;
 - raw counters use saturating full-window accounting and are reset only after commit/freeze;
-- added Fast-vs-Cycle parity coverage for a fixed two-NOP/eight-T-state sequence where both backends possess equivalent ADDRESS/STATUS information;
-- optical persistence remains downstream presentation and never feeds CPU/S-100 state;
-- `draw_altair` now commits persistence with the real host frame interval rather than a fixed 16 ms constant.
+- a >32,000-sample regression proves that late activity still contributes to the result;
+- a reversed-order regression proves raw duty is sample-order invariant;
+- Fast-vs-Cycle coverage compares a fixed two-NOP/eight-T-state sequence where both backends possess equivalent ADDRESS/STATUS information;
+- optical persistence remains presentation-only and uses the real host frame interval rather than a fabricated fixed 16 ms interval.
 
-Still required before final PASS:
+The full local `cargo test` suite passed on 2026-08-30 with these regressions enabled. Physical brightness/aura calibration remains a presentation-quality task, not an electrical-fidelity blocker.
 
-- local suite validation of the new raw-duty/parity tests and real-frame integration;
-- retain a deterministic long-window/order test proving no regression to truncated sampling;
-- physical/calibrated LED response remains a separate presentation-quality question and must not be confused with electrical-duty correctness.
-
-## 3. Authentic 2 MHz long-term clock — IMPLEMENTED, LOCAL VALIDATION REQUIRED
+## 3. Authentic 2 MHz long-term clock — PASS
 
 The old runtime used `min(20 ms)` and converted that clipped duration directly to a `u32` budget, permanently discarding host stalls and fractional T-states. The replacement clock is a fixed-point host-to-T-state scheduler:
 
 - one emulated T-state equals one billion accumulator units, so nanosecond intervals retain fractional cycles without `f64` rounding loss;
 - all elapsed throttled wall-clock time is retained as signed debt;
-- authentic execution is bounded to 40,000 T-states per UI update, while 5x/10x preserve the previous scaled responsiveness bounds;
-- a 100 ms host stall at 2 MHz creates 200,000 T-states of debt; only 40,000 are serviced at once and the remainder survives subsequent updates;
-- actual backend T-state deltas are subtracted, so Fast whole-instruction overshoot becomes a small negative balance and is repaid instead of creating long-term positive drift;
+- authentic execution is bounded to 40,000 T-states per UI update while remaining debt survives subsequent updates;
+- a 100 ms host stall at 2 MHz creates exactly 200,000 T-states of debt;
+- actual backend T-state deltas are subtracted, so Fast whole-instruction overshoot becomes a small negative balance and is repaid instead of creating long-term drift;
 - stopped time is discarded and blocked RUN states that execute zero T-states do not become catch-up bursts;
-- clock/speed changes create a fresh debt epoch so debt accrued at one effective rate cannot leak into another;
-- Unlimited remains explicitly detached from wall-clock throttling and keeps its bounded immediate repaint chunks;
-- POWER, physical RUN/STOP and RESET fence the execution clock at the operator action boundary.
+- effective clock/speed changes create a fresh debt epoch so work accrued under one rate cannot leak into another;
+- Unlimited remains explicitly detached from wall-clock throttling;
+- POWER, physical RUN/STOP and RESET fence the execution clock at the operator-action boundary;
+- the installed `CpuBoard::clock_hz()` remains the physical timing authority; the scheduler contains no private fixed 2 MHz production constant.
 
-Deterministic unit coverage includes:
+Deterministic coverage includes 100 ms stall retention, fractional-cycle carry, Fast overshoot repayment, stopped-time discard, 10x scaling, rate-epoch changes and Unlimited independence. The focused clock-authority test and the full local `cargo test` suite passed on 2026-08-30.
 
-- 100 ms @ 2 MHz = 200,000 retained T-states;
-- fractional-cycle carry;
-- Fast overshoot repayment;
-- stopped-time discard;
-- 10x scaling;
-- speed-epoch change;
-- Unlimited independence.
+## 4. 88-2SIO / MC6850 — IN PROGRESS
 
-Final PASS requires the focused scheduler tests and full local suite to be green.
+### Primary hardware evidence
 
-## 4. 88-2SIO / MC6850 — OPEN
+The March 1977 MITS *88-2SIO Documentation* describes a board-level input wait generator in addition to the two MC6850 ACIAs. During an `IN`, SINP clocks flip-flop V and forces S-100 PRDY low; the processor remains in WAIT for 500 ns. PWAIT then clears V and releases PRDY. MITS explicitly states that this wait is used only during input to satisfy address setup time. At the stock 2 MHz MITS 8080 clock, 500 ns is exactly one additional TW.
 
-Current model implements the BASIC-required subset and IRQ routing but not full ACIA conformance. Required closeout from Motorola/MITS documentation:
+### S-100 timing implemented in this branch
+
+- only decoded 88-2SIO addresses `10h`–`13h` generate the input wait;
+- 88-SIO accesses do not inherit it;
+- unmapped I/O does not pull PRDY low;
+- `OUT` does not wait;
+- Fast adds the documented single external wait T-state to instruction elapsed time while remaining explicitly reconstructed at sub-instruction level;
+- Cycle combines RAM-card and I/O-card PRDY contributions at the S-100 arbitration point, producing a real `T1 -> T2 -> TW -> T3` input machine cycle;
+- in Cycle, READY is low at the T2 sampling point, WAIT is a real CPU output in TW, and PWAIT releases PRDY during that sole TW;
+- `tests/two_sio_prdy_timing.rs` guards total T-state parity and the exact Cycle sequence.
+
+This S-100 timing work is not sufficient to call the complete 88-2SIO electrically faithful. Full closeout still requires Motorola/MITS ACIA behavior:
 
 - control-word clock divide and word format;
-- transmitter and receiver register/shift-register semantics;
-- RDRF / TDRE timing ownership in the board rather than endpoint UI;
+- real transmit data register + transmit shift register semantics;
+- real receive shift register + receive data register semantics;
+- RDRF / TDRE timing owned by the emulated card rather than ASR/Terminal/TCP/COM presentation timing;
 - overrun, framing and parity status;
-- IRQ flag/enable behavior and master reset;
-- deterministic conformance tests for both ports.
+- CTS, DCD, RTS and BREAK behavior where exposed by the board;
+- IRQ status/enable behavior and master reset;
+- baud-clock/jumper timing and deterministic conformance tests for both ACIAs/ports.
 
 ## 5. MITS 88-SIO — OPEN
 
