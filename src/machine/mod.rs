@@ -210,10 +210,7 @@ impl AltairBus {
     fn panel_address(&self) -> u16 { self.s100.signals().address }
     fn panel_data(&self) -> u8 { self.s100.signals().panel_data }
 
-    fn sync_cpu_inte(&mut self, enabled: bool) {
-        self.s100.set_inte(enabled);
-    }
-
+    fn sync_cpu_inte(&mut self, enabled: bool) { self.s100.set_inte(enabled); }
     fn set_run(&mut self, run: bool) { self.s100.set_run(run); }
     fn set_ready(&mut self, ready: bool) { self.s100.set_ready(ready); }
     fn set_hold(&mut self, hold: bool) { self.s100.set_hold(hold); }
@@ -230,9 +227,7 @@ impl AltairBus {
         self.s100.set_interrupt_request(asserted);
     }
 
-    pub(crate) fn direct_interrupt_opcode(&self) -> u8 {
-        self.serial_interrupt_opcode()
-    }
+    pub(crate) fn direct_interrupt_opcode(&self) -> u8 { self.serial_interrupt_opcode() }
 
     pub(crate) fn cpu_control_lines(&self) -> S100CpuControlLines {
         let signals = self.s100.signals();
@@ -281,8 +276,7 @@ impl AltairBus {
         let data = self.memory.preview_read(address);
         let protected = self.memory.is_protected(address);
         let inte = self.s100.signals().inte;
-        self.s100
-            .drive_power_on_state(address, data, protected, inte, run);
+        self.s100.drive_power_on_state(address, data, protected, inte, run);
     }
 
     fn assert_front_panel_reset_bus(&mut self, run: bool) {
@@ -295,8 +289,7 @@ impl AltairBus {
         let data = self.memory.preview_read(address);
         let protected = self.memory.is_protected(address);
         let inte = self.s100.signals().inte;
-        self.s100
-            .release_front_panel_reset(address, data, protected, inte, run);
+        self.s100.release_front_panel_reset(address, data, protected, inte, run);
     }
 
     fn set_ext_clear(&mut self, asserted: bool) {
@@ -339,14 +332,10 @@ impl Bus for AltairBus {
     }
 
     fn input(&mut self, port: u8) -> u8 {
-        if port != 0xff {
-            self.fast_account_io_input_wait(port);
-        }
+        if port != 0xff { self.fast_account_io_input_wait(port); }
         let value = match port { 0xff => self.panel.input(), _ => self.io.input(port) };
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::InputRead);
-        if port != 0xff {
-            self.refresh_interrupt_request_line();
-        }
+        if port != 0xff { self.refresh_interrupt_request_line(); }
         value
     }
 
@@ -383,9 +372,7 @@ impl Bus for AltairBus {
         self.drive_cpu_cycle(address, opcode, S100Cycle::HaltAcknowledge);
     }
 
-    fn take_wait_states(&mut self) -> u32 {
-        self.take_fast_memory_wait_t_states()
-    }
+    fn take_wait_states(&mut self) -> u32 { self.take_fast_memory_wait_t_states() }
 
     fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
         let cycle = if while_halted {
@@ -433,20 +420,12 @@ impl AltairMachine {
         self.bus.clear_serial();
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
-        if self.powered {
-            self.front_panel_reset();
-        } else {
-            self.bus.power_off_s100();
-        }
+        if self.powered { self.front_panel_reset(); } else { self.bus.power_off_s100(); }
     }
 
     pub fn installed_ram_bytes(&self) -> usize { self.bus.installed_ram_bytes() }
-    pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
-        self.bus.configure_memory_board_profile(profile);
-    }
-    pub fn memory_board_profile(&self, address: u16) -> Option<RamBoardProfile> {
-        self.bus.memory_board_profile(address)
-    }
+    pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) { self.bus.configure_memory_board_profile(profile); }
+    pub fn memory_board_profile(&self, address: u16) -> Option<RamBoardProfile> { self.bus.memory_board_profile(address) }
     pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { self.bus.arm_basic32_full_memory_probe_guard() }
 
     pub fn begin_cpu_diagnostic_meter(
@@ -457,22 +436,11 @@ impl AltairMachine {
         expected_instructions: Option<u64>,
         expected_t_states: Option<u64>,
     ) {
-        self.bus.begin_cpu_diagnostic_meter(
-            name,
-            bdos_start,
-            bdos_len,
-            expected_instructions,
-            expected_t_states,
-        );
+        self.bus.begin_cpu_diagnostic_meter(name, bdos_start, bdos_len, expected_instructions, expected_t_states);
     }
+    pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> { self.bus.take_cpu_diagnostic_result() }
 
-    pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> {
-        self.bus.take_cpu_diagnostic_result()
-    }
-
-    pub fn power(&mut self, on: bool) {
-        self.power_with_historical_run_latch(on, false);
-    }
+    pub fn power(&mut self, on: bool) { self.power_with_historical_run_latch(on, false); }
 
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) {
         self.bus.cancel_cpu_diagnostic_meter();
@@ -521,12 +489,8 @@ impl AltairMachine {
         if !self.powered { return; }
         self.run_switch_asserted = run;
         self.stop_switch_asserted = !run;
-
         if run {
             if self.bus.reset_asserted() {
-                // On the original D/C board RUN is the asynchronous SET input
-                // of the R-S latch. RESET does not gate it; the processor simply
-                // remains held in RESET until PRESET is released.
                 self.running = true;
                 self.bus.set_run(true);
                 self.bus.set_ready(true);
@@ -534,19 +498,12 @@ impl AltairMachine {
                 self.set_running(true);
             }
         } else if !self.bus.reset_asserted() && !self.cpu.halted {
-            // STOP needs a processor synchronization opportunity. While RESET
-            // is held there is no qualifying post-reset fetch yet, so retain the
-            // RUN latch and capture STOP when RESET is released.
             self.set_running(false);
         }
     }
 
     pub fn release_run_stop(&mut self, run: bool) {
-        if run {
-            self.run_switch_asserted = false;
-        } else {
-            self.stop_switch_asserted = false;
-        }
+        if run { self.run_switch_asserted = false; } else { self.stop_switch_asserted = false; }
     }
 
     pub fn assert_front_panel_reset(&mut self) {
@@ -554,8 +511,6 @@ impl AltairMachine {
         self.bus.cancel_cpu_diagnostic_meter();
         self.bus.clear_transient_memory_guards();
         self.cpu.reset();
-        // RESET clears processor state but deliberately preserves the physical
-        // RUN/STOP latch. A pending STOP is captured only after RESET release.
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_hlda(false);
@@ -566,8 +521,6 @@ impl AltairMachine {
         if !self.powered { return; }
         self.cpu.reset();
         if fast_capture_pending_stop && self.stop_switch_asserted {
-            // The instruction-level backend cannot expose the first post-reset
-            // PSYNC. Approximate that exact boundary here, not while RESET is held.
             self.running = false;
             self.bus.set_run(false);
         }
@@ -577,37 +530,12 @@ impl AltairMachine {
         self.bus.release_front_panel_reset_bus(address, self.running);
     }
 
-    pub fn release_front_panel_reset(&mut self) {
-        self.release_front_panel_reset_common(true);
-    }
-
-    pub fn front_panel_reset(&mut self) {
-        if !self.powered { return; }
-        self.assert_front_panel_reset();
-        self.release_front_panel_reset();
-    }
-
-    pub fn reset(&mut self) {
-        if !self.powered { return; }
-        self.front_panel_reset();
-        self.bus.clear_serial();
-    }
-
-    pub fn assert_front_panel_clear(&mut self) {
-        if !self.powered { return; }
-        self.bus.set_ext_clear(true);
-    }
-
-    pub fn release_front_panel_clear(&mut self) {
-        if !self.powered { return; }
-        self.bus.set_ext_clear(false);
-    }
-
-    pub fn clear_io(&mut self) {
-        if !self.powered { return; }
-        self.assert_front_panel_clear();
-        self.release_front_panel_clear();
-    }
+    pub fn release_front_panel_reset(&mut self) { self.release_front_panel_reset_common(true); }
+    pub fn front_panel_reset(&mut self) { if self.powered { self.assert_front_panel_reset(); self.release_front_panel_reset(); } }
+    pub fn reset(&mut self) { if self.powered { self.front_panel_reset(); self.bus.clear_serial(); } }
+    pub fn assert_front_panel_clear(&mut self) { if self.powered { self.bus.set_ext_clear(true); } }
+    pub fn release_front_panel_clear(&mut self) { if self.powered { self.bus.set_ext_clear(false); } }
+    pub fn clear_io(&mut self) { if self.powered { self.assert_front_panel_clear(); self.release_front_panel_clear(); } }
 
     pub fn set_running(&mut self, run: bool) {
         if !self.powered || self.bus.reset_asserted() { return; }
@@ -627,9 +555,7 @@ impl AltairMachine {
     fn service_fast_interrupt_if_requested(&mut self) -> u32 {
         self.bus.refresh_interrupt_request_line();
         let lines = self.bus.cpu_control_lines();
-        if !lines.interrupt || !self.cpu.inte {
-            return 0;
-        }
+        if !lines.interrupt || !self.cpu.inte { return 0; }
 
         let opcode = self.bus.direct_interrupt_opcode();
         self.bus.sync_cpu_inte(false);
@@ -637,7 +563,9 @@ impl AltairMachine {
         let accepted = self.cpu.interrupt(&mut self.bus, opcode);
         debug_assert!(accepted);
         self.bus.sync_cpu_inte(self.cpu.inte);
-        self.cpu.cycles.saturating_sub(before) as u32
+        let elapsed = self.cpu.cycles.saturating_sub(before) as u32;
+        self.bus.advance_serial_hardware_time(u64::from(elapsed));
+        elapsed
     }
 
     pub fn step(&mut self) {
@@ -651,7 +579,8 @@ impl AltairMachine {
         self.bus.set_ready(true);
         self.bus.sync_cpu_inte(self.cpu.inte);
         if self.service_fast_interrupt_if_requested() == 0 {
-            self.cpu.step(&mut self.bus);
+            let elapsed = self.cpu.step(&mut self.bus);
+            self.bus.advance_serial_hardware_time(u64::from(elapsed));
         }
         self.bus.sync_cpu_inte(self.cpu.inte);
         let address = self.bus.panel_address();
@@ -676,38 +605,32 @@ impl AltairMachine {
             if interrupt_t_states != 0 {
                 used = used.saturating_add(interrupt_t_states);
             } else {
-                used = used.saturating_add(self.cpu.step(&mut self.bus));
+                let elapsed = self.cpu.step(&mut self.bus);
+                self.bus.advance_serial_hardware_time(u64::from(elapsed));
+                used = used.saturating_add(elapsed);
             }
             self.bus.sync_cpu_inte(self.cpu.inte);
         }
     }
 
-    pub fn request_hold(&mut self, hold: bool) {
-        self.bus.set_hold(hold);
-        if !hold { self.bus.set_hlda(false); }
+    /// Advance clocks that belong to powered chassis cards while the CPU is not
+    /// being serviced by the instruction-level engine (for example front-panel
+    /// STOP). The runtime will supply this path from virtual chassis time rather
+    /// than abusing endpoint presentation timers.
+    pub fn advance_idle_chassis_time(&mut self, t_states: u64) {
+        if self.powered { self.bus.advance_serial_hardware_time(t_states); }
     }
 
+    pub fn request_hold(&mut self, hold: bool) { self.bus.set_hold(hold); if !hold { self.bus.set_hlda(false); } }
+
     pub fn commit_panel_activity(&mut self, dt: Duration) {
-        let dynamic = self.powered
-            && self.running
-            && !self.cpu.halted
-            && !self.bus.hlda()
-            && !self.bus.reset_asserted();
+        let dynamic = self.powered && self.running && !self.cpu.halted && !self.bus.hlda() && !self.bus.reset_asserted();
         self.bus.commit_panel_activity(dt, dynamic);
     }
 
-    pub fn examine(&mut self, next: bool) {
-        self.fast_front_panel_examine_via_cpu_board(next);
-    }
-
-    pub fn deposit(&mut self, next: bool) {
-        self.fast_front_panel_deposit_via_cpu_board(next);
-    }
-
-    pub fn protect_current_board(&mut self, protected: bool) {
-        self.front_panel_set_memory_protection_via_s100(protected);
-    }
-
+    pub fn examine(&mut self, next: bool) { self.fast_front_panel_examine_via_cpu_board(next); }
+    pub fn deposit(&mut self, next: bool) { self.fast_front_panel_deposit_via_cpu_board(next); }
+    pub fn protect_current_board(&mut self, protected: bool) { self.front_panel_set_memory_protection_via_s100(protected); }
     pub fn current_board_protected(&self) -> bool { self.powered && self.bus.s100.signals().prot }
     pub fn panel_switches(&self) -> u16 { self.bus.panel_switches() }
     pub fn toggle_sense_switch(&mut self, bit: usize) { self.bus.toggle_panel_switch(bit); }
@@ -735,14 +658,7 @@ mod tests {
     #[test]
     fn diagnostic_meter_normalizes_real_bdos_to_reference_stub() {
         let mut bus = AltairBus::default();
-        bus.begin_cpu_diagnostic_meter(
-            "TEST.COM".into(),
-            0xff00,
-            0x37,
-            Some(7),
-            Some(65),
-        );
-
+        bus.begin_cpu_diagnostic_meter("TEST.COM".into(), 0xff00, 0x37, Some(7), Some(65));
         bus.instruction_complete(0x0000, 0xc3, 10);
         bus.instruction_complete(0x0080, 0x31, 10);
         bus.instruction_complete(0x0100, 0x00, 4);
@@ -753,7 +669,6 @@ mod tests {
         bus.instruction_complete(0x0104, 0x00, 4);
         bus.instruction_complete(0x0105, 0xc3, 10);
         bus.instruction_complete(0x0000, 0x76, 7);
-
         let result = bus.take_cpu_diagnostic_result().unwrap();
         assert_eq!(result.instructions, 7);
         assert_eq!(result.t_states, 65);
@@ -766,7 +681,6 @@ mod tests {
         let mut machine = AltairMachine::default();
         machine.power(true);
         machine.bus.load(0, &[0xa5]);
-
         machine.assert_front_panel_reset();
         assert_eq!(machine.address_leds(), 0xffff);
         assert_eq!(machine.data_leds(), 0xff);
@@ -776,7 +690,6 @@ mod tests {
         assert_eq!(held.m1, 0.0);
         assert_eq!(held.wo, 0.0);
         assert_eq!(held.wait, 0.0);
-
         machine.release_front_panel_reset();
         assert_eq!(machine.cpu.pc, 0);
         assert_eq!(machine.address_leds(), 0);
@@ -809,13 +722,12 @@ mod tests {
         machine.front_panel_reset();
         machine.set_running(true);
         machine.cpu.halted = true;
-
         machine.assert_run_stop(false);
-        assert!(machine.running, "STOP cannot latch without PSYNC while halted");
+        assert!(machine.running);
         machine.assert_front_panel_reset();
-        assert!(machine.running, "RESET itself must preserve the physical RUN/STOP latch");
+        assert!(machine.running);
         machine.release_front_panel_reset();
-        assert!(!machine.running, "Fast must capture held STOP at its reconstructed first post-reset fetch boundary");
+        assert!(!machine.running);
         machine.release_run_stop(false);
         assert!(machine.wait_led());
     }
@@ -837,13 +749,11 @@ mod tests {
         machine.front_panel_reset();
         machine.cpu.pc = 0x1234;
         machine.bus.serial_receive(b'X');
-
         machine.assert_front_panel_clear();
         assert!(machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
         assert_eq!(machine.bus.serial_rx_len(), 0);
         assert!(!machine.bus.cpu_control_lines().interrupt);
-
         machine.release_front_panel_clear();
         assert!(!machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
@@ -882,7 +792,6 @@ mod tests {
         assert_eq!(machine.data_leds(), 0x12);
         assert_eq!(machine.panel_lamps().memr, 1.0);
         assert_eq!(machine.panel_lamps().wo, 1.0);
-
         for bit in [1, 2, 4, 6] { machine.toggle_sense_switch(bit); }
         machine.deposit(false);
         assert_eq!(machine.bus.peek_memory(0), Some(0x56));
@@ -911,15 +820,12 @@ mod tests {
         machine.bus.load(0, &[0xfb, 0x00, 0x00]);
         machine.bus.output(0x00, 0x01);
         machine.set_running(true);
-
         machine.run_cycles(8);
         assert_eq!(machine.cpu.pc, 0x0002);
         assert!(machine.cpu.inte);
-
         machine.bus.serial_receive(b'I');
         assert!(machine.bus.cpu_control_lines().interrupt);
         machine.run_cycles(11);
-
         assert_eq!(machine.cpu.pc, 0x0038);
         assert_eq!(machine.cpu.sp, 0x03fe);
         assert!(!machine.cpu.inte);
@@ -937,12 +843,10 @@ mod tests {
         machine.bus.load(0, &[0xfb, 0x76]);
         machine.bus.output(0x00, 0x01);
         machine.set_running(true);
-
         machine.run_cycles(11);
         assert!(machine.cpu.halted);
         assert!(machine.cpu.inte);
         assert_eq!(machine.cpu.pc, 0x0002);
-
         machine.bus.serial_receive(b'W');
         machine.run_cycles(11);
         assert!(!machine.cpu.halted);
