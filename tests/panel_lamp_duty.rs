@@ -3,7 +3,6 @@ use std::time::Duration;
 use rustair::backend::{
     CycleAccurateMachineBackend, FastMachineBackend, MachineBackend,
 };
-use rustair::config::{RamInit, RamSize};
 use rustair::machine::PanelLampSnapshot;
 
 fn assert_close(actual: f32, expected: f32, label: &str) {
@@ -42,7 +41,6 @@ fn assert_snapshot_equal(actual: PanelLampSnapshot, expected: PanelLampSnapshot,
 
 fn prepare_fast() -> FastMachineBackend {
     let mut backend = FastMachineBackend::default();
-    backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
@@ -52,7 +50,6 @@ fn prepare_fast() -> FastMachineBackend {
 
 fn prepare_cycle() -> CycleAccurateMachineBackend {
     let mut backend = CycleAccurateMachineBackend::default();
-    backend.configure_memory(RamSize::K1, RamInit::Zeroed).unwrap();
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
