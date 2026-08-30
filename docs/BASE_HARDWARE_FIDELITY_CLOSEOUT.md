@@ -13,7 +13,7 @@ This document is the live evidence log for `agent/base-hardware-fidelity-closeou
 5. Presentation state (LED persistence, animation, audio) is downstream of electrical state and must never feed it back.
 6. Compatibility workarounds remain explicit and optional.
 
-## 1. S-100 open bus — CLOSED IN CODE, LOCAL VALIDATION REQUIRED
+## 1. S-100 open bus — PASS
 
 ### Historical evidence
 
@@ -28,36 +28,62 @@ The 1975 MITS *Altair 8800 Theory of Operation Manual & Schematics* documents tr
 - A memory card that is not selected contributes no PRDY wait states.
 - An I/O read for which the installed card set has no decoder response observes `FFh`.
 - A device that *does* decode the port owns the returned value; open-bus policy must not replace a legitimate zero/status value.
+- Power-on and RESET-release panel projections use the same guest-visible bus resolution rather than a local zero fallback.
+- Cycle Accurate exposes `FFh` on S-100 DI before the CPU samples the byte, not only as a post-hoc CPU return value.
 
 ### Regression coverage
 
 - `src/machine/memory.rs`: physical absence vs guest-visible `FFh`, ignored writes, no wait-state contribution.
 - `src/machine/io_devices.rs`: inactive serial-board address ranges and arbitrary unmapped ports resolve to `FFh`.
-- `tests/open_bus_fidelity.rs`: public Fast/S-100 guest paths for memory, opcode, stack and I/O.
+- `tests/open_bus_fidelity.rs`: public guest paths for memory, opcode, stack and I/O plus exact Cycle T2/T3 open-bus visibility.
+- `tests/debugger_execution.rs`: debugger still sees absent RAM as `None` while watched guest reads observe `FFh` in both engines.
 
-### Remaining edge before final PASS
+### Validation
 
-Power-on/front-panel helper paths that inspect RAM through `peek()` must also resolve `None` through the same bus policy rather than using a local zero fallback. This will be closed before the open-bus item is marked final PASS.
+The normal local `cargo test` suite passed on 2026-08-30 after the old `00h` debugger expectation was corrected. Subsequent timing work does not change the open-bus contract and keeps these regressions in the normal suite.
 
-## 2. Front-panel LED electrical duty and optical persistence — OPEN
+## 2. Front-panel LED electrical duty and optical persistence — IMPLEMENTED, LOCAL VALIDATION REQUIRED
 
-Required closeout:
+Implemented closeout work:
 
-- remove first-window sampling bias under accelerated execution;
-- expose deterministic raw electrical duty separately from optical persistence;
-- prove sample-order invariance and long-window accounting;
-- compare fixed-program raw duty between Fast reconstruction and Cycle Accurate electrical samples;
-- retain wall-clock optical persistence as presentation only.
+- removed the former 32,000-T-state first-window cap, so accelerated execution no longer biases duty toward the first samples of a host frame;
+- added a deterministic raw electrical-duty snapshot separate from the wall-clock-persistent visible snapshot;
+- raw counters use saturating full-window accounting and are reset only after commit/freeze;
+- added Fast-vs-Cycle parity coverage for a fixed two-NOP/eight-T-state sequence where both backends possess equivalent ADDRESS/STATUS information;
+- optical persistence remains downstream presentation and never feeds CPU/S-100 state;
+- `draw_altair` now commits persistence with the real host frame interval rather than a fixed 16 ms constant.
 
-## 3. Authentic 2 MHz long-term clock — OPEN
+Still required before final PASS:
 
-Current runtime caps delayed-frame elapsed time and therefore can permanently discard emulated time after a host stall. Required closeout:
+- local suite validation of the new raw-duty/parity tests and real-frame integration;
+- retain a deterministic long-window/order test proving no regression to truncated sampling;
+- physical/calibrated LED response remains a separate presentation-quality question and must not be confused with electrical-duty correctness.
 
-- retain elapsed-time debt rather than discarding it;
-- bound per-UI-update execution for responsiveness while carrying remaining debt forward;
-- preserve fractional T-state accounting;
-- keep Unlimited explicitly outside wall-clock throttling;
-- add deterministic scheduler tests, including a 100 ms host stall at 2 MHz producing 200,000 T-states of total debt.
+## 3. Authentic 2 MHz long-term clock — IMPLEMENTED, LOCAL VALIDATION REQUIRED
+
+The old runtime used `min(20 ms)` and converted that clipped duration directly to a `u32` budget, permanently discarding host stalls and fractional T-states. The replacement clock is a fixed-point host-to-T-state scheduler:
+
+- one emulated T-state equals one billion accumulator units, so nanosecond intervals retain fractional cycles without `f64` rounding loss;
+- all elapsed throttled wall-clock time is retained as signed debt;
+- authentic execution is bounded to 40,000 T-states per UI update, while 5x/10x preserve the previous scaled responsiveness bounds;
+- a 100 ms host stall at 2 MHz creates 200,000 T-states of debt; only 40,000 are serviced at once and the remainder survives subsequent updates;
+- actual backend T-state deltas are subtracted, so Fast whole-instruction overshoot becomes a small negative balance and is repaid instead of creating long-term positive drift;
+- stopped time is discarded and blocked RUN states that execute zero T-states do not become catch-up bursts;
+- clock/speed changes create a fresh debt epoch so debt accrued at one effective rate cannot leak into another;
+- Unlimited remains explicitly detached from wall-clock throttling and keeps its bounded immediate repaint chunks;
+- POWER, physical RUN/STOP and RESET fence the execution clock at the operator action boundary.
+
+Deterministic unit coverage includes:
+
+- 100 ms @ 2 MHz = 200,000 retained T-states;
+- fractional-cycle carry;
+- Fast overshoot repayment;
+- stopped-time discard;
+- 10x scaling;
+- speed-epoch change;
+- Unlimited independence.
+
+Final PASS requires the focused scheduler tests and full local suite to be green.
 
 ## 4. 88-2SIO / MC6850 — OPEN
 
