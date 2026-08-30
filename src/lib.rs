@@ -15,6 +15,7 @@ pub mod memory_activity8080;
 pub mod peripherals;
 pub mod trace8080;
 pub(crate) mod embedded_assets;
+pub(crate) mod mc6850;
 
 // Keep the original public module path working while the implementation now
 // lives under peripherals/asr33.
