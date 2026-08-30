@@ -35,7 +35,10 @@ impl eframe::App for RusTairApp {
         // individual windows merely publish demand through their egui state.
         super::ui::sync_instruction_trace_capture(self, ctx);
 
-        let dt = now.duration_since(self.last_tick).min(Duration::from_millis(20));
+        // Presentation uses the real host interval. CPU timing has its own
+        // lossless fixed-point wall-clock accumulator below and therefore must
+        // never share a clamped GUI delta.
+        let frame_dt = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
 
         self.update_paper_tape();
@@ -43,12 +46,34 @@ impl eframe::App for RusTairApp {
             self.process_terminal_input(ctx);
         }
 
-        if self.machine.running() {
-            let board = self.config.machine.cpu_board();
-            let authentic_cycles = (board.clock_hz() as f64 * dt.as_secs_f64()) as u32;
-            let authentic_cycles = authentic_cycles.clamp(1, 40_000);
-            let speed = self.effective_emulation_speed();
-            self.machine.run_cycles(speed.cycle_budget(authentic_cycles));
+        let running = self.machine.running();
+        let board = self.config.machine.cpu_board();
+        let speed = self.effective_emulation_speed();
+        let budget = self
+            .execution_clock
+            .budget(now, running, board.clock_hz(), speed);
+
+        if running && budget != 0 {
+            let before_t_states = self.machine.intel8080_state().total_t_states;
+            self.machine.run_cycles(budget);
+            let after_t_states = self.machine.intel8080_state().total_t_states;
+
+            if speed != EmulationSpeed::Unlimited {
+                let executed = match (before_t_states, after_t_states) {
+                    (Some(before), Some(after)) => after.saturating_sub(before),
+                    _ => u64::from(budget),
+                };
+                if executed == 0 {
+                    // RESET/HOLD/debugger blocking while the physical RUN latch
+                    // remains set is not CPU time to replay later as a burst.
+                    self.execution_clock.discard_pending_debt();
+                } else {
+                    self.execution_clock.record_executed(executed);
+                }
+            }
+        }
+
+        if running {
             if speed == EmulationSpeed::Unlimited {
                 ctx.request_repaint();
             } else {
@@ -349,7 +374,7 @@ impl eframe::App for RusTairApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.centered_and_justified(|ui| self.draw_altair(ui));
+            ui.centered_and_justified(|ui| self.draw_altair(ui, frame_dt));
         });
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
