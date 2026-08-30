@@ -7,7 +7,7 @@ use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
-use crate::machine::{AltairChassis as AltairMachine, Cycle8080S100Adapter, MemoryReadyPhase};
+use crate::machine::{AltairChassis, Cycle8080S100Adapter, MemoryReadyPhase};
 
 use super::{
     BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
@@ -28,7 +28,7 @@ pub(super) enum CycleExecutionEvent {
 /// converted by the cycle CPU-board adapter into the same S-100 sample contract
 /// consumed by the fast CPU-board adapter and the front-panel bus model.
 pub struct CycleAccurateMachineBackend {
-    machine: AltairMachine,
+    machine: AltairChassis,
     cpu: Cpu8080Cycle,
     instruction_address: u16,
     /// Historical teaching sample only. It is a derived observation of the
@@ -46,7 +46,7 @@ pub struct CycleAccurateMachineBackend {
 impl Default for CycleAccurateMachineBackend {
     fn default() -> Self {
         Self {
-            machine: AltairMachine::default(),
+            machine: AltairChassis::default(),
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
             last_teaching_snapshot: None,
@@ -57,8 +57,8 @@ impl Default for CycleAccurateMachineBackend {
 }
 
 impl CycleAccurateMachineBackend {
-    pub fn machine(&self) -> &AltairMachine { &self.machine }
-    pub fn machine_mut(&mut self) -> &mut AltairMachine { &mut self.machine }
+    pub fn machine(&self) -> &AltairChassis { &self.machine }
+    pub fn machine_mut(&mut self) -> &mut AltairChassis { &mut self.machine }
     pub fn cpu(&self) -> &Cpu8080Cycle { &self.cpu }
     pub(super) fn teaching_snapshot(&self) -> Option<BusTeachingSnapshot> { self.last_teaching_snapshot }
 
