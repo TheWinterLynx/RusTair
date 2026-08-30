@@ -1,11 +1,11 @@
-use rustair::machine::AltairChassis;
+use rustair::machine::{AltairChassis, MEM_SIZE};
 
 #[test]
 fn real_chassis_default_is_cpu_free_physical_container() {
     let chassis = AltairChassis::default();
     assert!(!chassis.powered);
     assert!(!chassis.running);
-    assert_eq!(chassis.installed_ram_bytes(), 65_536);
+    assert_eq!(chassis.installed_ram_bytes(), MEM_SIZE);
 }
 
 #[test]
