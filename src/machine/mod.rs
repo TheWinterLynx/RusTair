@@ -228,10 +228,6 @@ impl AltairBus {
         self.s100.set_interrupt_request(asserted);
     }
 
-    pub(crate) fn interrupt_requested(&self) -> bool {
-        self.s100.signals().interrupt
-    }
-
     pub(crate) fn direct_interrupt_opcode(&self) -> u8 {
         self.serial_interrupt_opcode()
     }
@@ -580,10 +576,6 @@ impl AltairMachine {
         self.release_front_panel_reset_common(true);
     }
 
-    pub(crate) fn cycle_release_front_panel_reset(&mut self) {
-        self.release_front_panel_reset_common(false);
-    }
-
     pub fn front_panel_reset(&mut self) {
         if !self.powered { return; }
         self.assert_front_panel_reset();
@@ -845,7 +837,7 @@ mod tests {
         assert!(machine.ext_clear_asserted());
         assert_eq!(machine.cpu.pc, 0x1234);
         assert_eq!(machine.bus.serial_rx_len(), 0);
-        assert!(!machine.bus.interrupt_requested());
+        assert!(!machine.bus.cpu_control_lines().interrupt);
 
         machine.release_front_panel_clear();
         assert!(!machine.ext_clear_asserted());
