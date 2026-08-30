@@ -55,12 +55,13 @@ impl ExecutionClock {
     /// Return the bounded T-state budget for this UI update.
     ///
     /// Stopped time is discarded rather than becoming catch-up debt. Throttled
-    /// speeds preserve all elapsed time and fractional T-states. A clock/speed
-    /// change starts a fresh debt epoch at `now`: the preceding host interval
-    /// cannot be attributed safely to either side of an observed rate change,
-    /// so it is deliberately not replayed at the new rate. Unlimited is
-    /// intentionally detached from wall clock and simply supplies one bounded
-    /// chunk per repaint.
+    /// speeds preserve all elapsed time and fractional T-states. `rate == None`
+    /// means an exact boundary was established by `new`/`reset_at`, so elapsed
+    /// time since that boundary belongs to the currently supplied rate. A real
+    /// change from one known rate to another starts a fresh epoch at `now`; the
+    /// preceding host interval cannot be attributed safely to either rate and
+    /// is not replayed at the new one. Unlimited remains detached from wall
+    /// clock and simply supplies one bounded chunk per repaint.
     pub(super) fn budget(
         &mut self,
         now: Instant,
@@ -72,16 +73,20 @@ impl ExecutionClock {
         self.last_accounted = now;
 
         let rate = (clock_hz, speed);
-        if self.rate != Some(rate) {
-            self.balance_units = 0;
-            self.rate = Some(rate);
-            if !running {
-                return 0;
+        match self.rate {
+            None => self.rate = Some(rate),
+            Some(previous) if previous != rate => {
+                self.balance_units = 0;
+                self.rate = Some(rate);
+                if !running {
+                    return 0;
+                }
+                return match Self::wall_clock_multiplier(speed) {
+                    Some(_) => 0,
+                    None => UNLIMITED_CHUNK_T_STATES,
+                };
             }
-            return match Self::wall_clock_multiplier(speed) {
-                Some(_) => 0,
-                None => UNLIMITED_CHUNK_T_STATES,
-            };
+            Some(_) => {}
         }
 
         if !running {
@@ -161,6 +166,18 @@ mod tests {
             clock.record_executed(40_000);
             assert_eq!(clock.whole_t_state_balance(), expected_remaining);
         }
+    }
+
+    #[test]
+    fn reset_boundary_does_not_drop_first_running_frame() {
+        let t0 = Instant::now();
+        let mut clock = ExecutionClock::new(t0);
+        clock.reset_at(t0);
+        let t1 = t0 + Duration::from_millis(16);
+        assert_eq!(
+            clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic),
+            32_000
+        );
     }
 
     #[test]
