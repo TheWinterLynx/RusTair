@@ -43,8 +43,10 @@ fn prepare_fast() -> FastMachineBackend {
     let mut backend = FastMachineBackend::default();
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
-    backend.release_reset().unwrap();
+    // Load while RESET is asserted so release exposes a deterministic 00h at
+    // address zero instead of preserving a random power-on RAM byte in DATA.
     backend.load_bytes(0, &[0x00, 0x00, 0x76]).unwrap(); // NOP / NOP / HLT
+    backend.release_reset().unwrap();
     backend
 }
 
@@ -52,8 +54,8 @@ fn prepare_cycle() -> CycleAccurateMachineBackend {
     let mut backend = CycleAccurateMachineBackend::default();
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
-    backend.release_reset().unwrap();
     backend.load_bytes(0, &[0x00, 0x00, 0x76]).unwrap(); // NOP / NOP / HLT
+    backend.release_reset().unwrap();
     backend
 }
 
