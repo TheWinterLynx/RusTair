@@ -31,7 +31,6 @@ use crate::config::{
     TerminalSpeed,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
-use crate::machine::CLOCK_HZ;
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
 };
@@ -107,6 +106,16 @@ impl RusTairApp {
         Tex::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
         let config = AppConfig::default();
+        let cpu_board = config.machine.cpu_board();
+        let cpu = cpu_board.cpu_model();
+        let status = format!(
+            "Ready — RusTair Fast 8080 — {} / {} @ {:.1} MHz — {} RAM — {} — ASR-33 connected",
+            cpu_board.label(),
+            cpu.label(),
+            cpu_board.clock_hz() as f32 / 1_000_000.0,
+            config.machine.ram_size.label(),
+            config.machine.serial_board.label(),
+        );
         let mut terminal = TerminalState::default();
         terminal.speed = config.peripherals.terminal_speed;
         Self {
@@ -124,8 +133,7 @@ impl RusTairApp {
             terminal,
             audio: AudioEngine::new(),
             last_tick: now,
-            status: "Ready — RusTair Fast 8080 @ 2 MHz — 8 KiB RAM — MITS 88-SIO — ASR-33 connected"
-                .into(),
+            status,
         }
     }
 
@@ -159,10 +167,6 @@ impl RusTairApp {
 
     fn select_emulation_engine(&mut self, engine: EmulationEngine) {
         if self.machine.engine() == engine { return; }
-        if !engine.is_available() {
-            self.status = format!("{} is parked until the SIMH backend branch is integrated", engine.label());
-            return;
-        }
         if self.machine.powered() {
             self.status = "Power OFF the Altair before changing emulation engine".into();
             return;
