@@ -1,15 +1,9 @@
 /// Motorola MC6850 ACIA digital core.
 ///
-/// This models the chip-owned register/flag state independently from any host
-/// terminal or teletype. Serial bit timing is driven explicitly by callers via
-/// transmitter/receiver completion events; presentation endpoints never own
-/// TDRE/RDRF semantics.
+/// Register state belongs to the emulated chip, never to a host terminal or
+/// teletype. Serial bit timing is advanced explicitly by the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Parity {
-    None,
-    Even,
-    Odd,
-}
+pub(crate) enum Parity { None, Even, Odd }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WordFormat {
@@ -29,6 +23,7 @@ pub(crate) struct Mc6850 {
     overrun_visible: bool,
     tdr: Option<u8>,
     tx_shift: Option<u8>,
+    // Status-register sense of the active-low modem inputs.
     cts_high: bool,
     dcd_input_high: bool,
     dcd_status_latched: bool,
@@ -48,8 +43,7 @@ impl Default for Mc6850 {
             overrun_visible: false,
             tdr: None,
             tx_shift: None,
-            // MITS documents grounding unused CTS/DCD inputs. Low therefore
-            // represents the normal directly-connected terminal condition.
+            // MITS instructs grounding unused CTS/DCD inputs.
             cts_high: false,
             dcd_input_high: false,
             dcd_status_latched: false,
@@ -62,23 +56,8 @@ impl Default for Mc6850 {
 }
 
 impl Mc6850 {
-    #[cfg(test)]
-    fn control(&self) -> u8 {
-        self.control
-    }
-
-    #[cfg(test)]
-    fn clock_divider(&self) -> Option<u8> {
-        match self.control & 0x03 {
-            0x00 => Some(1),
-            0x01 => Some(16),
-            0x02 => Some(64),
-            _ => None,
-        }
-    }
-
     pub(crate) fn word_format(&self) -> WordFormat {
-        match (self.control >> 2) & 0x07 {
+        match (self.control >> 2) & 7 {
             0 => WordFormat { data_bits: 7, parity: Parity::Even, stop_bits: 2 },
             1 => WordFormat { data_bits: 7, parity: Parity::Odd, stop_bits: 2 },
             2 => WordFormat { data_bits: 7, parity: Parity::Even, stop_bits: 1 },
@@ -90,34 +69,19 @@ impl Mc6850 {
         }
     }
 
-    pub(crate) fn receive_interrupt_enabled(&self) -> bool {
-        self.control & 0x80 != 0
+    pub(crate) fn frame_bits(&self) -> u8 {
+        let f = self.word_format();
+        1 + f.data_bits + u8::from(f.parity != Parity::None) + f.stop_bits
     }
 
-    pub(crate) fn transmit_interrupt_enabled(&self) -> bool {
-        self.control & 0x60 == 0x20
-    }
-
-    #[cfg(test)]
-    fn rts_asserted(&self) -> bool {
-        matches!(self.control & 0x60, 0x00 | 0x20 | 0x60)
-    }
-
-    #[cfg(test)]
-    fn break_active(&self) -> bool {
-        self.control & 0x60 == 0x60
-    }
+    fn receive_interrupt_enabled(&self) -> bool { self.control & 0x80 != 0 }
+    fn transmit_interrupt_enabled(&self) -> bool { self.control & 0x60 == 0x20 }
 
     pub(crate) fn write_control(&mut self, value: u8) {
         self.control = value;
-        if value & 0x03 == 0x03 {
-            self.master_reset();
-        }
+        if value & 3 == 3 { self.master_reset(); }
     }
 
-    /// MC6850 master reset clears internal status/error state and initializes
-    /// transmitter/receiver logic, but does not alter CR2..CR7 or external CTS/
-    /// DCD levels.
     pub(crate) fn master_reset(&mut self) {
         self.rdr_full = false;
         self.framing_error = false;
@@ -132,22 +96,18 @@ impl Mc6850 {
     }
 
     fn rdrf(&self) -> bool {
-        // Motorola specifies that DCD high forces RDRF empty. During an overrun
-        // indication RDRF intentionally remains set until the overrun is reset.
         !self.dcd_input_high && (self.rdr_full || self.overrun_visible)
     }
 
     fn tdre(&self) -> bool {
-        // CTS high inhibits the TDRE indication even if the TDR is physically
-        // empty. The shift register may remain busy while TDRE is already high.
+        // CTS high inhibits TDRE even if the holding register is empty.
         !self.cts_high && self.tdr.is_none()
     }
 
     pub(crate) fn interrupt_request(&self) -> bool {
-        let rx_irq = self.receive_interrupt_enabled()
-            && (self.rdrf() || self.overrun_visible || self.dcd_irq_pending);
-        let tx_irq = self.transmit_interrupt_enabled() && self.tdre();
-        rx_irq || tx_irq
+        (self.receive_interrupt_enabled()
+            && (self.rdrf() || self.overrun_visible || self.dcd_irq_pending))
+            || (self.transmit_interrupt_enabled() && self.tdre())
     }
 
     fn status_value(&self) -> u8 {
@@ -161,29 +121,19 @@ impl Mc6850 {
             | (u8::from(self.interrupt_request()) << 7)
     }
 
-    pub(crate) fn peek_status(&self) -> u8 {
-        self.status_value()
-    }
+    pub(crate) fn peek_status(&self) -> u8 { self.status_value() }
 
     pub(crate) fn read_status(&mut self) -> u8 {
-        let status = self.status_value();
-        if status & 0x04 != 0 {
-            self.dcd_status_seen = true;
-        }
-        status
+        let value = self.status_value();
+        if value & 0x04 != 0 { self.dcd_status_seen = true; }
+        value
     }
 
-    pub(crate) fn peek_data(&self) -> u8 {
-        self.rdr
-    }
+    pub(crate) fn peek_data(&self) -> u8 { self.rdr }
 
     pub(crate) fn read_data(&mut self) -> u8 {
         let value = self.rdr;
-
         if self.overrun_visible {
-            // Motorola keeps RDRF asserted together with OVRN after the valid
-            // pre-overrun character has been read. A subsequent data-register
-            // read clears the overrun indication.
             self.overrun_visible = false;
             self.rdr_full = false;
         } else if self.rdr_full {
@@ -193,36 +143,21 @@ impl Mc6850 {
                 self.overrun_visible = true;
             }
         }
-
         if !self.rdr_full {
             self.framing_error = false;
             self.parity_error = false;
         }
-
-        // Loss-of-carrier IRQ is cleared only by status-read followed by a data
-        // read (or reset). If DCD is still high, its status bit remains high but
-        // the edge-triggered IRQ condition is cleared until another transition.
         if self.dcd_status_seen {
             self.dcd_irq_pending = false;
             self.dcd_status_seen = false;
-            if !self.dcd_input_high {
-                self.dcd_status_latched = false;
-            }
+            if !self.dcd_input_high { self.dcd_status_latched = false; }
         }
-
         value
     }
 
-    /// Complete one received serial character and transfer it from the receiver
-    /// shift register into the one-byte RDR when possible. Additional complete
-    /// characters while RDR is occupied are lost and arm the documented delayed
-    /// overrun indication.
-    pub(crate) fn receive_character(
-        &mut self,
-        value: u8,
-        framing_error: bool,
-        parity_error: bool,
-    ) {
+    /// Receiver shift-register completion. If RDR is occupied, the new character
+    /// is lost and OVRN remains latent until the valid old RDR byte is read.
+    pub(crate) fn receive_character(&mut self, value: u8, framing_error: bool, parity_error: bool) {
         if self.rdr_full || self.overrun_visible {
             self.overrun_pending = true;
             return;
@@ -234,6 +169,8 @@ impl Mc6850 {
         self.parity_error = format.parity != Parity::None && parity_error;
     }
 
+    pub(crate) fn receive_len(&self) -> usize { usize::from(self.rdrf()) }
+
     pub(crate) fn clear_receive_for_debugger(&mut self) {
         self.rdr_full = false;
         self.framing_error = false;
@@ -242,39 +179,20 @@ impl Mc6850 {
         self.overrun_visible = false;
     }
 
-    pub(crate) fn receive_len(&self) -> usize {
-        usize::from(self.rdrf())
-    }
+    pub(crate) fn write_data(&mut self, value: u8) { self.tdr = Some(value); }
 
-    pub(crate) fn write_data(&mut self, value: u8) {
-        self.tdr = Some(value);
-    }
-
-    /// One transmitter clock opportunity: if the shift register is idle and CTS
-    /// permits transmission, move TDR into TSR. This is the transition that sets
-    /// TDRE; completion of the character is a separate event.
+    /// Transfer TDR -> transmit shift register. This transition, not completion
+    /// at the terminal, is what raises TDRE.
     pub(crate) fn transfer_tdr_to_shift_if_idle(&mut self) -> bool {
-        if self.cts_high || self.tx_shift.is_some() {
-            return false;
-        }
-        let Some(value) = self.tdr.take() else {
-            return false;
-        };
+        if self.cts_high || self.tx_shift.is_some() { return false; }
+        let Some(value) = self.tdr.take() else { return false; };
         self.tx_shift = Some(value);
         true
     }
 
-    pub(crate) fn tx_shift_front(&self) -> Option<u8> {
-        self.tx_shift
-    }
+    pub(crate) fn tx_shift_front(&self) -> Option<u8> { self.tx_shift }
+    pub(crate) fn transmit_busy(&self) -> bool { self.tdr.is_some() || self.tx_shift.is_some() }
 
-    pub(crate) fn transmit_busy(&self) -> bool {
-        self.tdr.is_some() || self.tx_shift.is_some()
-    }
-
-    /// Complete the current shifted character. If another byte is waiting in
-    /// TDR, the real transmitter starts it as soon as the previous character is
-    /// complete, so promote it to TSR at this same boundary.
     pub(crate) fn complete_tx_shift(&mut self) -> Option<u8> {
         let completed = self.tx_shift.take()?;
         let _ = self.transfer_tdr_to_shift_if_idle();
@@ -287,10 +205,15 @@ impl Mc6850 {
     }
 
     #[cfg(test)]
-    fn set_cts_high(&mut self, high: bool) {
-        self.cts_high = high;
+    fn clock_divider(&self) -> Option<u8> {
+        match self.control & 3 { 0 => Some(1), 1 => Some(16), 2 => Some(64), _ => None }
     }
-
+    #[cfg(test)]
+    fn rts_asserted(&self) -> bool { matches!(self.control & 0x60, 0x00 | 0x20 | 0x60) }
+    #[cfg(test)]
+    fn break_active(&self) -> bool { self.control & 0x60 == 0x60 }
+    #[cfg(test)]
+    fn set_cts_high(&mut self, high: bool) { self.cts_high = high; }
     #[cfg(test)]
     fn set_dcd_high(&mut self, high: bool) {
         if high && !self.dcd_input_high {
@@ -306,145 +229,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_register_decodes_motorola_clock_word_and_modem_modes() {
-        let mut acia = Mc6850::default();
-        acia.write_control(0b1001_0101); // RX IRQ, 8N1, divide 16
-        assert_eq!(acia.clock_divider(), Some(16));
-        assert_eq!(
-            acia.word_format(),
-            WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 1 }
-        );
-        assert!(acia.receive_interrupt_enabled());
-        assert!(!acia.transmit_interrupt_enabled());
-        assert!(acia.rts_asserted());
-        assert!(!acia.break_active());
-
-        acia.write_control(0x60);
-        assert!(acia.break_active());
-        assert!(acia.rts_asserted());
-        assert!(!acia.transmit_interrupt_enabled());
+    fn control_word_decodes_clock_format_rts_and_break() {
+        let mut a = Mc6850::default();
+        a.write_control(0x95); // RX IRQ, 8N1, divide 16
+        assert_eq!(a.clock_divider(), Some(16));
+        assert_eq!(a.word_format(), WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 1 });
+        assert_eq!(a.frame_bits(), 10);
+        assert!(a.rts_asserted());
+        assert!(!a.break_active());
+        a.write_control(0x60);
+        assert!(a.break_active());
+        assert!(a.rts_asserted());
     }
 
     #[test]
-    fn tdr_and_shift_register_are_distinct_and_tdre_tracks_only_tdr() {
-        let mut acia = Mc6850::default();
-        assert_eq!(acia.peek_status() & 0x02, 0x02);
-
-        acia.write_data(b'A');
-        assert_eq!(acia.peek_status() & 0x02, 0x00);
-        assert_eq!(acia.tx_shift_front(), None);
-
-        assert!(acia.transfer_tdr_to_shift_if_idle());
-        assert_eq!(acia.tx_shift_front(), Some(b'A'));
-        assert_eq!(acia.peek_status() & 0x02, 0x02);
-
-        acia.write_data(b'B');
-        assert_eq!(acia.peek_status() & 0x02, 0x00);
-        assert!(!acia.transfer_tdr_to_shift_if_idle());
-        assert_eq!(acia.complete_tx_shift(), Some(b'A'));
-        assert_eq!(acia.tx_shift_front(), Some(b'B'));
-        assert_eq!(acia.peek_status() & 0x02, 0x02);
+    fn tdr_tsr_are_distinct_and_tdre_tracks_tdr_only() {
+        let mut a = Mc6850::default();
+        assert_eq!(a.peek_status() & 2, 2);
+        a.write_data(b'A');
+        assert_eq!(a.peek_status() & 2, 0);
+        assert!(a.transfer_tdr_to_shift_if_idle());
+        assert_eq!(a.tx_shift_front(), Some(b'A'));
+        assert_eq!(a.peek_status() & 2, 2);
+        a.write_data(b'B');
+        assert_eq!(a.peek_status() & 2, 0);
+        assert_eq!(a.complete_tx_shift(), Some(b'A'));
+        assert_eq!(a.tx_shift_front(), Some(b'B'));
+        assert_eq!(a.peek_status() & 2, 2);
     }
 
     #[test]
-    fn receive_register_is_one_byte_and_rdrf_clears_on_read() {
-        let mut acia = Mc6850::default();
-        acia.write_control(0x14); // 8N1, divide 1
-        acia.receive_character(0x5a, false, false);
-        assert_eq!(acia.peek_status() & 0x01, 0x01);
-        assert_eq!(acia.peek_data(), 0x5a);
-        assert_eq!(acia.read_data(), 0x5a);
-        assert_eq!(acia.peek_status() & 0x01, 0x00);
+    fn rdr_is_one_byte_and_overrun_is_delayed_exactly_as_documented() {
+        let mut a = Mc6850::default();
+        a.write_control(0x14);
+        a.receive_character(b'A', false, false);
+        a.receive_character(b'B', false, false);
+        assert_eq!(a.peek_status() & 0x21, 0x01);
+        assert_eq!(a.read_data(), b'A');
+        assert_eq!(a.peek_status() & 0x21, 0x21);
+        assert_eq!(a.read_data(), b'A');
+        assert_eq!(a.peek_status() & 0x21, 0);
     }
 
     #[test]
-    fn overrun_is_delayed_until_valid_character_is_read_then_requires_data_read_to_clear() {
-        let mut acia = Mc6850::default();
-        acia.write_control(0x14);
-        acia.receive_character(b'A', false, false);
-        acia.receive_character(b'B', false, false);
-
-        assert_eq!(acia.peek_status() & 0x21, 0x01, "OVRN is latent while A is unread");
-        assert_eq!(acia.read_data(), b'A');
-        assert_eq!(acia.peek_status() & 0x21, 0x21, "RDRF stays set when OVRN becomes visible");
-        assert_eq!(acia.read_data(), b'A', "second read sees retained RDR contents");
-        assert_eq!(acia.peek_status() & 0x21, 0x00);
+    fn irq_follows_rdrf_tdre_instead_of_endpoint_busy() {
+        let mut a = Mc6850::default();
+        a.write_control(0xa0);
+        assert!(a.interrupt_request());
+        a.write_data(b'T');
+        assert!(!a.interrupt_request());
+        assert!(a.transfer_tdr_to_shift_if_idle());
+        assert!(a.interrupt_request());
+        assert!(a.transmit_busy());
+        a.write_control(0x80);
+        assert!(!a.interrupt_request());
+        a.receive_character(b'R', false, false);
+        assert!(a.interrupt_request());
+        assert_eq!(a.read_data(), b'R');
+        assert!(!a.interrupt_request());
     }
 
     #[test]
-    fn receive_and_transmit_interrupts_follow_rdrf_tdre_not_endpoint_busy() {
-        let mut acia = Mc6850::default();
-        acia.write_control(0xa0);
-        assert!(acia.interrupt_request(), "empty TDR requests TX service");
-
-        acia.write_data(b'T');
-        assert!(!acia.interrupt_request(), "writing TDR clears TX-empty condition");
-        assert!(acia.transfer_tdr_to_shift_if_idle());
-        assert!(acia.interrupt_request(), "TDRE returns while TSR is still transmitting");
-        assert_eq!(acia.tx_shift_front(), Some(b'T'));
-
-        acia.write_control(0x80);
-        assert!(!acia.interrupt_request());
-        acia.receive_character(b'R', false, false);
-        assert!(acia.interrupt_request());
-        assert_eq!(acia.read_data(), b'R');
-        assert!(!acia.interrupt_request());
+    fn cts_inhibits_tdre_and_tdr_transfer() {
+        let mut a = Mc6850::default();
+        a.set_cts_high(true);
+        assert_eq!(a.peek_status() & 0x0a, 0x08);
+        a.write_data(b'X');
+        assert!(!a.transfer_tdr_to_shift_if_idle());
+        a.set_cts_high(false);
+        assert!(a.transfer_tdr_to_shift_if_idle());
+        assert_eq!(a.peek_status() & 2, 2);
     }
 
     #[test]
-    fn cts_high_inhibits_tdre_and_prevents_tdr_transfer() {
-        let mut acia = Mc6850::default();
-        acia.set_cts_high(true);
-        assert_eq!(acia.peek_status() & 0x0a, 0x08);
-        acia.write_data(b'X');
-        assert!(!acia.transfer_tdr_to_shift_if_idle());
-        assert_eq!(acia.tx_shift_front(), None);
-
-        acia.set_cts_high(false);
-        assert!(acia.transfer_tdr_to_shift_if_idle());
-        assert_eq!(acia.tx_shift_front(), Some(b'X'));
-        assert_eq!(acia.peek_status() & 0x02, 0x02);
+    fn framing_and_parity_flags_belong_to_current_rdr_character() {
+        let mut a = Mc6850::default();
+        a.write_control(0x1c); // 8O1
+        a.receive_character(0x33, true, true);
+        assert_eq!(a.peek_status() & 0x51, 0x51);
+        a.read_data();
+        assert_eq!(a.peek_status() & 0x51, 0);
+        a.write_control(0x14); // 8N1
+        a.receive_character(0x44, false, true);
+        assert_eq!(a.peek_status() & 0x40, 0);
     }
 
     #[test]
-    fn framing_and_parity_errors_belong_to_the_current_receive_character() {
-        let mut acia = Mc6850::default();
-        acia.write_control(0x1c); // 8 odd parity, 1 stop, divide 1
-        acia.receive_character(0x33, true, true);
-        assert_eq!(acia.peek_status() & 0x51, 0x51);
-        acia.read_data();
-        assert_eq!(acia.peek_status() & 0x51, 0x00);
-
-        acia.write_control(0x14); // 8N1: parity checking inhibited
-        acia.receive_character(0x44, false, true);
-        assert_eq!(acia.peek_status() & 0x40, 0x00);
+    fn dcd_irq_clears_only_after_status_then_data_read() {
+        let mut a = Mc6850::default();
+        a.write_control(0x80);
+        a.set_dcd_high(true);
+        assert_eq!(a.peek_status() & 0x84, 0x84);
+        a.set_dcd_high(false);
+        assert_eq!(a.peek_status() & 0x84, 0x84);
+        let _ = a.read_status();
+        assert!(a.interrupt_request());
+        let _ = a.read_data();
+        assert_eq!(a.peek_status() & 0x84, 0);
     }
 
     #[test]
-    fn dcd_interrupt_requires_status_then_data_read_to_clear_the_edge_latch() {
-        let mut acia = Mc6850::default();
-        acia.write_control(0x80);
-        acia.set_dcd_high(true);
-        assert_eq!(acia.peek_status() & 0x84, 0x84);
-        assert!(acia.interrupt_request());
-
-        acia.set_dcd_high(false);
-        assert_eq!(acia.peek_status() & 0x84, 0x84);
-        let _ = acia.read_status();
-        assert!(acia.interrupt_request());
-        let _ = acia.read_data();
-        assert_eq!(acia.peek_status() & 0x84, 0x00);
-        assert!(!acia.interrupt_request());
-    }
-
-    #[test]
-    fn master_reset_clears_internal_status_but_preserves_upper_control_and_external_cts() {
-        let mut acia = Mc6850::default();
-        acia.set_cts_high(true);
-        acia.write_control(0xbc);
-        assert_eq!(acia.control(), 0xbc);
-        assert_eq!(acia.clock_divider(), None);
-        assert_eq!(acia.peek_status() & 0x08, 0x08);
-        assert_eq!(acia.peek_status() & 0x71, 0x00);
+    fn master_reset_preserves_external_cts_and_upper_control_bits() {
+        let mut a = Mc6850::default();
+        a.set_cts_high(true);
+        a.write_control(0xbf); // CR1:CR0=11 master reset
+        assert_eq!(a.control, 0xbf);
+        assert_eq!(a.clock_divider(), None);
+        assert_eq!(a.peek_status() & 0x08, 0x08);
+        assert_eq!(a.peek_status() & 0x71, 0);
     }
 }
