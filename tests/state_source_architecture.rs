@@ -101,10 +101,16 @@ fn cycle_memory_configuration_bypasses_fast_machine_cpu_helper() {
 }
 
 #[test]
-fn remaining_state_debt_is_documented_without_claiming_removed_mirrors() {
+fn state_source_documentation_matches_resolved_chassis_architecture() {
     let doc = include_str!("../docs/STATE_SOURCES.md");
+    assert!(doc.contains("CPU/chassis type composition is resolved"));
+    assert!(doc.contains("Cycle physically owns a CPU-free"));
     assert!(doc.contains("RUN latch duplication"));
-    assert!(doc.contains("CPU/chassis type composition"));
+    assert!(doc.contains("Backend encapsulation"));
     assert!(doc.contains("There is no `sync_machine_cpu()` path"));
     assert!(doc.contains("previous `AltairBus::cpu_inte` duplicate has already been removed"));
+    assert!(
+        !doc.contains("Cycle backend carries an unused `Cpu8080`"),
+        "documentation must not resurrect the removed dormant Fast CPU"
+    );
 }
