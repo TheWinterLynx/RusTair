@@ -1,3 +1,4 @@
+mod chassis;
 mod cpu_board;
 mod front_panel;
 mod io_devices;
@@ -17,6 +18,7 @@ use io_devices::IoDevices;
 use memory::Memory;
 use panel_bus::S100BusState;
 
+pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub(crate) use memory::MemoryReadyPhase;
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
