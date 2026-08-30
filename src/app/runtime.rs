@@ -133,7 +133,20 @@ impl eframe::App for RusTairApp {
                             "Authentic hardware clock: {:.1} MHz",
                             board.clock_hz() as f32 / 1_000_000.0
                         ));
-                        ui.small("Host-side acceleration is configured under Preferences → Emulation speed; it does not change the installed CPU board hardware clock.");
+
+                        ui.separator();
+                        ui.label("Emulator speed");
+                        for speed in SELECTABLE_EMULATION_SPEEDS {
+                            let label = emulation_speed_label(speed, board);
+                            if ui.selectable_label(self.config.preferences.emulation_speed == speed, label).clicked() {
+                                self.set_emulation_speed(speed);
+                                ui.close();
+                            }
+                        }
+                        if self.config.preferences.emulation_speed == EmulationSpeed::X2 {
+                            ui.small("Loaded legacy 2× preference. Select Authentic, 5×, 10× or Unlimited to replace it.");
+                        }
+                        ui.small("Acceleration changes host execution rate only; it does not alter the installed CPU board hardware clock.");
                     });
 
                     if ui.button("LED visuals…").clicked() {
@@ -239,16 +252,6 @@ impl eframe::App for RusTairApp {
                     });
 
                     ui.menu_button("Preferences", |ui| {
-                        ui.menu_button("Emulation speed", |ui| {
-                            for speed in EmulationSpeed::ALL {
-                                if ui.selectable_label(self.config.preferences.emulation_speed == speed, speed.label()).clicked() {
-                                    self.set_emulation_speed(speed);
-                                    ui.close();
-                                }
-                            }
-                        });
-                        ui.small("Acceleration changes host execution rate only; it does not change the installed CPU board hardware clock.");
-                        ui.separator();
                         let mut auto_open_basic_console = self.config.preferences.auto_open_basic_console;
                         if ui.checkbox(&mut auto_open_basic_console, "Auto-open BASIC console").changed() {
                             self.config.preferences.auto_open_basic_console = auto_open_basic_console;
@@ -321,7 +324,10 @@ impl eframe::App for RusTairApp {
                 let panel = self.machine.front_panel_state();
                 ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", cpu.pc, cpu.sp, cpu.a, cpu.flags));
                 ui.separator();
-                ui.label(self.effective_emulation_speed().label());
+                ui.label(emulation_speed_label(
+                    self.effective_emulation_speed(),
+                    self.config.machine.cpu_board(),
+                ));
                 ui.separator();
                 let execution_state = if !panel.powered {
                     "POWER OFF"
