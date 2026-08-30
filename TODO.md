@@ -125,9 +125,9 @@
 ## P1 — CPU / machine / backend architecture
 
 - [x] ~~**[P1] Remove the duplicate Fast `Cpu8080` state that remains as a mirror inside the Cycle Accurate machine integration**, making the chassis truly CPU-core agnostic.~~ Completed and locally validated: Cycle now physically owns `AltairChassis + Cpu8080Cycle`; Fast alone owns `AltairMachine + Cpu8080`, with regression guards against reintroducing the dormant Fast CPU, alias or `Deref` wrapper.
-- [ ] **[P1] Propagate Cycle Accurate core faults to the application as explicit errors/diagnostics** instead of allowing execution to appear silently stopped.
-- [ ] **[P1] Rework Cycle memory reconfiguration so it does not rebuild the backend and accidentally discard unrelated chassis state.**
-- [ ] **[P1] Harden `BackendHost` error handling** so backend errors are surfaced rather than converted into application `panic!` paths.
+- [x] ~~**[P1] Propagate Cycle Accurate core faults to the application as explicit errors/diagnostics** instead of allowing execution to appear silently stopped.~~ Completed and locally validated: Cycle faults are latched, lower RUN before returning, cross `BackendHost` through `try_run_cycles()` and are surfaced by the runtime as `CPU ERROR — ...`.
+- [x] ~~**[P1] Rework Cycle memory reconfiguration so it does not rebuild the backend and accidentally discard unrelated chassis state.**~~ Completed and locally validated: Cycle mutates RAM on the existing chassis/bus, retains unrelated chassis configuration, and resets the existing Cycle CPU when powered; regression tests forbid backend reconstruction.
+- [ ] **[P2] Replace remaining panic-based `BackendHost` error handling with fallible application boundaries when an operation can legitimately fail.** Runtime CPU execution is already fallible; avoid a broad signature refactor without a concrete failing path.
 - [ ] **[P1] Gate UI operations using backend capabilities at the common interface**, even while only the two Rust 8080 engines are active.
 - [ ] **[P1] Remove/restrict public concrete-backend escape hatches** such as direct `machine()/machine_mut()/into_machine()` access where they undermine the abstraction.
 - [ ] **[P1] Add an architectural regression test** that fails if `src/app` starts depending directly on `AltairMachine`/concrete CPU/bus internals again.
@@ -218,8 +218,8 @@
 ## P1/P2 — Documentation / licensing / project hygiene
 
 - [ ] **[P1] Rewrite the root `README.md` current-state section.** It still describes essentially one 8080 core and an 8 KiB model and omits Fast/Cycle engines, configurable RAM, 88-SIO/88-2SIO, routing, TCP/COM, persistence, diagnostics and current ASR tape controls.
-- [ ] **[P1] Update `src/backend/README.md`** so it describes the architecture that exists now rather than old branch/refactor plans.
-- [ ] **[P1] Complete `THIRD_PARTY.md` / provenance review** for Open SIMH material already present, diagnostic binaries, fonts, images and audio before a public release.
+- [x] ~~**[P1] Update `src/backend/README.md`** so it describes the architecture that exists now rather than old branch/refactor plans.~~ Updated for the Rust-only Fast/Cycle architecture, CPU-free Cycle chassis, validated memory reconfiguration and explicit runtime fault boundary.
+- [ ] **[P1] Complete `THIRD_PARTY.md` / provenance review** for diagnostic binaries, fonts, images and audio before a public release.
 - [ ] **[P1] Review `.github/workflows/*` automatic triggers** against the project rule that GitHub Actions must never be run without explicit permission; prefer manual-only behavior if appropriate.
 - [ ] **[P2] Add a concise architecture document** covering UI → `BackendHost/MachineBackend` → chassis/core, serial routing, timing ownership and presentation-vs-electrical front-panel layers.
 - [ ] **[P2] Add a historical-fidelity notes document** identifying deliberate approximations, compatibility hacks and optional non-historical conveniences.
@@ -233,19 +233,6 @@
 - [ ] **[P2] Add optional common-address annotations** (reset vector, RST vectors, loaded image ranges) without pretending unknown symbols are known source labels.
 - [ ] **[P2] Allow copying disassembly/history/trace snippets for teaching/debugging.**
 - [ ] **[P3] Session snapshots for debugging/teaching** (machine state + RAM + key debugger metadata), clearly separate from normal power-on configuration persistence.
-
----
-
-## PARKED — SIMH / Z80 (do not work without explicit instruction)
-
-> The existing files remain exactly as they are. These are recorded so the work is not forgotten, but they are **outside the active backlog until the user explicitly reactivates them**.
-
-- [ ] **[PARKED] Open SIMH classic Altair backend integration/factory activation.**
-- [ ] **[PARKED] Open SIMH serial/TMXR routing into the common ASR/Terminal/TCP/COM endpoint model.**
-- [ ] **[PARKED] Open SIMH front-panel lamp/activity integration.**
-- [ ] **[PARKED] Open SIMH memory/profile/configuration negotiation and disk operations through the common backend contract.**
-- [ ] **[PARKED] AltairZ80 backend activation and Z80-aware CPU state/UI/debugger/disassembly.**
-- [ ] **[PARKED] SIMH/Z80 smoke/integration testing and capabilities cleanup.**
 
 ---
 
