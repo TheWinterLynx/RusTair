@@ -1,3 +1,4 @@
+mod cpu_model_compat;
 mod external_com;
 mod external_serial;
 mod machine;
