@@ -10,7 +10,7 @@ pub use external_serial::{
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
 };
 pub use machine::{
-    AppConfig, Asr33Speed, CompatibilityConfig, CpuModel, EmulationSpeed, MachineConfig,
+    AppConfig, Asr33Speed, CompatibilityConfig, CpuBoard, CpuModel, EmulationSpeed, MachineConfig,
     PeripheralConfig, PreferencesConfig, RamBoardProfile, RamInit, RamSize, SerialBoard,
     TerminalSpeed,
 };
