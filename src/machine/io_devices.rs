@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use crate::config::SerialBoard;
 use crate::cpu8080::Bus;
 
+use super::memory::S100_OPEN_BUS_VALUE;
 use super::serial::SerialPort;
 use super::{AltairBus, AltairMachine};
 
@@ -232,16 +233,14 @@ impl IoDevices {
                     (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
                 }
                 SIO_DATA_PORT => self.serial[0].read_rx().unwrap_or(0),
-                SIO2_PORT0_STATUS | SIO2_PORT1_STATUS => 0x00,
-                _ => 0,
+                _ => S100_OPEN_BUS_VALUE,
             },
             SerialBoard::TwoSio88 => match port {
                 SIO2_PORT0_STATUS => self.two_sio_status(0),
                 SIO2_PORT0_DATA => self.serial[0].read_rx().unwrap_or(0),
                 SIO2_PORT1_STATUS => self.two_sio_status(1),
                 SIO2_PORT1_DATA => self.serial[1].read_rx().unwrap_or(0),
-                SIO_STATUS_PORT => 0xff,
-                _ => 0,
+                _ => S100_OPEN_BUS_VALUE,
             },
         }
     }
@@ -255,16 +254,14 @@ impl IoDevices {
                     (if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
                 }
                 SIO_DATA_PORT => self.serial[0].rx_front().unwrap_or(0),
-                SIO2_PORT0_STATUS | SIO2_PORT1_STATUS => 0x00,
-                _ => 0,
+                _ => S100_OPEN_BUS_VALUE,
             },
             SerialBoard::TwoSio88 => match port {
                 SIO2_PORT0_STATUS => self.two_sio_status(0),
                 SIO2_PORT0_DATA => self.serial[0].rx_front().unwrap_or(0),
                 SIO2_PORT1_STATUS => self.two_sio_status(1),
                 SIO2_PORT1_DATA => self.serial[1].rx_front().unwrap_or(0),
-                SIO_STATUS_PORT => 0xff,
-                _ => 0,
+                _ => S100_OPEN_BUS_VALUE,
             },
         }
     }
@@ -553,8 +550,24 @@ mod tests {
         io.output(SIO2_PORT1_DATA, b'Y');
         assert!(!io.serial_tx_busy());
         assert!(!io.port1_tx_busy());
+        assert_eq!(io.input(SIO2_PORT0_STATUS), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.input(SIO2_PORT0_DATA), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.input(SIO2_PORT1_STATUS), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.input(SIO2_PORT1_DATA), S100_OPEN_BUS_VALUE);
         io.output(SIO_DATA_PORT, b'S');
         assert_eq!(io.serial_tx_front(), Some(b'S'));
+    }
+
+    #[test]
+    fn unmapped_io_reads_open_bus_for_each_installed_serial_board() {
+        let mut io = IoDevices::default();
+        assert_eq!(io.input(0x7e), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.peek_input(0x7e), S100_OPEN_BUS_VALUE);
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(io.input(SIO_STATUS_PORT), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.input(SIO_DATA_PORT), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.input(0x7e), S100_OPEN_BUS_VALUE);
+        assert_eq!(io.peek_input(0x7e), S100_OPEN_BUS_VALUE);
     }
 
     #[test]
@@ -602,7 +615,7 @@ mod tests {
         io.configure_serial_board(SerialBoard::TwoSio88);
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x02, 0x02);
         assert_eq!(io.input(SIO2_PORT1_STATUS) & 0x02, 0x02);
-        assert_eq!(io.input(SIO_STATUS_PORT), 0xff);
+        assert_eq!(io.input(SIO_STATUS_PORT), S100_OPEN_BUS_VALUE);
         io.output(SIO2_PORT0_DATA, b'0');
         io.output(SIO2_PORT1_DATA, b'1');
         assert_eq!(io.serial_tx_front(), Some(b'0'));
