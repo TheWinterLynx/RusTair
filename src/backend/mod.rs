@@ -4,7 +4,6 @@ mod bus_teaching;
 mod cycle;
 mod cycle_host;
 mod native;
-pub mod simh;
 
 use std::fmt;
 use std::time::Duration;
@@ -25,35 +24,28 @@ pub type FastMachineBackend = NativeMachineBackend;
 pub type InstructionTraceSnapshot = Vec<InstructionTraceEntry>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BackendFamily { Rustair, Simh }
+pub enum BackendFamily { Rustair }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmulationEngine {
     RustFast8080,
     RustCycleAccurate8080,
-    SimhAltair,
-    SimhAltairZ80,
 }
 
 impl EmulationEngine {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 2] = [
         Self::RustFast8080,
         Self::RustCycleAccurate8080,
-        Self::SimhAltair,
-        Self::SimhAltairZ80,
     ];
     pub const fn family(self) -> BackendFamily {
         match self {
             Self::RustFast8080 | Self::RustCycleAccurate8080 => BackendFamily::Rustair,
-            Self::SimhAltair | Self::SimhAltairZ80 => BackendFamily::Simh,
         }
     }
     pub const fn label(self) -> &'static str {
         match self {
             Self::RustFast8080 => "RusTair — Fast 8080",
             Self::RustCycleAccurate8080 => "RusTair — Cycle Accurate 8080",
-            Self::SimhAltair => "Open SIMH — Altair",
-            Self::SimhAltairZ80 => "Open SIMH — AltairZ80",
         }
     }
     pub const fn is_available(self) -> bool {
@@ -105,30 +97,8 @@ impl Intel8080State {
     pub const fn hl(self) -> u16 { ((self.h as u16) << 8) | self.l as u16 }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Z80State {
-    pub a: u8,
-    pub flags: u8,
-    pub bc: u16,
-    pub de: u16,
-    pub hl: u16,
-    pub pc: u16,
-    pub sp: u16,
-    pub ix: u16,
-    pub iy: u16,
-    pub af_alt: u16,
-    pub bc_alt: u16,
-    pub de_alt: u16,
-    pub hl_alt: u16,
-    pub iff: u8,
-    pub interrupt_mode: u8,
-    pub ir: u16,
-    pub halted: Option<bool>,
-    pub total_t_states: Option<u64>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CpuState { Intel8080(Intel8080State), Z80(Z80State) }
+pub enum CpuState { Intel8080(Intel8080State) }
 impl Default for CpuState { fn default() -> Self { Self::Intel8080(Intel8080State::default()) } }
 
 #[derive(Clone, Copy, Debug)]
@@ -371,8 +341,6 @@ pub fn create_backend(engine: EmulationEngine) -> Result<Box<dyn MachineBackend>
     match engine {
         EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
         EmulationEngine::RustCycleAccurate8080 => Ok(Box::new(CycleHostBackend::default())),
-        EmulationEngine::SimhAltair | EmulationEngine::SimhAltairZ80 =>
-            Err(BackendCreateError::Unavailable(engine)),
     }
 }
 
@@ -400,7 +368,6 @@ impl BackendHost {
     pub fn intel8080_state(&mut self) -> Intel8080State {
         match self.cpu_state() {
             CpuState::Intel8080(state) => state,
-            CpuState::Z80(_) => panic!("selected backend exposes a Z80, not an Intel 8080"),
         }
     }
     pub fn front_panel_state(&mut self) -> FrontPanelState { Self::call(self.backend.front_panel_state()) }
@@ -555,6 +522,7 @@ mod tests {
 
     #[test]
     fn both_builtin_rust_8080_engines_are_available() {
+        assert_eq!(EmulationEngine::ALL.len(), 2);
         assert!(EmulationEngine::RustFast8080.is_available());
         assert!(EmulationEngine::RustCycleAccurate8080.is_available());
         assert!(BackendHost::from_engine(EmulationEngine::RustFast8080).is_ok());
@@ -562,11 +530,9 @@ mod tests {
     }
 
     #[test]
-    fn engine_families_remain_separate_from_simh() {
+    fn both_engines_belong_to_rustair_family() {
         assert_eq!(EmulationEngine::RustFast8080.family(), BackendFamily::Rustair);
         assert_eq!(EmulationEngine::RustCycleAccurate8080.family(), BackendFamily::Rustair);
-        assert_eq!(EmulationEngine::SimhAltair.family(), BackendFamily::Simh);
-        assert_eq!(EmulationEngine::SimhAltairZ80.family(), BackendFamily::Simh);
     }
 
     #[test]
