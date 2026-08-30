@@ -278,7 +278,7 @@ impl AltairBus {
     }
 
     fn drive_power_on_state(&mut self, address: u16, run: bool) {
-        let data = self.memory.peek(address).unwrap_or(0);
+        let data = self.memory.preview_read(address);
         let protected = self.memory.is_protected(address);
         let inte = self.s100.signals().inte;
         self.s100
@@ -292,7 +292,7 @@ impl AltairBus {
     }
 
     fn release_front_panel_reset_bus(&mut self, address: u16, run: bool) {
-        let data = self.memory.peek(address).unwrap_or(0);
+        let data = self.memory.preview_read(address);
         let protected = self.memory.is_protected(address);
         let inte = self.s100.signals().inte;
         self.s100
