@@ -47,6 +47,14 @@ const PRINT_HEAD_IMPACT_DELAY: Duration = Duration::from_millis(20);
 const PRINT_HEAD_CARRIAGE_RETURN_TIME: Duration = Duration::from_millis(160);
 const PAPER_FEED_TIME: Duration = Duration::from_millis(74);
 
+/// Normalization clock used only by the classic Intel 8080 diagnostic reports.
+///
+/// Their published/reference T-state totals are displayed as the equivalent
+/// elapsed time of the original MITS 8080 CPU board at 2 MHz. This is not the
+/// runtime scheduler clock: execution timing is owned by the installed
+/// `CpuBoard` and `runtime.rs` must never consume this reference constant.
+const CLOCK_HZ: u32 = crate::config::CpuBoard::Mits8080.clock_hz();
+
 const ADDR_LED_X: [f32; 16] = [
     1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0, 1052.7, 953.6, 884.8,
     817.5, 718.5, 649.7, 579.9, 480.0,
