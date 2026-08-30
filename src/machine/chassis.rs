@@ -20,8 +20,14 @@ pub struct AltairChassis {
 
 impl Default for AltairChassis {
     fn default() -> Self {
+        let mut bus = AltairBus::default();
+        // Unlike the Fast adapter's reconstructed machine-cycle samples, every
+        // CPU-board sample driven by this chassis is one real Cycle-core T-state.
+        // Independent card oscillators can therefore advance exactly once per
+        // sample without relying on another CPU implementation.
+        bus.set_exact_t_state_clock_owner(true);
         Self {
-            bus: AltairBus::default(),
+            bus,
             powered: false,
             running: false,
             stop_switch_asserted: false,
