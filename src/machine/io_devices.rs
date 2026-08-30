@@ -4,7 +4,7 @@ use crate::config::SerialBoard;
 use crate::cpu8080::Bus;
 
 use super::serial::SerialPort;
-use super::{AltairBus, FastAltairMachine};
+use super::{AltairBus, AltairMachine};
 
 const SIO_STATUS_PORT: u8 = 0x00;
 const SIO_DATA_PORT: u8 = 0x01;
@@ -210,6 +210,8 @@ impl IoDevices {
             SerialBoard::TwoSio88 => (0..2).any(|index| {
                 let control = self.two_sio_control[index];
                 let rx_irq = control & 0x80 != 0 && !self.serial[index].rx_empty();
+                // MC6850 transmitter-control bits CR6:CR5 = 01 enable the
+                // transmitter-empty interrupt while keeping RTS asserted.
                 let tx_irq = control & 0x60 == 0x20 && !self.serial[index].tx_busy();
                 rx_irq || tx_irq
             }),
@@ -217,6 +219,7 @@ impl IoDevices {
     }
 
     pub(super) const fn direct_interrupt_opcode(&self) -> u8 {
+        // The stock direct-PINT Altair interrupt path forces RST 7 (0038h).
         0xff
     }
 
@@ -300,9 +303,17 @@ impl IoDevices {
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
     }
 
-    pub(super) fn serial_rx_empty(&self) -> bool { self.serial[0].rx_empty() }
-    pub(super) fn serial_rx_len(&self) -> usize { self.serial[0].rx_len() }
-    pub(super) fn serial_tx_front(&self) -> Option<u8> { self.serial[0].tx_front() }
+    pub(super) fn serial_rx_empty(&self) -> bool {
+        self.serial[0].rx_empty()
+    }
+
+    pub(super) fn serial_rx_len(&self) -> usize {
+        self.serial[0].rx_len()
+    }
+
+    pub(super) fn serial_tx_front(&self) -> Option<u8> {
+        self.serial[0].tx_front()
+    }
 
     pub(super) fn serial_tx_complete(&mut self) -> Option<u8> {
         let completed = self.serial[0].complete_tx();
@@ -313,7 +324,9 @@ impl IoDevices {
         completed
     }
 
-    pub(super) fn serial_tx_busy(&self) -> bool { self.serial[0].tx_busy() }
+    pub(super) fn serial_tx_busy(&self) -> bool {
+        self.serial[0].tx_busy()
+    }
 
     pub(super) fn port1_receive(&mut self, byte: u8) {
         self.serial[1].receive(byte);
@@ -321,9 +334,17 @@ impl IoDevices {
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
     }
 
-    pub(super) fn port1_rx_empty(&self) -> bool { self.serial[1].rx_empty() }
-    pub(super) fn port1_rx_len(&self) -> usize { self.serial[1].rx_len() }
-    pub(super) fn port1_tx_front(&self) -> Option<u8> { self.serial[1].tx_front() }
+    pub(super) fn port1_rx_empty(&self) -> bool {
+        self.serial[1].rx_empty()
+    }
+
+    pub(super) fn port1_rx_len(&self) -> usize {
+        self.serial[1].rx_len()
+    }
+
+    pub(super) fn port1_tx_front(&self) -> Option<u8> {
+        self.serial[1].tx_front()
+    }
 
     pub(super) fn port1_tx_complete(&mut self) -> Option<u8> {
         let completed = self.serial[1].complete_tx();
@@ -334,7 +355,9 @@ impl IoDevices {
         completed
     }
 
-    pub(super) fn port1_tx_busy(&self) -> bool { self.serial[1].tx_busy() }
+    pub(super) fn port1_tx_busy(&self) -> bool {
+        self.serial[1].tx_busy()
+    }
 
     pub(super) fn clear_serial(&mut self) {
         self.serial[0].clear();
@@ -344,20 +367,26 @@ impl IoDevices {
     }
 
     fn debugger_inject_rx(&mut self, port: u8, byte: u8) -> bool {
-        let Some(index) = self.data_port_index(port) else { return false; };
+        let Some(index) = self.data_port_index(port) else {
+            return false;
+        };
         self.serial[index].receive(byte);
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
         true
     }
 
     fn debugger_clear_rx(&mut self, port: u8) -> bool {
-        let Some(index) = self.data_port_index(port) else { return false; };
+        let Some(index) = self.data_port_index(port) else {
+            return false;
+        };
         self.serial[index].clear_rx();
         true
     }
 
     fn debugger_clear_tx(&mut self, port: u8) -> bool {
-        let Some(index) = self.data_port_index(port) else { return false; };
+        let Some(index) = self.data_port_index(port) else {
+            return false;
+        };
         self.serial[index].clear_tx();
         true
     }
@@ -376,16 +405,26 @@ impl AltairBus {
         self.refresh_interrupt_request_line();
     }
 
-    pub fn serial_board(&self) -> SerialBoard { self.io.serial_board() }
+    pub fn serial_board(&self) -> SerialBoard {
+        self.io.serial_board()
+    }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
         self.io.port1_receive(byte);
         self.refresh_interrupt_request_line();
     }
 
-    pub fn serial_port1_rx_empty(&self) -> bool { self.io.port1_rx_empty() }
-    pub fn serial_port1_rx_len(&self) -> usize { self.io.port1_rx_len() }
-    pub fn serial_port1_tx_front(&self) -> Option<u8> { self.io.port1_tx_front() }
+    pub fn serial_port1_rx_empty(&self) -> bool {
+        self.io.port1_rx_empty()
+    }
+
+    pub fn serial_port1_rx_len(&self) -> usize {
+        self.io.port1_rx_len()
+    }
+
+    pub fn serial_port1_tx_front(&self) -> Option<u8> {
+        self.io.port1_tx_front()
+    }
 
     pub fn serial_port1_tx_complete(&mut self) -> Option<u8> {
         let completed = self.io.port1_tx_complete();
@@ -393,50 +432,84 @@ impl AltairBus {
         completed
     }
 
-    pub fn serial_port1_tx_busy(&self) -> bool { self.io.port1_tx_busy() }
-    pub(crate) fn serial_interrupt_request(&self) -> bool { self.io.interrupt_request() }
-    pub(crate) fn serial_interrupt_opcode(&self) -> u8 { self.io.direct_interrupt_opcode() }
+    pub fn serial_port1_tx_busy(&self) -> bool {
+        self.io.port1_tx_busy()
+    }
+
+    pub(crate) fn serial_interrupt_request(&self) -> bool {
+        self.io.interrupt_request()
+    }
+
+    pub(crate) fn serial_interrupt_opcode(&self) -> u8 {
+        self.io.direct_interrupt_opcode()
+    }
 
     pub fn peek_io_port(&self, port: u8) -> u8 {
-        if port == 0xff { self.panel.input() } else { self.io.peek_input(port) }
+        if port == 0xff {
+            self.panel.input()
+        } else {
+            self.io.peek_input(port)
+        }
     }
 
     pub fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
         self.io.trace.port_activity(port)
     }
-    pub fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> { self.io.trace.snapshot() }
-    pub fn io_trace_enabled(&self) -> bool { self.io.trace.enabled }
-    pub fn set_io_trace_enabled(&mut self, enabled: bool) { self.io.trace.set_enabled(enabled); }
-    pub fn clear_io_trace(&mut self) { self.io.trace.clear_events(); }
+
+    pub fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
+        self.io.trace.snapshot()
+    }
+
+    pub fn io_trace_enabled(&self) -> bool {
+        self.io.trace.enabled
+    }
+
+    pub fn set_io_trace_enabled(&mut self, enabled: bool) {
+        self.io.trace.set_enabled(enabled);
+    }
+
+    pub fn clear_io_trace(&mut self) {
+        self.io.trace.clear_events();
+    }
 
     pub fn debugger_input_port(&mut self, port: u8) -> u8 {
         let value = <Self as Bus>::input(self, port);
-        if port == 0xff { self.io.trace.record(IO_TRACE_IN, port, value); }
+        if port == 0xff {
+            self.io.trace.record(IO_TRACE_IN, port, value);
+        }
         self.refresh_interrupt_request_line();
         value
     }
 
     pub fn debugger_output_port(&mut self, port: u8, value: u8) {
         <Self as Bus>::output(self, port, value);
-        if port == 0xff { self.io.trace.record(IO_TRACE_OUT, port, value); }
+        if port == 0xff {
+            self.io.trace.record(IO_TRACE_OUT, port, value);
+        }
         self.refresh_interrupt_request_line();
     }
 
     pub fn debugger_inject_serial_rx(&mut self, data_port: u8, byte: u8) -> bool {
         let changed = self.io.debugger_inject_rx(data_port, byte);
-        if changed { self.refresh_interrupt_request_line(); }
+        if changed {
+            self.refresh_interrupt_request_line();
+        }
         changed
     }
 
     pub fn debugger_clear_serial_rx(&mut self, data_port: u8) -> bool {
         let changed = self.io.debugger_clear_rx(data_port);
-        if changed { self.refresh_interrupt_request_line(); }
+        if changed {
+            self.refresh_interrupt_request_line();
+        }
         changed
     }
 
     pub fn debugger_clear_serial_tx(&mut self, data_port: u8) -> bool {
         let changed = self.io.debugger_clear_tx(data_port);
-        if changed { self.refresh_interrupt_request_line(); }
+        if changed {
+            self.refresh_interrupt_request_line();
+        }
         changed
     }
 
@@ -447,7 +520,7 @@ impl AltairBus {
     }
 }
 
-impl FastAltairMachine {
+impl AltairMachine {
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         if self.bus.serial_board() == board {
             return;
@@ -463,7 +536,9 @@ impl FastAltairMachine {
         }
     }
 
-    pub fn serial_board(&self) -> SerialBoard { self.bus.serial_board() }
+    pub fn serial_board(&self) -> SerialBoard {
+        self.bus.serial_board()
+    }
 }
 
 #[cfg(test)]
@@ -486,17 +561,19 @@ mod tests {
     fn sio_control_port_enables_level_sensitive_rx_and_tx_interrupt_sources() {
         let mut io = IoDevices::default();
         assert!(!io.interrupt_request());
-        io.output(SIO_STATUS_PORT, 0x01);
+
+        io.output(SIO_STATUS_PORT, 0x01); // D0: receive interrupt enable
         io.serial_receive(b'R');
         assert!(io.interrupt_request());
         assert_eq!(io.input(SIO_DATA_PORT), b'R');
-        assert!(!io.interrupt_request());
-        io.output(SIO_STATUS_PORT, 0x02);
-        assert!(io.interrupt_request());
+        assert!(!io.interrupt_request(), "reading the receive buffer removes the RX interrupt condition");
+
+        io.output(SIO_STATUS_PORT, 0x02); // D1: transmit-ready interrupt enable
+        assert!(io.interrupt_request(), "an empty transmitter is ready and therefore requests service");
         io.output(SIO_DATA_PORT, b'T');
-        assert!(!io.interrupt_request());
+        assert!(!io.interrupt_request(), "loading the transmitter removes the ready condition");
         assert_eq!(io.serial_tx_complete(), Some(b'T'));
-        assert!(io.interrupt_request());
+        assert!(io.interrupt_request(), "completed transmission restores the ready interrupt condition");
         assert_eq!(io.direct_interrupt_opcode(), 0xff);
     }
 
@@ -504,12 +581,14 @@ mod tests {
     fn two_sio_acia_control_bits_drive_rx_and_tx_interrupt_conditions() {
         let mut io = IoDevices::default();
         io.configure_serial_board(SerialBoard::TwoSio88);
-        io.output(SIO2_PORT0_STATUS, 0x80);
+
+        io.output(SIO2_PORT0_STATUS, 0x80); // CR7: RX IRQ enable
         io.serial_receive(b'R');
         assert!(io.interrupt_request());
         assert_eq!(io.input(SIO2_PORT0_DATA), b'R');
         assert!(!io.interrupt_request());
-        io.output(SIO2_PORT0_STATUS, 0x20);
+
+        io.output(SIO2_PORT0_STATUS, 0x20); // CR6:CR5 = 01: TX empty IRQ enable
         assert!(io.interrupt_request());
         io.output(SIO2_PORT0_DATA, b'T');
         assert!(!io.interrupt_request());
@@ -532,21 +611,24 @@ mod tests {
 
     #[test]
     fn port1_irq_projects_to_canonical_pint_immediately() {
-        let mut machine = FastAltairMachine::default();
+        let mut machine = AltairMachine::default();
         machine.configure_serial_board(SerialBoard::TwoSio88);
         machine.bus.debugger_output_port(SIO2_PORT1_STATUS, 0x80);
         assert!(!machine.bus.cpu_control_lines().interrupt);
+
         machine.bus.serial_port1_receive(b'P');
         assert!(machine.bus.cpu_control_lines().interrupt);
+
         assert_eq!(machine.bus.debugger_input_port(SIO2_PORT1_DATA), b'P');
         assert!(!machine.bus.cpu_control_lines().interrupt);
     }
 
     #[test]
     fn debugger_uart_mutations_refresh_canonical_pint() {
-        let mut machine = FastAltairMachine::default();
+        let mut machine = AltairMachine::default();
         machine.bus.debugger_output_port(SIO_STATUS_PORT, 0x01);
         assert!(!machine.bus.cpu_control_lines().interrupt);
+
         assert!(machine.bus.debugger_inject_serial_rx(SIO_DATA_PORT, b'D'));
         assert!(machine.bus.cpu_control_lines().interrupt);
         assert!(machine.bus.debugger_clear_serial_rx(SIO_DATA_PORT));
@@ -555,7 +637,7 @@ mod tests {
 
     #[test]
     fn changing_serial_board_preserves_ram() {
-        let mut machine = FastAltairMachine::default();
+        let mut machine = AltairMachine::default();
         machine.bus.load(0x0200, &[0x5a]);
         machine.configure_serial_board(SerialBoard::TwoSio88);
         assert_eq!(machine.bus.read(0x0200), 0x5a);
@@ -564,7 +646,7 @@ mod tests {
 
     #[test]
     fn peek_does_not_consume_serial_rx() {
-        let mut machine = FastAltairMachine::default();
+        let mut machine = AltairMachine::default();
         machine.bus.serial_receive(b'Y');
         assert_eq!(machine.bus.peek_io_port(SIO_DATA_PORT), b'Y');
         assert_eq!(machine.bus.serial_rx_len(), 1);

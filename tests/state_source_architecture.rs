@@ -1,7 +1,5 @@
 const CYCLE: &str = include_str!("../src/backend/cycle.rs");
 const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
-const MACHINE: &str = include_str!("../src/machine/mod.rs");
-const CHASSIS: &str = include_str!("../src/machine/chassis.rs");
 const MEMORY: &str = include_str!("../src/machine/memory.rs");
 const PANEL_BUS: &str = include_str!("../src/machine/panel_bus.rs");
 
@@ -52,7 +50,7 @@ fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
     );
     assert!(
         !CYCLE.contains("machine.cpu"),
-        "Cycle backend must not read or write a Fast CPU authority"
+        "Cycle backend must not read or write AltairMachine.cpu"
     );
     assert!(
         !CYCLE.contains("cycle_registers_from_fast"),
@@ -65,31 +63,16 @@ fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
 }
 
 #[test]
-fn altair_chassis_is_physically_cpu_agnostic() {
-    assert!(CHASSIS.contains("pub struct AltairChassis"));
-    assert!(CHASSIS.contains("pub bus: AltairBus"));
-    assert!(
-        !CHASSIS.contains("Cpu8080"),
-        "the common Altair chassis must not contain any concrete CPU implementation"
-    );
-    assert!(MACHINE.contains("pub struct FastAltairMachine"));
-    assert!(MACHINE.contains("pub cpu: Cpu8080"));
-    assert!(MACHINE.contains("chassis: AltairChassis"));
-    assert!(
-        MACHINE.contains("pub type AltairMachine = AltairChassis"),
-        "Cycle compatibility name must resolve to the CPU-free chassis"
-    );
-}
-
-#[test]
 fn cycle_memory_configuration_bypasses_fast_machine_cpu_helper() {
     assert!(CYCLE_HOST.contains("machine_mut().bus.configure_memory(size, init)"));
     assert!(!CYCLE_HOST.contains("machine_mut().configure_memory(size, init)"));
 }
 
 #[test]
-fn state_source_documentation_tracks_removed_mirror_and_chassis_split() {
+fn remaining_state_debt_is_documented_without_claiming_removed_mirrors() {
     let doc = include_str!("../docs/STATE_SOURCES.md");
+    assert!(doc.contains("RUN latch duplication"));
+    assert!(doc.contains("CPU/chassis type composition"));
     assert!(doc.contains("There is no `sync_machine_cpu()` path"));
     assert!(doc.contains("previous `AltairBus::cpu_inte` duplicate has already been removed"));
 }

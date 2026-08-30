@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{TState, TickTrace};
 
@@ -137,6 +139,9 @@ impl Fast8080S100Adapter {
         mut emit: impl FnMut(S100CpuSample),
     ) {
         let status = cycle.status_word();
+        // At the beginning of every machine cycle the 8080 places its status
+        // byte on D0-D7. The CPU-board output buffers also present that level on
+        // DO while the local 8212 latches the dedicated S-100 status outputs.
         emit(S100CpuSample {
             address: Some(address),
             cpu_data: Some(status),
@@ -151,6 +156,9 @@ impl Fast8080S100Adapter {
 
         for _ in 1..cycle.t_states() {
             let (cpu_data, data_in, data_out) = if front_panel_direct {
+                // EXAMINE injects directly onto the processor D bus; it is not
+                // an S-100 DI source. The CPU-board DO buffers see that same D
+                // level while the Display/Control board owns the injection.
                 (Some(data), None, Some(data))
             } else if cycle.reads_data_from_s100() {
                 (Some(data), Some(data), None)
@@ -198,6 +206,9 @@ impl Fast8080S100Adapter {
     }
 }
 
+/// Temporary bus overlay used while the physical front panel jams an instruction
+/// into the instruction-level 8080. RAM remains untouched; only the bytes seen
+/// by the CPU on the selected read cycles are replaced by the panel sequence.
 struct FrontPanelJamBus<'a> {
     bus: &'a mut super::AltairBus,
     sequence: FrontPanelJamSequence,
@@ -245,10 +256,16 @@ impl Bus for FrontPanelJamBus<'_> {
     fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
         self.bus.interrupt_ack(address, opcode, while_halted);
     }
+
+    // Front-panel-injected JMP/NOP activity is hardware control sequencing, not
+    // guest code, and must never perturb diagnostic instruction accounting.
     fn instruction_complete(&mut self, _address: u16, _opcode: u8, _t_states: u32) {}
 }
 
 impl super::AltairBus {
+    /// Deposit is the one original front-panel operation that really does drive
+    /// the write data/pulse itself while the stopped CPU continues to provide the
+    /// address. Expose that physical action to backend CPU-board adapters.
     pub(crate) fn cpu_board_front_panel_deposit(&mut self, address: u16, value: u8) {
         self.panel.set_address_latch(address);
         self.front_panel_deposit(address, value);
@@ -273,14 +290,23 @@ impl super::AltairBus {
         );
     }
 
+    /// Cycle Accurate mutates the external READY input independently of WAIT.
+    /// WAIT is an 8080 output and is updated only by exact CPU-board samples.
     pub(crate) fn cycle_set_ready_input(&mut self, ready: bool) {
         self.s100.set_ready_input(ready);
     }
 
+    /// Display/Control-board PRDY contribution before RAM/device wait sources
+    /// are wired into the effective S-100 READY level.
     pub(crate) fn cycle_front_panel_ready_input(&self) -> bool {
         self.s100.signals().front_panel_ready
     }
 
+    /// Change only the external HOLD request seen by the cycle-accurate CPU.
+    /// HLDA is an 8080 output and must remain whatever the last exact CPU sample
+    /// drove until a later `Cpu8080Cycle::tick()` changes it. The generic chassis
+    /// helper also drops HLDA on HOLD release for the instruction-level backend;
+    /// Cycle must not use that approximation.
     pub(crate) fn cycle_set_hold_request(&mut self, hold: bool) {
         let cpu_hlda = self.s100.signals().hlda;
         self.s100.set_hold(hold);
@@ -288,7 +314,162 @@ impl super::AltairBus {
     }
 }
 
-impl super::FastAltairMachine {
+impl super::AltairMachine {
+    /// Power the chassis for Cycle Accurate without touching `AltairMachine.cpu`.
+    /// The exact core supplies the undefined power-on PC/INTE sample explicitly;
+    /// the Fast `Cpu8080` field remains exclusively owned by the Fast backend.
+    pub(crate) fn cycle_power_chassis(
+        &mut self,
+        on: bool,
+        run: bool,
+        cpu_address: u16,
+        cpu_inte: bool,
+    ) {
+        self.bus.cancel_cpu_diagnostic_meter();
+        self.powered = on;
+        self.stop_switch_asserted = false;
+        self.run_switch_asserted = false;
+
+        if on {
+            self.bus.clear_protection();
+            self.bus.clear_transient_memory_guards();
+            self.bus.clear_serial();
+            self.running = run;
+            self.bus.set_run(run);
+            self.bus.sync_cpu_inte(cpu_inte);
+            self.bus.set_hlda(false);
+            self.bus.panel.set_address_latch(cpu_address);
+            self.bus.drive_power_on_state(cpu_address, run);
+        } else {
+            self.running = false;
+            self.bus.clear_serial();
+            self.bus.initialize_memory();
+            self.bus.power_off_s100();
+        }
+    }
+
+    /// Cycle-specific RESET assertion. Processor state is reset by
+    /// `Cpu8080Cycle`; this helper only mutates physical chassis/S-100 state.
+    pub(crate) fn cycle_assert_front_panel_reset_from_cpu(&mut self) {
+        if !self.powered { return; }
+        self.bus.cancel_cpu_diagnostic_meter();
+        self.bus.clear_transient_memory_guards();
+        self.bus.panel.reset_address();
+        self.bus.sync_cpu_inte(false);
+        self.bus.set_hlda(false);
+        self.bus.assert_front_panel_reset_bus(self.running);
+    }
+
+    /// Cycle-specific RESET release. The 8080 RESET input guarantees PC=0000h
+    /// and INTE=0; neither value is read from the dormant Fast CPU object.
+    pub(crate) fn cycle_release_front_panel_reset_from_cpu(&mut self) {
+        if !self.powered { return; }
+        let address = self.bus.panel.reset_address();
+        self.bus.sync_cpu_inte(false);
+        self.bus.set_hlda(false);
+        self.bus.release_front_panel_reset_bus(address, self.running);
+    }
+
+    /// Cycle Accurate supplies its own HALT state to the optical integrator.
+    /// This prevents panel persistence from consulting `AltairMachine.cpu`.
+    pub(crate) fn cycle_commit_panel_activity(&mut self, dt: Duration, cpu_halted: bool) {
+        let dynamic = self.powered
+            && self.running
+            && !cpu_halted
+            && !self.bus.hlda()
+            && !self.bus.reset_asserted();
+        self.bus.commit_panel_activity(dt, dynamic);
+    }
+
+    /// Cycle-specific PROTECT/UNPROTECT gate. Fast retains its existing helper;
+    /// Cycle passes exact HALT/HOLD truth rather than reading the Fast CPU field.
+    pub(crate) fn cycle_front_panel_set_memory_protection(
+        &mut self,
+        protected: bool,
+        cpu_halted: bool,
+        cpu_holding: bool,
+    ) {
+        if !self.powered
+            || self.running
+            || self.bus.reset_asserted()
+            || self.bus.hold_requested()
+            || cpu_halted
+            || cpu_holding
+        {
+            return;
+        }
+
+        let address = self.bus.panel_address();
+        self.bus.set_protected(address, protected);
+        self.bus.freeze_panel_bus();
+    }
+
+    /// Cycle Accurate RUN-latch mutation. READY follows the Display/Control
+    /// board, but WAIT is deliberately untouched until the real 8080 sample
+    /// acknowledges entry to or exit from TW.
+    pub(crate) fn cycle_set_running(&mut self, run: bool) {
+        if !self.powered || self.bus.reset_asserted() { return; }
+        self.running = run;
+        self.bus.set_run(run);
+        self.bus.cycle_set_ready_input(run);
+        if !run {
+            let address = self.bus.panel_address();
+            self.bus.panel.set_address_latch(address);
+        }
+    }
+
+    fn cycle_set_run_latch_during_reset(&mut self) {
+        debug_assert!(self.powered && self.bus.reset_asserted());
+        self.running = true;
+        self.bus.set_run(true);
+        // PRDY follows RUN even during PRESET. WAIT remains owned by the 8080
+        // and stays low while the processor is reset.
+        self.bus.cycle_set_ready_input(true);
+    }
+
+    /// Cycle-accurate RUN/STOP entry point. STOP still records the physical
+    /// switch level while HLT or HLDA suppresses PSYNC, but it must not mutate
+    /// the R-S RUN latch until a real synchronization opportunity exists.
+    pub(crate) fn cycle_assert_run_stop(
+        &mut self,
+        run: bool,
+        cpu_halted: bool,
+        cpu_holding: bool,
+    ) {
+        if !self.powered { return; }
+        self.run_switch_asserted = run;
+        self.stop_switch_asserted = !run;
+
+        if run {
+            if self.bus.reset_asserted() {
+                self.cycle_set_run_latch_during_reset();
+            } else {
+                self.cycle_set_running(true);
+            }
+        } else if !self.bus.reset_asserted() && !cpu_halted && !cpu_holding {
+            self.cycle_set_running(false);
+        }
+    }
+
+    /// A STOP held while HLDA was active becomes effective at the first real
+    /// PSYNC after HOLD is released. Returns true when the physical RUN latch was
+    /// actually cleared so the cycle backend can stop host execution immediately.
+    pub(crate) fn cycle_capture_pending_stop_at_psync(&mut self) -> bool {
+        if self.powered
+            && self.running
+            && self.stop_switch_asserted
+            && !self.bus.reset_asserted()
+        {
+            self.cycle_set_running(false);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Instruction-level approximation of the original EXAMINE/EXAMINE NEXT
+    /// sequencer. The fast CPU executes the real injected JMP/NOP rather than
+    /// having its PC assigned by the GUI or backend.
     pub(crate) fn fast_front_panel_examine_via_cpu_board(&mut self, next: bool) {
         if !self.powered
             || self.running
@@ -314,6 +495,9 @@ impl super::FastAltairMachine {
             cpu.step(&mut jam_bus);
         }
         self.bus.sync_cpu_inte(self.cpu.inte);
+
+        // The next fetch is where the physical machine is stopped. Synthesise
+        // that waiting-fetch bus state for the instruction-level core.
         self.bus.panel.set_address_latch(self.cpu.pc);
         self.bus.set_ready(false);
         self.bus.release_front_panel_reset_bus(self.cpu.pc, false);
@@ -337,6 +521,11 @@ impl super::FastAltairMachine {
         self.bus.cpu_board_front_panel_deposit(address, value);
     }
 
+    /// PROTECT/UNPROTECT belongs to the front panel and the selected memory
+    /// board, not to a particular CPU implementation. The addressed board is
+    /// therefore derived from the address currently visible on the S-100 bus.
+    /// Changing the switch register after EXAMINE must not silently retarget the
+    /// protection operation.
     pub(crate) fn front_panel_set_memory_protection_via_s100(&mut self, protected: bool) {
         if !self.powered
             || self.running
@@ -354,6 +543,11 @@ impl super::FastAltairMachine {
 }
 
 /// Adapter for the T-state Intel 8080 core.
+///
+/// Timing and CPU output-control signals come directly from `TickTrace`. Read
+/// data originates on RAM/I/O boards and therefore appears on S-100 DI before
+/// reaching the package D bus. Front-panel EXAMINE injection is different: the
+/// D/C board strobes the processor D bus directly and bypasses S-100 DI.
 pub(crate) struct Cycle8080S100Adapter;
 
 impl Cycle8080S100Adapter {
@@ -368,6 +562,8 @@ impl Cycle8080S100Adapter {
         } else if trace.pins.sync {
             trace.pins.data_out
         } else if trace.t_state == TState::Thalt {
+            // HALT dwell has no repeated SYNC, but after a HOLD grant the S-100
+            // status latch must again represent the still-halted processor.
             trace.machine_cycle.status_word()
         } else {
             None
@@ -410,9 +606,15 @@ mod tests {
     fn fast_adapter_routes_fetch_status_to_do_and_memory_data_to_di() {
         let mut samples = Vec::new();
         Fast8080S100Adapter::for_each_sample(
-            0x1234, 0x56, S100Cycle::InstructionFetch, true, true, false,
+            0x1234,
+            0x56,
+            S100Cycle::InstructionFetch,
+            true,
+            true,
+            false,
             |sample| samples.push(sample),
         );
+
         assert_eq!(samples.len(), 4);
         assert_eq!(samples[0].status_word, Some(0xA2));
         assert_eq!(samples[0].cpu_data, Some(0xA2));
@@ -429,7 +631,12 @@ mod tests {
     fn fast_adapter_routes_memory_write_to_do_not_di() {
         let mut samples = Vec::new();
         Fast8080S100Adapter::for_each_sample(
-            0x2000, 0xa5, S100Cycle::MemoryWrite, false, true, false,
+            0x2000,
+            0xa5,
+            S100Cycle::MemoryWrite,
+            false,
+            true,
+            false,
             |sample| samples.push(sample),
         );
         assert_eq!(samples[1].cpu_data, Some(0xa5));
@@ -492,7 +699,10 @@ mod tests {
         assert_eq!(memory.data_out, None);
 
         let jam = Cycle8080S100Adapter::sample_with_front_panel_direct(
-            &trace, Some(0xc3), true, true,
+            &trace,
+            Some(0xc3),
+            true,
+            true,
         );
         assert_eq!(jam.cpu_data, Some(0xc3));
         assert_eq!(jam.data_in, None);
@@ -510,22 +720,47 @@ mod tests {
 
     #[test]
     fn cycle_run_ready_change_does_not_fabricate_wait_output() {
-        let mut chassis = super::super::AltairChassis::default();
-        chassis.cycle_power_chassis(true, false, 0, false);
-        chassis.bus.s100.drive_cpu_t_state(
+        let mut machine = super::super::AltairMachine::default();
+        machine.power(true);
+        machine.front_panel_reset();
+        machine.bus.s100.drive_cpu_t_state(
             Some(0), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
             true, false, false,
         );
-        chassis.cycle_set_running(false);
-        let stopped_request = chassis.bus.s100.signals();
+        machine.cycle_set_running(false);
+        let stopped_request = machine.bus.s100.signals();
         assert!(!stopped_request.run);
         assert!(!stopped_request.ready);
         assert!(!stopped_request.wait, "lowering READY is not itself a WAIT acknowledgement");
     }
 
     #[test]
+    fn cycle_chassis_helpers_do_not_touch_fast_cpu() {
+        let mut machine = super::super::AltairMachine::default();
+        machine.cpu.a = 0x11;
+        machine.cpu.pc = 0x2222;
+        machine.cpu.sp = 0x3333;
+        machine.cpu.inte = true;
+        machine.cpu.halted = true;
+        machine.cpu.cycles = 0x4444;
+
+        machine.cycle_power_chassis(true, false, 0x1234, false);
+        machine.cycle_assert_front_panel_reset_from_cpu();
+        machine.cycle_release_front_panel_reset_from_cpu();
+        machine.cycle_commit_panel_activity(Duration::from_millis(16), false);
+        machine.cycle_front_panel_set_memory_protection(false, false, false);
+
+        assert_eq!(machine.cpu.a, 0x11);
+        assert_eq!(machine.cpu.pc, 0x2222);
+        assert_eq!(machine.cpu.sp, 0x3333);
+        assert!(machine.cpu.inte);
+        assert!(machine.cpu.halted);
+        assert_eq!(machine.cpu.cycles, 0x4444);
+    }
+
+    #[test]
     fn fast_front_panel_examine_executes_jammed_jump_without_touching_ram() {
-        let mut machine = super::super::FastAltairMachine::default();
+        let mut machine = super::super::AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.bus.load(0, &[0x76, 0xaa, 0xbb]);
@@ -550,7 +785,7 @@ mod tests {
 
     #[test]
     fn fast_front_panel_examine_next_jams_nop_and_deposit_next_uses_new_address() {
-        let mut machine = super::super::FastAltairMachine::default();
+        let mut machine = super::super::AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.bus.load(0, &[0x11, 0x22]);
@@ -558,6 +793,7 @@ mod tests {
         assert_eq!(machine.cpu.pc, 1);
         assert_eq!(machine.address_leds(), 1);
 
+        // Low eight switches = A5h.
         for bit in [0, 2, 5, 7] { machine.toggle_sense_switch(bit); }
         machine.fast_front_panel_deposit_via_cpu_board(false);
         assert_eq!(machine.bus.peek_memory(1), Some(0xa5));
@@ -569,11 +805,12 @@ mod tests {
 
     #[test]
     fn front_panel_protection_uses_live_s100_address_and_blocks_deposit() {
-        let mut machine = super::super::FastAltairMachine::default();
+        let mut machine = super::super::AltairMachine::default();
         machine.power(true);
         machine.front_panel_reset();
         machine.bus.load(0x0456, &[0x11]);
 
+        // Select 0456h and let the CPU itself drive it through a jammed JMP.
         for bit in 0..16 {
             if 0x0456 & (1u16 << bit) != 0 {
                 machine.toggle_sense_switch(bit);
@@ -582,7 +819,9 @@ mod tests {
         machine.fast_front_panel_examine_via_cpu_board(false);
         assert_eq!(machine.address_leds(), 0x0456);
 
-        machine.toggle_sense_switch(11);
+        // Change the switch register to a different 1 KiB board without doing
+        // another EXAMINE. PROTECT must still target the live S-100 address.
+        machine.toggle_sense_switch(11); // 0456h -> 0C56h, low data stays 56h.
         machine.front_panel_set_memory_protection_via_s100(true);
         assert!(machine.bus.is_protected(0x0400));
         assert!(machine.bus.is_protected(0x07ff));
