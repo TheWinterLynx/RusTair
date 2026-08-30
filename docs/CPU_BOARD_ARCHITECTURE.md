@@ -28,6 +28,8 @@ Fast and Cycle Accurate do not represent two different CPU boards. They are two 
 
 `MachineConfig::cpu_board()` exposes the installed-board view while preserving the existing `machine.cpu_model=intel8080` persistence format. This compatibility bridge is intentionally temporary: when a second real CPU board exists, persistence should migrate to an explicit board key.
 
+Runtime scheduling already resolves the installed CPU board and derives the authentic execution budget from `CpuBoard::clock_hz()`. The application therefore no longer assumes that every supported CPU board runs at 2 MHz. The only remaining 2 MHz clock outside `CpuBoard` is a diagnostic normalization reference for classic Intel 8080 test reports; it does not drive machine execution.
+
 Do not add dormant processor or board variants merely to reserve names. A new variant belongs in production only when its core/board integration exists.
 
 ## Future Z80 board
@@ -57,7 +59,7 @@ A Z80 CPU board is not a SIMH backend and must not reintroduce the removed SIMH 
 2. Implement or integrate a real Z80 CPU core independently of the S-100 chassis.
 3. Add `CpuModel::ZilogZ80` only when that core exists.
 4. Add the selected `CpuBoard` variant only when its board adapter exists.
-5. Put clock rate on the CPU board, not on a global assumption that every machine runs at 2 MHz.
+5. Keep authentic runtime scheduling driven by the installed CPU board's `clock_hz()`; never reintroduce a global assumption that every machine runs at 2 MHz.
 6. Implement the board adapter between Z80 CPU signals and the existing S-100 electrical authority. Front-panel/S-100 state must continue to come from the bus, not from UI-side projections.
 7. Preserve the existing chassis, RAM boards, serial boards and front-panel model when swapping CPU boards where historically/electrically compatible.
 8. Require POWER OFF for CPU-board replacement. Do not migrate live registers or hidden execution state between boards.
