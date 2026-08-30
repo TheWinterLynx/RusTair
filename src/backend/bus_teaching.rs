@@ -1,5 +1,5 @@
 use crate::cpu8080_cycle::{MachineCycle, TState};
-use crate::machine::{AltairMachine, PanelLampSnapshot};
+use crate::machine::{AltairBus, AltairChassis, AltairMachine, PanelLampSnapshot};
 
 use super::{CpuState, EmulationEngine, FrontPanelState};
 
@@ -191,32 +191,60 @@ pub struct BusChassisSnapshot {
     pub visible_lamps: PanelLampSnapshot,
 }
 
+pub(crate) trait BusChassisSource {
+    fn powered(&self) -> bool;
+    fn running(&self) -> bool;
+    fn bus(&self) -> &AltairBus;
+    fn ext_clear_asserted(&self) -> bool;
+    fn address_leds(&self) -> u16;
+    fn panel_lamps(&self) -> PanelLampSnapshot;
+}
+
+impl BusChassisSource for AltairMachine {
+    fn powered(&self) -> bool { self.powered }
+    fn running(&self) -> bool { self.running }
+    fn bus(&self) -> &AltairBus { &self.bus }
+    fn ext_clear_asserted(&self) -> bool { self.ext_clear_asserted() }
+    fn address_leds(&self) -> u16 { self.address_leds() }
+    fn panel_lamps(&self) -> PanelLampSnapshot { self.panel_lamps() }
+}
+
+impl BusChassisSource for AltairChassis {
+    fn powered(&self) -> bool { self.powered }
+    fn running(&self) -> bool { self.running }
+    fn bus(&self) -> &AltairBus { &self.bus }
+    fn ext_clear_asserted(&self) -> bool { self.ext_clear_asserted() }
+    fn address_leds(&self) -> u16 { self.address_leds() }
+    fn panel_lamps(&self) -> PanelLampSnapshot { self.panel_lamps() }
+}
+
 impl BusChassisSnapshot {
-    pub(crate) fn from_altair_machine(
+    pub(crate) fn from_altair_machine<M: BusChassisSource>(
         engine: EmulationEngine,
-        machine: &AltairMachine,
+        machine: &M,
     ) -> Self {
-        let powered = machine.powered;
-        let lines = machine.bus.cpu_control_lines();
-        let status_word = powered.then(|| machine.bus.raw_s100_status_word());
+        let powered = machine.powered();
+        let bus = machine.bus();
+        let lines = bus.cpu_control_lines();
+        let status_word = powered.then(|| bus.raw_s100_status_word());
         let mut status = BusStatusLines::from_status_word(status_word);
         if powered {
-            status.inte = Some(machine.bus.raw_s100_inte());
-            status.prot = Some(machine.bus.raw_s100_prot());
-            status.wait = Some(machine.bus.raw_s100_wait());
-            status.hlda = Some(machine.bus.raw_s100_hlda());
+            status.inte = Some(bus.raw_s100_inte());
+            status.prot = Some(bus.raw_s100_prot());
+            status.wait = Some(bus.raw_s100_wait());
+            status.hlda = Some(bus.raw_s100_hlda());
         }
         Self {
             accuracy: BusTeachingAccuracy::ControlState,
             engine,
             powered,
-            running: machine.running,
+            running: machine.running(),
             ext_clear: powered.then(|| machine.ext_clear_asserted()),
             address: powered.then(|| machine.address_leds()),
-            cpu_data: powered.then(|| machine.bus.raw_cpu_data()).flatten(),
-            s100_di: powered.then(|| machine.bus.raw_s100_data_in()).flatten(),
-            s100_do: powered.then(|| machine.bus.raw_s100_data_out()).flatten(),
-            panel_data: powered.then(|| machine.bus.raw_panel_data()),
+            cpu_data: powered.then(|| bus.raw_cpu_data()).flatten(),
+            s100_di: powered.then(|| bus.raw_s100_data_in()).flatten(),
+            s100_do: powered.then(|| bus.raw_s100_data_out()).flatten(),
+            panel_data: powered.then(|| bus.raw_panel_data()),
             status_word,
             status,
             ready: powered.then_some(lines.ready),
