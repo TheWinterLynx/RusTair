@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use crate::cpu8080::{Bus, Cpu8080};
 use crate::cpu8080_cycle::{TState, TickTrace};
 
@@ -315,158 +313,6 @@ impl super::AltairBus {
 }
 
 impl super::AltairMachine {
-    /// Power the chassis for Cycle Accurate without touching `AltairMachine.cpu`.
-    /// The exact core supplies the undefined power-on PC/INTE sample explicitly;
-    /// the Fast `Cpu8080` field remains exclusively owned by the Fast backend.
-    pub(crate) fn cycle_power_chassis(
-        &mut self,
-        on: bool,
-        run: bool,
-        cpu_address: u16,
-        cpu_inte: bool,
-    ) {
-        self.bus.cancel_cpu_diagnostic_meter();
-        self.powered = on;
-        self.stop_switch_asserted = false;
-        self.run_switch_asserted = false;
-
-        if on {
-            self.bus.clear_protection();
-            self.bus.clear_transient_memory_guards();
-            self.bus.clear_serial();
-            self.running = run;
-            self.bus.set_run(run);
-            self.bus.sync_cpu_inte(cpu_inte);
-            self.bus.set_hlda(false);
-            self.bus.panel.set_address_latch(cpu_address);
-            self.bus.drive_power_on_state(cpu_address, run);
-        } else {
-            self.running = false;
-            self.bus.clear_serial();
-            self.bus.initialize_memory();
-            self.bus.power_off_s100();
-        }
-    }
-
-    /// Cycle-specific RESET assertion. Processor state is reset by
-    /// `Cpu8080Cycle`; this helper only mutates physical chassis/S-100 state.
-    pub(crate) fn cycle_assert_front_panel_reset_from_cpu(&mut self) {
-        if !self.powered { return; }
-        self.bus.cancel_cpu_diagnostic_meter();
-        self.bus.clear_transient_memory_guards();
-        self.bus.panel.reset_address();
-        self.bus.sync_cpu_inte(false);
-        self.bus.set_hlda(false);
-        self.bus.assert_front_panel_reset_bus(self.running);
-    }
-
-    /// Cycle-specific RESET release. The 8080 RESET input guarantees PC=0000h
-    /// and INTE=0; neither value is read from the dormant Fast CPU object.
-    pub(crate) fn cycle_release_front_panel_reset_from_cpu(&mut self) {
-        if !self.powered { return; }
-        let address = self.bus.panel.reset_address();
-        self.bus.sync_cpu_inte(false);
-        self.bus.set_hlda(false);
-        self.bus.release_front_panel_reset_bus(address, self.running);
-    }
-
-    /// Cycle Accurate supplies its own HALT state to the optical integrator.
-    /// This prevents panel persistence from consulting `AltairMachine.cpu`.
-    pub(crate) fn cycle_commit_panel_activity(&mut self, dt: Duration, cpu_halted: bool) {
-        let dynamic = self.powered
-            && self.running
-            && !cpu_halted
-            && !self.bus.hlda()
-            && !self.bus.reset_asserted();
-        self.bus.commit_panel_activity(dt, dynamic);
-    }
-
-    /// Cycle-specific PROTECT/UNPROTECT gate. Fast retains its existing helper;
-    /// Cycle passes exact HALT/HOLD truth rather than reading the Fast CPU field.
-    pub(crate) fn cycle_front_panel_set_memory_protection(
-        &mut self,
-        protected: bool,
-        cpu_halted: bool,
-        cpu_holding: bool,
-    ) {
-        if !self.powered
-            || self.running
-            || self.bus.reset_asserted()
-            || self.bus.hold_requested()
-            || cpu_halted
-            || cpu_holding
-        {
-            return;
-        }
-
-        let address = self.bus.panel_address();
-        self.bus.set_protected(address, protected);
-        self.bus.freeze_panel_bus();
-    }
-
-    /// Cycle Accurate RUN-latch mutation. READY follows the Display/Control
-    /// board, but WAIT is deliberately untouched until the real 8080 sample
-    /// acknowledges entry to or exit from TW.
-    pub(crate) fn cycle_set_running(&mut self, run: bool) {
-        if !self.powered || self.bus.reset_asserted() { return; }
-        self.running = run;
-        self.bus.set_run(run);
-        self.bus.cycle_set_ready_input(run);
-        if !run {
-            let address = self.bus.panel_address();
-            self.bus.panel.set_address_latch(address);
-        }
-    }
-
-    fn cycle_set_run_latch_during_reset(&mut self) {
-        debug_assert!(self.powered && self.bus.reset_asserted());
-        self.running = true;
-        self.bus.set_run(true);
-        // PRDY follows RUN even during PRESET. WAIT remains owned by the 8080
-        // and stays low while the processor is reset.
-        self.bus.cycle_set_ready_input(true);
-    }
-
-    /// Cycle-accurate RUN/STOP entry point. STOP still records the physical
-    /// switch level while HLT or HLDA suppresses PSYNC, but it must not mutate
-    /// the R-S RUN latch until a real synchronization opportunity exists.
-    pub(crate) fn cycle_assert_run_stop(
-        &mut self,
-        run: bool,
-        cpu_halted: bool,
-        cpu_holding: bool,
-    ) {
-        if !self.powered { return; }
-        self.run_switch_asserted = run;
-        self.stop_switch_asserted = !run;
-
-        if run {
-            if self.bus.reset_asserted() {
-                self.cycle_set_run_latch_during_reset();
-            } else {
-                self.cycle_set_running(true);
-            }
-        } else if !self.bus.reset_asserted() && !cpu_halted && !cpu_holding {
-            self.cycle_set_running(false);
-        }
-    }
-
-    /// A STOP held while HLDA was active becomes effective at the first real
-    /// PSYNC after HOLD is released. Returns true when the physical RUN latch was
-    /// actually cleared so the cycle backend can stop host execution immediately.
-    pub(crate) fn cycle_capture_pending_stop_at_psync(&mut self) -> bool {
-        if self.powered
-            && self.running
-            && self.stop_switch_asserted
-            && !self.bus.reset_asserted()
-        {
-            self.cycle_set_running(false);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Instruction-level approximation of the original EXAMINE/EXAMINE NEXT
     /// sequencer. The fast CPU executes the real injected JMP/NOP rather than
     /// having its PC assigned by the GUI or backend.
@@ -720,42 +566,17 @@ mod tests {
 
     #[test]
     fn cycle_run_ready_change_does_not_fabricate_wait_output() {
-        let mut machine = super::super::AltairMachine::default();
-        machine.power(true);
-        machine.front_panel_reset();
-        machine.bus.s100.drive_cpu_t_state(
+        let mut chassis = super::super::AltairChassis::default();
+        chassis.cycle_power_chassis(true, true, 0, false);
+        chassis.bus.s100.drive_cpu_t_state(
             Some(0), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
             true, false, false,
         );
-        machine.cycle_set_running(false);
-        let stopped_request = machine.bus.s100.signals();
+        chassis.cycle_set_running(false);
+        let stopped_request = chassis.bus.s100.signals();
         assert!(!stopped_request.run);
         assert!(!stopped_request.ready);
         assert!(!stopped_request.wait, "lowering READY is not itself a WAIT acknowledgement");
-    }
-
-    #[test]
-    fn cycle_chassis_helpers_do_not_touch_fast_cpu() {
-        let mut machine = super::super::AltairMachine::default();
-        machine.cpu.a = 0x11;
-        machine.cpu.pc = 0x2222;
-        machine.cpu.sp = 0x3333;
-        machine.cpu.inte = true;
-        machine.cpu.halted = true;
-        machine.cpu.cycles = 0x4444;
-
-        machine.cycle_power_chassis(true, false, 0x1234, false);
-        machine.cycle_assert_front_panel_reset_from_cpu();
-        machine.cycle_release_front_panel_reset_from_cpu();
-        machine.cycle_commit_panel_activity(Duration::from_millis(16), false);
-        machine.cycle_front_panel_set_memory_protection(false, false, false);
-
-        assert_eq!(machine.cpu.a, 0x11);
-        assert_eq!(machine.cpu.pc, 0x2222);
-        assert_eq!(machine.cpu.sp, 0x3333);
-        assert!(machine.cpu.inte);
-        assert!(machine.cpu.halted);
-        assert_eq!(machine.cpu.cycles, 0x4444);
     }
 
     #[test]
