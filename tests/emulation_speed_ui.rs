@@ -48,3 +48,15 @@ fn cpu_diagnostic_results_report_execution_mode_not_fixed_two_mhz() {
         assert!(!source.contains("format_2mhz_duration"));
     }
 }
+
+#[test]
+fn external_cpu_diagnostic_keeps_the_launch_speed_for_its_result() {
+    assert!(APP.contains("cpu_diagnostic_run_speed_label: Option<String>"));
+    assert!(RUNTIME.contains("self.cpu_diagnostic_run_speed_label.is_some()"));
+    assert!(RUNTIME.contains("Speed locked while external CPU diagnostic runs: {speed}"));
+    assert!(EXTERNAL_DIAGNOSTICS.contains(
+        "self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());"
+    ));
+    assert!(EXTERNAL_DIAGNOSTICS.contains("self.cpu_diagnostic_run_speed_label.take()"));
+    assert!(EXTERNAL_DIAGNOSTICS.contains("DIAGNOSTIC_RESULT_SPEED_ID"));
+}
