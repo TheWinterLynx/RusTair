@@ -71,17 +71,6 @@ fn format_diff(actual: u64, expected: u64) -> String {
     if diff > 0 { format!("+{diff}") } else { diff.to_string() }
 }
 
-fn format_2mhz_duration(t_states: u64) -> String {
-    let total_millis = t_states.saturating_mul(1_000) / u64::from(CLOCK_HZ);
-    let hours = total_millis / 3_600_000;
-    let minutes = (total_millis / 60_000) % 60;
-    let seconds = (total_millis / 1_000) % 60;
-    let millis = total_millis % 1_000;
-    if hours > 0 { format!("{hours}h {minutes:02}m {seconds:02}.{millis:03}s") }
-    else if minutes > 0 { format!("{minutes}m {seconds:02}.{millis:03}s") }
-    else { format!("{seconds}.{millis:03}s") }
-}
-
 fn append_abs(code: &mut Vec<u8>, opcode: u8, address: u16) {
     let [lo, hi] = address.to_le_bytes();
     code.extend_from_slice(&[opcode, lo, hi]);
@@ -209,6 +198,10 @@ impl RusTairApp {
             (Some(expected_i), Some(expected_t)) => Some(result.instructions == expected_i && result.t_states == expected_t),
             _ => None,
         };
+        let speed_label = emulation_speed_label(
+            self.config.preferences.emulation_speed,
+            self.config.machine.cpu_board(),
+        );
         let mut dismissed = false;
         egui::Window::new("CPU diagnostic complete")
             .id(egui::Id::new("rustair-cpu-diagnostic-result-window"))
@@ -234,7 +227,7 @@ impl RusTairApp {
                     ui.end_row();
                 });
                 ui.add_space(8.0);
-                ui.label(format!("Equivalent 8080 time at 2 MHz: {}", format_2mhz_duration(result.t_states)));
+                ui.label(format!("Test speed: {speed_label}"));
                 ui.small("For comparison with the classic test harness, accounting starts at 0100h, normalizes each CP/M CALL 0005h to the reference OUT+RET stub, and normalizes the final warm boot at 0000h to OUT 0. RusTair still executes the real high-memory mini-BDOS, UART polling and serial hardware; only the reported comparison counters are normalized.");
                 ui.add_space(10.0);
                 if ui.button("OK").clicked() { dismissed = true; }
@@ -309,9 +302,13 @@ impl RusTairApp {
         self.machine.set_running(true);
         let endpoint = self.serial_router.device_on(connection).map(Self::serial_device_name).unwrap_or("no endpoint connected");
         let reference_label = if reference.is_some() { "reference totals armed" } else { "measurement only" };
+        let speed_label = emulation_speed_label(
+            self.config.preferences.emulation_speed,
+            self.config.machine.cpu_board(),
+        );
         self.status = format!(
-            "CPU diagnostic running: {} at 0100h — clean reset/RAM — mini-BDOS {:04X}h functions 2/9 — {} — output via {} → {}",
-            path.display(), environment.bdos_base, reference_label, port.label(board), endpoint
+            "CPU diagnostic running: {} at 0100h — {} — clean reset/RAM — mini-BDOS {:04X}h functions 2/9 — {} — output via {} → {}",
+            path.display(), speed_label, environment.bdos_base, reference_label, port.label(board), endpoint
         );
     }
 }
