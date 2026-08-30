@@ -1,3 +1,4 @@
+use rustair::backend::{BackendHost, BusTState, EmulationEngine};
 use rustair::config::{RamInit, RamSize, SerialBoard};
 use rustair::cpu8080::Bus;
 use rustair::machine::AltairBus;
@@ -24,6 +25,35 @@ fn writes_into_uninstalled_memory_do_not_create_ram_or_change_open_bus() {
     bus.write(0x0100, 0x5a);
     assert_eq!(bus.peek_memory(0x0100), None);
     assert_eq!(bus.read(0x0100), OPEN_BUS);
+}
+
+#[test]
+fn cycle_exact_t2_exposes_open_bus_on_s100_di_before_cpu_samples_t3() {
+    let mut host = BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080)
+        .expect("built-in Cycle backend");
+    host.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
+    host.power(true);
+    host.front_panel_reset();
+    host.load_bytes(0, &[0xc3, 0x00, 0x01]); // JMP 0100h, outside installed RAM.
+
+    host.debugger_step_instruction();
+    assert_eq!(host.intel8080_state().pc, 0x0100);
+    assert_eq!(host.peek_memory(0x0100), None);
+
+    host.debugger_step_t_state(); // opcode fetch T1 at 0100h
+    host.debugger_step_t_state(); // T2: external DI source is already visible
+    let t2 = host.bus_teaching_snapshot().expect("exact T2 sample");
+
+    assert_eq!(t2.t_state, BusTState::T2);
+    assert_eq!(t2.address, Some(0x0100));
+    assert_eq!(t2.s100_di, Some(OPEN_BUS));
+    assert_eq!(t2.panel_data, Some(OPEN_BUS));
+
+    host.debugger_step_t_state(); // T3: the 8080 samples the same released bus value
+    let t3 = host.bus_teaching_snapshot().expect("exact T3 sample");
+    assert_eq!(t3.t_state, BusTState::T3);
+    assert_eq!(t3.s100_di, Some(OPEN_BUS));
+    assert_eq!(t3.cpu_data, Some(OPEN_BUS));
 }
 
 #[test]
