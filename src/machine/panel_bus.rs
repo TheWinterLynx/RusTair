@@ -15,15 +15,11 @@ const LAMP_HLDA: usize = 11;
 const LAMP_COUNT: usize = 12;
 const STATUS_INSTRUCTION_FETCH: u8 = 0xa2;
 
-// Presentation persistence only. The emulated hardware state remains binary;
-// this low-pass maps MHz bus transitions onto a ~60 Hz host display.
+// Presentation persistence only. Electrical duty is accumulated independently
+// over every CPU-board sample seen since the previous commit. This low-pass maps
+// that exact duty onto human-visible persistence without feeding presentation
+// state back into the S-100 model.
 const VISUAL_PERSISTENCE_SECS: f32 = 0.045;
-// One 16 ms visual frame at the authentic 2 MHz clock is about 32,000 T-states.
-// Accelerated/Unlimited execution may advance far more guest time per host
-// frame, but averaging all of it makes the lamps unnaturally static. Limit the
-// presentation integrator to one authentic visual window; CPU/bus execution is
-// completely unaffected.
-const VISUAL_SAMPLE_TSTATES: u64 = 32_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BusOwner {
@@ -154,7 +150,7 @@ impl S100Signals {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PanelLampSnapshot {
     pub address: [f32; 16],
     pub data: [f32; 8],
@@ -233,45 +229,83 @@ struct PanelLampIntegrator {
     data_on: [u64; 8],
     lamps_on: [u64; LAMP_COUNT],
     total_weight: u64,
+    /// Last complete electrical-duty window, before any optical filtering.
+    raw_duty: PanelLampSnapshot,
+    /// Human-visible, wall-clock-persistent representation.
     snapshot: PanelLampSnapshot,
 }
 
 impl PanelLampIntegrator {
     fn sample(&mut self, signals: &S100Signals, weight: u32) {
-        let remaining = VISUAL_SAMPLE_TSTATES.saturating_sub(self.total_weight);
-        let weight = u64::from(weight).min(remaining);
+        let weight = u64::from(weight);
         if weight == 0 {
             return;
         }
         for bit in 0..16 {
             if signals.address & (1u16 << bit) != 0 {
-                self.address_on[bit] += weight;
+                self.address_on[bit] = self.address_on[bit].saturating_add(weight);
             }
         }
         for bit in 0..8 {
             if signals.panel_data & (1u8 << bit) != 0 {
-                self.data_on[bit] += weight;
+                self.data_on[bit] = self.data_on[bit].saturating_add(weight);
             }
         }
         let lamps = signals.lamp_states();
         for bit in 0..LAMP_COUNT {
             if lamps[bit] {
-                self.lamps_on[bit] += weight;
+                self.lamps_on[bit] = self.lamps_on[bit].saturating_add(weight);
             }
         }
-        self.total_weight += weight;
+        self.total_weight = self.total_weight.saturating_add(weight);
     }
 
-    fn freeze(&mut self, signals: &S100Signals) {
-        self.clear_activity();
-        self.snapshot.address = bits16(signals.address);
-        self.snapshot.data = bits8(signals.panel_data);
+    fn binary_snapshot(signals: &S100Signals) -> PanelLampSnapshot {
+        let mut snapshot = PanelLampSnapshot {
+            address: bits16(signals.address),
+            data: bits8(signals.panel_data),
+            ..PanelLampSnapshot::default()
+        };
         let states = signals.lamp_states();
         let mut lamps = [0.0; LAMP_COUNT];
         for bit in 0..LAMP_COUNT {
             lamps[bit] = if states[bit] { 1.0 } else { 0.0 };
         }
-        self.snapshot.set_lamp_array(lamps);
+        snapshot.set_lamp_array(lamps);
+        snapshot
+    }
+
+    fn accumulated_duty(&self) -> PanelLampSnapshot {
+        debug_assert!(self.total_weight != 0);
+        let total = self.total_weight as f32;
+        let mut duty = PanelLampSnapshot::default();
+        for bit in 0..16 {
+            duty.address[bit] = self.address_on[bit] as f32 / total;
+        }
+        for bit in 0..8 {
+            duty.data[bit] = self.data_on[bit] as f32 / total;
+        }
+        let mut lamps = [0.0; LAMP_COUNT];
+        for bit in 0..LAMP_COUNT {
+            lamps[bit] = self.lamps_on[bit] as f32 / total;
+        }
+        duty.set_lamp_array(lamps);
+        duty
+    }
+
+    fn raw_duty_snapshot(&self) -> PanelLampSnapshot {
+        if self.total_weight == 0 {
+            self.raw_duty
+        } else {
+            self.accumulated_duty()
+        }
+    }
+
+    fn freeze(&mut self, signals: &S100Signals) {
+        self.clear_activity();
+        let instant = Self::binary_snapshot(signals);
+        self.raw_duty = instant;
+        self.snapshot = instant;
     }
 
     fn commit(&mut self, signals: &S100Signals, dt: Duration, dynamic: bool) {
@@ -283,19 +317,8 @@ impl PanelLampIntegrator {
             self.sample(signals, 1);
         }
 
-        let total = self.total_weight as f32;
-        let mut target = PanelLampSnapshot::default();
-        for bit in 0..16 {
-            target.address[bit] = self.address_on[bit] as f32 / total;
-        }
-        for bit in 0..8 {
-            target.data[bit] = self.data_on[bit] as f32 / total;
-        }
-        let mut target_lamps = [0.0; LAMP_COUNT];
-        for bit in 0..LAMP_COUNT {
-            target_lamps[bit] = self.lamps_on[bit] as f32 / total;
-        }
-        target.set_lamp_array(target_lamps);
+        let target = self.accumulated_duty();
+        self.raw_duty = target;
 
         let dt_secs = dt.as_secs_f32().max(0.000_001);
         let retention = (-dt_secs / VISUAL_PERSISTENCE_SECS).exp().clamp(0.0, 1.0);
@@ -320,6 +343,7 @@ impl PanelLampIntegrator {
 
     fn clear(&mut self) {
         self.clear_activity();
+        self.raw_duty = PanelLampSnapshot::default();
         self.snapshot = PanelLampSnapshot::default();
     }
 
@@ -354,9 +378,14 @@ impl S100BusState {
         self.lamps.snapshot
     }
 
+    pub(super) fn raw_duty_snapshot(&self) -> PanelLampSnapshot {
+        self.lamps.raw_duty_snapshot()
+    }
+
     #[cfg(test)]
     pub(super) fn debug_set_snapshot(&mut self, snapshot: PanelLampSnapshot) {
         self.lamps.clear_activity();
+        self.lamps.raw_duty = snapshot;
         self.lamps.snapshot = snapshot;
     }
 
@@ -611,6 +640,15 @@ impl S100BusState {
     }
 }
 
+impl super::AltairBus {
+    /// Electrical duty accumulated from CPU-board/S-100 samples. This is not the
+    /// optically filtered value drawn by the UI and is safe for diagnostics and
+    /// deterministic fidelity tests.
+    pub fn raw_panel_lamp_duty(&self) -> PanelLampSnapshot {
+        self.s100.raw_duty_snapshot()
+    }
+}
+
 #[cfg(test)]
 impl super::AltairBus {
     pub(crate) fn debug_set_panel_lamp_snapshot_for_test(&mut self, snapshot: PanelLampSnapshot) {
@@ -637,6 +675,57 @@ fn bits8(value: u8) -> [f32; 8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_duty_counts_the_entire_interval_instead_of_the_first_visual_window() {
+        let mut integrator = PanelLampIntegrator::default();
+        let off = S100Signals::default();
+        let mut on = off;
+        on.memr = true;
+
+        // This deliberately exceeds the old 32,000-sample presentation cap in
+        // the first OFF half. The correct electrical duty is still exactly 50%.
+        integrator.sample(&off, 40_000);
+        integrator.sample(&on, 40_000);
+        integrator.commit(&on, Duration::from_millis(16), true);
+
+        assert_eq!(integrator.raw_duty.memr, 0.5);
+        assert_eq!(integrator.total_weight, 0);
+    }
+
+    #[test]
+    fn raw_duty_is_sample_order_invariant() {
+        let off = S100Signals::default();
+        let mut on = off;
+        on.m1 = true;
+
+        let mut forward = PanelLampIntegrator::default();
+        forward.sample(&on, 3);
+        forward.sample(&off, 7);
+        forward.commit(&off, Duration::from_millis(16), true);
+
+        let mut reverse = PanelLampIntegrator::default();
+        reverse.sample(&off, 7);
+        reverse.sample(&on, 3);
+        reverse.commit(&off, Duration::from_millis(16), true);
+
+        assert_eq!(forward.raw_duty, reverse.raw_duty);
+        assert_eq!(forward.raw_duty.m1, 0.3);
+    }
+
+    #[test]
+    fn raw_electrical_duty_is_not_the_optically_persistent_snapshot() {
+        let mut integrator = PanelLampIntegrator::default();
+        let mut on = S100Signals::default();
+        on.wo = true;
+
+        integrator.sample(&on, 100);
+        integrator.commit(&on, Duration::from_millis(1), true);
+
+        assert_eq!(integrator.raw_duty.wo, 1.0);
+        assert!(integrator.snapshot.wo > 0.0);
+        assert!(integrator.snapshot.wo < 1.0);
+    }
 
     #[test]
     fn intel_status_and_read_data_keep_cpu_di_do_domains_distinct() {
@@ -895,7 +984,6 @@ mod ready_source_tests {
         assert!(!bus.signals().ready);
     }
 }
-
 
 #[cfg(test)]
 mod reset_run_ready_tests {
