@@ -126,10 +126,12 @@ fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
 
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
-    assert!(backend.machine().bus.cpu_control_lines().reset);
+    let reset_panel = backend.front_panel_state().unwrap();
+    assert_eq!(reset_panel.address, 0xffff);
+    assert_eq!(reset_panel.data, 0xff);
     assert_eq!(backend.cpu().registers().pc, 0);
     backend.release_reset().unwrap();
-    assert!(!backend.machine().bus.cpu_control_lines().reset);
+    assert_eq!(backend.front_panel_state().unwrap().address, 0x0000);
 
     backend.load_bytes(0x0123, &[0xa5, 0x5a]).unwrap();
     backend.set_switch_register(0x0123).unwrap();
@@ -147,14 +149,20 @@ fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
     backend.run().unwrap();
     backend.service_execution(5).unwrap();
     assert!(backend.cpu().is_holding());
-    assert!(backend.machine().bus.raw_s100_hlda());
+    backend
+        .commit_panel_activity(std::time::Duration::from_millis(16))
+        .unwrap();
+    assert_eq!(backend.front_panel_state().unwrap().lamps.hlda, 1.0);
+
     backend.request_hold(false).unwrap();
     backend.service_execution(1).unwrap();
     assert!(!backend.cpu().is_holding());
-    assert!(!backend.machine().bus.raw_s100_hlda());
     backend.halt().unwrap();
+    backend
+        .commit_panel_activity(std::time::Duration::from_millis(16))
+        .unwrap();
+    assert_eq!(backend.front_panel_state().unwrap().lamps.hlda, 0.0);
 
-    backend.commit_panel_activity(std::time::Duration::from_millis(16)).unwrap();
     backend.power(false).unwrap();
     assert!(!backend.machine().powered);
 }
