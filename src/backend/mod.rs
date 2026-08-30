@@ -413,6 +413,12 @@ impl BackendHost {
     pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) { Self::call(self.backend.power_with_historical_run_latch(on, historical)); }
     pub fn set_running(&mut self, run: bool) { if run { Self::call(self.backend.run()); } else { Self::call(self.backend.halt()); } }
+    /// Fallible execution entry point for the runtime. Keep this narrow so Cycle
+    /// core faults can reach the application without broadening the existing
+    /// BackendHost panic-cleanup P1 into this change.
+    pub fn try_run_cycles(&mut self, t_state_budget: u32) -> BackendResult<()> {
+        self.backend.service_execution(t_state_budget)
+    }
     pub fn run_cycles(&mut self, t_state_budget: u32) { Self::call(self.backend.service_execution(t_state_budget)); }
     pub fn step(&mut self) { Self::call(self.backend.step()); }
     pub fn commit_panel_activity(&mut self, dt: Duration) { Self::call(self.backend.commit_panel_activity(dt)); }
@@ -500,6 +506,53 @@ impl BackendHost {
 mod tests {
     use super::*;
 
+    struct ExecutionErrorBackend;
+
+    impl MachineBackend for ExecutionErrorBackend {
+        fn engine(&self) -> EmulationEngine { EmulationEngine::RustCycleAccurate8080 }
+        fn name(&self) -> &'static str { "test execution fault backend" }
+        fn capabilities(&self) -> BackendCapabilities { BackendCapabilities::default() }
+        fn execution_model(&self) -> BackendExecutionModel { BackendExecutionModel::HostDriven }
+        fn cpu_state(&mut self) -> BackendResult<CpuState> { Ok(CpuState::default()) }
+        fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(FrontPanelState::default()) }
+        fn power(&mut self, _on: bool) -> BackendResult<()> { Ok(()) }
+        fn power_with_historical_run_latch(&mut self, _on: bool, _historical: bool) -> BackendResult<()> { Ok(()) }
+        fn run(&mut self) -> BackendResult<()> { Ok(()) }
+        fn halt(&mut self) -> BackendResult<()> { Ok(()) }
+        fn step(&mut self) -> BackendResult<()> { Ok(()) }
+        fn service_execution(&mut self, _t_state_budget: u32) -> BackendResult<()> {
+            Err(BackendError::Operation {
+                operation: "service execution",
+                detail: "cycle-accurate 8080 fault: test fault".into(),
+            })
+        }
+        fn commit_panel_activity(&mut self, _dt: Duration) -> BackendResult<()> { Ok(()) }
+        fn assert_run_stop(&mut self, _run: bool) -> BackendResult<()> { Ok(()) }
+        fn release_run_stop(&mut self, _run: bool) -> BackendResult<()> { Ok(()) }
+        fn assert_reset(&mut self) -> BackendResult<()> { Ok(()) }
+        fn release_reset(&mut self) -> BackendResult<()> { Ok(()) }
+        fn assert_clear(&mut self) -> BackendResult<()> { Ok(()) }
+        fn release_clear(&mut self) -> BackendResult<()> { Ok(()) }
+        fn request_hold(&mut self, _hold: bool) -> BackendResult<()> { Ok(()) }
+        fn panel_examine(&mut self, _next: bool) -> BackendResult<()> { Ok(()) }
+        fn panel_deposit(&mut self, _next: bool) -> BackendResult<()> { Ok(()) }
+        fn protect_current_board(&mut self, _protected: bool) -> BackendResult<()> { Ok(()) }
+        fn switch_register(&mut self) -> BackendResult<u16> { Ok(0) }
+        fn set_switch_register(&mut self, _value: u16) -> BackendResult<()> { Ok(()) }
+        fn configure_serial_board(&mut self, _board: SerialBoard) -> BackendResult<()> { Ok(()) }
+        fn serial_board(&mut self) -> BackendResult<SerialBoard> { Ok(SerialBoard::default()) }
+        fn serial_receive(&mut self, _port: BackendSerialPort, _byte: u8) -> BackendResult<()> { Ok(()) }
+        fn serial_rx_empty(&mut self, _port: BackendSerialPort) -> BackendResult<bool> { Ok(true) }
+        fn serial_rx_len(&mut self, _port: BackendSerialPort) -> BackendResult<usize> { Ok(0) }
+        fn serial_tx_busy(&mut self, _port: BackendSerialPort) -> BackendResult<bool> { Ok(false) }
+        fn serial_tx_front(&mut self, _port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(None) }
+        fn serial_tx_complete(&mut self, _port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(None) }
+        fn clear_serial(&mut self) -> BackendResult<()> { Ok(()) }
+        fn peek_memory(&mut self, _address: u16) -> BackendResult<Option<u8>> { Ok(None) }
+        fn write_memory(&mut self, _address: u16, _value: u8, _respect_protection: bool) -> BackendResult<bool> { Ok(false) }
+        fn load_bytes(&mut self, _address: u16, _bytes: &[u8]) -> BackendResult<()> { Ok(()) }
+    }
+
     #[test]
     fn both_builtin_rust_8080_engines_are_available() {
         assert!(EmulationEngine::RustFast8080.is_available());
@@ -529,5 +582,18 @@ mod tests {
         assert_eq!(cpu.pc, 1);
         assert_eq!(cpu.total_t_states, Some(7));
         assert!(panel.lamps.wait > 0.0);
+    }
+
+    #[test]
+    fn host_exposes_execution_error_without_panicking() {
+        let mut host = BackendHost::new(Box::new(ExecutionErrorBackend));
+        let error = host.try_run_cycles(64).expect_err("execution error must cross BackendHost");
+        assert_eq!(
+            error,
+            BackendError::Operation {
+                operation: "service execution",
+                detail: "cycle-accurate 8080 fault: test fault".into(),
+            }
+        );
     }
 }
