@@ -44,7 +44,8 @@ impl eframe::App for RusTairApp {
         }
 
         if self.machine.running() {
-            let authentic_cycles = (CLOCK_HZ as f64 * dt.as_secs_f64()) as u32;
+            let board = self.config.machine.cpu_board();
+            let authentic_cycles = (board.clock_hz() as f64 * dt.as_secs_f64()) as u32;
             let authentic_cycles = authentic_cycles.clamp(1, 40_000);
             let speed = self.effective_emulation_speed();
             self.machine.run_cycles(speed.cycle_budget(authentic_cycles));
@@ -123,14 +124,16 @@ impl eframe::App for RusTairApp {
                             if capabilities.exact_bus_activity { "exact T-state samples" } else { "machine-cycle samples synthesized by the fast CPU-board adapter" }
                         ));
 
-                        let cpu = self.config.machine.cpu_model;
+                        let board = self.config.machine.cpu_board();
+                        let cpu = board.cpu_model();
                         ui.separator();
-                        ui.label(format!("Processor: {}", cpu.label()));
+                        ui.label(format!("Installed CPU board: {}", board.label()));
+                        ui.small(format!("Processor: {}", cpu.label()));
                         ui.small(format!(
                             "Authentic hardware clock: {:.1} MHz",
-                            cpu.clock_hz() as f32 / 1_000_000.0
+                            board.clock_hz() as f32 / 1_000_000.0
                         ));
-                        ui.small("Host-side acceleration is configured under Preferences → Emulation speed; it does not change the emulated 2 MHz hardware clock.");
+                        ui.small("Host-side acceleration is configured under Preferences → Emulation speed; it does not change the installed CPU board hardware clock.");
                     });
 
                     if ui.button("LED visuals…").clicked() {
@@ -244,7 +247,7 @@ impl eframe::App for RusTairApp {
                                 }
                             }
                         });
-                        ui.small("Acceleration changes host execution rate only; the emulated CPU remains an Intel 8080 at 2 MHz.");
+                        ui.small("Acceleration changes host execution rate only; it does not change the installed CPU board hardware clock.");
                         ui.separator();
                         let mut auto_open_basic_console = self.config.preferences.auto_open_basic_console;
                         if ui.checkbox(&mut auto_open_basic_console, "Auto-open BASIC console").changed() {
