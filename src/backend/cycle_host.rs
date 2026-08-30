@@ -861,7 +861,7 @@ mod tests {
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x00]).unwrap();
         backend.step().unwrap();
-        let CpuState::Intel8080(state) = backend.cpu_state().unwrap() else { unreachable!() };
+        let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(7));
         assert_eq!(backend.inner.cpu().t_state(), TState::Tw);
