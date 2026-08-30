@@ -1,66 +1,13 @@
 use rustair::backend::{
     CpuState, CycleAccurateMachineBackend, Intel8080State, MachineBackend, NativeMachineBackend,
 };
+use rustair::machine::AltairChassis;
 
 fn intel_state<B: MachineBackend>(backend: &mut B) -> Intel8080State {
     match backend.cpu_state().expect("CPU state must be available") {
         CpuState::Intel8080(state) => state,
         CpuState::Z80(_) => panic!("expected Intel 8080 backend"),
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct DormantFastCpuState {
-    a: u8,
-    b: u8,
-    c: u8,
-    d: u8,
-    e: u8,
-    h: u8,
-    l: u8,
-    f: u8,
-    pc: u16,
-    sp: u16,
-    inte: bool,
-    halted: bool,
-    cycles: u64,
-}
-
-fn dormant_fast_cpu_state(backend: &CycleAccurateMachineBackend) -> DormantFastCpuState {
-    let cpu = &backend.machine().cpu;
-    DormantFastCpuState {
-        a: cpu.a,
-        b: cpu.b,
-        c: cpu.c,
-        d: cpu.d,
-        e: cpu.e,
-        h: cpu.h,
-        l: cpu.l,
-        f: cpu.f,
-        pc: cpu.pc,
-        sp: cpu.sp,
-        inte: cpu.inte,
-        halted: cpu.halted,
-        cycles: cpu.cycles,
-    }
-}
-
-fn poison_dormant_fast_cpu(backend: &mut CycleAccurateMachineBackend) -> DormantFastCpuState {
-    let cpu = &mut backend.machine_mut().cpu;
-    cpu.a = 0x11;
-    cpu.b = 0x22;
-    cpu.c = 0x33;
-    cpu.d = 0x44;
-    cpu.e = 0x55;
-    cpu.h = 0x66;
-    cpu.l = 0x77;
-    cpu.f = 0xd7;
-    cpu.pc = 0x3456;
-    cpu.sp = 0x789a;
-    cpu.inte = true;
-    cpu.halted = true;
-    cpu.cycles = 0xdead_beef;
-    dormant_fast_cpu_state(backend)
 }
 
 /// Advance one exact 8080 machine cycle without using the Altair front-panel
@@ -151,79 +98,65 @@ fn fast_backend_uses_altair_machine_cpu_as_its_execution_authority() {
 }
 
 #[test]
-fn cycle_execution_neither_reads_nor_rewrites_dormant_fast_cpu() {
+fn cycle_backend_physically_owns_cpu_free_altair_chassis() {
     let mut backend = CycleAccurateMachineBackend::default();
+    let _: &AltairChassis = backend.machine();
+
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
     backend.load_bytes(0, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
 
     let authoritative_a = backend.cpu().registers().a;
-    let dormant = poison_dormant_fast_cpu(&mut backend);
-
     cycle_step_machine_cycle(&mut backend); // M1 fetch only.
     assert_eq!(backend.cpu().registers().pc, 1);
     assert_eq!(backend.cpu().registers().a, authoritative_a);
     assert_eq!(backend.cpu().total_t_states(), 4);
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant);
 
     cycle_step_machine_cycle(&mut backend); // M2 operand read completes MVI.
     assert_eq!(backend.cpu().registers().pc, 2);
     assert_eq!(backend.cpu().registers().a, 0x5a);
     assert_eq!(backend.cpu().total_t_states(), 7);
-    assert_eq!(
-        dormant_fast_cpu_state(&backend),
-        dormant,
-        "Cycle must not use its embedded AltairMachine Cpu8080 as a mirror"
-    );
 }
 
 #[test]
-fn cycle_chassis_controls_leave_dormant_fast_cpu_untouched() {
+fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
     let mut backend = CycleAccurateMachineBackend::default();
-    let dormant = poison_dormant_fast_cpu(&mut backend);
+    let _: &AltairChassis = backend.machine();
 
-    // Power-on now seeds Cpu8080Cycle directly instead of randomizing/copying
-    // AltairMachine.cpu.
     backend.power(true).unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "power on");
-
     backend.assert_reset().unwrap();
+    assert!(backend.machine().bus.cpu_control_lines().reset);
+    assert_eq!(backend.cpu().registers().pc, 0);
     backend.release_reset().unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "RESET");
+    assert!(!backend.machine().bus.cpu_control_lines().reset);
 
-    backend.load_bytes(0, &[0x00, 0x00]).unwrap();
-    backend.step().unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "physical SINGLE STEP");
-
-    backend.run().unwrap();
-    backend.service_execution(4).unwrap();
-    backend.halt().unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "RUN/host pause");
-
-    backend.assert_reset().unwrap();
-    backend.release_reset().unwrap();
     backend.load_bytes(0x0123, &[0xa5, 0x5a]).unwrap();
     backend.set_switch_register(0x0123).unwrap();
     backend.panel_examine(false).unwrap();
+    assert_eq!(backend.cpu().registers().pc, 0x0123);
+    assert_eq!(backend.machine().address_leds(), 0x0123);
+    assert_eq!(backend.machine().data_leds(), 0xa5);
+
     backend.set_switch_register(0x005a).unwrap();
     backend.panel_deposit(false).unwrap();
-    backend.protect_current_board(false).unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "front panel operations");
+    assert_eq!(backend.peek_memory(0x0123).unwrap(), Some(0x5a));
+    assert_eq!(backend.cpu().registers().pc, 0x0123);
 
     backend.request_hold(true).unwrap();
     backend.run().unwrap();
     backend.service_execution(5).unwrap();
+    assert!(backend.cpu().is_holding());
+    assert!(backend.machine().bus.raw_s100_hlda());
     backend.request_hold(false).unwrap();
     backend.service_execution(1).unwrap();
+    assert!(!backend.cpu().is_holding());
+    assert!(!backend.machine().bus.raw_s100_hlda());
     backend.halt().unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "HOLD/HLDA");
 
     backend.commit_panel_activity(std::time::Duration::from_millis(16)).unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "panel lamp integration");
-
     backend.power(false).unwrap();
-    assert_eq!(dormant_fast_cpu_state(&backend), dormant, "power off");
+    assert!(!backend.machine().powered);
 }
 
 #[test]
