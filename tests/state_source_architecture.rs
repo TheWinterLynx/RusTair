@@ -73,12 +73,20 @@ fn cycle_physically_owns_cpu_free_chassis_while_fast_keeps_its_cpu() {
     assert!(!CHASSIS.contains("DerefMut"), "chassis ownership must remain explicit");
 
     assert!(
-        CYCLE.contains("AltairChassis as AltairMachine"),
-        "Cycle must bind its machine field to the CPU-free chassis"
+        CYCLE.contains("use crate::machine::{AltairChassis,"),
+        "Cycle must import the CPU-free chassis explicitly"
     );
     assert!(
-        !CYCLE.contains("use crate::machine::{AltairMachine,"),
-        "Cycle must not import the Fast AltairMachine as its physical container"
+        CYCLE.contains("machine: AltairChassis"),
+        "Cycle's physical container must be AltairChassis"
+    );
+    assert!(
+        !CYCLE.contains("AltairChassis as AltairMachine"),
+        "Cycle must not hide its CPU-free chassis behind the Fast machine name"
+    );
+    assert!(
+        !CYCLE.contains("machine: AltairMachine"),
+        "Cycle must not own the Fast AltairMachine as its physical container"
     );
 
     assert!(MACHINE.contains("pub struct AltairMachine"));
