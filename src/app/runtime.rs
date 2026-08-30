@@ -110,9 +110,6 @@ impl eframe::App for RusTairApp {
                                 ui.close();
                             }
                         }
-                        ui.separator();
-                        ui.add_enabled(false, egui::Button::new("Open SIMH — Altair (integration parked)"));
-                        ui.add_enabled(false, egui::Button::new("Open SIMH — AltairZ80 (integration parked)"));
 
                         let capabilities = self.machine.capabilities();
                         ui.separator();
