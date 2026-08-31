@@ -1,25 +1,30 @@
+use std::time::Duration;
+
+use rustair::backend::{MachineBackend, NativeMachineBackend};
 use rustair::config::{SioAddressPair, SioHardwareConfig, SioRevision};
 use rustair::machine::AltairMachine;
 
 #[test]
 fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
-    let mut machine = AltairMachine::default();
-    assert_eq!(machine.bus.peek_io_port(0x00), 0x01, "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7");
+    let mut backend = NativeMachineBackend::default();
+    backend.power(true).unwrap();
+    backend.halt().unwrap();
+    assert_eq!(backend.machine().bus.peek_io_port(0x00), 0x01, "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7");
 
-    machine.bus.serial_receive(b'R');
-    assert_eq!(machine.bus.peek_io_port(0x00) & 0x01, 0x01, "RDA must not change until the serial frame completes");
-    assert_eq!(machine.bus.peek_io_port(0x01), 0x00);
+    backend.machine_mut().bus.serial_receive(b'R');
+    assert_eq!(backend.machine().bus.peek_io_port(0x00) & 0x01, 0x01, "RDA must not change until the serial frame completes");
+    assert_eq!(backend.machine().bus.peek_io_port(0x01), 0x00);
 
-    machine.bus.advance_serial_hardware_time(200_000);
-    assert_eq!(machine.bus.peek_io_port(0x00) & 0xc1, 0x00, "completed Rev1 RX drives D0 low and must never fabricate D6");
-    assert_eq!(machine.bus.peek_io_port(0x01), b'R');
-    assert_eq!(machine.bus.debugger_input_port(0x01), b'R');
-    assert_eq!(machine.bus.peek_io_port(0x00) & 0x01, 0x01);
+    backend.commit_panel_activity(Duration::from_millis(100)).unwrap();
+    assert_eq!(backend.machine().bus.peek_io_port(0x00) & 0xc1, 0x00, "completed Rev1 RX drives D0 low and must never fabricate D6");
+    assert_eq!(backend.machine().bus.peek_io_port(0x01), b'R');
+    assert_eq!(backend.machine_mut().bus.debugger_input_port(0x01), b'R');
+    assert_eq!(backend.machine().bus.peek_io_port(0x00) & 0x01, 0x01);
 
-    machine.bus.debugger_output_port(0x01, b'T');
-    assert_eq!(machine.bus.serial_tx_front(), None, "TX byte must cross the COM2502 shift register before reaching the endpoint");
-    machine.bus.advance_serial_hardware_time(200_000);
-    assert_eq!(machine.bus.serial_tx_front(), Some(b'T'));
+    backend.machine_mut().bus.debugger_output_port(0x01, b'T');
+    assert_eq!(backend.machine().bus.serial_tx_front(), None, "TX byte must cross the COM2502 shift register before reaching the endpoint");
+    backend.commit_panel_activity(Duration::from_millis(100)).unwrap();
+    assert_eq!(backend.machine().bus.serial_tx_front(), Some(b'T'));
 }
 
 #[test]
