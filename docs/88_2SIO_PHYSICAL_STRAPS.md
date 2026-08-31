@@ -1,6 +1,6 @@
 # MITS 88-2SIO physical address and baud straps
 
-Status: **IMPLEMENTED THROUGH BACKEND/PERSISTENCE/UI — user-visible strap UI requires local validation.**
+Status: **UI/PERSISTENCE/DECODER LOCALLY GREEN — readdressed authentic bootstrap and Fast debugger-wait isolation implemented, next local validation pending.**
 
 Parent hardware document: `docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`.
 
@@ -21,7 +21,8 @@ The goal is not merely to let the user type arbitrary port numbers or baud rates
 - the block containing FFh is not offered because MITS identifies FFh as the front-panel sense-switch address and says it should not be used for the 88-2SIO;
 - each ACIA has one selected physical clock tap from the eight rates printed on the board;
 - the selected tap is not the complete baud-rate decision: the MC6850 CR1:CR0 /1, /16 or /64 divider remains software controlled;
-- changing these straps from the normal application UI requires POWER OFF, because RusTair treats them as physical jumper changes rather than runtime preferences.
+- changing these straps from the normal application UI requires POWER OFF, because RusTair treats them as physical jumper changes rather than runtime preferences;
+- software bootstraps that contain immediate 8080 IN/OUT port operands must name the block actually selected by A2-A7. RusTair does not keep a hidden `10h/11h` compatibility alias when the card is moved.
 
 Analog oscillator tolerance, propagation delay through individual TTL gates and wire capacitance are outside this digital strap-level claim.
 
@@ -157,7 +158,7 @@ Port 1 tap = 9600
 
 Keeping these defaults means existing software/bootstrap behavior does not change merely because the jumpers have become explicit hardware state.
 
-`MachineConfig` now owns these straps and persistence writes them independently of the selected serial board. This represents a physical 88-2SIO card whose jumpers remain what the user set even if the application temporarily selects another serial board or recreates the Fast/Cycle backend.
+`MachineConfig` owns these straps and persistence writes them independently of the selected serial board. This represents a physical 88-2SIO card whose jumpers remain what the user set even if the application temporarily selects another serial board or recreates the Fast/Cycle backend.
 
 ## 4. Dynamic board decoder
 
@@ -216,7 +217,7 @@ Thus the same physical 110 tap can produce different effective rates solely thro
 
 Endpoint speed settings must not overwrite this card clock.
 
-## 6. Backend, persistence and UI mapping
+## 6. Backend, persistence, UI and software mapping
 
 Both backend families expose the same backend-neutral strap contract:
 
@@ -256,6 +257,30 @@ The normal user UI is under **Configuration -> Serial board -> Physical 88-2SIO 
 
 The endpoint wiring labels are generated from the actual straps, so moving the card to `44h` changes the visible Port 0 label to `44h/45h` and Port 1 to `46h/47h` rather than leaving stale `10h-13h` text.
 
+### 6.1 Authentic BASIC bootstrap follows A2-A7
+
+The MITS/default RusTair 88-2SIO bootstrap template is preserved verbatim as:
+
+```text
+3E 03 D3 10  3E 11 D3 10  21 AE 0F 31 1A 00 DB 10
+0F D0 DB 11  BD C8 2D 77  C0 E9 0B 00
+```
+
+Those `10h/11h` operands describe a card installed at the default block. A physical 8080 has no way to discover that a card has been moved to `44h`; software must contain the new immediate port values.
+
+`BootstrapDefinition::resolved_bytes()` therefore changes **only four bytes** for a readdressed 88-2SIO:
+
+| Bootstrap address | Instruction role | Default | 44h block |
+| ---: | --- | ---: | ---: |
+| `0003h` | operand of master-reset `OUT` | `10h` | `44h` |
+| `0007h` | operand of framing-control `OUT` | `10h` | `44h` |
+| `000Fh` | operand of status `IN` | `10h` | `44h` |
+| `0013h` | operand of data `IN` | `11h` | `45h` |
+
+All opcodes, control values, addresses, return-vector bytes and checksum-loader logic remain unchanged. The assisted front-panel loader deposits these resolved bytes through the real EXAMINE/DEPOSIT path, and the row-by-row teaching UI displays the same resolved bytes and dynamic mnemonics (`OUT $44`, `IN $44`, `IN $45`).
+
+This is deliberately **not** implemented by letting the old `10h/11h` program alias the card at its new address. After readdressing, `10h-13h` remain open bus as required by the S-100 decoder model.
+
 ## 7. Fast versus Cycle Accurate
 
 ### Fast
@@ -265,6 +290,8 @@ Fast uses the configured address decoder for guest IN/OUT and adds the 88-2SIO's
 If the board is moved from `10h` to `44h`, an `IN 10h` is now unmapped/open bus and receives no 88-2SIO wait. An `IN 44h-47h` receives the card's wait.
 
 Fast does not claim pin-exact placement of Tw within the instruction.
+
+A debugger-triggered register read is not an 8080 instruction even when it intentionally performs the register's real side effect. `NativeMachineBackend::debugger_input_port()` therefore discards Fast wait debt before and after that host observation. The next guest instruction cannot inherit the debugger's 88-2SIO `+1T` PRDY wait.
 
 ### Cycle Accurate
 
@@ -309,7 +336,19 @@ The selected baud tap feeds the same independent chassis-clock model in both eng
   - requires the application POWER-OFF guard;
   - requires the UI controls themselves to be disabled with POWER ON;
   - forbids fixed `88-2SIO Port 0 [10h/11h]` / `Port 1 [12h/13h]` labels;
+  - requires ASR-33, Text Terminal, TCP and COM connection surfaces to receive the same physical straps;
   - guards the `FCh-FFh` exclusion and user explanation.
+
+### authentic loader and debugger isolation
+
+`src/app/authentic_loader.rs` now contains regressions that:
+
+- preserve the canonical published/default 10h/11h byte image;
+- prove a 44h installation changes only bootstrap offsets `0003h`, `0007h`, `000Fh`, `0013h`;
+- deposit 44h/45h operands through the real front-panel path on both Fast and Cycle;
+- execute the readdressed bootstrap and prove I/O occurs at 44h/45h with zero legacy 10h/11h activity.
+
+`tests/two_sio_debugger_wait_isolation.rs` requires a Fast debugger `IN 10h` followed by a guest NOP to consume exactly the NOP's normal **4 T-states**, never 5.
 
 ## 9. How the user can validate it
 
@@ -368,20 +407,55 @@ I/O Inspector can show when RDRF changes. A real COM/loopback endpoint or an ext
 
 The key observation is that changing the **physical board tap**, not an endpoint presentation-speed setting, changes the ACIA clock.
 
+### 9.5 Authentic BASIC bootstrap after readdressing
+
+This is the most direct user-visible proof that address strapping is not merely a UI label.
+
+1. POWER OFF and configure the 88-2SIO for **44h-47h** with Port 0 at **110 baud**.
+2. POWER ON, STOP the machine, and open **File -> Microsoft 4K BASIC 3.2 -> Authentic Load — paper tape**.
+3. In **Machine / loader status**, verify RusTair reports status `44h` / data `45h`.
+4. Expand **Operator-assisted row-by-row bootstrap entry**.
+5. Inspect these data rows:
+   - address `0003h` must contain `44h`;
+   - address `0007h` must contain `44h`;
+   - address `000Fh` must contain `44h`;
+   - address `0013h` must contain `45h`.
+6. Hover the corresponding instruction rows. The teaching text must say `OUT $44`, `IN $44`, and `IN $45`, not 10h/11h.
+7. Use **Install bootstrap via front panel** or enter it row by row. The Bootstrap RAM indicator must become verified for the current straps.
+8. Open **I/O Inspector**, mount the BASIC tape, set the required sense switches and run the authentic loader.
+9. The polling/read activity must appear at `44h` and `45h`. `10h` and `11h` must remain unused/open bus.
+10. POWER OFF, return the board to `10h-13h`, and reopen the loader. The four operand bytes must return to the canonical `10h,10h,10h,11h` values.
+
+A regression is present if the loader still deposits 10h/11h while the card is at 44h, if old ports alias the new card, or if the teaching table disagrees with the actual I/O trace.
+
+### 9.6 Fast debugger wait isolation
+
+This behavior is mainly protected automatically because a host/debugger observation should not alter guest time. A user can nevertheless sanity-check it in **Fast 8080** with instruction tracing enabled:
+
+1. Install the 88-2SIO at its default `10h-13h` block.
+2. Put a single `NOP` (`00h`) at the current stopped PC.
+3. Use a debugger/I/O inspection action that performs a real read of 88-2SIO status at `10h`.
+4. Single-step the NOP.
+5. The instruction must account for its normal **4 T-states**. It must not appear as a 5-T-state NOP merely because the preceding host observation encountered the 88-2SIO PRDY wait.
+
+The authoritative regression for this boundary remains `tests/two_sio_debugger_wait_isolation.rs` because not every UI inspection surface performs a side-effecting debugger `IN`.
+
 ## 10. Validation history
 
 - The 88-TYA Reader Control / physical RX-line block passed the full normal local `cargo test` suite on 2026-08-31.
 - The CTS/DCD/BREAK External COM block passed its focused tests and the full normal local `cargo test` suite on 2026-08-31, as reported by the user.
 - The physical decoder/tap core, backend contract and persistence layer passed their focused tests and the full normal local `cargo test` suite on 2026-08-31, as reported by the user.
-- The user-facing POWER-OFF strap controls and dynamic labels were added after that green checkpoint and require the next local compile/full-suite run before this document can be marked PASS.
+- The user-facing POWER-OFF strap controls, dynamic labels, engine preservation and all four endpoint label call sites passed the focused/full normal local suite on 2026-08-31; the user reported **all green** through commit `cde13a9a3b1697c59755b2596196cd4ae8aa144b`.
+- Readdressed authentic-bootstrap generation/execution and Fast debugger wait isolation were implemented after that green checkpoint and require the next focused/full local validation.
 - GitHub Actions were not run.
 
 ## 11. Remaining work before 88-2SIO strap PASS
 
-1. Locally validate the new user-facing strap UI and dynamic labels.
-2. Make the authentic BASIC bootstrap respect the physically installed 88-2SIO address block instead of assuming `10h/11h`.
-3. Run the manual validation procedures above, especially the 44h decoder/open-bus test.
-4. Update this document to **PASS** after focused/full local tests and user-visible validation are green.
+1. Locally validate the new readdressed bootstrap tests and Fast debugger-wait isolation test.
+2. Run or spot-check the user-visible 44h bootstrap procedure in section 9.5 when convenient.
+3. If focused/full tests remain green, mark this **physical straps** sub-block PASS in this document and the parent 88-2SIO ledger.
+
+These items are specifically for the strap sub-block. Separate remaining 88-2SIO fidelity questions such as system-level interrupt routing and non-COM BREAK/interface boundaries are tracked in the parent hardware closeout and are not hidden by a strap PASS.
 
 ## 12. Primary references
 
