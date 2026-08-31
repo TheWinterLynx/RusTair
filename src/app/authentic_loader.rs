@@ -167,7 +167,7 @@ const SIO_BOOTSTRAP_INSTRUCTIONS: &[BootstrapInstructionInfo] = &[
         len: 2,
         mnemonic: "STACK RETURN VECTOR $0003",
         effect: "These two bytes form the little-endian address 0003h; they are data, not an instruction executed in sequence.",
-        purpose: "RC, RZ and RNZ pop this address as their return target, producing a compact loop back to LXI SP at 0003h without needing a longer JMP instruction.",
+        purpose: "RC, RZ and RNZ pop this address as their return target, producing a compact loop back to LXI SP at 0003h.",
     },
 ];
 
@@ -1492,18 +1492,22 @@ mod tests {
                 assert!(definition.pc_is_polling(machine.intel8080_state().pc));
 
                 // I/O activity is the unambiguous proof that the guest itself
-                // executed IN on the DATA port. RDRF cannot be used as a completion
-                // signal now that the 88-2SIO models the receiver shift register:
-                // it is false both while a character is still arriving and after
-                // the CPU has consumed the completed RDR byte.
+                // executed IN on the DATA port. The host-facing RX helper includes
+                // the timed receiver-shift path; MC6850 RDRF remains separately
+                // observable in the actual status register.
                 machine.set_io_trace_enabled(true);
                 let (_, _, leader_reads_before, _) =
                     machine.io_port_activity(definition.data_port);
                 machine.serial_receive(BackendSerialPort::Port0, 0xAE);
                 if board == SerialBoard::TwoSio88 {
                     assert!(
-                        machine.serial_rx_empty(BackendSerialPort::Port0),
-                        "88-2SIO must not expose a just-started wire character in RDR before its 110-baud frame completes"
+                        !machine.serial_rx_empty(BackendSerialPort::Port0),
+                        "88-2SIO host RX path must remain occupied while the 110-baud frame is shifting"
+                    );
+                    assert_eq!(
+                        machine.peek_io_port(definition.status_port) & 0x01,
+                        0,
+                        "MC6850 RDRF must stay low until the complete frame reaches RDR"
                     );
                 }
                 // 88-2SIO Port 0 is strapped for 110 baud and the historical 11h
@@ -1530,10 +1534,8 @@ mod tests {
                 let payload_reads_before = leader_reads_after;
                 machine.serial_receive(BackendSerialPort::Port0, 0x42);
                 if board == SerialBoard::TwoSio88 {
-                    assert!(
-                        machine.serial_rx_empty(BackendSerialPort::Port0),
-                        "88-2SIO payload must traverse the timed receiver shift register before RDRF"
-                    );
+                    assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
+                    assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
                 }
                 for _ in 0..4_096 {
                     machine.run_cycles(64);
