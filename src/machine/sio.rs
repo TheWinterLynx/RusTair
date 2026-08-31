@@ -9,7 +9,7 @@ use crate::config::{SioHardwareConfig, SioRevision};
 /// `tx_shift` is the active serial shift register. `rx_shift` is the receiver
 /// shift register and `rx_data` is the receiver data-bits holding register
 /// (RDA reflects the latter).
-pub(super) struct SioPort {
+pub(in crate::machine) struct SioPort {
     config: SioHardwareConfig,
     bit_phase_numerator: u64,
 
@@ -32,7 +32,7 @@ impl Default for SioPort {
 }
 
 impl SioPort {
-    pub(super) fn new(config: SioHardwareConfig) -> Self {
+    pub(in crate::machine) fn new(config: SioHardwareConfig) -> Self {
         Self {
             config,
             bit_phase_numerator: 0,
@@ -50,29 +50,29 @@ impl SioPort {
         }
     }
 
-    pub(super) fn configure(&mut self, config: SioHardwareConfig) {
+    pub(in crate::machine) fn configure(&mut self, config: SioHardwareConfig) {
         if self.config == config { return; }
         *self = Self::new(config);
     }
 
-    pub(super) fn config(&self) -> SioHardwareConfig { self.config }
+    pub(in crate::machine) fn config(&self) -> SioHardwareConfig { self.config }
 
-    pub(super) fn clear(&mut self) {
+    pub(in crate::machine) fn clear(&mut self) {
         let config = self.config;
         *self = Self::new(config);
     }
 
-    pub(super) fn receive_line_idle(&self) -> bool { self.rx_shift.is_none() }
-    pub(super) fn receive_len(&self) -> usize {
+    pub(in crate::machine) fn receive_line_idle(&self) -> bool { self.rx_shift.is_none() }
+    pub(in crate::machine) fn receive_len(&self) -> usize {
         usize::from(self.rx_full) + usize::from(self.rx_shift.is_some())
     }
-    pub(super) fn rx_full(&self) -> bool { self.rx_full }
-    pub(super) fn tx_buffer_empty(&self) -> bool { self.tx_holding.is_none() }
+    pub(in crate::machine) fn rx_full(&self) -> bool { self.rx_full }
+    pub(in crate::machine) fn tx_buffer_empty(&self) -> bool { self.tx_holding.is_none() }
 
     /// Begin one real serial receive frame. A full unread holding register does
     /// not stop the COM2502 receiver shift register; the resulting overwrite is
     /// handled only when this new frame completes.
-    pub(super) fn queue_received_character(&mut self, value: u8) {
+    pub(in crate::machine) fn queue_received_character(&mut self, value: u8) {
         if !self.receive_line_idle() { return; }
         self.rx_shift = Some((value, false, false));
         self.rx_bits_remaining = self.config.format.frame_bits();
@@ -80,7 +80,7 @@ impl SioPort {
 
     /// Debugger injection bypasses serial line time but retains COM2502 holding
     /// register / overrun semantics.
-    pub(super) fn debugger_inject_received_character(&mut self, value: u8) {
+    pub(in crate::machine) fn debugger_inject_received_character(&mut self, value: u8) {
         self.complete_received_character(value, false, false);
     }
 
@@ -98,7 +98,7 @@ impl SioPort {
         self.parity_error = self.config.format.parity != crate::config::SioParity::None && parity_error;
     }
 
-    pub(super) fn read_data(&mut self) -> u8 {
+    pub(in crate::machine) fn read_data(&mut self) -> u8 {
         let value = self.rx_data;
         // The board pulses RDAR when the CPU reads the data channel. COM2502
         // specifies RDAR as resetting RDA; error outputs are status-register
@@ -108,9 +108,9 @@ impl SioPort {
         value
     }
 
-    pub(super) fn peek_data(&self) -> u8 { self.rx_data }
+    pub(in crate::machine) fn peek_data(&self) -> u8 { self.rx_data }
 
-    pub(super) fn clear_receive_for_debugger(&mut self) {
+    pub(in crate::machine) fn clear_receive_for_debugger(&mut self) {
         self.rx_full = false;
         self.rx_shift = None;
         self.rx_bits_remaining = 0;
@@ -119,7 +119,7 @@ impl SioPort {
         self.parity_error = false;
     }
 
-    pub(super) fn write_data(&mut self, value: u8) {
+    pub(in crate::machine) fn write_data(&mut self, value: u8) {
         self.tx_holding = Some(value);
         // COM2502 loads an idle transmitter shift register immediately from the
         // holding register. TBMT therefore returns HIGH even though the serial
@@ -134,20 +134,20 @@ impl SioPort {
         self.tx_bits_remaining = self.config.format.frame_bits();
     }
 
-    pub(super) fn endpoint_tx_front(&self) -> Option<u8> { self.wire_tx.front().copied() }
-    pub(super) fn endpoint_tx_complete(&mut self) -> Option<u8> { self.wire_tx.pop_front() }
-    pub(super) fn endpoint_tx_pending_or_hardware_busy(&self) -> bool {
+    pub(in crate::machine) fn endpoint_tx_front(&self) -> Option<u8> { self.wire_tx.front().copied() }
+    pub(in crate::machine) fn endpoint_tx_complete(&mut self) -> Option<u8> { self.wire_tx.pop_front() }
+    pub(in crate::machine) fn endpoint_tx_pending_or_hardware_busy(&self) -> bool {
         !self.wire_tx.is_empty() || self.tx_holding.is_some() || self.tx_shift.is_some()
     }
 
-    pub(super) fn clear_transmit_for_debugger(&mut self) {
+    pub(in crate::machine) fn clear_transmit_for_debugger(&mut self) {
         self.tx_holding = None;
         self.tx_shift = None;
         self.tx_bits_remaining = 0;
         self.wire_tx.clear();
     }
 
-    pub(super) fn debugger_complete_one_tx(&mut self) -> Option<u8> {
+    pub(in crate::machine) fn debugger_complete_one_tx(&mut self) -> Option<u8> {
         if let Some(byte) = self.wire_tx.pop_front() { return Some(byte); }
         if self.tx_shift.is_none() { self.promote_tx_holding(); }
         let byte = self.tx_shift.take()?;
@@ -156,7 +156,7 @@ impl SioPort {
         Some(byte)
     }
 
-    pub(super) fn status(&self) -> u8 {
+    pub(in crate::machine) fn status(&self) -> u8 {
         let errors = (u8::from(self.overrun) << 4)
             | (u8::from(self.framing_error) << 3)
             | (u8::from(self.parity_error) << 2);
@@ -211,7 +211,7 @@ impl SioPort {
     /// `baud` is the serial bit rate; the physical COM2502 receives a 16x clock,
     /// but its internal divider yields exactly one serial bit boundary per
     /// `cpu_clock_hz / baud` elapsed chassis quanta.
-    pub(super) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
+    pub(in crate::machine) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
         if t_states == 0 || cpu_clock_hz == 0 { return; }
         let baud = self.config.baud.baud();
         if baud == 0 { return; }
