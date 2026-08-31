@@ -55,7 +55,10 @@ impl RusTairApp {
         }
 
         if self.external_com.port.rx_pending() != 0 {
-            if self.serial_rx_empty_at(connection) {
+            // The OS has already paced the physical host link. We only prevent
+            // two emulated frames from occupying the MC6850 receive shift path
+            // simultaneously; an unread RDR must not provide hidden flow control.
+            if self.serial_rx_line_idle_at(connection) {
                 if let Some(raw_byte) = self.external_com.port.pop_rx() {
                     let byte = config.character_mode.rx_transform(raw_byte);
                     self.serial_receive_at(connection, byte);
@@ -179,7 +182,7 @@ impl RusTairApp {
         if let Some(error) = &self.external_com.port_scan_error { ui.small(error); }
         if explanatory {
             ui.small("Framing configures the real host serial port. Character mode is a separate byte-level terminal model applied at the Altair boundary.");
-            ui.small("COM RX is already physically paced by the host UART/driver, so RusTair does not add a second receive delay. The emulated UART still accepts only one unread character at a time.");
+            ui.small("COM RX is already physically paced by the host UART/driver, so RusTair does not add a second receive delay. A full MC6850 RDR does not pause the next frame; falling behind may set OVRN.");
             ui.small("Altair TX-ready timing follows the selected real framing: start bit + data bits + optional parity + stop bits.");
             ui.small("Duplex describes the attached terminal. RusTair does not fabricate local-echo bytes; a physical terminal or host terminal program performs its own local echo when configured for half duplex.");
         }
@@ -266,7 +269,7 @@ impl RusTairApp {
             ui::collapsible_section(ui, "How the COM bridge behaves", false, |ui| {
                 ui.label("• The host COM device is a transport only; guest software still sees the selected 88-SIO/88-2SIO and its normal I/O addresses.");
                 ui.label("• The OS serial driver applies baud rate, data bits, parity, stop bits and flow control to the actual host port.");
-                ui.label("• Received host bytes enter the emulated UART only when its receive register is free; no second baud delay is added on top of the physical link.");
+                ui.label("• Received host bytes enter the emulated receive line when its shift path is free; an unread MC6850 RDR does not stop a later frame and can therefore produce OVRN.");
                 ui.label("• Guest TX-ready timing is based on the complete selected asynchronous frame, even if the host driver buffers the byte immediately.");
                 ui.label("• ASR-33 style strips bit 7 and uppercases host a-z on input. 7-bit ASCII preserves case. Raw 8-bit is byte-transparent.");
                 ui.label("• Duplex never creates extra serial traffic. Any half-duplex local echo belongs to the attached terminal or terminal application.");
