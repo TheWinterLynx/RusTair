@@ -27,9 +27,11 @@ impl RusTairApp {
             return;
         }
 
-        // Model a one-character receive register on whichever physical port the
-        // Text Terminal is currently attached to.
-        if !self.terminal_serial_rx_empty() {
+        // A real MC6850 may begin the next frame while RDR still contains an
+        // unread byte. Gate the host source on the physical receive shift path,
+        // not on RDRF; if guest software falls behind, the ACIA must be allowed
+        // to produce its documented overrun instead of receiving hidden flow control.
+        if !self.terminal_serial_rx_line_idle() {
             ctx.request_repaint_after(Duration::from_millis(1));
             return;
         }
