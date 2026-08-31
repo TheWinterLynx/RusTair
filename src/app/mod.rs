@@ -31,7 +31,7 @@ use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamBoardProfile, RamInit, RamSize,
-    SerialBoard, TerminalSpeed,
+    SerialBoard, TerminalSpeed, TwoSioStraps,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::peripherals::asr33::{
@@ -215,6 +215,7 @@ impl RusTairApp {
                 self.machine
                     .configure_memory_board_profile(self.config.machine.ram_board_profile);
                 self.machine.configure_serial_board(self.config.machine.serial_board);
+                self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
                 self.asr33.tx_started = None;
                 self.asr33.answerback.clear();
                 self.terminal.tx_started = None;
@@ -262,6 +263,9 @@ impl RusTairApp {
         if self.config.machine.serial_board == serial_board { return; }
         self.config.machine.serial_board = serial_board;
         self.machine.configure_serial_board(serial_board);
+        if serial_board == SerialBoard::TwoSio88 {
+            self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
+        }
         self.execution_clock.reset_at(Instant::now());
         self.serial_router.reset_for_board(serial_board);
         self.asr33.tx_started = None;
@@ -271,8 +275,39 @@ impl RusTairApp {
         self.external_com.reset_line_timing();
         self.status = match serial_board {
             SerialBoard::Sio88 => "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset".into(),
-            SerialBoard::TwoSio88 => "Serial board configured: MITS 88-2SIO — ASR-33 → Port 0 (10h/11h), Text Terminal → Port 1 (12h/13h); machine reset".into(),
+            SerialBoard::TwoSio88 => format!(
+                "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} baud tap; Port 1 {:02X}h/{:02X}h @ {} baud tap; machine reset",
+                self.config.machine.serial_port0_status(),
+                self.config.machine.serial_port0_data(),
+                self.config.machine.two_sio_straps.port0_baud.label(),
+                self.config.machine.serial_port1_status().unwrap_or(0),
+                self.config.machine.serial_port1_data().unwrap_or(0),
+                self.config.machine.two_sio_straps.port1_baud.label(),
+            ),
         };
+    }
+
+    fn apply_two_sio_straps(&mut self, straps: TwoSioStraps) {
+        if self.config.machine.two_sio_straps == straps { return; }
+        if self.machine.powered() {
+            self.status = "Power OFF the Altair before moving the physical 88-2SIO address/baud straps".into();
+            return;
+        }
+        self.config.machine.two_sio_straps = straps;
+        self.machine.configure_two_sio_straps(straps);
+        self.asr33.tx_started = None;
+        self.asr33.answerback.clear();
+        self.terminal.tx_started = None;
+        self.external_serial.reset_line_timing();
+        self.external_com.reset_line_timing();
+        self.execution_clock.reset_at(Instant::now());
+        self.status = format!(
+            "88-2SIO jumpers: {:02X}h-{:02X}h; Port 0 {} baud tap; Port 1 {} baud tap — POWER remains OFF",
+            straps.address.base(),
+            straps.address.base() + 3,
+            straps.port0_baud.label(),
+            straps.port1_baud.label(),
+        );
     }
 
     fn serial_device_name(device: SerialDevice) -> &'static str {
@@ -284,13 +319,25 @@ impl RusTairApp {
         }
     }
 
-    fn serial_connection_label(board: SerialBoard, connection: SerialConnection) -> &'static str {
+    fn serial_connection_label(
+        board: SerialBoard,
+        straps: TwoSioStraps,
+        connection: SerialConnection,
+    ) -> String {
         match (board, connection) {
-            (_, SerialConnection::Disconnected) => "Disconnected",
-            (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [00h/01h]",
-            (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable",
-            (SerialBoard::TwoSio88, SerialConnection::Port0) => "88-2SIO Port 0 [10h/11h]",
-            (SerialBoard::TwoSio88, SerialConnection::Port1) => "88-2SIO Port 1 [12h/13h]",
+            (_, SerialConnection::Disconnected) => "Disconnected".into(),
+            (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [00h/01h]".into(),
+            (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable".into(),
+            (SerialBoard::TwoSio88, SerialConnection::Port0) => format!(
+                "88-2SIO Port 0 [{:02X}h/{:02X}h]",
+                straps.address.port0_status(),
+                straps.address.port0_data(),
+            ),
+            (SerialBoard::TwoSio88, SerialConnection::Port1) => format!(
+                "88-2SIO Port 1 [{:02X}h/{:02X}h]",
+                straps.address.port1_status(),
+                straps.address.port1_data(),
+            ),
         }
     }
 
@@ -312,7 +359,11 @@ impl RusTairApp {
             self.asr33.answerback.clear();
         }
         let device_name = Self::serial_device_name(device);
-        let connection_name = Self::serial_connection_label(self.config.machine.serial_board, connection);
+        let connection_name = Self::serial_connection_label(
+            self.config.machine.serial_board,
+            self.config.machine.two_sio_straps,
+            connection,
+        );
         self.status = if let Some(displaced) = displaced {
             format!("{device_name} connected to {connection_name}; {} disconnected from that port", Self::serial_device_name(displaced))
         } else {
