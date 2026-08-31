@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::two_sio::TwoSioStraps;
+use super::two_sio::{TwoSioInterruptTarget, TwoSioInterruptWiring, TwoSioStraps};
 
 /// Processor model carried by an installed S-100 CPU board.
 ///
@@ -400,6 +400,10 @@ pub struct MachineConfig {
     /// Physical A2-A7 address block and per-ACIA baud-generator straps of the
     /// installed/dormant MITS 88-2SIO card.
     pub two_sio_straps: TwoSioStraps,
+    /// Physical interrupt-request wiring from the two 88-2SIO ACIAs. MITS calls
+    /// the Port 0 request pad DI and Port 1 request pad EI; each may be left
+    /// disconnected, wired to PINT, or wired to VI0..VI7 for an 88-VI system.
+    pub two_sio_interrupt_wiring: TwoSioInterruptWiring,
 }
 
 impl MachineConfig {
@@ -558,6 +562,19 @@ mod tests {
         assert_eq!(config.machine.serial_data_port(), 0x45);
         assert_eq!(config.machine.serial_port1_status_port(), Some(0x46));
         assert_eq!(config.machine.serial_port1_data_port(), Some(0x47));
+    }
+
+    #[test]
+    fn two_sio_interrupt_wiring_is_machine_configuration_not_address_state() {
+        let mut config = AppConfig::default();
+        let original_straps = config.machine.two_sio_straps;
+        config.machine.two_sio_interrupt_wiring = TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Vi3,
+            port1: TwoSioInterruptTarget::Disconnected,
+        };
+        assert_eq!(config.machine.two_sio_straps, original_straps);
+        assert_eq!(config.machine.two_sio_interrupt_wiring.port0, TwoSioInterruptTarget::Vi3);
+        assert_eq!(config.machine.two_sio_interrupt_wiring.port1, TwoSioInterruptTarget::Disconnected);
     }
 }
 
