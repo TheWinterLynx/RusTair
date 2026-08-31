@@ -2,6 +2,7 @@ mod external_com;
 mod external_serial;
 mod machine;
 mod terminal;
+mod two_sio;
 
 pub use external_com::{
     ComDataBits, ComFlowControl, ComModemInputMode, ComParity, ComStopBits, ExternalComConfig,
@@ -15,3 +16,4 @@ pub use machine::{
     TerminalSpeed,
 };
 pub use terminal::TerminalDuplex;
+pub use two_sio::{TwoSioAddressBlock, TwoSioBaudTap, TwoSioStraps};
