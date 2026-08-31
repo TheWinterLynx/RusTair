@@ -60,7 +60,31 @@ pub enum BackendExecutionModel { HostDriven, ExternalProcess }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendSerialPort { Port0, Port1 }
-impl BackendSerialPort { pub const ALL: [Self; 2] = [Self::Port0, Self::Port1]; }
+impl BackendSerialPort {
+    pub const ALL: [Self; 2] = [Self::Port0, Self::Port1];
+    pub const fn index(self) -> usize {
+        match self { Self::Port0 => 0, Self::Port1 => 1 }
+    }
+}
+
+/// Physical logic levels at one MC6850 serial channel boundary.
+///
+/// These are deliberately electrical levels, not host-terminal policy. In
+/// particular `rts_high` means the MC6850 RTS pin is physically HIGH; MITS'
+/// 88-TYA ReaderRun+ circuit uses that exact level to energize its reader relay.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SerialModemLines {
+    pub rts_high: bool,
+    pub break_active: bool,
+    pub cts_high: bool,
+    pub dcd_high: bool,
+}
+
+impl From<(bool, bool, bool, bool)> for SerialModemLines {
+    fn from((rts_high, break_active, cts_high, dcd_high): (bool, bool, bool, bool)) -> Self {
+        Self { rts_high, break_active, cts_high, dcd_high }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BackendCapabilities {
@@ -188,6 +212,17 @@ pub trait MachineBackend {
     fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
+    fn serial_modem_lines(&mut self, _port: BackendSerialPort) -> BackendResult<Option<SerialModemLines>> {
+        Err(BackendError::Unsupported { operation: "read serial modem pins", engine: self.engine() })
+    }
+    fn serial_set_modem_inputs(
+        &mut self,
+        _port: BackendSerialPort,
+        _cts_high: bool,
+        _dcd_high: bool,
+    ) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "drive serial modem inputs", engine: self.engine() })
+    }
     fn clear_serial(&mut self) -> BackendResult<()>;
     fn installed_ram_bytes(&mut self) -> BackendResult<usize> {
         Err(BackendError::Unsupported { operation: "query installed RAM", engine: self.engine() })
@@ -332,7 +367,7 @@ pub trait MachineBackend {
 pub enum BackendCreateError { Unavailable(EmulationEngine) }
 impl fmt::Display for BackendCreateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self { Self::Unavailable(engine) => write!(f, "{} backend is not available in this build", engine.label()) }
+        match self { Self::Unavailable(engine) => write!(f, "{} does not support {operation}", engine.label(), operation = "selected engine") }
     }
 }
 impl std::error::Error for BackendCreateError {}
@@ -408,6 +443,10 @@ impl BackendHost {
     pub fn serial_tx_busy(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_tx_busy(port)) }
     pub fn serial_tx_front(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_front(port)) }
     pub fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_complete(port)) }
+    pub fn serial_modem_lines(&mut self, port: BackendSerialPort) -> Option<SerialModemLines> { Self::call(self.backend.serial_modem_lines(port)) }
+    pub fn serial_set_modem_inputs(&mut self, port: BackendSerialPort, cts_high: bool, dcd_high: bool) -> bool {
+        Self::call(self.backend.serial_set_modem_inputs(port, cts_high, dcd_high))
+    }
     pub fn clear_serial(&mut self) { Self::call(self.backend.clear_serial()); }
     pub fn installed_ram_bytes(&mut self) -> usize { Self::call(self.backend.installed_ram_bytes()) }
     pub fn peek_memory(&mut self, address: u16) -> Option<u8> { Self::call(self.backend.peek_memory(address)) }
