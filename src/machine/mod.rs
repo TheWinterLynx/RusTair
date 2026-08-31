@@ -262,7 +262,7 @@ impl AltairBus {
             sample.hlda,
         );
         if self.exact_t_state_clock_owner {
-            // Advance the independent 88-2SIO oscillator by exactly this real
+            // Advance the independent serial-card oscillators by exactly this real
             // CPU-clock quantum, but leave PINT projection to Cycle's existing
             // post-sample refresh so the Teacher snapshot keeps the interrupt
             // level the processor actually saw on this tick.
@@ -841,6 +841,8 @@ mod tests {
         assert_eq!(machine.cpu.pc, 0x0002);
         assert!(machine.cpu.inte);
         machine.bus.serial_receive(b'I');
+        assert!(!machine.bus.cpu_control_lines().interrupt, "88-SIO RDA/PINT must wait for the physical receive frame");
+        machine.bus.advance_serial_hardware_time(200_000);
         assert!(machine.bus.cpu_control_lines().interrupt);
         machine.run_cycles(11);
         assert_eq!(machine.cpu.pc, 0x0038);
@@ -865,6 +867,9 @@ mod tests {
         assert!(machine.cpu.inte);
         assert_eq!(machine.cpu.pc, 0x0002);
         machine.bus.serial_receive(b'W');
+        assert!(!machine.bus.cpu_control_lines().interrupt, "HALTed CPU must not see 88-SIO PINT before RDA is physically ready");
+        machine.bus.advance_serial_hardware_time(200_000);
+        assert!(machine.bus.cpu_control_lines().interrupt);
         machine.run_cycles(11);
         assert!(!machine.cpu.halted);
         assert!(!machine.cpu.inte);
