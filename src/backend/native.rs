@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioStraps};
+use crate::config::{
+    RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioInterruptWiring, TwoSioStraps,
+};
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
 use crate::trace8080::{
@@ -278,6 +280,26 @@ impl MachineBackend for NativeMachineBackend {
         Ok(())
     }
     fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> { Ok(self.machine.two_sio_straps()) }
+    fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) -> BackendResult<()> {
+        if self.machine.bus.two_sio_interrupt_wiring() == wiring { return Ok(()); }
+        let powered = self.machine.powered;
+        if powered { self.machine.set_running(false); }
+        self.machine.bus.configure_two_sio_interrupt_wiring(wiring);
+        self.machine.bus.clear_transient_memory_guards();
+        if powered && self.machine.serial_board() == SerialBoard::TwoSio88 {
+            self.machine.reset();
+        }
+        self.idle_chassis_clock_units = 0;
+        self.last_panel_commit_cpu_t_states = None;
+        self.reset_debugger_epoch();
+        Ok(())
+    }
+    fn two_sio_interrupt_wiring(&mut self) -> BackendResult<TwoSioInterruptWiring> {
+        Ok(self.machine.bus.two_sio_interrupt_wiring())
+    }
+    fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
+        Ok(self.machine.bus.two_sio_vector_interrupt_requests())
+    }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
         match port { BackendSerialPort::Port0 => self.machine.bus.serial_receive(byte), BackendSerialPort::Port1 => self.machine.bus.serial_port1_receive(byte) }; Ok(())
     }
