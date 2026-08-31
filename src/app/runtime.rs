@@ -32,7 +32,7 @@ impl eframe::App for RusTairApp {
 
         // Instruction history is a shared backend resource consumed by several
         // debugger windows. Only this one runtime point owns the enable flag;
-        // individual windows merely publish demand through their egui state.
+        // individual windows merely publish demand through their UI state.
         super::ui::sync_instruction_trace_capture(self, ctx);
 
         // Presentation uses the real host interval. CPU timing has its own
@@ -228,6 +228,7 @@ impl eframe::App for RusTairApp {
                     ui.menu_button("Serial board", |ui| {
                         let current = self.config.machine.serial_board;
                         let straps = self.config.machine.two_sio_straps;
+                        let irq_wiring = self.config.machine.two_sio_interrupt_wiring;
                         ui.label(format!("Installed board: {}", current.label()));
                         match current {
                             SerialBoard::Sio88 => {
@@ -242,6 +243,8 @@ impl eframe::App for RusTairApp {
                                     "Port 1: {:02X}h status/control / {:02X}h data · {} baud-generator tap",
                                     straps.address.port1_status(), straps.address.port1_data(), straps.port1_baud.label()
                                 ));
+                                ui.small(format!("DI / Port 0 IRQ → {}", irq_wiring.port0.label()));
+                                ui.small(format!("EI / Port 1 IRQ → {}", irq_wiring.port1.label()));
                             }
                         }
 
@@ -299,6 +302,47 @@ impl eframe::App for RusTairApp {
                             }
                             ui.small("A2-A7 select one four-port block; A0/A1 select the two ACIAs/registers inside it. FCh-FFh is intentionally unavailable because FFh belongs to the Altair front-panel sense-switch input.");
                             ui.small("The selected baud tap is the board clock source. MC6850 CR1:CR0 still selects /1, /16 or /64; the tap is not a terminal-speed override.");
+
+                            ui.separator();
+                            ui.label("Physical 88-2SIO interrupt wiring:");
+                            ui.add_enabled_ui(!powered, |ui| {
+                                ui.menu_button(
+                                    format!("DI / Port 0 IRQ: {}", irq_wiring.port0.label()),
+                                    |ui| {
+                                        for target in crate::config::TwoSioInterruptTarget::ALL {
+                                            if ui.selectable_label(irq_wiring.port0 == target, target.label()).clicked() {
+                                                let mut next = irq_wiring;
+                                                next.port0 = target;
+                                                self.apply_two_sio_interrupt_wiring(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                                ui.menu_button(
+                                    format!("EI / Port 1 IRQ: {}", irq_wiring.port1.label()),
+                                    |ui| {
+                                        for target in crate::config::TwoSioInterruptTarget::ALL {
+                                            if ui.selectable_label(irq_wiring.port1 == target, target.label()).clicked() {
+                                                let mut next = irq_wiring;
+                                                next.port1 = target;
+                                                self.apply_two_sio_interrupt_wiring(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                            if powered {
+                                ui.small("POWER OFF required: DI/EI are physical interrupt-request wires, not runtime software settings.");
+                            }
+                            ui.small("MITS DI is Port 0 and EI is Port 1. Each may be disconnected, wired to the single PINT processor request, or wired to VI0..VI7 for a separate 88-Vector Interrupt system.");
+                            ui.small("VI0..VI7 stop at the raw chassis boundary until an 88-VI board is installed; selecting VIx never fabricates a CPU RST opcode inside the 88-2SIO.");
+                            let vi_mask = self.machine.two_sio_vector_interrupt_requests();
+                            ui.small(format!(
+                                "Active raw 88-2SIO vector outputs: {}",
+                                Self::two_sio_vi_mask_label(vi_mask)
+                            ));
                         }
 
                         ui.separator();
