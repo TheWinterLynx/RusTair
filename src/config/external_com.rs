@@ -122,6 +122,29 @@ impl Default for ComFlowControl {
     }
 }
 
+/// Physical wiring of the host COM modem-input pins to an emulated MC6850.
+///
+/// MITS explicitly instructs installers to jumper CTS and DCD to ground when
+/// they are not connected. `Grounded` is therefore the historically safe
+/// no-modem default rather than an emulator convenience.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ComModemInputMode {
+    #[default]
+    Grounded,
+    HostPins,
+}
+
+impl ComModemInputMode {
+    pub const ALL: [Self; 2] = [Self::Grounded, Self::HostPins];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Grounded => "Grounded — MITS no-modem jumpers",
+            Self::HostPins => "Follow host CTS / Carrier Detect",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalComConfig {
     pub enabled: bool,
@@ -131,6 +154,7 @@ pub struct ExternalComConfig {
     pub parity: ComParity,
     pub stop_bits: ComStopBits,
     pub flow_control: ComFlowControl,
+    pub modem_inputs: ComModemInputMode,
     pub character_mode: ExternalSerialCharacterMode,
     pub duplex: TerminalDuplex,
 }
@@ -174,6 +198,7 @@ impl Default for ExternalComConfig {
             parity: ComParity::None,
             stop_bits: ComStopBits::One,
             flow_control: ComFlowControl::None,
+            modem_inputs: ComModemInputMode::Grounded,
             character_mode: ExternalSerialCharacterMode::Asr33Uppercase,
             duplex: TerminalDuplex::FullDuplexRemoteEcho,
         }
@@ -199,5 +224,13 @@ mod tests {
         let config = ExternalComConfig::default();
         assert_eq!(config.frame_bits(), 10);
         assert_eq!(config.char_time(), Duration::from_secs_f64(10.0 / 9_600.0));
+    }
+
+    #[test]
+    fn unconnected_modem_inputs_default_to_mits_ground_jumpers() {
+        assert_eq!(
+            ExternalComConfig::default().modem_inputs,
+            ComModemInputMode::Grounded
+        );
     }
 }
