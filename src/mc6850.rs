@@ -77,6 +77,33 @@ impl Mc6850 {
     fn receive_interrupt_enabled(&self) -> bool { self.control & 0x80 != 0 }
     fn transmit_interrupt_enabled(&self) -> bool { self.control & 0x60 == 0x20 }
 
+    /// Physical logic level driven on the MC6850 RTS output pin.
+    ///
+    /// Keep this as an electrical HIGH/LOW statement rather than an
+    /// "asserted" abstraction. Motorola defines CR6:CR5=10 as RTS HIGH; the
+    /// other three transmitter-control combinations drive RTS LOW. This matters
+    /// directly for the MITS 88-TYA ReaderRun+ circuit, which uses RTS HIGH to
+    /// energize the paper-tape reader relay.
+    pub(crate) fn rts_high(&self) -> bool { self.control & 0x60 == 0x40 }
+
+    /// CR6:CR5=11 forces a continuous spacing/BREAK level on Tx Data and keeps
+    /// RTS LOW. The board wrapper owns serial-clock progression; this accessor
+    /// exposes the ACIA control-pin state without conflating BREAK with a byte.
+    pub(crate) fn break_active(&self) -> bool { self.control & 0x60 == 0x60 }
+
+    pub(crate) fn cts_high(&self) -> bool { self.cts_high }
+    pub(crate) fn dcd_high(&self) -> bool { self.dcd_input_high }
+
+    pub(crate) fn set_cts_high(&mut self, high: bool) { self.cts_high = high; }
+
+    pub(crate) fn set_dcd_high(&mut self, high: bool) {
+        if high && !self.dcd_input_high {
+            self.dcd_status_latched = true;
+            self.dcd_irq_pending = true;
+        }
+        self.dcd_input_high = high;
+    }
+
     pub(crate) fn write_control(&mut self, value: u8) {
         self.control = value;
         if value & 3 == 3 { self.master_reset(); }
@@ -208,20 +235,6 @@ impl Mc6850 {
     fn clock_divider(&self) -> Option<u8> {
         match self.control & 3 { 0 => Some(1), 1 => Some(16), 2 => Some(64), _ => None }
     }
-    #[cfg(test)]
-    fn rts_asserted(&self) -> bool { matches!(self.control & 0x60, 0x00 | 0x20 | 0x60) }
-    #[cfg(test)]
-    fn break_active(&self) -> bool { self.control & 0x60 == 0x60 }
-    #[cfg(test)]
-    fn set_cts_high(&mut self, high: bool) { self.cts_high = high; }
-    #[cfg(test)]
-    fn set_dcd_high(&mut self, high: bool) {
-        if high && !self.dcd_input_high {
-            self.dcd_status_latched = true;
-            self.dcd_irq_pending = true;
-        }
-        self.dcd_input_high = high;
-    }
 }
 
 #[cfg(test)]
@@ -229,17 +242,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn control_word_decodes_clock_format_rts_and_break() {
+    fn control_word_decodes_clock_format_rts_level_and_break_exactly() {
         let mut a = Mc6850::default();
-        a.write_control(0x95); // RX IRQ, 8N1, divide 16
+        a.write_control(0x11); // /16, 8N2, CR6:CR5=00
         assert_eq!(a.clock_divider(), Some(16));
-        assert_eq!(a.word_format(), WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 1 });
-        assert_eq!(a.frame_bits(), 10);
-        assert!(a.rts_asserted());
+        assert_eq!(a.word_format(), WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 2 });
+        assert_eq!(a.frame_bits(), 11);
+        assert!(!a.rts_high());
         assert!(!a.break_active());
-        a.write_control(0x60);
+
+        a.write_control(0x31); // CR6:CR5=01: RTS low + TX-empty IRQ
+        assert!(!a.rts_high());
+        assert!(!a.break_active());
+
+        a.write_control(0x51); // CR6:CR5=10: physical RTS HIGH
+        assert!(a.rts_high());
+        assert!(!a.break_active());
+
+        a.write_control(0x71); // CR6:CR5=11: RTS low + BREAK
+        assert!(!a.rts_high());
         assert!(a.break_active());
-        assert!(a.rts_asserted());
     }
 
     #[test]
@@ -290,13 +312,16 @@ mod tests {
     }
 
     #[test]
-    fn cts_inhibits_tdre_and_tdr_transfer() {
+    fn cts_input_level_projects_to_status_and_inhibits_tdr_transfer() {
         let mut a = Mc6850::default();
+        assert!(!a.cts_high());
         a.set_cts_high(true);
+        assert!(a.cts_high());
         assert_eq!(a.peek_status() & 0x0a, 0x08);
         a.write_data(b'X');
         assert!(!a.transfer_tdr_to_shift_if_idle());
         a.set_cts_high(false);
+        assert!(!a.cts_high());
         assert!(a.transfer_tdr_to_shift_if_idle());
         assert_eq!(a.peek_status() & 2, 2);
     }
@@ -315,12 +340,15 @@ mod tests {
     }
 
     #[test]
-    fn dcd_irq_clears_only_after_status_then_data_read() {
+    fn dcd_input_level_and_irq_clear_only_after_status_then_data_read() {
         let mut a = Mc6850::default();
         a.write_control(0x80);
+        assert!(!a.dcd_high());
         a.set_dcd_high(true);
+        assert!(a.dcd_high());
         assert_eq!(a.peek_status() & 0x84, 0x84);
         a.set_dcd_high(false);
+        assert!(!a.dcd_high());
         assert_eq!(a.peek_status() & 0x84, 0x84);
         let _ = a.read_status();
         assert!(a.interrupt_request());
