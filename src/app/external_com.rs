@@ -147,7 +147,6 @@ impl RusTairApp {
             Err(error) => { self.external_com.available_ports.clear(); self.external_com.port_scan_error = Some(error); }
         }
     }
-
     fn apply_external_com_config(&mut self, next: ExternalComConfig) {
         let previous = self.external_com.config.clone();
         if previous == next { return; }
@@ -256,16 +255,17 @@ impl RusTairApp {
 
     fn draw_external_com_connection_selector(&mut self, ui: &mut egui::Ui) {
         let board = self.config.machine.serial_board;
+        let straps = self.config.machine.two_sio_straps;
         let current = self.external_com_connection();
         let mut selected = current;
         ui.horizontal(|ui| {
             ui.label("Virtual cable:");
             egui::ComboBox::from_id_salt("external-com-serial-connection")
-                .selected_text(Self::serial_connection_label(board, current)).show_ui(ui, |ui| {
+                .selected_text(Self::serial_connection_label(board, straps, current)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut selected, SerialConnection::Disconnected, "Disconnected");
-                    ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(board, SerialConnection::Port0));
+                    ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(board, straps, SerialConnection::Port0));
                     if board == SerialBoard::TwoSio88 {
-                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(board, SerialConnection::Port1));
+                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(board, straps, SerialConnection::Port1));
                     }
                 });
         });
