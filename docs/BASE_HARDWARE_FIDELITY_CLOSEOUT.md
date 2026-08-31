@@ -12,6 +12,7 @@ This document is the live evidence log for `agent/base-hardware-fidelity-closeou
 4. Fast may reconstruct unavailable sub-instruction detail, but Cycle Accurate must not invent electrical state.
 5. Presentation state (LED persistence, animation, audio) is downstream of electrical state and must never feed it back.
 6. Compatibility workarounds remain explicit and optional.
+7. A hardware item is not `PASS` until its dedicated Markdown documentation satisfies `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`, including primary references, physical-to-code mapping, supporting snippets, Fast/Cycle claims, regressions and known gaps.
 
 ## 1. S-100 open bus — PASS
 
@@ -75,31 +76,35 @@ Deterministic coverage includes 100 ms stall retention, fractional-cycle carry, 
 
 ## 4. 88-2SIO / MC6850 — IN PROGRESS
 
-### Primary hardware evidence
+Dedicated implementation/evidence document: **`docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`**.
 
-The March 1977 MITS *88-2SIO Documentation* describes a board-level input wait generator in addition to the two MC6850 ACIAs. During an `IN`, SINP clocks flip-flop V and forces S-100 PRDY low; the processor remains in WAIT for 500 ns. PWAIT then clears V and releases PRDY. MITS explicitly states that this wait is used only during input to satisfy address setup time. At the stock 2 MHz MITS 8080 clock, 500 ns is exactly one additional TW.
+### Implemented and locally validated
 
-### S-100 timing implemented in this branch
+- S-100 input wait generator: selected 88-2SIO `IN` produces exactly one 500 ns / one-Tw delay at 2 MHz; `OUT`, 88-SIO and unmapped I/O do not inherit it.
+- Cycle exposes the real `T1 -> T2 -> Tw -> T3` sequence with READY/WAIT/PRDY behavior; Fast accounts the same +1 total T-state without claiming pin-exact sub-instruction timing.
+- Two finite MC6850 channels replace the old generic unbounded serial queues for 88-2SIO.
+- Control word clock divide, word format, master reset, RX/TX interrupt enables and transmitter control are modeled.
+- TDR and transmit shift register are distinct; TDRE follows TDR availability instead of endpoint presentation completion.
+- Timed receive shift path and finite RDR are distinct; RDRF appears only after the configured frame completes.
+- Motorola-style delayed OVRN, FE and PE status behavior is modeled.
+- CTS, DCD, physical RTS level, BREAK and IRQ status are modeled and exposed through the backend-neutral hardware contract.
+- DCD status/IRQ clearing follows status-read then data-read sequencing.
+- Card baud timing belongs to the installed board, not ASR/Terminal pacing; integer phase accumulation retains fractional effective rates.
+- The 88-2SIO oscillator continues during CPU STOP, sustained RESET and HOLD/HLDA while avoiding double advancement during RUN.
+- Host-visible RX state now distinguishes pending receiver contents from physical receive-line occupancy, enabling real overrun instead of mandatory RDR-empty flow control.
+- Authentic paper-tape loader regression consumes bytes through timed hardware and a genuine guest `IN 11h` in both Rust engines.
 
-- only decoded 88-2SIO addresses `10h`–`13h` generate the input wait;
-- 88-SIO accesses do not inherit it;
-- unmapped I/O does not pull PRDY low;
-- `OUT` does not wait;
-- Fast adds the documented single external wait T-state to instruction elapsed time while remaining explicitly reconstructed at sub-instruction level;
-- Cycle combines RAM-card and I/O-card PRDY contributions at the S-100 arbitration point, producing a real `T1 -> T2 -> TW -> T3` input machine cycle;
-- in Cycle, READY is low at the T2 sampling point, WAIT is a real CPU output in TW, and PWAIT releases PRDY during that sole TW;
-- `tests/two_sio_prdy_timing.rs` guards total T-state parity and the exact Cycle sequence.
+The full local `cargo test` suite was green on 2026-08-31 through these changes after the debugger architecture guard was made semantic rather than dependent on a local variable name.
 
-This S-100 timing work is not sufficient to call the complete 88-2SIO electrically faithful. Full closeout still requires Motorola/MITS ACIA behavior:
+### Remaining blockers before `PASS`
 
-- control-word clock divide and word format;
-- real transmit data register + transmit shift register semantics;
-- real receive shift register + receive data register semantics;
-- RDRF / TDRE timing owned by the emulated card rather than ASR/Terminal/TCP/COM presentation timing;
-- overrun, framing and parity status;
-- CTS, DCD, RTS and BREAK behavior where exposed by the board;
-- IRQ status/enable behavior and master reset;
-- baud-clock/jumper timing and deterministic conformance tests for both ACIAs/ports.
+- migrate ASR/Terminal/TCP/COM RX delivery to physical line-idle / appropriate real flow-control semantics rather than RDR-empty pacing;
+- add explicit 88-TYA Reader Control wiring option so physical RTS HIGH drives ReaderRun only when that historical wiring is installed;
+- propagate BREAK appropriately to attached endpoint models;
+- expose CTS/DCD behavior/configuration for endpoints that can provide those signals;
+- expose per-port baud-generator straps instead of retaining only the current default 110/9600 installation;
+- expose the physical A2-A7 base-address strap block instead of permanently fixing `10h`-`13h`;
+- re-run complete serial/loader/full-suite validation after endpoint migration.
 
 ## 5. MITS 88-SIO — OPEN
 
@@ -109,7 +114,8 @@ The 88-SIO must be audited by hardware revision rather than treated as a generic
 - verify status-bit polarity and control semantics;
 - model finite receive/transmit hardware and overrun/error behavior where applicable;
 - move serial timing authority from ASR/Terminal/TCP/COM endpoints into the emulated card;
-- document any deliberate compatibility mode separately from historical behavior.
+- document any deliberate compatibility mode separately from historical behavior;
+- create its dedicated hardware-fidelity Markdown document before the item can become `PASS`.
 
 ## Validation policy
 
