@@ -13,11 +13,15 @@ use two_sio::{TwoSioBaudTap, TwoSioPort};
 
 const SIO_STATUS_PORT: u8 = 0x00;
 const SIO_DATA_PORT: u8 = 0x01;
-// Historical RusTair/default installation retained as test/readability constants.
+// Historical RusTair/default installation retained only for regression clarity.
 // Production 88-2SIO decoding is owned by `TwoSioStraps::address`, not these values.
+#[cfg(test)]
 const SIO2_PORT0_STATUS: u8 = 0x10;
+#[cfg(test)]
 const SIO2_PORT0_DATA: u8 = 0x11;
+#[cfg(test)]
 const SIO2_PORT1_STATUS: u8 = 0x12;
+#[cfg(test)]
 const SIO2_PORT1_DATA: u8 = 0x13;
 const IO_TRACE_LIMIT: usize = 4096;
 
