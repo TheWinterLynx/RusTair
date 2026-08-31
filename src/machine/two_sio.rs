@@ -48,6 +48,11 @@ pub(super) struct TwoSioPort {
     baud_tap: TwoSioBaudTap,
     bit_phase_numerator: u64,
     tx_bits_remaining: u8,
+    /// True once the currently shifting character has overlapped the physical
+    /// BREAK/spacing level. Motorola makes BREAK an override of Tx Data, not a
+    /// transmitter clock stop, so TDR/TSR keep advancing but such a frame can no
+    /// longer be presented downstream as the original byte.
+    tx_frame_corrupted_by_break: bool,
     wire_tx: VecDeque<u8>,
     /// Complete character currently traversing the external receive line / ACIA
     /// receiver shift register. This is deliberately not RDR/RDRF: status bit 0
@@ -64,6 +69,7 @@ impl TwoSioPort {
             baud_tap,
             bit_phase_numerator: 0,
             tx_bits_remaining: 0,
+            tx_frame_corrupted_by_break: false,
             wire_tx: VecDeque::new(),
             rx_shift: None,
             rx_bits_remaining: 0,
@@ -104,14 +110,25 @@ impl TwoSioPort {
     }
 
     pub(super) fn write_control(&mut self, value: u8) {
+        let was_break = self.acia.break_active();
         self.control = value;
         self.acia.write_control(value);
+        let now_break = self.acia.break_active();
+
+        // BREAK controls the physical Tx Data pin immediately. If a character is
+        // already shifting when spacing begins, that frame is irreversibly
+        // corrupted even if BREAK is released before its nominal stop bit.
+        if !was_break && now_break && self.acia.tx_shift_front().is_some() {
+            self.tx_frame_corrupted_by_break = true;
+        }
+
         if value & 0x03 == 0x03 {
             // Reset aborts the character currently inside the ACIA. Bytes that
             // already left the transmit shift register remain on the external
             // wire queue.
             self.bit_phase_numerator = 0;
             self.tx_bits_remaining = 0;
+            self.tx_frame_corrupted_by_break = false;
             self.rx_shift = None;
             self.rx_bits_remaining = 0;
         }
@@ -120,7 +137,8 @@ impl TwoSioPort {
     pub(super) fn write_data(&mut self, value: u8) {
         // Do not move TDR to TSR here. Motorola specifies that the transfer is
         // synchronized by the transmitter clock and occurs within one bit time
-        // when the transmitter is idle. The next bit boundary below owns it.
+        // when the transmitter is idle. BREAK is not a transfer inhibit; only
+        // the physical Tx Data level is overridden while CR6:CR5=11.
         self.acia.write_data(value);
     }
 
@@ -151,23 +169,30 @@ impl TwoSioPort {
     pub(super) fn clear_transmit_for_debugger(&mut self) {
         self.acia.clear_transmit_for_debugger();
         self.tx_bits_remaining = 0;
+        self.tx_frame_corrupted_by_break = false;
         self.wire_tx.clear();
     }
 
     /// Force one debugger-visible UART TX completion. Prefer an already
     /// completed wire byte; otherwise finish the active hardware character (or
     /// first promote a waiting TDR) without leaving a duplicate for an endpoint.
+    /// The returned value is the internal TSR byte for debugger inspection; a
+    /// BREAK-corrupted frame is still not queued as valid wire data.
     pub(super) fn debugger_complete_one_tx(&mut self) -> Option<u8> {
         if let Some(byte) = self.wire_tx.pop_front() {
             return Some(byte);
         }
         if self.acia.tx_shift_front().is_none() {
-            let _ = self.acia.transfer_tdr_to_shift_if_idle();
+            if self.acia.transfer_tdr_to_shift_if_idle() {
+                self.tx_frame_corrupted_by_break = self.break_active();
+            }
         }
         let byte = self.acia.complete_tx_shift()?;
         self.tx_bits_remaining = if self.acia.tx_shift_front().is_some() {
+            self.tx_frame_corrupted_by_break = self.break_active();
             self.acia.frame_bits()
         } else {
+            self.tx_frame_corrupted_by_break = false;
             0
         };
         Some(byte)
@@ -200,8 +225,13 @@ impl TwoSioPort {
         if self.acia.tx_shift_front().is_none() {
             if self.acia.transfer_tdr_to_shift_if_idle() {
                 self.tx_bits_remaining = self.acia.frame_bits();
+                self.tx_frame_corrupted_by_break = self.break_active();
             }
             return;
+        }
+
+        if self.break_active() {
+            self.tx_frame_corrupted_by_break = true;
         }
 
         if self.tx_bits_remaining > 1 {
@@ -211,14 +241,21 @@ impl TwoSioPort {
 
         if self.tx_bits_remaining == 1 {
             self.tx_bits_remaining = 0;
+            let corrupted = self.tx_frame_corrupted_by_break;
             if let Some(byte) = self.acia.complete_tx_shift() {
-                self.wire_tx.push_back(byte);
+                if !corrupted {
+                    self.wire_tx.push_back(byte);
+                }
             }
             if self.acia.tx_shift_front().is_some() {
                 // `complete_tx_shift` promotes a waiting TDR at exactly the
                 // previous character boundary, so back-to-back characters have
-                // no fictitious idle gap.
+                // no fictitious idle gap. A newly promoted frame starts corrupt
+                // when the physical line is still being forced to BREAK.
                 self.tx_bits_remaining = self.acia.frame_bits();
+                self.tx_frame_corrupted_by_break = self.break_active();
+            } else {
+                self.tx_frame_corrupted_by_break = false;
             }
         }
     }
@@ -342,6 +379,44 @@ mod tests {
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
         assert!(port.interrupt_request());
         assert_eq!(port.endpoint_tx_complete(), Some(b'A'));
+    }
+
+    #[test]
+    fn break_overrides_wire_without_freezing_tdr_tsr_or_tdre() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.write_control(0x75); // /16, 8N1, CR6:CR5=11 BREAK
+        port.write_data(b'B');
+        assert_eq!(port.peek_status() & 0x02, 0, "TDR is full before the first transmitter boundary");
+
+        port.advance_t_states(209, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x02, 0x02, "BREAK must not inhibit the normal TDR->TSR transfer");
+        assert!(port.endpoint_tx_pending_or_hardware_busy());
+
+        port.advance_t_states(2_100, TWO_MHZ);
+        assert!(!port.endpoint_tx_pending_or_hardware_busy(), "TSR continues clocking internally while BREAK holds TxD spacing");
+        assert_eq!(port.endpoint_tx_front(), None, "a frame transmitted under BREAK is not a valid downstream byte");
+    }
+
+    #[test]
+    fn break_asserted_mid_frame_irreversibly_corrupts_only_that_frame() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.write_control(0x15); // /16, 8N1, normal TxD
+        port.write_data(b'A');
+        port.advance_t_states(209, TWO_MHZ); // TDR -> TSR, frame begins
+        assert_eq!(port.peek_status() & 0x02, 0x02);
+
+        port.advance_t_states(417, TWO_MHZ); // part-way through the frame
+        port.write_control(0x75); // BREAK immediately overrides TxD
+        assert!(port.break_active());
+        port.write_control(0x15); // release before the nominal frame completes
+        assert!(!port.break_active());
+
+        port.advance_t_states(2_000, TWO_MHZ);
+        assert_eq!(port.endpoint_tx_front(), None, "releasing BREAK cannot repair an already corrupted frame");
+
+        port.write_data(b'Z');
+        port.advance_t_states(2_300, TWO_MHZ);
+        assert_eq!(port.endpoint_tx_front(), Some(b'Z'), "the next complete post-BREAK frame is valid again");
     }
 
     #[test]
