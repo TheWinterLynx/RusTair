@@ -4,7 +4,7 @@ mod machine;
 mod terminal;
 
 pub use external_com::{
-    ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig,
+    ComDataBits, ComFlowControl, ComModemInputMode, ComParity, ComStopBits, ExternalComConfig,
 };
 pub use external_serial::{
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
