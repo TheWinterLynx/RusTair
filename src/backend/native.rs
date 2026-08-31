@@ -62,18 +62,8 @@ impl NativeMachineBackend {
     fn trace_cpu_snapshot(&self) -> CpuSnapshot8080 {
         let cpu = &self.machine.cpu;
         CpuSnapshot8080 {
-            a: cpu.a,
-            b: cpu.b,
-            c: cpu.c,
-            d: cpu.d,
-            e: cpu.e,
-            h: cpu.h,
-            l: cpu.l,
-            flags: cpu.f,
-            pc: cpu.pc,
-            sp: cpu.sp,
-            inte: cpu.inte,
-            halted: cpu.halted,
+            a: cpu.a, b: cpu.b, c: cpu.c, d: cpu.d, e: cpu.e, h: cpu.h, l: cpu.l,
+            flags: cpu.f, pc: cpu.pc, sp: cpu.sp, inte: cpu.inte, halted: cpu.halted,
         }
     }
 
@@ -85,19 +75,11 @@ impl NativeMachineBackend {
         ]
     }
 
-    /// RESET, front-panel address injection and external program replacement
-    /// create a new execution context. Retaining the previous ring would let
-    /// inferred structures such as Call Stack claim frames that are no longer
-    /// live, so make those operations explicit trace-generation boundaries.
     fn reset_debugger_epoch(&mut self) {
         self.instruction_trace.clear();
         self.debug_control.clear_transient();
     }
 
-    /// The 88-2SIO baud oscillator belongs to the powered card, not to the CPU.
-    /// While RUN is actively clocking the Fast core, instruction T-states already
-    /// advance the card. If STOP, RESET or HOLD parks the instruction engine,
-    /// advance only the wall-time quanta not already covered by CPU execution.
     fn service_idle_chassis_clock(&mut self, dt: Duration) {
         let current_cpu_t_states = self.machine.cpu.cycles;
         let cpu_covered = self
@@ -119,18 +101,12 @@ impl NativeMachineBackend {
         let total = self.idle_chassis_clock_units.saturating_add(added);
         let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
         self.idle_chassis_clock_units = total % WALL_CLOCK_UNITS_PER_SECOND;
-
         let missing = due.saturating_sub(cpu_covered);
-        if missing != 0 {
-            self.machine.bus.advance_serial_hardware_time(missing);
-        }
+        if missing != 0 { self.machine.bus.advance_serial_hardware_time(missing); }
     }
 
     fn record_one_stopped_instruction(&mut self) {
-        if self.machine.cpu.halted {
-            return;
-        }
-
+        if self.machine.cpu.halted { return; }
         let before = self.trace_cpu_snapshot();
         let bytes = self.trace_bytes(before.pc);
         let mut effects = collect_pre_instruction_effects(bytes, before, |address| {
@@ -139,14 +115,12 @@ impl NativeMachineBackend {
         let start_cycles = self.machine.cpu.cycles;
         self.machine.step();
         let after = self.trace_cpu_snapshot();
-        let post = collect_post_instruction_effects(bytes, before, after, &effects);
-        effects.extend(post);
+        effects.extend(collect_post_instruction_effects(bytes, before, after, &effects));
         let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
         if delta != 0 {
             self.debug_control.stop_after_effects(before.pc, &effects);
             if self.instruction_trace.enabled() {
-                self.instruction_trace
-                    .push_with_effects(before.pc, bytes, before, after, delta, effects);
+                self.instruction_trace.push_with_effects(before.pc, bytes, before, after, delta, effects);
             }
         }
     }
@@ -158,63 +132,45 @@ impl NativeMachineBackend {
         let bytes = before.map(|snapshot| self.trace_bytes(snapshot.pc));
         let mut effects = match (before, bytes) {
             (Some(snapshot), Some(opcodes)) => collect_pre_instruction_effects(
-                opcodes,
-                snapshot,
-                |address| self.machine.bus.preview_guest_memory(address),
+                opcodes, snapshot, |address| self.machine.bus.preview_guest_memory(address),
             ),
             _ => Vec::new(),
         };
         let start_cycles = self.machine.cpu.cycles;
-
         self.machine.run_cycles(1);
-
         let delta = self.machine.cpu.cycles.saturating_sub(start_cycles) as u32;
         if let (Some(before), Some(bytes)) = (before, bytes) {
             let after = self.trace_cpu_snapshot();
-            let post = collect_post_instruction_effects(bytes, before, after, &effects);
-            effects.extend(post);
+            effects.extend(collect_post_instruction_effects(bytes, before, after, &effects));
             if delta != 0 {
                 let watch_stop = self.debug_control.stop_after_effects(before.pc, &effects).is_some();
-                if tracing {
-                    self.instruction_trace
-                        .push_with_effects(before.pc, bytes, before, after, delta, effects);
-                }
-                if watch_stop {
-                    self.machine.set_running(false);
-                }
+                if tracing { self.instruction_trace.push_with_effects(before.pc, bytes, before, after, delta, effects); }
+                if watch_stop { self.machine.set_running(false); }
             }
         }
         delta
     }
 
     fn service_execution_with_debug_boundaries(&mut self, t_state_budget: u32) {
-        if !self.machine.running || t_state_budget == 0 {
-            return;
-        }
-
+        if !self.machine.running || t_state_budget == 0 { return; }
         let mut used = 0u32;
         while used < t_state_budget && self.machine.running {
             if self.machine.cpu.halted {
                 self.machine.run_cycles(t_state_budget - used);
                 break;
             }
-
             if self.machine.bus.cpu_control_lines().reset {
                 self.machine.run_cycles(t_state_budget - used);
                 break;
             }
-
             let pc = self.machine.cpu.pc;
             let sp = self.machine.cpu.sp;
             if self.debug_control.stop_before_with_sp(pc, sp).is_some() {
                 self.machine.set_running(false);
                 break;
             }
-
             let delta = self.execute_one_running_instruction();
-            if delta == 0 {
-                break;
-            }
+            if delta == 0 { break; }
             used = used.saturating_add(delta);
         }
     }
@@ -242,14 +198,10 @@ impl MachineBackend for NativeMachineBackend {
     fn cpu_state(&mut self) -> BackendResult<CpuState> { Ok(self.snapshot_cpu()) }
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
-        self.machine.configure_memory(size, init);
-        self.reset_debugger_epoch();
-        Ok(())
+        self.machine.configure_memory(size, init); self.reset_debugger_epoch(); Ok(())
     }
     fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) -> BackendResult<()> {
-        self.machine.configure_memory_board_profile(profile);
-        self.reset_debugger_epoch();
-        Ok(())
+        self.machine.configure_memory_board_profile(profile); self.reset_debugger_epoch(); Ok(())
     }
     fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
@@ -261,68 +213,43 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn run(&mut self) -> BackendResult<()> {
         self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
-        self.machine.set_running(true);
-        Ok(())
+        self.machine.set_running(true); Ok(())
     }
     fn halt(&mut self) -> BackendResult<()> {
-        self.debug_control.cancel_run_to();
-        self.machine.set_running(false);
-        Ok(())
+        self.debug_control.cancel_run_to(); self.machine.set_running(false); Ok(())
     }
     fn step(&mut self) -> BackendResult<()> {
         self.debug_control.prepare_manual_step();
-        if self.machine.cpu.halted {
-            self.machine.step();
-        } else if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
-            self.record_one_stopped_instruction();
-        } else {
-            self.machine.step();
-        }
+        if self.machine.cpu.halted { self.machine.step(); }
+        else if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() { self.record_one_stopped_instruction(); }
+        else { self.machine.step(); }
         Ok(())
     }
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
-        if self.instruction_trace.enabled() || self.debug_control.active() {
-            self.service_execution_with_debug_boundaries(t_state_budget);
-        } else if self.machine.running {
-            self.machine.run_cycles(t_state_budget);
-        }
+        if self.instruction_trace.enabled() || self.debug_control.active() { self.service_execution_with_debug_boundaries(t_state_budget); }
+        else if self.machine.running { self.machine.run_cycles(t_state_budget); }
         Ok(())
     }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
-        self.service_idle_chassis_clock(dt);
-        self.machine.commit_panel_activity(dt);
-        Ok(())
+        self.service_idle_chassis_clock(dt); self.machine.commit_panel_activity(dt); Ok(())
     }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
-        if run {
-            self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
-        } else {
-            self.debug_control.cancel_run_to();
-        }
-        self.machine.assert_run_stop(run);
-        Ok(())
+        if run { self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp); }
+        else { self.debug_control.cancel_run_to(); }
+        self.machine.assert_run_stop(run); Ok(())
     }
     fn release_run_stop(&mut self, run: bool) -> BackendResult<()> { self.machine.release_run_stop(run); Ok(()) }
-    fn assert_reset(&mut self) -> BackendResult<()> {
-        self.reset_debugger_epoch();
-        self.machine.assert_front_panel_reset();
-        Ok(())
-    }
+    fn assert_reset(&mut self) -> BackendResult<()> { self.reset_debugger_epoch(); self.machine.assert_front_panel_reset(); Ok(()) }
     fn release_reset(&mut self) -> BackendResult<()> { self.machine.release_front_panel_reset(); Ok(()) }
     fn assert_clear(&mut self) -> BackendResult<()> { self.machine.assert_front_panel_clear(); Ok(()) }
     fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> { self.machine.request_hold(hold); Ok(()) }
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
-        self.reset_debugger_epoch();
-        self.machine.fast_front_panel_examine_via_cpu_board(next);
-        Ok(())
+        self.reset_debugger_epoch(); self.machine.fast_front_panel_examine_via_cpu_board(next); Ok(())
     }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
-        if next {
-            self.reset_debugger_epoch();
-        }
-        self.machine.fast_front_panel_deposit_via_cpu_board(next);
-        Ok(())
+        if next { self.reset_debugger_epoch(); }
+        self.machine.fast_front_panel_deposit_via_cpu_board(next); Ok(())
     }
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.machine.front_panel_set_memory_protection_via_s100(protected); Ok(()) }
     fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
@@ -344,11 +271,24 @@ impl MachineBackend for NativeMachineBackend {
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
         match port { BackendSerialPort::Port0 => self.machine.bus.serial_receive(byte), BackendSerialPort::Port1 => self.machine.bus.serial_port1_receive(byte) }; Ok(())
     }
-    fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_rx_empty(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_empty() }) }
-    fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_rx_len(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_len() }) }
-    fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.tx_busy(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_busy() }) }
-    fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_front(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_front() }) }
-    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_complete(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_complete() }) }
+    fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
+        Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_rx_empty(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_empty() })
+    }
+    fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize> {
+        Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_rx_len(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_len() })
+    }
+    fn serial_rx_line_idle(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
+        Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_rx_line_idle(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_line_idle() })
+    }
+    fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
+        Ok(match port { BackendSerialPort::Port0 => self.machine.bus.tx_busy(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_busy() })
+    }
+    fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
+        Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_front(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_front() })
+    }
+    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
+        Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_complete(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_complete() })
+    }
     fn serial_modem_lines(&mut self, port: BackendSerialPort) -> BackendResult<Option<SerialModemLines>> {
         Ok(self.machine.bus.serial_modem_lines(port.index()).map(SerialModemLines::from))
     }
@@ -359,25 +299,13 @@ impl MachineBackend for NativeMachineBackend {
     fn installed_ram_bytes(&mut self) -> BackendResult<usize> { Ok(self.machine.installed_ram_bytes()) }
     fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> { Ok(self.machine.bus.peek_memory(address)) }
     fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> BackendResult<bool> { Ok(self.machine.bus.debugger_write_memory(address, value, respect_protection)) }
-    fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> {
-        self.machine.bus.load(address, bytes);
-        self.reset_debugger_epoch();
-        Ok(())
-    }
+    fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> { self.machine.bus.load(address, bytes); self.reset_debugger_epoch(); Ok(()) }
     fn memory_is_protected(&mut self, address: u16) -> BackendResult<bool> { Ok(self.machine.bus.is_protected(address)) }
     fn clear_memory_protection(&mut self) -> BackendResult<()> { self.machine.bus.clear_protection(); Ok(()) }
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> { self.machine.bus.clear_transient_memory_guards(); Ok(()) }
     fn arm_basic32_full_memory_probe_guard(&mut self) -> BackendResult<bool> { Ok(self.machine.arm_basic32_full_memory_probe_guard()) }
-    fn begin_cpu_diagnostic_meter(
-        &mut self,
-        name: String,
-        bdos_start: u16,
-        bdos_len: usize,
-        expected_instructions: Option<u64>,
-        expected_t_states: Option<u64>,
-    ) -> BackendResult<()> {
-        self.machine.begin_cpu_diagnostic_meter(name, bdos_start, bdos_len, expected_instructions, expected_t_states);
-        Ok(())
+    fn begin_cpu_diagnostic_meter(&mut self, name: String, bdos_start: u16, bdos_len: usize, expected_instructions: Option<u64>, expected_t_states: Option<u64>) -> BackendResult<()> {
+        self.machine.begin_cpu_diagnostic_meter(name, bdos_start, bdos_len, expected_instructions, expected_t_states); Ok(())
     }
     fn cancel_cpu_diagnostic_meter(&mut self) -> BackendResult<()> { self.machine.bus.cancel_cpu_diagnostic_meter(); Ok(()) }
     fn take_cpu_diagnostic_result(&mut self) -> BackendResult<Option<CpuDiagnosticResult>> { Ok(self.machine.take_cpu_diagnostic_result()) }
@@ -396,57 +324,26 @@ impl MachineBackend for NativeMachineBackend {
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
         if self.machine.powered && !self.machine.running && !self.machine.cpu.halted {
             self.debug_control.prepare_manual_step();
-            if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() {
-                self.record_one_stopped_instruction();
-            } else {
-                self.machine.step();
-            }
+            if self.instruction_trace.enabled() || self.debug_control.has_watchpoints() { self.record_one_stopped_instruction(); }
+            else { self.machine.step(); }
         }
         Ok(())
     }
     fn debugger_breakpoints(&mut self) -> BackendResult<Vec<u16>> { Ok(self.debug_control.breakpoints()) }
-    fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) -> BackendResult<()> {
-        self.debug_control.set_breakpoint(address, enabled);
-        Ok(())
-    }
-    fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
-        self.debug_control.clear_breakpoints();
-        Ok(())
-    }
-    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> {
-        Ok(self.debug_control.watchpoints())
-    }
-    fn debugger_set_watchpoint(
-        &mut self,
-        address: u16,
-        access: Option<MemoryWatchAccess>,
-    ) -> BackendResult<()> {
-        self.debug_control.set_watchpoint(address, access);
-        Ok(())
-    }
-    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
-        self.debug_control.clear_watchpoints();
-        Ok(())
-    }
+    fn debugger_set_breakpoint(&mut self, address: u16, enabled: bool) -> BackendResult<()> { self.debug_control.set_breakpoint(address, enabled); Ok(()) }
+    fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> { self.debug_control.clear_breakpoints(); Ok(()) }
+    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> { Ok(self.debug_control.watchpoints()) }
+    fn debugger_set_watchpoint(&mut self, address: u16, access: Option<MemoryWatchAccess>) -> BackendResult<()> { self.debug_control.set_watchpoint(address, access); Ok(()) }
+    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> { self.debug_control.clear_watchpoints(); Ok(()) }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
-        self.debug_control.set_run_to(address);
-        self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
-        self.machine.set_running(true);
-        Ok(())
+        self.debug_control.set_run_to(address); self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp); self.machine.set_running(true); Ok(())
     }
     fn debugger_run_to_with_sp(&mut self, address: u16, required_sp: u16) -> BackendResult<()> {
-        self.debug_control.set_run_to_with_sp(address, required_sp);
-        self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
-        self.machine.set_running(true);
-        Ok(())
+        self.debug_control.set_run_to_with_sp(address, required_sp); self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp); self.machine.set_running(true); Ok(())
     }
-    fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
-        self.debug_control.cancel_run_to();
-        Ok(())
-    }
+    fn debugger_cancel_run_to(&mut self) -> BackendResult<()> { self.debug_control.cancel_run_to(); Ok(()) }
     fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> { Ok(self.debug_control.run_to()) }
     fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> { Ok(self.debug_control.stop_reason()) }
-
     fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.machine.bus.debugger_input_port(port)) }
     fn debugger_output_port(&mut self, port: u8, value: u8) -> BackendResult<()> { self.machine.bus.debugger_output_port(port, value); Ok(()) }
     fn debugger_inject_serial_rx(&mut self, port: u8, byte: u8) -> BackendResult<bool> { Ok(self.machine.bus.debugger_inject_serial_rx(port, byte)) }
