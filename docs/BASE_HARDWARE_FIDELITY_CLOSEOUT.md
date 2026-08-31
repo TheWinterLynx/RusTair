@@ -12,7 +12,7 @@ This document is the live evidence log for `agent/base-hardware-fidelity-closeou
 4. Fast may reconstruct unavailable sub-instruction detail, but Cycle Accurate must not invent electrical state.
 5. Presentation state (LED persistence, animation, audio) is downstream of electrical state and must never feed it back.
 6. Compatibility workarounds remain explicit and optional.
-7. A hardware item is not `PASS` until its dedicated Markdown documentation satisfies `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`, including primary references, physical-to-code mapping, supporting snippets, Fast/Cycle claims, regressions and known gaps.
+7. A hardware item is not `PASS` until its dedicated Markdown documentation satisfies `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`, including primary references, physical-to-code mapping, supporting snippets, Fast/Cycle claims, regressions, known gaps and a user-observable validation procedure wherever practical.
 
 ## 1. S-100 open bus — PASS
 
@@ -76,7 +76,11 @@ Deterministic coverage includes 100 ms stall retention, fractional-cycle carry, 
 
 ## 4. 88-2SIO / MC6850 — IN PROGRESS
 
-Dedicated implementation/evidence document: **`docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`**.
+Dedicated implementation/evidence documents:
+
+- **`docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`** — card/ACIA core, timing and Reader Control;
+- **`docs/88_2SIO_EXTERNAL_COM_SIGNALS.md`** — physical CTS/DCD/BREAK bridge;
+- **`docs/88_2SIO_PHYSICAL_STRAPS.md`** — A2-A7 address and per-ACIA baud straps.
 
 ### Implemented and locally validated
 
@@ -92,30 +96,39 @@ Dedicated implementation/evidence document: **`docs/88_2SIO_MC6850_HARDWARE_FIDE
 - Card baud timing belongs to the installed board, not ASR/Terminal pacing; integer phase accumulation retains fractional effective rates.
 - The 88-2SIO oscillator continues during CPU STOP, sustained RESET and HOLD/HLDA while avoiding double advancement during RUN.
 - Host-visible RX state distinguishes pending receiver contents from physical receive-line occupancy, enabling real overrun instead of mandatory RDR-empty flow control.
-- Authentic paper-tape loader regression consumes bytes through timed hardware and a genuine guest `IN 11h` in both Rust engines.
+- Authentic paper-tape loader regression consumes bytes through timed hardware and a genuine guest `IN` in both Rust engines.
+- Text Terminal, raw TCP, external COM and ASR reader RX delivery gate only on the physical receive shift path; unread RDR is not hidden flow control.
+- ASR-33 paper-tape reader no longer depends on the 8080 RUN latch.
+- `ReaderControlMode` models local/manual reader control and optional MITS 88-TYA Reader Control via the real 88-2SIO RTS pin.
+- In 88-TYA mode, `11h` / octal `021` leaves RTS LOW/ReaderRun off and `51h` / octal `121` raises RTS HIGH/ReaderRun on.
+- External COM can use the MITS no-modem wiring (CTS/DCD grounded) or follow real host CTS/CD pins with the required active-LOW MC6850 polarity conversion.
+- MC6850 BREAK is projected to a physical COM endpoint using the host serial BREAK control rather than a fabricated data byte.
+- moving/disconnecting the External COM cable cannot leave stale CTS/DCD HIGH levels on the old virtual channel.
 
-The full local `cargo test` suite was green on 2026-08-31 through these changes after the debugger architecture guard was made semantic rather than dependent on a local variable name.
+The Reader Control / physical RX pacing block passed the full local `cargo test` suite on 2026-08-31. The subsequent CTS/DCD/BREAK External COM focused tests and full normal suite were also reported green by the user on 2026-08-31. No GitHub Actions were run.
 
-### Implemented after the last local green — validation required
+### Implemented after the latest local green — validation required
 
-- Text Terminal, raw TCP and external COM RX delivery now wait only for the physical receive shift path to become free; an unread MC6850 RDR no longer acts as hidden flow control.
-- ASR-33 paper-tape reader uses the same physical RX-line contract and no longer depends on the 8080 RUN latch.
-- `ReaderControlMode` models two real installations: local/manual reader control and optional MITS 88-TYA Reader Control via 88-2SIO RTS.
-- In 88-TYA mode, the local Read/Pause buttons have no electrical authority; physical MC6850 RTS HIGH runs ReaderRun+, RTS LOW stops it.
-- Historical values are exposed directly: `11h` / octal `021` leaves RTS LOW; `51h` / octal `121` raises RTS HIGH.
-- UI states distinguish missing RTS source, RTS LOW and a character currently occupying the RX shift path.
-- `tests/asr33_reader_control_architecture.rs` guards against reintroducing CPU-RUN or RDR-empty pacing.
+- `TwoSioAddressBlock` models the A2-A7 jumper selection as one four-port-aligned block and rejects the `FCh-FFh` front-panel-conflicting block.
+- `TwoSioBaudTap` exposes only the eight physical MITS board taps: 110/150/300/1200/1800/2400/4800/9600.
+- `TwoSioStraps` gives Port 0 and Port 1 independent physical baud selections while preserving the existing default installation (base `10h`, Port 0 110, Port 1 9600).
+- the production `IoDevices` decoder, PRDY wait selection, debugger data-port mapping, trace data addresses and S-100 open-bus ownership now derive from the selected A2-A7 block instead of permanently decoding `10h-13h`.
+- a regression moves the board to the MITS manual example base 68 decimal / `44h` and requires `44h-47h` to decode while `10h-13h` become open bus with no 88-2SIO wait.
+- a second regression gives the two ACIAs different baud straps and requires their timed receive completions to diverge accordingly.
 
 ### Remaining blockers before `PASS`
 
-- locally validate the new Reader Control / endpoint physical-line block and full suite;
-- propagate BREAK appropriately to attached endpoint models;
-- expose CTS/DCD behavior/configuration for endpoints that can provide those signals;
-- expose per-port baud-generator straps instead of retaining only the current default 110/9600 installation;
-- expose the physical A2-A7 base-address strap block instead of permanently fixing `10h`-`13h`;
+- locally compile/validate the physical-strap core and full suite;
+- carry `TwoSioStraps` through both backend implementations and `BackendHost`;
+- expose address and per-port baud jumpers in Configuration with POWER-OFF-only changes;
+- persist the selected physical straps across application restarts;
+- replace remaining UI/endpoint labels that assume `10h-13h` with the selected address block;
+- add shared public Fast/Cycle readdressing regressions;
+- add/validate user-observable strap procedures from `docs/88_2SIO_PHYSICAL_STRAPS.md`;
+- add the pending regression that debugger-only 88-2SIO `IN` activity cannot leave a stale Fast +1T wait for the next guest instruction;
+- finish BREAK semantics for internal non-COM endpoints only where primary device evidence supports an observable effect; raw TCP must not invent an electrical BREAK byte;
+- close the broader interrupt-routing/jumper question (direct interrupt vs no interrupt / 88-VI integration) at the machine-card boundary;
 - re-run complete serial/loader/full-suite validation after final strap/signal closeout.
-
-`ReaderControlMode` persistence across application restarts is a configuration/UX follow-up, not an electrical-fidelity blocker; the hardware mode currently defaults to Manual on each process start.
 
 ## 5. MITS 88-SIO — OPEN
 
@@ -130,4 +143,4 @@ The 88-SIO must be audited by hardware revision rather than treated as a generic
 
 ## Validation policy
 
-Do not run GitHub Actions for this branch. Each checkpoint should be validated locally with focused tests first and then the normal project validation (`cargo test`; release launch/build as appropriate). Long ignored CPU diagnostics are re-run only when a change can plausibly affect CPU semantics/timing or before a release certification pass.
+Do not run GitHub Actions for this branch. Each checkpoint should be validated locally with focused tests first and then the normal project validation (`cargo test`; release launch/build as appropriate). Long ignored CPU diagnostics are re-run only when a change can plausibly affect CPU semantics/timing or before a release certification pass. User-observable validation procedures complement deterministic tests and are required in hardware documentation wherever the behavior can be meaningfully exercised from the normal application.
