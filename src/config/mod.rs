@@ -16,4 +16,7 @@ pub use machine::{
     TerminalSpeed,
 };
 pub use terminal::TerminalDuplex;
-pub use two_sio::{TwoSioAddressBlock, TwoSioBaudTap, TwoSioStraps};
+pub use two_sio::{
+    TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget, TwoSioInterruptWiring,
+    TwoSioStraps,
+};
