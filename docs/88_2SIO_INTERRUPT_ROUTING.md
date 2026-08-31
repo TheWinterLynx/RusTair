@@ -1,6 +1,6 @@
 # MITS 88-2SIO interrupt routing
 
-Status: **IN PROGRESS — physical routing types implemented and documented; machine/backend/persistence/UI application still pending.**
+Status: **IN PROGRESS — physical routing types and machine-level PINT/VI routing implemented; backend/persistence/UI application still pending.**
 
 Parent hardware document: `docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`.
 
@@ -51,20 +51,20 @@ The wording “chosen interrupt request line or lines” means wiring both ports
 
 The same section warns that the processor can handle only one direct interrupt signal and that if the 88-2SIO single-level PINT wiring is used, another board cannot also be hard-wired directly to the processor interrupt input.
 
-RusTair therefore must not treat “ACIA IRQ active” and “CPU PINT active” as synonyms. The former is chip state; the latter depends on board wiring.
+RusTair therefore does not treat “ACIA IRQ active” and “CPU PINT active” as synonyms. The former is chip state; the latter depends on board wiring.
 
 ### 2.3 88-Vector Interrupt is a separate system component
 
 The PCB/schematic exposes `VI0` through `VI7` alongside `PINT`. Wiring DI/EI to `VIx` does not mean the 88-2SIO itself invents an 8080 restart opcode. The separate 88-VI hardware owns vector arbitration/opcode presentation during interrupt acknowledge.
 
-RusTair will model the 88-2SIO boundary faithfully even before an 88-VI card exists in the chassis model:
+RusTair models the 88-2SIO boundary even before an 88-VI card exists in the chassis model:
 
-- the 2SIO can expose which VI level is electrically requested;
-- only an installed 88-VI model may turn those requests into the processor interrupt/vector behavior.
+- the 2SIO exposes which VI levels are electrically requested;
+- only an installed 88-VI model may turn those requests into processor interrupt/vector behavior.
 
 This prevents a future 88-VI implementation from having to undo a fake direct-RST shortcut inside the serial card.
 
-## 3. Current pre-closeout behavior and why it is insufficient
+## 3. Pre-audit behavior and correction
 
 Before this audit, `IoDevices::interrupt_request()` for the 88-2SIO effectively used:
 
@@ -74,21 +74,26 @@ self.two_sio.iter().any(TwoSioPort::interrupt_request)
 
 and `AltairBus::refresh_interrupt_request_line()` projected that aggregate directly to the shared S-100 interrupt state.
 
-That corresponds to exactly one possible physical installation: **both DI and EI hard-wired to PINT**.
+That corresponded to exactly one possible physical installation: **both DI and EI hard-wired to PINT**.
 
-It cannot reproduce:
+The machine layer now separates three stages:
 
-- no interrupt wiring;
-- Port 0 only to PINT;
-- Port 1 only to PINT;
-- DI/EI sent to VI0..VI7 instead of PINT;
-- different VI levels for the two ports.
+```text
+MC6850 IRQ state
+      ↓
+DI / EI board output
+      ↓
+physical TwoSioInterruptTarget
+      ├─ Disconnected → no system interrupt line
+      ├─ PINT         → shared processor interrupt request
+      └─ VI0..VI7     → separate vector-request line mask
+```
 
-The current aggregate behavior is retained temporarily until the new routing type is connected through the machine/backend/configuration layers. This document therefore remains IN PROGRESS.
+Therefore an MC6850 may have status bit 7/IRQ active while processor PINT remains inactive.
 
 ## 4. RusTair physical topology types
 
-`src/config/two_sio.rs` now defines the destination of one physical IRQ wire:
+`src/config/two_sio.rs` defines the destination of one physical IRQ wire:
 
 ```rust
 pub enum TwoSioInterruptTarget {
@@ -107,7 +112,7 @@ pub enum TwoSioInterruptTarget {
 
 The model deliberately uses explicit `Vi0`..`Vi7` variants rather than an arbitrary integer. Only the eight physical vector lines printed/exposed by the MITS system are representable.
 
-Two independent wires are then represented by:
+Two independent wires are represented by:
 
 ```rust
 pub struct TwoSioInterruptWiring {
@@ -146,9 +151,38 @@ EI -> PINT
 
 This is **not** claimed as the unique MITS factory/default installation. It is a migration default chosen to preserve RusTair's pre-audit behavior while the physical choice becomes explicit.
 
-Once persistence/UI are connected, users can reproduce the other valid installations instead of being silently locked to both-PINT.
+Existing tests that expected either ACIA to reach PINT therefore remain valid under the default wiring.
 
-## 7. Vector boundary
+## 7. Machine implementation
+
+`src/machine/io_devices.rs` owns both raw ACIA IRQ state and the physical wiring.
+
+The direct PINT request is now selected per source:
+
+```rust
+fn two_sio_pint_request(&self) -> bool {
+    [0usize, 1].into_iter().any(|index| {
+        self.two_sio_interrupt_wiring
+            .target(index)
+            .map_or(false, TwoSioInterruptTarget::drives_pint)
+            && self.two_sio_irq(index)
+    })
+}
+```
+
+`IoDevices::interrupt_request()` uses that routed value for the 88-2SIO rather than OR-ing the two ACIAs unconditionally.
+
+The vector side is independently projected as an eight-bit physical line mask:
+
+```rust
+pub(super) fn vector_interrupt_requests(&self) -> u8
+```
+
+Bit `n` means `VIn` is being driven by an active 88-2SIO ACIA IRQ. A VI bit does not assert PINT by itself.
+
+`AltairBus::two_sio_vector_interrupt_requests()` exposes this board/chassis boundary for a future 88-VI component. It intentionally does not return an 8080 opcode.
+
+## 8. Vector boundary
 
 Each target exposes two mutually exclusive interpretations:
 
@@ -163,9 +197,9 @@ Required invariant:
 - `Vi0`..`Vi7` expose exactly one VI level and do not drive PINT;
 - `Disconnected` drives neither.
 
-An ACIA routed to `VI3` must therefore be able to assert the board's VI3 output while the processor PINT line stays unchanged unless an 88-VI board is installed and arbitrates that request.
+An ACIA routed to `VI3` can therefore assert the board's VI3 output while the processor PINT line stays unchanged. This remains true until an 88-VI board is modeled and explicitly consumes/arbitrates that line.
 
-## 8. Fast versus Cycle Accurate
+## 9. Fast versus Cycle Accurate
 
 The routing itself is static chassis wiring and is backend-independent.
 
@@ -173,52 +207,68 @@ The routing itself is static chassis wiring and is backend-independent.
 
 Fast may service a direct PINT interrupt at an instruction boundary, but only if the selected ACIA IRQ is physically wired to PINT.
 
-A VIx-routed request must not be converted directly into the existing Fast `RST 7`/`FFh` path.
+A VIx-routed request is excluded from the existing direct `FFh` interrupt opcode path.
 
 ### Cycle Accurate
 
-Cycle must sample the same routed PINT level on the shared interrupt control line. VIx requests remain separate board/chassis signals until an 88-VI component consumes them.
+Cycle samples the same routed PINT level on the shared interrupt control line because `AltairBus::refresh_interrupt_request_line()` now sees the routed result. VIx requests remain separate board/chassis signals until an 88-VI component consumes them.
 
-The two engines must therefore agree on routing even though their CPU timing models differ.
+Backend configuration APIs still need to expose the physical wiring before this sub-block can be considered complete from the application surface.
 
-## 9. Phase-1 regression evidence
+## 10. Regression evidence
 
-`src/config/two_sio.rs` contains:
+### `src/config/two_sio.rs`
 
-### `interrupt_wiring_models_disconnected_pint_and_all_eight_vi_levels`
+`interrupt_wiring_models_disconnected_pint_and_all_eight_vi_levels`
 
-Protects:
-
-- exactly the ten legal destinations: disconnected, PINT, VI0..VI7;
+- exactly ten legal destinations: disconnected, PINT, VI0..VI7;
 - PINT is not also a vector level;
 - VI0..VI7 map to levels 0..7 exactly;
 - vector targets do not silently drive PINT.
 
-### `interrupt_wiring_is_independent_for_di_and_ei`
+`interrupt_wiring_is_independent_for_di_and_ei`
 
-Protects the physical independence of Port 0/DI and Port 1/EI.
+- protects the physical independence of Port 0/DI and Port 1/EI.
 
-### `interrupt_wiring_default_preserves_previous_pint_projection`
+`interrupt_wiring_default_preserves_previous_pint_projection`
 
-Protects the migration default of both ports wired to PINT until the user selects another installation.
+- protects the migration default of both ports wired to PINT.
 
-## 10. Next implementation phase
+### `src/machine/io_devices.rs`
 
-Before this block can become PASS, RusTair still has to connect the topology to actual machine behavior:
+`two_sio_irq_is_routed_after_the_acia_not_fabricated_as_pint`
 
-1. store `TwoSioInterruptWiring` as machine configuration independent of A2-A7/baud straps;
-2. expose it through Fast and Cycle backends;
-3. route only PINT-selected ACIA IRQs to the processor interrupt line;
-4. expose active VI0..VI7 requests as a separate chassis signal/boundary for a future 88-VI board;
-5. persist both DI and EI destinations;
-6. expose POWER-OFF-only UI controls, because these are physical jumper/solder changes;
-7. add focused regressions for None / Port0 PINT / Port1 PINT / both PINT / VI routing;
-8. document user-visible manual validation;
-9. run the full local suite.
+- creates a real MC6850 RX IRQ first;
+- proves its chip IRQ/status remains active with DI disconnected;
+- proves disconnected DI produces neither PINT nor VI;
+- reroutes the same live IRQ to VI3 and proves PINT remains low while VI3 rises;
+- reroutes it to PINT and proves the processor request rises.
 
-## 11. User validation procedure once phase 2 is wired
+`di_and_ei_route_independently_and_vi_levels_are_combined_as_lines`
 
-The intended manual test is:
+- routes Port 0/DI to VI3 and Port 1/EI to PINT;
+- proves Port 0 cannot accidentally drive PINT;
+- proves Port 1 independently can;
+- reroutes both to different VI levels and verifies the physical VI mask contains both lines without asserting PINT.
+
+Existing DCD/RX/TX tests continue to protect the migration default where both DI and EI are PINT-connected.
+
+## 11. Remaining implementation before PASS
+
+The electrical machine layer is implemented. Remaining application/configuration work is deliberately above that layer:
+
+1. store `TwoSioInterruptWiring` in `MachineConfig` independently of A2-A7/baud straps;
+2. expose configure/query through Fast and Cycle `MachineBackend` implementations;
+3. reapply wiring when an engine is recreated;
+4. persist both DI and EI destinations;
+5. expose POWER-OFF-only UI controls;
+6. add backend/persistence/UI regressions;
+7. run the manual validation below and the full local suite;
+8. update the parent 88-2SIO closeout document and mark this block PASS.
+
+The 88-VI card itself is **not** a prerequisite for this board-level routing block. The honest 88-2SIO boundary is the VI0..VI7 line mask; CPU vector generation belongs to the future 88-VI implementation.
+
+## 12. User validation procedure once application wiring is exposed
 
 1. POWER OFF and select MITS 88-2SIO.
 2. Set DI/Port 0 to **Disconnected**, EI/Port 1 to **Disconnected**.
@@ -232,7 +282,15 @@ The intended manual test is:
 
 Until an 88-VI board is modeled, step 8 stops at the chassis VI3 boundary; RusTair must not fabricate a CPU vector beyond that boundary.
 
-## 12. Primary references
+## 13. Validation history
+
+- Address/baud straps and the readdressed authentic loader are separately PASS as of 2026-08-31.
+- Interrupt routing topology types were added after that green checkpoint.
+- Machine-level routed PINT plus separate VI0..VI7 mask were then implemented in commit `4f7464568954ee2917e0c6487e31a2746335c2a9`.
+- These new interrupt-routing commits require local focused/full validation before backend/persistence/UI work is stacked on top.
+- GitHub Actions were not run.
+
+## 14. Primary references
 
 ### MITS 88-2SIO
 
