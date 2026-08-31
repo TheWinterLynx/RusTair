@@ -5,11 +5,16 @@ use super::*;
 /// The loader bytes are the MITS front-panel bootstrap, not a RusTair helper
 /// program. BASIC 3.2 uses leader/checksum-loader marker 256 octal (AEh); 4K
 /// uses checksum-loader selector 017 octal. The 88-2SIO variant below uses the
-/// historically appropriate two-stop-bit ACIA setup for an ASR-33.
+/// historically appropriate two-stop-bit ACIA setup for an ASR-33. The published
+/// 10h/11h byte image remains the canonical template; when the physical 88-2SIO
+/// A2-A7 straps select another block, only the immediate IN/OUT port operands are
+/// changed exactly as a real operator would have to enter them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BootstrapDefinition {
     pub(super) board: SerialBoard,
     pub(super) name: &'static str,
+    /// Canonical MITS template. `resolved_bytes()` applies only the installed
+    /// 88-2SIO I/O-address operands; the historical template itself is immutable.
     pub(super) bytes: &'static [u8],
     pub(super) required_sense: u8,
     pub(super) status_port: u8,
@@ -34,6 +39,8 @@ const BASIC32_4K_88_2SIO: [u8; 28] = [
 ];
 
 impl BootstrapDefinition {
+    /// Canonical published/default installation. Tests use this to protect the
+    /// original MITS byte image; production loading uses `for_installed()`.
     pub(super) const fn for_board(board: SerialBoard) -> Self {
         match board {
             SerialBoard::Sio88 => Self {
@@ -57,6 +64,37 @@ impl BootstrapDefinition {
                 poll_end: 0x0011,
             },
         }
+    }
+
+    pub(super) const fn for_installed(board: SerialBoard, straps: TwoSioStraps) -> Self {
+        match board {
+            SerialBoard::Sio88 => Self::for_board(SerialBoard::Sio88),
+            SerialBoard::TwoSio88 => Self {
+                board,
+                name: "Microsoft 4K BASIC 3.2 — MITS 88-2SIO Port 0 bootstrap",
+                bytes: &BASIC32_4K_88_2SIO,
+                required_sense: 0x08,
+                status_port: straps.address.port0_status(),
+                data_port: straps.address.port0_data(),
+                poll_start: 0x000B,
+                poll_end: 0x0011,
+            },
+        }
+    }
+
+    /// Return the actual bytes the operator must deposit for the installed card.
+    /// The 88-2SIO instruction sequence is unchanged; only its four immediate
+    /// port operands follow A2-A7. This is not an address alias or compatibility
+    /// hack: a physical 8080 program must name the address decoded by the card.
+    fn resolved_bytes(self) -> Vec<u8> {
+        let mut bytes = self.bytes.to_vec();
+        if self.board == SerialBoard::TwoSio88 {
+            bytes[0x03] = self.status_port; // OUT control: master reset
+            bytes[0x07] = self.status_port; // OUT control: 11h / 8N2 /16
+            bytes[0x0F] = self.status_port; // IN status
+            bytes[0x13] = self.data_port;   // IN data
+        }
+        bytes
     }
 
     const fn last_address(self) -> u16 {
@@ -319,7 +357,7 @@ impl Default for AuthenticLoaderState {
 
 fn bootstrap_matches(machine: &mut BackendHost, definition: BootstrapDefinition) -> bool {
     definition
-        .bytes
+        .resolved_bytes()
         .iter()
         .enumerate()
         .all(|(address, expected)| machine.peek_memory(address as u16) == Some(*expected))
@@ -354,8 +392,9 @@ fn install_via_front_panel(
         return Err("EXAMINE 0000h did not place the front panel at address 0000h.".into());
     }
 
-    let mut log = Vec::with_capacity(definition.bytes.len());
-    for (index, byte) in definition.bytes.iter().copied().enumerate() {
+    let bytes = definition.resolved_bytes();
+    let mut log = Vec::with_capacity(bytes.len());
+    for (index, byte) in bytes.iter().copied().enumerate() {
         machine.set_switch_register(u16::from(byte));
         machine.deposit(index != 0);
 
@@ -425,6 +464,39 @@ fn bootstrap_instruction_info(
         .find(|info| index >= info.start && index < info.start + info.len)
 }
 
+fn bootstrap_instruction_text(
+    definition: BootstrapDefinition,
+    info: BootstrapInstructionInfo,
+) -> (String, String) {
+    if definition.board == SerialBoard::TwoSio88 {
+        match info.start {
+            0x02 | 0x06 => return (
+                format!("OUT ${:02X}", definition.status_port),
+                format!(
+                    "Writes A to the installed 88-2SIO Port 0 control register at {:02X}h.",
+                    definition.status_port
+                ),
+            ),
+            0x0E => return (
+                format!("IN ${:02X}", definition.status_port),
+                format!(
+                    "Reads the installed 88-2SIO Port 0 status register at {:02X}h into A.",
+                    definition.status_port
+                ),
+            ),
+            0x12 => return (
+                format!("IN ${:02X}", definition.data_port),
+                format!(
+                    "Reads one byte from the installed 88-2SIO Port 0 data register at {:02X}h into A.",
+                    definition.data_port
+                ),
+            ),
+            _ => {}
+        }
+    }
+    (info.mnemonic.to_owned(), info.effect.to_owned())
+}
+
 fn bootstrap_switch_tooltip(
     definition: BootstrapDefinition,
     index: usize,
@@ -438,6 +510,7 @@ fn bootstrap_switch_tooltip(
             grouped_binary16(switch_value)
         );
     };
+    let (mnemonic, effect) = bootstrap_instruction_text(definition, info);
 
     let row_role = if info.mnemonic.starts_with("STACK RETURN VECTOR") {
         if index == info.start {
@@ -458,10 +531,8 @@ fn bootstrap_switch_tooltip(
     };
 
     format!(
-        "Configure A15..A0 = {switch_value:04X}h / {switch_value:06o}o\n{}\n\n8080 / bootstrap meaning\n{}\n{row_role}\n\nWhat it does: {}\nWhy the loader needs it: {}\n\nConfig switches only moves the front-panel switches. The byte is not deposited and the instruction is not executed until the corresponding panel operations and later RUN occur.",
+        "Configure A15..A0 = {switch_value:04X}h / {switch_value:06o}o\n{}\n\n8080 / bootstrap meaning\n{mnemonic}\n{row_role}\n\nWhat it does: {effect}\nWhy the loader needs it: {}\n\nConfig switches only moves the front-panel switches. The byte is not deposited and the instruction is not executed until the corresponding panel operations and later RUN occur.",
         grouped_binary16(switch_value),
-        info.mnemonic,
-        info.effect,
         info.purpose
     )
 }
@@ -609,7 +680,10 @@ impl RusTairApp {
     }
 
     fn arm_authentic_tape_reader(&mut self) -> Result<(), String> {
-        let definition = BootstrapDefinition::for_board(self.config.machine.serial_board);
+        let definition = BootstrapDefinition::for_installed(
+            self.config.machine.serial_board,
+            self.config.machine.two_sio_straps,
+        );
         if self.machine.installed_ram_bytes() < BASIC32_4K_MIN_RAM {
             return Err(format!(
                 "Microsoft 4K BASIC 3.2 requires at least 4 KiB RAM; the current machine has {}.",
@@ -617,7 +691,7 @@ impl RusTairApp {
             ));
         }
         if !bootstrap_matches(&mut self.machine, definition) {
-            return Err("The selected board's BASIC 3.2 bootstrap is not verified at 0000h. Enter it manually or use Install bootstrap first.".into());
+            return Err("The installed board/strap configuration's BASIC 3.2 bootstrap is not verified at 0000h. Enter it manually or use Install bootstrap first.".into());
         }
         if self.tty.tape_input_total_len() == 0 {
             return Err("Mount a BASIC 3.2 paper-tape image first.".into());
@@ -695,8 +769,11 @@ impl RusTairApp {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let definition =
-                        BootstrapDefinition::for_board(self.config.machine.serial_board);
+                    let definition = BootstrapDefinition::for_installed(
+                        self.config.machine.serial_board,
+                        self.config.machine.two_sio_straps,
+                    );
+                    let resolved_bootstrap = definition.resolved_bytes();
                     let panel = self.machine.front_panel_state();
                     let sense = (panel.switches >> 8) as u8;
                     let installed_ram = self.machine.installed_ram_bytes();
@@ -718,6 +795,15 @@ impl RusTairApp {
 
                     ui.strong(definition.name);
                     ui.small("Authentic path: the bootstrap executes on the emulated 8080 and consumes the mounted tape through the selected UART. No BASIC bytes are injected directly into RAM.");
+                    if definition.board == SerialBoard::TwoSio88 {
+                        ui.small(format!(
+                            "A2-A7 are currently strapped for {:02X}h-{:02X}h. The MITS 10h/11h bootstrap template is therefore entered with its four immediate I/O operands resolved to {:02X}h/{:02X}h; no legacy-port alias is created.",
+                            self.config.machine.two_sio_straps.address.base(),
+                            self.config.machine.two_sio_straps.address.base() + 3,
+                            definition.status_port,
+                            definition.data_port,
+                        ));
+                    }
                     ui.add_space(6.0);
 
                     egui::CollapsingHeader::new("Machine / loader status")
@@ -803,9 +889,9 @@ impl RusTairApp {
                                             Color32::YELLOW
                                         },
                                         if bootstrap_verified {
-                                            format!("verified · {} bytes", definition.bytes.len())
+                                            format!("verified · {} bytes", resolved_bootstrap.len())
                                         } else {
-                                            "not installed / does not match".into()
+                                            "not installed / does not match current board straps".into()
                                         },
                                     );
                                     ui.end_row();
@@ -832,26 +918,20 @@ impl RusTairApp {
 
                                     ui.label("Guest UART RX");
                                     if rx_len == 0 {
-                                        ui.label("empty · reader may present the next byte");
+                                        ui.label("RDR empty");
                                     } else {
                                         ui.colored_label(
                                             Color32::YELLOW,
-                                            format!(
-                                                "{rx_len} byte(s) pending · WAIT GUEST RX until guest IN consumes data"
-                                            ),
+                                            format!("{rx_len} byte(s) in/pending for guest UART RX"),
                                         );
                                     }
                                     ui.end_row();
 
                                     ui.label("Reader");
-                                    ui.label(if self.asr33.reader_running {
-                                        if self.machine.running() {
-                                            "READING / guest-paced"
-                                        } else {
-                                            "ARMED · waiting for RUN"
-                                        }
+                                    ui.label(if self.asr_reader_motor_running() {
+                                        "motor RUNNING"
                                     } else {
-                                        "stopped"
+                                        "stopped / control not enabling motor"
                                     });
                                     ui.end_row();
 
@@ -879,8 +959,10 @@ impl RusTairApp {
                                         Ok(log) => {
                                             self.authentic_loader.last_install_log = log;
                                             self.status = format!(
-                                                "Authentic bootstrap installed via EXAMINE/DEPOSIT: {} bytes — now EXAMINE 0000h and set sense {:02X}h",
-                                                definition.bytes.len(),
+                                                "Authentic bootstrap installed via EXAMINE/DEPOSIT: {} bytes for status {:02X}h / data {:02X}h — now EXAMINE 0000h and set sense {:02X}h",
+                                                resolved_bootstrap.len(),
+                                                definition.status_port,
+                                                definition.data_port,
                                                 definition.required_sense
                                             );
                                         }
@@ -890,14 +972,10 @@ impl RusTairApp {
                                 if ui.button("Arm / start paper reader").clicked() {
                                     match self.arm_authentic_tape_reader() {
                                         Ok(()) => {
-                                            self.status = if self.machine.running() {
-                                                format!(
-                                                    "ASR-33 paper reader started — {}",
-                                                    self.asr33.reader_speed.label()
-                                                )
-                                            } else {
-                                                "ASR-33 paper reader armed — it will not advance until the Altair RUN latch is on".into()
-                                            };
+                                            self.status = format!(
+                                                "ASR-33 paper reader switch started — {}; the physical reader motor is independent of the 8080 RUN latch",
+                                                self.asr33.reader_speed.label()
+                                            );
                                         }
                                         Err(error) => self.report_load_error(error),
                                     }
@@ -914,7 +992,7 @@ impl RusTairApp {
                         .default_open(false)
                         .show(ui, |ui| {
                             ui.label("1. Power ON, STOP the machine, RESET, set the ASR-33 to LINE and connect it to Port 0.");
-                            ui.label("2. Put all 16 switches DOWN and operate EXAMINE. Enter the first byte with switches A7..A0 and DEPOSIT; enter each following byte with DEPOSIT NEXT.");
+                            ui.label("2. Put all 16 switches DOWN and operate EXAMINE. Enter the first byte with switches A7..A0 and DEPOSIT; enter each following byte with DEPOSIT NEXT. For 88-2SIO the table below already reflects the installed A2-A7 address straps.");
                             ui.label("3. Verify the loader if desired, then put all switches DOWN and EXAMINE 0000h again.");
                             ui.label(format!(
                                 "4. Set A15..A8 to {:02X}h ({}) before loading BASIC 3.2.",
@@ -927,10 +1005,10 @@ impl RusTairApp {
                                 }
                             ));
                             ui.label(match definition.board {
-                                SerialBoard::Sio88 => "5. Historical SIO sequence: start/arm the paper reader, then operate RUN. RusTair will keep the tape stationary until RUN is actually active.",
-                                SerialBoard::TwoSio88 => "5. Historical 2SIO sequence: operate RUN, then start the paper reader.",
+                                SerialBoard::Sio88 => "5. Historical SIO sequence: start/arm the paper reader, then operate RUN. The reader transport is physical hardware and does not derive its motor state from the CPU RUN latch.",
+                                SerialBoard::TwoSio88 => "5. Historical 2SIO sequence: operate RUN, then start the paper reader (or let 88-TYA Reader Control drive it through RTS when configured).",
                             });
-                            ui.label("6. The reader advances only when the guest UART can accept another byte. WAIT GUEST RX therefore means the bootstrap/checksum loader has not yet consumed the previous byte with a real IN instruction.");
+                            ui.label("6. On 88-2SIO, a new character may start whenever the physical receive shift path is free even if RDR still contains an unread byte. If software falls behind, the real MC6850 overrun semantics apply rather than hidden host flow control.");
                         });
 
                     egui::CollapsingHeader::new("Operator-assisted row-by-row bootstrap entry")
@@ -980,7 +1058,7 @@ impl RusTairApp {
                                         ui.end_row();
 
                                         for (index, byte) in
-                                            definition.bytes.iter().copied().enumerate()
+                                            resolved_bootstrap.iter().copied().enumerate()
                                         {
                                             let address = index as u16;
                                             let stored =
@@ -1383,6 +1461,7 @@ impl RusTairApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TwoSioAddressBlock;
 
     #[test]
     fn basic32_4k_bootstraps_keep_historical_leader_and_ports() {
@@ -1412,6 +1491,39 @@ mod tests {
     }
 
     #[test]
+    fn readdressed_two_sio_bootstrap_changes_only_physical_io_operands() {
+        let straps = TwoSioStraps {
+            address: TwoSioAddressBlock::try_new(0x44).unwrap(),
+            ..TwoSioStraps::default()
+        };
+        let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
+        let resolved = definition.resolved_bytes();
+        assert_eq!(definition.status_port, 0x44);
+        assert_eq!(definition.data_port, 0x45);
+        assert_eq!(resolved[0x03], 0x44);
+        assert_eq!(resolved[0x07], 0x44);
+        assert_eq!(resolved[0x0F], 0x44);
+        assert_eq!(resolved[0x13], 0x45);
+
+        for (index, (&canonical, &actual)) in BASIC32_4K_88_2SIO
+            .iter()
+            .zip(resolved.iter())
+            .enumerate()
+        {
+            if ![0x03, 0x07, 0x0F, 0x13].contains(&index) {
+                assert_eq!(actual, canonical, "non-port bootstrap byte changed at {index:02X}h");
+            }
+        }
+
+        let out = bootstrap_switch_tooltip(definition, 2, resolved[2]);
+        assert!(out.contains("OUT $44"));
+        assert!(out.contains("44h"));
+        let input = bootstrap_switch_tooltip(definition, 18, resolved[18]);
+        assert!(input.contains("IN $45"));
+        assert!(input.contains("45h"));
+    }
+
+    #[test]
     fn assisted_bootstrap_really_uses_front_panel_on_both_rust_engines() {
         for engine in [
             EmulationEngine::RustFast8080,
@@ -1434,6 +1546,33 @@ mod tests {
                 );
                 assert_eq!(machine.switch_register() & 0x00FF, 0x00);
             }
+        }
+    }
+
+    #[test]
+    fn assisted_readdressed_bootstrap_deposits_actual_44h_45h_operands_on_both_engines() {
+        let straps = TwoSioStraps {
+            address: TwoSioAddressBlock::try_new(0x44).unwrap(),
+            ..TwoSioStraps::default()
+        };
+        let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
+        for engine in [
+            EmulationEngine::RustFast8080,
+            EmulationEngine::RustCycleAccurate8080,
+        ] {
+            let mut machine = BackendHost::from_engine(engine).unwrap();
+            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+            machine.configure_serial_board(SerialBoard::TwoSio88);
+            machine.configure_two_sio_straps(straps);
+            machine.power(true);
+            machine.set_running(false);
+
+            install_via_front_panel(&mut machine, definition).unwrap();
+            assert!(bootstrap_matches(&mut machine, definition));
+            assert_eq!(machine.peek_memory(0x0003), Some(0x44));
+            assert_eq!(machine.peek_memory(0x0007), Some(0x44));
+            assert_eq!(machine.peek_memory(0x000F), Some(0x44));
+            assert_eq!(machine.peek_memory(0x0013), Some(0x45));
         }
     }
 
@@ -1552,6 +1691,59 @@ mod tests {
                 );
                 assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
             }
+        }
+    }
+
+    #[test]
+    fn readdressed_bootstrap_executes_guest_io_on_44h_45h_not_legacy_10h_11h() {
+        let straps = TwoSioStraps {
+            address: TwoSioAddressBlock::try_new(0x44).unwrap(),
+            ..TwoSioStraps::default()
+        };
+        let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
+        for engine in [
+            EmulationEngine::RustFast8080,
+            EmulationEngine::RustCycleAccurate8080,
+        ] {
+            let mut machine = BackendHost::from_engine(engine).unwrap();
+            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+            machine.configure_serial_board(SerialBoard::TwoSio88);
+            machine.configure_two_sio_straps(straps);
+            machine.power(true);
+            machine.set_running(false);
+            install_via_front_panel(&mut machine, definition).unwrap();
+
+            machine.set_switch_register(0x0000);
+            machine.examine(false);
+            machine.set_switch_register(u16::from(definition.required_sense) << 8);
+            machine.set_io_trace_enabled(true);
+            machine.set_running(true);
+
+            for _ in 0..400 {
+                machine.run_cycles(32);
+                if definition.pc_is_polling(machine.intel8080_state().pc) {
+                    break;
+                }
+            }
+            assert!(definition.pc_is_polling(machine.intel8080_state().pc));
+            let (_, _, legacy_status_reads, _) = machine.io_port_activity(0x10);
+            let (_, _, status_reads, _) = machine.io_port_activity(0x44);
+            assert!(status_reads > 0, "readdressed bootstrap never polled 44h on {engine:?}");
+            assert_eq!(legacy_status_reads, 0, "readdressed bootstrap still touched legacy 10h on {engine:?}");
+
+            let (_, _, data_reads_before, _) = machine.io_port_activity(0x45);
+            machine.serial_receive(BackendSerialPort::Port0, 0xAE);
+            for _ in 0..4_096 {
+                machine.run_cycles(64);
+                let (_, _, data_reads, _) = machine.io_port_activity(0x45);
+                if data_reads > data_reads_before {
+                    break;
+                }
+            }
+            let (_, _, data_reads_after, _) = machine.io_port_activity(0x45);
+            let (_, _, legacy_data_reads, _) = machine.io_port_activity(0x11);
+            assert!(data_reads_after > data_reads_before, "readdressed bootstrap never read 45h on {engine:?}");
+            assert_eq!(legacy_data_reads, 0, "readdressed bootstrap still touched legacy 11h on {engine:?}");
         }
     }
 
