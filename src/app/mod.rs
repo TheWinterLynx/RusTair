@@ -8,6 +8,7 @@ mod execution_clock;
 mod external_com;
 mod external_serial;
 mod runtime;
+mod serial_hardware;
 mod terminal_controller;
 mod terminal_serial;
 mod terminal_state;
