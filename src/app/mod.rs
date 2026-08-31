@@ -31,7 +31,7 @@ use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamBoardProfile, RamInit, RamSize,
-    SerialBoard, TerminalSpeed, TwoSioStraps,
+    SerialBoard, TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::peripherals::asr33::{
@@ -216,6 +216,9 @@ impl RusTairApp {
                     .configure_memory_board_profile(self.config.machine.ram_board_profile);
                 self.machine.configure_serial_board(self.config.machine.serial_board);
                 self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
+                self.machine.configure_two_sio_interrupt_wiring(
+                    self.config.machine.two_sio_interrupt_wiring,
+                );
                 self.asr33.tx_started = None;
                 self.asr33.answerback.clear();
                 self.terminal.tx_started = None;
@@ -265,6 +268,9 @@ impl RusTairApp {
         self.machine.configure_serial_board(serial_board);
         if serial_board == SerialBoard::TwoSio88 {
             self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
+            self.machine.configure_two_sio_interrupt_wiring(
+                self.config.machine.two_sio_interrupt_wiring,
+            );
         }
         self.execution_clock.reset_at(Instant::now());
         self.serial_router.reset_for_board(serial_board);
@@ -276,13 +282,15 @@ impl RusTairApp {
         self.status = match serial_board {
             SerialBoard::Sio88 => "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset".into(),
             SerialBoard::TwoSio88 => format!(
-                "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} baud tap; Port 1 {:02X}h/{:02X}h @ {} baud tap; machine reset",
+                "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} baud tap; Port 1 {:02X}h/{:02X}h @ {} baud tap; DI→{}; EI→{}; machine reset",
                 self.config.machine.serial_status_port(),
                 self.config.machine.serial_data_port(),
                 self.config.machine.two_sio_straps.port0_baud.label(),
                 self.config.machine.serial_port1_status_port().unwrap_or(0),
                 self.config.machine.serial_port1_data_port().unwrap_or(0),
                 self.config.machine.two_sio_straps.port1_baud.label(),
+                self.config.machine.two_sio_interrupt_wiring.port0.label(),
+                self.config.machine.two_sio_interrupt_wiring.port1.label(),
             ),
         };
     }
@@ -308,6 +316,31 @@ impl RusTairApp {
             straps.port0_baud.label(),
             straps.port1_baud.label(),
         );
+    }
+
+    fn apply_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
+        if self.config.machine.two_sio_interrupt_wiring == wiring { return; }
+        if self.machine.powered() {
+            self.status = "Power OFF the Altair before changing the physical 88-2SIO DI/EI interrupt wiring".into();
+            return;
+        }
+        self.config.machine.two_sio_interrupt_wiring = wiring;
+        self.machine.configure_two_sio_interrupt_wiring(wiring);
+        self.execution_clock.reset_at(Instant::now());
+        self.status = format!(
+            "88-2SIO interrupt wiring: DI / Port 0 → {}; EI / Port 1 → {} — POWER remains OFF",
+            wiring.port0.label(),
+            wiring.port1.label(),
+        );
+    }
+
+    fn two_sio_vi_mask_label(mask: u8) -> String {
+        if mask == 0 { return "none".into(); }
+        (0u8..8)
+            .filter(|level| mask & (1u8 << level) != 0)
+            .map(|level| format!("VI{level}"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn serial_device_name(device: SerialDevice) -> &'static str {
