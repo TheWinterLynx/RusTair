@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::sio::SioHardwareConfig;
 use super::two_sio::{TwoSioInterruptWiring, TwoSioStraps};
 
 /// Processor model carried by an installed S-100 CPU board.
@@ -251,8 +252,8 @@ impl SerialBoard {
         }
     }
 
-    /// Canonical/default Port 0 status address. For an installed 88-2SIO whose
-    /// A2-A7 straps were moved, use `MachineConfig::serial_status_port()`.
+    /// Canonical/default Port 0 status address. For an installed serial board
+    /// whose jumpers were moved, use `MachineConfig::serial_status_port()`.
     pub const fn status_port(self) -> u8 {
         match self {
             Self::Sio88 => 0x00,
@@ -260,8 +261,8 @@ impl SerialBoard {
         }
     }
 
-    /// Canonical/default Port 0 data address. For an installed 88-2SIO whose
-    /// A2-A7 straps were moved, use `MachineConfig::serial_data_port()`.
+    /// Canonical/default Port 0 data address. For an installed serial board
+    /// whose jumpers were moved, use `MachineConfig::serial_data_port()`.
     pub const fn data_port(self) -> u8 {
         match self {
             Self::Sio88 => 0x01,
@@ -397,6 +398,9 @@ pub struct MachineConfig {
     pub ram_init: RamInit,
     pub ram_board_profile: RamBoardProfile,
     pub serial_board: SerialBoard,
+    /// Physical revision, interface, address, baud and word-format wiring of the
+    /// installed/dormant MITS 88-SIO card.
+    pub sio_hardware: SioHardwareConfig,
     /// Physical A2-A7 address block and per-ACIA baud-generator straps of the
     /// installed/dormant MITS 88-2SIO card.
     pub two_sio_straps: TwoSioStraps,
@@ -421,14 +425,14 @@ impl MachineConfig {
 
     pub const fn serial_status_port(self) -> u8 {
         match self.serial_board {
-            SerialBoard::Sio88 => 0x00,
+            SerialBoard::Sio88 => self.sio_hardware.address.status(),
             SerialBoard::TwoSio88 => self.two_sio_straps.address.port0_status(),
         }
     }
 
     pub const fn serial_data_port(self) -> u8 {
         match self.serial_board {
-            SerialBoard::Sio88 => 0x01,
+            SerialBoard::Sio88 => self.sio_hardware.address.data(),
             SerialBoard::TwoSio88 => self.two_sio_straps.address.port0_data(),
         }
     }
@@ -490,7 +494,7 @@ pub struct AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{TwoSioAddressBlock, TwoSioInterruptTarget};
+    use crate::config::{SioAddressPair, TwoSioAddressBlock, TwoSioInterruptTarget};
 
     #[test]
     fn classic_altair_maps_to_mits_8080_board_at_two_megahertz() {
@@ -542,6 +546,17 @@ mod tests {
     #[test]
     fn default_serial_board_is_88_sio() {
         assert_eq!(AppConfig::default().machine.serial_board, SerialBoard::Sio88);
+        assert_eq!(AppConfig::default().machine.sio_hardware, SioHardwareConfig::default());
+    }
+
+    #[test]
+    fn sio_serial_ports_follow_physical_address_jumpers() {
+        let mut config = AppConfig::default();
+        config.machine.sio_hardware.address = SioAddressPair::try_new(0x06).unwrap();
+        assert_eq!(config.machine.serial_status_port(), 0x06);
+        assert_eq!(config.machine.serial_data_port(), 0x07);
+        assert_eq!(config.machine.serial_port1_status_port(), None);
+        assert_eq!(config.machine.serial_port1_data_port(), None);
     }
 
     #[test]
