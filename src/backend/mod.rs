@@ -8,7 +8,7 @@ mod native;
 use std::fmt;
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard};
+use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioStraps};
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
@@ -206,6 +206,12 @@ pub trait MachineBackend {
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()>;
     fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()>;
     fn serial_board(&mut self) -> BackendResult<SerialBoard>;
+    fn configure_two_sio_straps(&mut self, _straps: TwoSioStraps) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure 88-2SIO straps", engine: self.engine() })
+    }
+    fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> {
+        Err(BackendError::Unsupported { operation: "query 88-2SIO straps", engine: self.engine() })
+    }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize>;
@@ -417,6 +423,8 @@ impl BackendHost {
     pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) { Self::call(self.backend.configure_memory_board_profile(profile)); }
     pub fn configure_serial_board(&mut self, board: SerialBoard) { Self::call(self.backend.configure_serial_board(board)); }
     pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
+    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) { Self::call(self.backend.configure_two_sio_straps(straps)); }
+    pub fn two_sio_straps(&mut self) -> TwoSioStraps { Self::call(self.backend.two_sio_straps()) }
     pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) { Self::call(self.backend.power_with_historical_run_latch(on, historical)); }
     pub fn set_running(&mut self, run: bool) { if run { Self::call(self.backend.run()); } else { Self::call(self.backend.halt()); } }
@@ -511,6 +519,7 @@ impl BackendHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{TwoSioAddressBlock, TwoSioBaudTap};
 
     #[test]
     fn both_builtin_rust_8080_engines_are_available() {
@@ -540,5 +549,22 @@ mod tests {
         assert_eq!(cpu.pc, 1);
         assert_eq!(cpu.total_t_states, Some(7));
         assert!(panel.lamps.wait > 0.0);
+    }
+
+    #[test]
+    fn both_backends_project_the_same_physical_two_sio_straps() {
+        let straps = TwoSioStraps {
+            address: TwoSioAddressBlock::try_new(0x44).unwrap(),
+            port0_baud: TwoSioBaudTap::Baud300,
+            port1_baud: TwoSioBaudTap::Baud9600,
+        };
+        for engine in EmulationEngine::ALL {
+            let mut host = BackendHost::from_engine(engine).unwrap();
+            host.configure_serial_board(SerialBoard::TwoSio88);
+            host.configure_two_sio_straps(straps);
+            assert_eq!(host.two_sio_straps(), straps);
+            assert_eq!(host.peek_io_port(0x44) & 0x02, 0x02);
+            assert_eq!(host.peek_io_port(0x10), 0xff);
+        }
     }
 }
