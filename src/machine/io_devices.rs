@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::config::SerialBoard;
+use crate::config::{SerialBoard, TwoSioBaudTap as ConfigTwoSioBaudTap, TwoSioStraps};
 use crate::cpu8080::Bus;
 
 use super::memory::{MemoryReadyPhase, S100_OPEN_BUS_VALUE};
@@ -13,6 +13,8 @@ use two_sio::{TwoSioBaudTap, TwoSioPort};
 
 const SIO_STATUS_PORT: u8 = 0x00;
 const SIO_DATA_PORT: u8 = 0x01;
+// Historical RusTair/default installation retained as test/readability constants.
+// Production 88-2SIO decoding is owned by `TwoSioStraps::address`, not these values.
 const SIO2_PORT0_STATUS: u8 = 0x10;
 const SIO2_PORT0_DATA: u8 = 0x11;
 const SIO2_PORT1_STATUS: u8 = 0x12;
@@ -105,11 +107,34 @@ impl IoTrace {
     }
 }
 
+fn card_baud_tap(tap: ConfigTwoSioBaudTap) -> TwoSioBaudTap {
+    match tap {
+        ConfigTwoSioBaudTap::Baud110 => TwoSioBaudTap::Baud110,
+        ConfigTwoSioBaudTap::Baud150 => TwoSioBaudTap::Baud150,
+        ConfigTwoSioBaudTap::Baud300 => TwoSioBaudTap::Baud300,
+        ConfigTwoSioBaudTap::Baud1200 => TwoSioBaudTap::Baud1200,
+        ConfigTwoSioBaudTap::Baud1800 => TwoSioBaudTap::Baud1800,
+        ConfigTwoSioBaudTap::Baud2400 => TwoSioBaudTap::Baud2400,
+        ConfigTwoSioBaudTap::Baud4800 => TwoSioBaudTap::Baud4800,
+        ConfigTwoSioBaudTap::Baud9600 => TwoSioBaudTap::Baud9600,
+    }
+}
+
+fn configured_two_sio_ports(straps: TwoSioStraps) -> [TwoSioPort; 2] {
+    [
+        TwoSioPort::new(card_baud_tap(straps.port0_baud)),
+        TwoSioPort::new(card_baud_tap(straps.port1_baud)),
+    ]
+}
+
 pub(super) struct IoDevices {
     /// Pre-audit byte-level model retained only for the revision-sensitive 88-SIO.
     serial: [SerialPort; 2],
     /// Two physical MC6850 channels with independent board baud-generator taps.
     two_sio: [TwoSioPort; 2],
+    /// Hardware straps on the installed/dormant 88-2SIO board. A2-A7 select one
+    /// four-address block; each ACIA also has its own baud-generator tap.
+    two_sio_straps: TwoSioStraps,
     serial_board: SerialBoard,
     sio_control: u8,
     trace: IoTrace,
@@ -117,12 +142,11 @@ pub(super) struct IoDevices {
 
 impl Default for IoDevices {
     fn default() -> Self {
+        let two_sio_straps = TwoSioStraps::default();
         Self {
             serial: [SerialPort::default(), SerialPort::default()],
-            two_sio: [
-                TwoSioPort::new(TwoSioBaudTap::Baud110),
-                TwoSioPort::new(TwoSioBaudTap::Baud9600),
-            ],
+            two_sio: configured_two_sio_ports(two_sio_straps),
+            two_sio_straps,
             serial_board: SerialBoard::default(),
             sio_control: 0,
             trace: IoTrace::default(),
@@ -136,6 +160,15 @@ impl IoDevices {
         self.clear_serial();
     }
     pub(super) fn serial_board(&self) -> SerialBoard { self.serial_board }
+
+    pub(super) fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
+        if self.two_sio_straps == straps { return; }
+        self.two_sio_straps = straps;
+        // Moving jumpers is a physical reconfiguration. Rebuild both ACIAs/card
+        // clocks instead of attempting to preserve impossible in-flight state.
+        self.two_sio = configured_two_sio_ports(straps);
+    }
+    pub(super) fn two_sio_straps(&self) -> TwoSioStraps { self.two_sio_straps }
 
     fn two_sio_port(&self, index: usize) -> Option<&TwoSioPort> {
         (self.serial_board == SerialBoard::TwoSio88)
@@ -162,26 +195,31 @@ impl IoDevices {
     fn data_port_for_index(&self, index: usize) -> u8 {
         match (self.serial_board, index) {
             (SerialBoard::Sio88, 0) => SIO_DATA_PORT,
-            (SerialBoard::TwoSio88, 0) => SIO2_PORT0_DATA,
-            (SerialBoard::TwoSio88, 1) => SIO2_PORT1_DATA,
-            (_, 1) => SIO2_PORT1_DATA,
+            (SerialBoard::TwoSio88, 0) => self.two_sio_straps.address.port0_data(),
+            (SerialBoard::TwoSio88, 1) => self.two_sio_straps.address.port1_data(),
+            (_, 1) => self.two_sio_straps.address.port1_data(),
             _ => SIO_DATA_PORT,
         }
     }
     fn data_port_index(&self, port: u8) -> Option<usize> {
         match self.serial_board {
             SerialBoard::Sio88 if port == SIO_DATA_PORT => Some(0),
-            SerialBoard::TwoSio88 if port == SIO2_PORT0_DATA => Some(0),
-            SerialBoard::TwoSio88 if port == SIO2_PORT1_DATA => Some(1),
+            SerialBoard::TwoSio88 => match self.two_sio_straps.address.offset(port) {
+                Some(1) => Some(0),
+                Some(3) => Some(1),
+                _ => None,
+            },
             _ => None,
         }
     }
-    fn two_sio_decodes_port(port: u8) -> bool {
-        matches!(port, SIO2_PORT0_STATUS | SIO2_PORT0_DATA | SIO2_PORT1_STATUS | SIO2_PORT1_DATA)
+    fn two_sio_offset(&self, port: u8) -> Option<u8> {
+        if self.serial_board != SerialBoard::TwoSio88 { return None; }
+        self.two_sio_straps.address.offset(port)
     }
+    fn two_sio_decodes_port(&self, port: u8) -> bool { self.two_sio_offset(port).is_some() }
 
     pub(super) fn input_wait_states(&self, port: u8) -> u8 {
-        if self.serial_board == SerialBoard::TwoSio88 && Self::two_sio_decodes_port(port) { 1 } else { 0 }
+        if self.two_sio_decodes_port(port) { 1 } else { 0 }
     }
     pub(super) fn ready_for_input_t_state(&self, port: u8, input_read: bool, phase: MemoryReadyPhase) -> bool {
         if !input_read || self.input_wait_states(port) == 0 { return true; }
@@ -215,11 +253,11 @@ impl IoDevices {
                 SIO_DATA_PORT => self.serial[0].read_rx().unwrap_or(0),
                 _ => S100_OPEN_BUS_VALUE,
             },
-            SerialBoard::TwoSio88 => match port {
-                SIO2_PORT0_STATUS => self.two_sio[0].read_status(),
-                SIO2_PORT0_DATA => self.two_sio[0].read_data(),
-                SIO2_PORT1_STATUS => self.two_sio[1].read_status(),
-                SIO2_PORT1_DATA => self.two_sio[1].read_data(),
+            SerialBoard::TwoSio88 => match self.two_sio_straps.address.offset(port) {
+                Some(0) => self.two_sio[0].read_status(),
+                Some(1) => self.two_sio[0].read_data(),
+                Some(2) => self.two_sio[1].read_status(),
+                Some(3) => self.two_sio[1].read_data(),
                 _ => S100_OPEN_BUS_VALUE,
             },
         }
@@ -235,11 +273,11 @@ impl IoDevices {
                 SIO_DATA_PORT => self.serial[0].rx_front().unwrap_or(0),
                 _ => S100_OPEN_BUS_VALUE,
             },
-            SerialBoard::TwoSio88 => match port {
-                SIO2_PORT0_STATUS => self.two_sio[0].peek_status(),
-                SIO2_PORT0_DATA => self.two_sio[0].peek_data(),
-                SIO2_PORT1_STATUS => self.two_sio[1].peek_status(),
-                SIO2_PORT1_DATA => self.two_sio[1].peek_data(),
+            SerialBoard::TwoSio88 => match self.two_sio_straps.address.offset(port) {
+                Some(0) => self.two_sio[0].peek_status(),
+                Some(1) => self.two_sio[0].peek_data(),
+                Some(2) => self.two_sio[1].peek_status(),
+                Some(3) => self.two_sio[1].peek_data(),
                 _ => S100_OPEN_BUS_VALUE,
             },
         }
@@ -257,11 +295,11 @@ impl IoDevices {
                 SIO_DATA_PORT => self.serial[0].write_tx(value),
                 _ => {}
             },
-            SerialBoard::TwoSio88 => match port {
-                SIO2_PORT0_STATUS => self.two_sio[0].write_control(value),
-                SIO2_PORT0_DATA => self.two_sio[0].write_data(value),
-                SIO2_PORT1_STATUS => self.two_sio[1].write_control(value),
-                SIO2_PORT1_DATA => self.two_sio[1].write_data(value),
+            SerialBoard::TwoSio88 => match self.two_sio_straps.address.offset(port) {
+                Some(0) => self.two_sio[0].write_control(value),
+                Some(1) => self.two_sio[0].write_data(value),
+                Some(2) => self.two_sio[1].write_control(value),
+                Some(3) => self.two_sio[1].write_data(value),
                 _ => {}
             },
         }
@@ -418,6 +456,12 @@ impl AltairBus {
     }
     pub fn serial_board(&self) -> SerialBoard { self.io.serial_board() }
 
+    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
+        self.io.configure_two_sio_straps(straps);
+        self.refresh_interrupt_request_line();
+    }
+    pub fn two_sio_straps(&self) -> TwoSioStraps { self.io.two_sio_straps() }
+
     pub fn serial_modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
         self.io.modem_lines(port_index)
     }
@@ -504,11 +548,25 @@ impl AltairMachine {
         if self.powered { self.reset(); } else { self.cpu.reset(); }
     }
     pub fn serial_board(&self) -> SerialBoard { self.bus.serial_board() }
+
+    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
+        if self.bus.two_sio_straps() == straps { return; }
+        self.running = false;
+        self.bus.configure_two_sio_straps(straps);
+        self.bus.clear_transient_memory_guards();
+        if self.powered && self.bus.serial_board() == SerialBoard::TwoSio88 {
+            self.reset();
+        } else {
+            self.cpu.reset();
+        }
+    }
+    pub fn two_sio_straps(&self) -> TwoSioStraps { self.bus.two_sio_straps() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{TwoSioAddressBlock, TwoSioBaudTap as ConfigTwoSioBaudTap};
 
     #[test]
     fn default_88_sio_does_not_alias_88_2sio_data_ports() {
@@ -532,6 +590,53 @@ mod tests {
         assert_eq!(io.input(SIO_STATUS_PORT), S100_OPEN_BUS_VALUE);
         assert_eq!(io.input(SIO_DATA_PORT), S100_OPEN_BUS_VALUE);
         assert_eq!(io.input(0x7e), S100_OPEN_BUS_VALUE);
+    }
+
+    #[test]
+    fn physical_address_strap_moves_decoder_waits_and_open_bus_together() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        let straps = TwoSioStraps {
+            address: TwoSioAddressBlock::try_new(0x44).unwrap(),
+            ..TwoSioStraps::default()
+        };
+        io.configure_two_sio_straps(straps);
+
+        for port in 0x44..=0x47 {
+            assert_eq!(io.input_wait_states(port), 1, "selected 88-2SIO block must own PRDY wait");
+        }
+        for port in 0x10..=0x13 {
+            assert_eq!(io.input_wait_states(port), 0, "old block must no longer stretch PRDY");
+            assert_eq!(io.input(port), S100_OPEN_BUS_VALUE, "old block must become S-100 open bus");
+        }
+        assert_eq!(io.input(0x44) & 0x02, 0x02);
+        assert_eq!(io.input(0x46) & 0x02, 0x02);
+        io.output(0x45, b'0');
+        io.output(0x47, b'1');
+        assert!(io.serial_tx_busy());
+        assert!(io.port1_tx_busy());
+        assert_eq!(io.input_wait_states(0xff), 0, "front-panel port must never be decoded by 88-2SIO");
+    }
+
+    #[test]
+    fn baud_straps_are_independent_per_acia() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        io.configure_two_sio_straps(TwoSioStraps {
+            address: TwoSioAddressBlock::try_new(0x10).unwrap(),
+            port0_baud: ConfigTwoSioBaudTap::Baud300,
+            port1_baud: ConfigTwoSioBaudTap::Baud9600,
+        });
+        io.output(SIO2_PORT0_STATUS, 0x15); // /16, 8N1
+        io.output(SIO2_PORT1_STATUS, 0x15);
+        io.serial_receive(b'A');
+        io.port1_receive(b'B');
+
+        io.advance_t_states(2_084); // enough for 9600 8N1, nowhere near 300 8N1
+        assert_eq!(io.peek_input(SIO2_PORT1_STATUS) & 0x01, 0x01);
+        assert_eq!(io.peek_input(SIO2_PORT0_STATUS) & 0x01, 0x00);
+        io.advance_t_states(64_583); // total >= 66,667 T-states for 300-baud 10-bit frame
+        assert_eq!(io.peek_input(SIO2_PORT0_STATUS) & 0x01, 0x01);
     }
 
     #[test]
