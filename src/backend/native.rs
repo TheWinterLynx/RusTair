@@ -11,7 +11,7 @@ use crate::trace8080::{
 use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
     DebugStopReason, EmulationEngine, FrontPanelState, InstructionTraceSnapshot, Intel8080State,
-    IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
+    IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess, SerialModemLines,
 };
 
 const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
@@ -127,9 +127,6 @@ impl NativeMachineBackend {
     }
 
     fn record_one_stopped_instruction(&mut self) {
-        // HLT dwell is not a guest instruction. The instruction-level CPU uses
-        // 4T chunks while halted, but the debugger must never decode the byte at
-        // the post-HLT PC and publish it as if that instruction had executed.
         if self.machine.cpu.halted {
             return;
         }
@@ -202,9 +199,6 @@ impl NativeMachineBackend {
                 break;
             }
 
-            // RESET suppresses opcode fetches while the physical RUN latch may
-            // remain set. Do not let an execute breakpoint fire merely because
-            // RESET left PC at the same numerical address.
             if self.machine.bus.cpu_control_lines().reset {
                 self.machine.run_cycles(t_state_budget - used);
                 break;
@@ -355,6 +349,12 @@ impl MachineBackend for NativeMachineBackend {
     fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.tx_busy(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_busy() }) }
     fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_front(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_front() }) }
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_tx_complete(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_complete() }) }
+    fn serial_modem_lines(&mut self, port: BackendSerialPort) -> BackendResult<Option<SerialModemLines>> {
+        Ok(self.machine.bus.serial_modem_lines(port.index()).map(SerialModemLines::from))
+    }
+    fn serial_set_modem_inputs(&mut self, port: BackendSerialPort, cts_high: bool, dcd_high: bool) -> BackendResult<bool> {
+        Ok(self.machine.bus.set_serial_modem_inputs(port.index(), cts_high, dcd_high))
+    }
     fn clear_serial(&mut self) -> BackendResult<()> { self.machine.bus.clear_serial(); Ok(()) }
     fn installed_ram_bytes(&mut self) -> BackendResult<usize> { Ok(self.machine.installed_ram_bytes()) }
     fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> { Ok(self.machine.bus.peek_memory(address)) }
