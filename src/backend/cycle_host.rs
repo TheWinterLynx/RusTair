@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig, TwoSioInterruptWiring,
+    TwoSioStraps,
 };
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
@@ -323,6 +324,20 @@ impl MachineBackend for CycleHostBackend {
         self.reset_idle_chassis_clock_tracking(); Ok(())
     }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { self.inner.serial_board() }
+    fn configure_sio_hardware(&mut self, config: SioHardwareConfig) -> BackendResult<()> {
+        if self.inner.machine().sio_hardware() == config { return Ok(()); }
+        let powered = self.inner.machine().powered;
+        self.reset_debugger_epoch();
+        self.inner.machine_mut().configure_sio_hardware(config);
+        if powered {
+            self.inner.assert_reset()?;
+            self.inner.release_reset()?;
+            self.teaching_reset_seen = true;
+        }
+        self.reset_idle_chassis_clock_tracking();
+        Ok(())
+    }
+    fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> { Ok(self.inner.machine().sio_hardware()) }
     fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) -> BackendResult<()> {
         if self.inner.machine().two_sio_straps() == straps { return Ok(()); }
         let powered = self.inner.machine().powered;
