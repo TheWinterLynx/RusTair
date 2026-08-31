@@ -17,6 +17,8 @@ use super::{
     InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
 };
 
+const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
+
 #[derive(Clone, Debug)]
 struct PendingInstructionTrace {
     address: u16,
@@ -33,6 +35,8 @@ pub(super) struct CycleHostBackend {
     pending_instruction_trace: Option<PendingInstructionTrace>,
     debug_control: DebugExecutionControl,
     teaching_reset_seen: bool,
+    idle_chassis_clock_units: u128,
+    last_panel_commit_cpu_t_states: Option<u64>,
 }
 
 impl Default for CycleHostBackend {
@@ -43,6 +47,8 @@ impl Default for CycleHostBackend {
             pending_instruction_trace: None,
             debug_control: DebugExecutionControl::default(),
             teaching_reset_seen: false,
+            idle_chassis_clock_units: 0,
+            last_panel_commit_cpu_t_states: None,
         }
     }
 }
@@ -200,6 +206,48 @@ impl CycleHostBackend {
         self.debug_control.clear_transient();
     }
 
+    fn reset_idle_chassis_clock_tracking(&mut self) {
+        self.idle_chassis_clock_units = 0;
+        self.last_panel_commit_cpu_t_states = None;
+    }
+
+    /// The exact core clocks the 88-2SIO once for every real T-state while it can
+    /// run. STOP, RESET and HLDA can park that core while the separately powered
+    /// card oscillator keeps running. Convert wall time to stock 2 MHz quanta,
+    /// subtract any exact CPU T-states already seen since the prior panel commit,
+    /// and advance only the uncovered interval.
+    fn service_idle_chassis_clock(&mut self, dt: Duration) {
+        let current_cpu_t_states = self.inner.cpu().total_t_states();
+        let cpu_covered = self
+            .last_panel_commit_cpu_t_states
+            .map_or(0, |previous| current_cpu_t_states.saturating_sub(previous));
+        self.last_panel_commit_cpu_t_states = Some(current_cpu_t_states);
+
+        let powered = self.inner.machine().powered;
+        let running = self.inner.machine().running;
+        let reset = self.inner.machine().bus.cpu_control_lines().reset;
+        let cpu_parked = powered && (!running || reset || self.inner.cpu().is_holding());
+        if !cpu_parked {
+            self.idle_chassis_clock_units = 0;
+            return;
+        }
+
+        let added = dt
+            .as_nanos()
+            .saturating_mul(u128::from(crate::machine::CLOCK_HZ));
+        let total = self.idle_chassis_clock_units.saturating_add(added);
+        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
+        self.idle_chassis_clock_units = total % WALL_CLOCK_UNITS_PER_SECOND;
+
+        let missing = due.saturating_sub(cpu_covered);
+        if missing != 0 {
+            self.inner
+                .machine_mut()
+                .bus
+                .advance_serial_hardware_time(missing);
+        }
+    }
+
     /// Cycle Accurate can be stopped between machine cycles. If debugger RAM is
     /// patched after an instruction has already been snapshotted, its operands
     /// and predicted data reads may no longer describe what the CPU will really
@@ -298,7 +346,7 @@ impl CycleHostBackend {
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
             address: if powered { Some(machine.address_leds()) } else { None },
-            // Keep the legacy display byte until older Teacher call sites have
+            // Keep the legacy display byte until older UI call sites have
             // migrated; the four fields below are the new electrical contract.
             data: panel_data,
             cpu_data,
@@ -433,6 +481,7 @@ impl MachineBackend for CycleHostBackend {
         } else {
             self.teaching_reset_seen = false;
         }
+        self.reset_idle_chassis_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -445,6 +494,7 @@ impl MachineBackend for CycleHostBackend {
             self.inner.release_reset()?;
             self.teaching_reset_seen = true;
         }
+        self.reset_idle_chassis_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -455,6 +505,7 @@ impl MachineBackend for CycleHostBackend {
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.inner.power_with_historical_run_latch(on, historical)?;
         self.teaching_reset_seen = false;
+        self.reset_idle_chassis_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -505,6 +556,7 @@ impl MachineBackend for CycleHostBackend {
             })
     }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
+        self.service_idle_chassis_clock(dt);
         self.inner.commit_panel_activity(dt)
     }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
@@ -557,6 +609,7 @@ impl MachineBackend for CycleHostBackend {
             self.inner.release_reset()?;
             self.teaching_reset_seen = true;
         }
+        self.reset_idle_chassis_clock_tracking();
         Ok(())
     }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { self.inner.serial_board() }
