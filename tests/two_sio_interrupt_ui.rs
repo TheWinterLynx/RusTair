@@ -1,6 +1,6 @@
 const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
-const PERSISTENCE_SOURCE: &str = include_str!("../src/app/ui/persistence.rs");
+const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
 
 #[test]
 fn engine_recreation_reapplies_physical_interrupt_wiring() {
