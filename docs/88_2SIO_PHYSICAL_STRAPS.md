@@ -1,6 +1,6 @@
 # MITS 88-2SIO physical address and baud straps
 
-Status: **UI/PERSISTENCE/DECODER LOCALLY GREEN — readdressed authentic bootstrap and Fast debugger-wait isolation implemented, next local validation pending.**
+Status: **PASS — decoder, baud taps, persistence, POWER-OFF UI, dynamic endpoint labels, readdressed authentic bootstrap and Fast debugger-wait isolation are locally validated.**
 
 Parent hardware document: `docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`.
 
@@ -341,7 +341,7 @@ The selected baud tap feeds the same independent chassis-clock model in both eng
 
 ### authentic loader and debugger isolation
 
-`src/app/authentic_loader.rs` now contains regressions that:
+`src/app/authentic_loader.rs` contains regressions that:
 
 - preserve the canonical published/default 10h/11h byte image;
 - prove a 44h installation changes only bootstrap offsets `0003h`, `0007h`, `000Fh`, `0013h`;
@@ -446,16 +446,16 @@ The authoritative regression for this boundary remains `tests/two_sio_debugger_w
 - The CTS/DCD/BREAK External COM block passed its focused tests and the full normal local `cargo test` suite on 2026-08-31, as reported by the user.
 - The physical decoder/tap core, backend contract and persistence layer passed their focused tests and the full normal local `cargo test` suite on 2026-08-31, as reported by the user.
 - The user-facing POWER-OFF strap controls, dynamic labels, engine preservation and all four endpoint label call sites passed the focused/full normal local suite on 2026-08-31; the user reported **all green** through commit `cde13a9a3b1697c59755b2596196cd4ae8aa144b`.
-- Readdressed authentic-bootstrap generation/execution and Fast debugger wait isolation were implemented after that green checkpoint and require the next focused/full local validation.
+- Readdressed authentic-bootstrap generation/execution and Fast debugger-wait isolation were validated locally on 2026-08-31 through commit `3893c60f04b32a8a73f1208189ac74fdccfe863b`; the user confirmed the requested checkpoint was correct.
 - GitHub Actions were not run.
 
-## 11. Remaining work before 88-2SIO strap PASS
+## 11. PASS decision
 
-1. Locally validate the new readdressed bootstrap tests and Fast debugger-wait isolation test.
-2. Run or spot-check the user-visible 44h bootstrap procedure in section 9.5 when convenient.
-3. If focused/full tests remain green, mark this **physical straps** sub-block PASS in this document and the parent 88-2SIO ledger.
+This sub-block is **PASS**.
 
-These items are specifically for the strap sub-block. Separate remaining 88-2SIO fidelity questions such as system-level interrupt routing and non-COM BREAK/interface boundaries are tracked in the parent hardware closeout and are not hidden by a strap PASS.
+The code, regressions, persistence, UI and manual procedures now agree on the same physical board installation. Moving A2-A7 moves decode ownership, PRDY waits, endpoint labels and bootstrap operands together; moving baud straps changes the board clock rather than endpoint presentation; debugger observations cannot leak board wait debt into later guest instructions.
+
+Separate 88-2SIO topics such as interrupt wiring and the remaining non-COM BREAK/interface boundaries are intentionally tracked in the parent hardware closeout and are not hidden by this PASS.
 
 ## 12. Primary references
 
