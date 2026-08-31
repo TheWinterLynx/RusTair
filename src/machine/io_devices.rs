@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use crate::config::{SerialBoard, TwoSioBaudTap as ConfigTwoSioBaudTap, TwoSioStraps};
+use crate::config::{
+    SerialBoard, TwoSioBaudTap as ConfigTwoSioBaudTap, TwoSioInterruptTarget,
+    TwoSioInterruptWiring, TwoSioStraps,
+};
 use crate::cpu8080::Bus;
 
 use super::memory::{MemoryReadyPhase, S100_OPEN_BUS_VALUE};
@@ -139,6 +142,10 @@ pub(super) struct IoDevices {
     /// Hardware straps on the installed/dormant 88-2SIO board. A2-A7 select one
     /// four-address block; each ACIA also has its own baud-generator tap.
     two_sio_straps: TwoSioStraps,
+    /// Physical DI/EI interrupt wiring. This is separate from MC6850 IRQ state:
+    /// an ACIA may request service while its board output is disconnected or sent
+    /// to one of the eight 88-VI inputs rather than to the processor PINT line.
+    two_sio_interrupt_wiring: TwoSioInterruptWiring,
     serial_board: SerialBoard,
     sio_control: u8,
     trace: IoTrace,
@@ -151,6 +158,7 @@ impl Default for IoDevices {
             serial: [SerialPort::default(), SerialPort::default()],
             two_sio: configured_two_sio_ports(two_sio_straps),
             two_sio_straps,
+            two_sio_interrupt_wiring: TwoSioInterruptWiring::default(),
             serial_board: SerialBoard::default(),
             sio_control: 0,
             trace: IoTrace::default(),
@@ -174,6 +182,13 @@ impl IoDevices {
     }
     pub(super) fn two_sio_straps(&self) -> TwoSioStraps { self.two_sio_straps }
 
+    pub(super) fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
+        self.two_sio_interrupt_wiring = wiring;
+    }
+    pub(super) fn two_sio_interrupt_wiring(&self) -> TwoSioInterruptWiring {
+        self.two_sio_interrupt_wiring
+    }
+
     fn two_sio_port(&self, index: usize) -> Option<&TwoSioPort> {
         (self.serial_board == SerialBoard::TwoSio88)
             .then(|| self.two_sio.get(index))
@@ -182,6 +197,35 @@ impl IoDevices {
     fn two_sio_port_mut(&mut self, index: usize) -> Option<&mut TwoSioPort> {
         if self.serial_board != SerialBoard::TwoSio88 { return None; }
         self.two_sio.get_mut(index)
+    }
+    fn two_sio_irq(&self, index: usize) -> bool {
+        self.two_sio
+            .get(index)
+            .map_or(false, TwoSioPort::interrupt_request)
+    }
+    fn two_sio_pint_request(&self) -> bool {
+        [0usize, 1].into_iter().any(|index| {
+            self.two_sio_interrupt_wiring
+                .target(index)
+                .map_or(false, TwoSioInterruptTarget::drives_pint)
+                && self.two_sio_irq(index)
+        })
+    }
+    pub(super) fn vector_interrupt_requests(&self) -> u8 {
+        if self.serial_board != SerialBoard::TwoSio88 { return 0; }
+        let mut mask = 0u8;
+        for index in [0usize, 1] {
+            if !self.two_sio_irq(index) { continue; }
+            let Some(level) = self
+                .two_sio_interrupt_wiring
+                .target(index)
+                .and_then(TwoSioInterruptTarget::vector_level)
+            else {
+                continue;
+            };
+            mask |= 1u8 << level;
+        }
+        mask
     }
 
     /// `(RTS high, BREAK active, CTS high, DCD high)` at the physical MC6850 pins.
@@ -241,7 +285,7 @@ impl IoDevices {
                 let tx_irq = self.sio_control & 0x02 != 0 && !self.serial[0].tx_busy();
                 rx_irq || tx_irq
             }
-            SerialBoard::TwoSio88 => self.two_sio.iter().any(TwoSioPort::interrupt_request),
+            SerialBoard::TwoSio88 => self.two_sio_pint_request(),
         }
     }
     pub(super) const fn direct_interrupt_opcode(&self) -> u8 { 0xff }
@@ -466,6 +510,20 @@ impl AltairBus {
     }
     pub fn two_sio_straps(&self) -> TwoSioStraps { self.io.two_sio_straps() }
 
+    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
+        self.io.configure_two_sio_interrupt_wiring(wiring);
+        self.refresh_interrupt_request_line();
+    }
+    pub fn two_sio_interrupt_wiring(&self) -> TwoSioInterruptWiring {
+        self.io.two_sio_interrupt_wiring()
+    }
+    /// Active raw 88-Vector Interrupt request levels sourced by the 88-2SIO.
+    /// Bit n corresponds to VIn. This does not itself assert processor PINT; an
+    /// installed 88-VI board must consume/arbitrate these lines separately.
+    pub fn two_sio_vector_interrupt_requests(&self) -> u8 {
+        self.io.vector_interrupt_requests()
+    }
+
     pub fn serial_modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
         self.io.modem_lines(port_index)
     }
@@ -565,12 +623,30 @@ impl AltairMachine {
         }
     }
     pub fn two_sio_straps(&self) -> TwoSioStraps { self.bus.two_sio_straps() }
+
+    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
+        if self.bus.two_sio_interrupt_wiring() == wiring { return; }
+        self.running = false;
+        self.bus.configure_two_sio_interrupt_wiring(wiring);
+        self.bus.clear_transient_memory_guards();
+        if self.powered && self.bus.serial_board() == SerialBoard::TwoSio88 {
+            self.reset();
+        } else {
+            self.cpu.reset();
+        }
+    }
+    pub fn two_sio_interrupt_wiring(&self) -> TwoSioInterruptWiring {
+        self.bus.two_sio_interrupt_wiring()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{TwoSioAddressBlock, TwoSioBaudTap as ConfigTwoSioBaudTap};
+    use crate::config::{
+        TwoSioAddressBlock, TwoSioBaudTap as ConfigTwoSioBaudTap, TwoSioInterruptTarget,
+        TwoSioInterruptWiring,
+    };
 
     #[test]
     fn default_88_sio_does_not_alias_88_2sio_data_ports() {
@@ -719,6 +795,63 @@ mod tests {
         assert!(!io.interrupt_request());
         assert_eq!(io.serial_tx_complete(), Some(b'T'));
         assert!(io.interrupt_request());
+    }
+
+    #[test]
+    fn two_sio_irq_is_routed_after_the_acia_not_fabricated_as_pint() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        io.output(SIO2_PORT0_STATUS, 0x95); // RX IRQ enabled
+        assert!(io.debugger_inject_rx(SIO2_PORT0_DATA, b'A'));
+        assert_eq!(io.peek_input(SIO2_PORT0_STATUS) & 0x80, 0x80, "MC6850 IRQ must exist before board routing");
+
+        io.configure_two_sio_interrupt_wiring(TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Disconnected,
+            port1: TwoSioInterruptTarget::Disconnected,
+        });
+        assert!(!io.interrupt_request(), "disconnected DI must not reach PINT");
+        assert_eq!(io.vector_interrupt_requests(), 0);
+
+        io.configure_two_sio_interrupt_wiring(TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Vi3,
+            port1: TwoSioInterruptTarget::Disconnected,
+        });
+        assert!(!io.interrupt_request(), "VI3 routing must not masquerade as direct PINT");
+        assert_eq!(io.vector_interrupt_requests(), 1 << 3);
+
+        io.configure_two_sio_interrupt_wiring(TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Pint,
+            port1: TwoSioInterruptTarget::Disconnected,
+        });
+        assert!(io.interrupt_request(), "DI->PINT must project the existing ACIA IRQ to the CPU line");
+        assert_eq!(io.vector_interrupt_requests(), 0);
+    }
+
+    #[test]
+    fn di_and_ei_route_independently_and_vi_levels_are_combined_as_lines() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        io.configure_two_sio_interrupt_wiring(TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Vi3,
+            port1: TwoSioInterruptTarget::Pint,
+        });
+        io.output(SIO2_PORT0_STATUS, 0x95);
+        io.output(SIO2_PORT1_STATUS, 0x95);
+
+        assert!(io.debugger_inject_rx(SIO2_PORT0_DATA, b'0'));
+        assert!(!io.interrupt_request(), "Port 0 VI3 alone must not drive PINT");
+        assert_eq!(io.vector_interrupt_requests(), 1 << 3);
+
+        assert!(io.debugger_inject_rx(SIO2_PORT1_DATA, b'1'));
+        assert!(io.interrupt_request(), "Port 1 EI->PINT must drive PINT independently");
+        assert_eq!(io.vector_interrupt_requests(), 1 << 3);
+
+        io.configure_two_sio_interrupt_wiring(TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Vi3,
+            port1: TwoSioInterruptTarget::Vi5,
+        });
+        assert!(!io.interrupt_request());
+        assert_eq!(io.vector_interrupt_requests(), (1 << 3) | (1 << 5));
     }
 
     #[test]
