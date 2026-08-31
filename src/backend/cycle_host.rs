@@ -15,6 +15,7 @@ use super::{
     BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState, CpuState,
     CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
     InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
+    SerialModemLines,
 };
 
 const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
@@ -75,14 +76,8 @@ impl CycleHostBackend {
     fn trace_bytes_from(inner: &CycleAccurateMachineBackend, address: u16) -> [u8; 3] {
         [
             inner.machine().bus.preview_guest_memory(address),
-            inner
-                .machine()
-                .bus
-                .preview_guest_memory(address.wrapping_add(1)),
-            inner
-                .machine()
-                .bus
-                .preview_guest_memory(address.wrapping_add(2)),
+            inner.machine().bus.preview_guest_memory(address.wrapping_add(1)),
+            inner.machine().bus.preview_guest_memory(address.wrapping_add(2)),
         ]
     }
 
@@ -101,9 +96,7 @@ impl CycleHostBackend {
         inner: &CycleAccurateMachineBackend,
         pending: &mut Option<PendingInstructionTrace>,
     ) {
-        if pending.is_some() {
-            return;
-        }
+        if pending.is_some() { return; }
         let before = Self::trace_cpu_snapshot_from(inner);
         let bytes = Self::trace_bytes_from(inner, before.pc);
         let effects = collect_pre_instruction_effects(bytes, before, |address| {
@@ -125,9 +118,7 @@ impl CycleHostBackend {
         instruction_trace: &mut InstructionTraceBuffer,
         debug_control: &mut DebugExecutionControl,
     ) -> bool {
-        let Some(mut pending_trace) = pending.take() else {
-            return false;
-        };
+        let Some(mut pending_trace) = pending.take() else { return false; };
         let after = Self::trace_cpu_snapshot_from(inner);
         let post = collect_post_instruction_effects(
             pending_trace.bytes,
@@ -147,9 +138,7 @@ impl CycleHostBackend {
         } else {
             elapsed
         };
-        if delta == 0 {
-            return false;
-        }
+        if delta == 0 { return false; }
 
         let watch_stop = debug_control
             .stop_after_effects(pending_trace.address, &pending_trace.effects)
@@ -168,21 +157,15 @@ impl CycleHostBackend {
     }
 
     fn begin_instruction_trace_if_needed(&mut self) {
-        if !self.observing_instruction_effects() || !self.at_instruction_boundary() {
-            return;
-        }
+        if !self.observing_instruction_effects() || !self.at_instruction_boundary() { return; }
         Self::begin_pending_trace(&self.inner, &mut self.pending_instruction_trace);
     }
 
     fn finish_instruction_trace_if_complete(&mut self) -> bool {
-        let Some(pending) = self.pending_instruction_trace.as_ref() else {
-            return false;
-        };
+        let Some(pending) = self.pending_instruction_trace.as_ref() else { return false; };
         let instruction_completed =
             self.inner.cpu().completed_instructions() > pending.start_completed_instructions;
-        if !instruction_completed && !self.inner.cpu().is_halted() {
-            return false;
-        }
+        if !instruction_completed && !self.inner.cpu().is_halted() { return false; }
 
         Self::finalize_pending_trace(
             &self.inner,
@@ -192,14 +175,8 @@ impl CycleHostBackend {
         )
     }
 
-    fn clear_pending_instruction_trace(&mut self) {
-        self.pending_instruction_trace = None;
-    }
+    fn clear_pending_instruction_trace(&mut self) { self.pending_instruction_trace = None; }
 
-    /// A trace generation represents one continuous execution context. RESET,
-    /// front-panel PC injection, serial-board reset and bulk program replacement
-    /// break that continuity. Clearing here prevents Call Stack / Loop Inspector
-    /// from treating pre-discontinuity observations as live state afterwards.
     fn reset_debugger_epoch(&mut self) {
         self.clear_pending_instruction_trace();
         self.instruction_trace.clear();
@@ -241,21 +218,12 @@ impl CycleHostBackend {
 
         let missing = due.saturating_sub(cpu_covered);
         if missing != 0 {
-            self.inner
-                .machine_mut()
-                .bus
-                .advance_serial_hardware_time(missing);
+            self.inner.machine_mut().bus.advance_serial_hardware_time(missing);
         }
     }
 
-    /// Cycle Accurate can be stopped between machine cycles. If debugger RAM is
-    /// patched after an instruction has already been snapshotted, its operands
-    /// and predicted data reads may no longer describe what the CPU will really
-    /// consume. Drop that partial observation rather than publish a false trace.
     fn invalidate_partial_trace_for_external_memory_change(&mut self) {
-        if self.pending_instruction_trace.is_some() {
-            self.reset_debugger_epoch();
-        }
+        if self.pending_instruction_trace.is_some() { self.reset_debugger_epoch(); }
     }
 
     fn control_teaching_snapshot(&self) -> BusTeachingSnapshot {
@@ -276,9 +244,6 @@ impl CycleHostBackend {
             BusMachineCycle::ResetReleasedStopped
         };
 
-        // RAW status always comes from the canonical S100BusState. The lamp
-        // snapshot below is optical persistence only and is never reverse-
-        // engineered back into an electrical truth value.
         let status_word = powered.then(|| machine.bus.raw_s100_status_word());
         let mut status = BusStatusLines::from_status_word(status_word);
         if powered {
@@ -288,16 +253,8 @@ impl CycleHostBackend {
             status.hlda = Some(machine.bus.raw_s100_hlda());
         }
 
-        // A lifecycle/control snapshot must never reuse stale Cpu8080Cycle pin
-        // values from a previous T-state. Publish only levels that are physically
-        // determined by the current chassis state. RESET RELEASED / STOP-WAIT is
-        // a stable read wait: READY is low, WAIT is high, DBIN remains asserted,
-        // /WR is inactive and SYNC is low after T1. Other lifecycle phases keep
-        // T-state-specific CPU outputs unknown until an actual tick is sampled.
         let pins = match phase {
-            BusMachineCycle::PowerOff | BusMachineCycle::PowerOnUndefined => {
-                BusCpuPins::default()
-            }
+            BusMachineCycle::PowerOff | BusMachineCycle::PowerOnUndefined => BusCpuPins::default(),
             BusMachineCycle::ResetReleasedStopped => BusCpuPins {
                 sync: Some(false),
                 dbin: Some(true),
@@ -326,15 +283,7 @@ impl CycleHostBackend {
         } else {
             (None, None, None, None)
         };
-        // Only STOP-WAIT gives us a stable, non-numbered CPU D0-D7 truth. In
-        // POWER ON, RESET-held and RESET-released RUN states the chassis may have
-        // meaningful DI/DO/display levels while the package D pins remain unknown
-        // until a real cycle-core sample exists.
-        let cpu_data = if phase == BusMachineCycle::ResetReleasedStopped {
-            raw_cpu_data
-        } else {
-            None
-        };
+        let cpu_data = if phase == BusMachineCycle::ResetReleasedStopped { raw_cpu_data } else { None };
 
         let r = self.inner.cpu().registers();
         BusTeachingSnapshot {
@@ -346,8 +295,6 @@ impl CycleHostBackend {
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
             address: if powered { Some(machine.address_leds()) } else { None },
-            // Keep the legacy display byte until older UI call sites have
-            // migrated; the four fields below are the new electrical contract.
             data: panel_data,
             cpu_data,
             s100_di,
@@ -379,7 +326,6 @@ impl CycleHostBackend {
         {
             return Ok(());
         }
-
         self.debug_control.prepare_manual_step();
         self.begin_instruction_trace_if_needed();
         self.inner.debugger_step_t_state_exact()?;
@@ -398,7 +344,6 @@ impl CycleHostBackend {
         {
             return Ok(());
         }
-
         self.debug_control.prepare_manual_step();
         self.begin_instruction_trace_if_needed();
         let start_cycle = self.inner.cpu().machine_cycle();
@@ -406,9 +351,7 @@ impl CycleHostBackend {
         let start_t_states = self.inner.cpu().total_t_states();
         for _ in 0..32 {
             self.inner.debugger_step_t_state_exact()?;
-            if self.inner.cpu().is_halted() || self.inner.cpu().is_holding() {
-                break;
-            }
+            if self.inner.cpu().is_halted() || self.inner.cpu().is_holding() { break; }
             if self.inner.cpu().machine_cycle() != start_cycle
                 || self.inner.cpu().machine_cycle_index() != start_index
                 || (self.inner.cpu().t_state() == TState::T1
@@ -432,7 +375,6 @@ impl CycleHostBackend {
         {
             return Ok(());
         }
-
         self.debug_control.prepare_manual_step();
         self.begin_instruction_trace_if_needed();
         let start_completed = self.inner.cpu().completed_instructions();
@@ -461,19 +403,9 @@ impl MachineBackend for CycleHostBackend {
 
     fn configure_memory(&mut self, size: RamSize, init: RamInit) -> BackendResult<()> {
         let powered = self.inner.machine().powered;
-        if powered {
-            // Host pause first so RAM reconfiguration cannot leave the physical
-            // RUN latch requesting execution while storage is being replaced.
-            self.inner.halt()?;
-        }
-
-        // Configure the shared RAM object directly. The generic
-        // AltairMachine::configure_memory path is intentionally Fast-specific:
-        // it resets AltairMachine.cpu. Cycle must never read or mutate that
-        // dormant Cpu8080 object.
+        if powered { self.inner.halt()?; }
         self.inner.machine_mut().bus.configure_memory(size, init);
         self.inner.machine_mut().bus.clear_serial();
-
         if powered {
             self.inner.assert_reset()?;
             self.inner.release_reset()?;
@@ -499,9 +431,7 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
 
-    fn power(&mut self, on: bool) -> BackendResult<()> {
-        self.power_with_historical_run_latch(on, false)
-    }
+    fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.inner.power_with_historical_run_latch(on, historical)?;
         self.teaching_reset_seen = false;
@@ -529,29 +459,20 @@ impl MachineBackend for CycleHostBackend {
         if !self.instruction_trace.enabled() && !self.debug_control.active() {
             return self.inner.service_execution(t_state_budget);
         }
-
         let observing_effects = self.observing_instruction_effects();
         let pending = &mut self.pending_instruction_trace;
         let instruction_trace = &mut self.instruction_trace;
         let debug_control = &mut self.debug_control;
-
         self.inner
             .service_execution_with_observer(t_state_budget, |inner, event| match event {
                 CycleExecutionEvent::BeforeInstruction => {
                     let r = inner.cpu().registers();
-                    if debug_control.stop_before_with_sp(r.pc, r.sp).is_some() {
-                        return true;
-                    }
-                    if observing_effects {
-                        Self::begin_pending_trace(inner, pending);
-                    }
+                    if debug_control.stop_before_with_sp(r.pc, r.sp).is_some() { return true; }
+                    if observing_effects { Self::begin_pending_trace(inner, pending); }
                     false
                 }
                 CycleExecutionEvent::InstructionComplete => Self::finalize_pending_trace(
-                    inner,
-                    pending,
-                    instruction_trace,
-                    debug_control,
+                    inner, pending, instruction_trace, debug_control,
                 ),
             })
     }
@@ -583,24 +504,14 @@ impl MachineBackend for CycleHostBackend {
         self.inner.panel_examine(next)
     }
     fn panel_deposit(&mut self, next: bool) -> BackendResult<()> {
-        if next {
-            self.reset_debugger_epoch();
-        } else {
-            self.invalidate_partial_trace_for_external_memory_change();
-        }
+        if next { self.reset_debugger_epoch(); } else { self.invalidate_partial_trace_for_external_memory_change(); }
         self.inner.panel_deposit(next)
     }
-    fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> {
-        self.inner.protect_current_board(protected)
-    }
+    fn protect_current_board(&mut self, protected: bool) -> BackendResult<()> { self.inner.protect_current_board(protected) }
     fn switch_register(&mut self) -> BackendResult<u16> { self.inner.switch_register() }
-    fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
-        self.inner.set_switch_register(value)
-    }
+    fn set_switch_register(&mut self, value: u16) -> BackendResult<()> { self.inner.set_switch_register(value) }
     fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
-        if self.inner.machine().serial_board() == board {
-            return Ok(());
-        }
+        if self.inner.machine().serial_board() == board { return Ok(()); }
         let powered = self.inner.machine().powered;
         self.reset_debugger_epoch();
         self.inner.machine_mut().configure_serial_board(board);
@@ -613,35 +524,22 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { self.inner.serial_board() }
-    fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
-        self.inner.serial_receive(port, byte)
+    fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> { self.inner.serial_receive(port, byte) }
+    fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> { self.inner.serial_rx_empty(port) }
+    fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize> { self.inner.serial_rx_len(port) }
+    fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> { self.inner.serial_tx_busy(port) }
+    fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { self.inner.serial_tx_front(port) }
+    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> { self.inner.serial_tx_complete(port) }
+    fn serial_modem_lines(&mut self, port: BackendSerialPort) -> BackendResult<Option<SerialModemLines>> {
+        Ok(self.inner.machine().bus.serial_modem_lines(port.index()).map(SerialModemLines::from))
     }
-    fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
-        self.inner.serial_rx_empty(port)
-    }
-    fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize> {
-        self.inner.serial_rx_len(port)
-    }
-    fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
-        self.inner.serial_tx_busy(port)
-    }
-    fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
-        self.inner.serial_tx_front(port)
-    }
-    fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
-        self.inner.serial_tx_complete(port)
+    fn serial_set_modem_inputs(&mut self, port: BackendSerialPort, cts_high: bool, dcd_high: bool) -> BackendResult<bool> {
+        Ok(self.inner.machine_mut().bus.set_serial_modem_inputs(port.index(), cts_high, dcd_high))
     }
     fn clear_serial(&mut self) -> BackendResult<()> { self.inner.clear_serial() }
     fn installed_ram_bytes(&mut self) -> BackendResult<usize> { Ok(self.inner.machine().installed_ram_bytes()) }
-    fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> {
-        self.inner.peek_memory(address)
-    }
-    fn write_memory(
-        &mut self,
-        address: u16,
-        value: u8,
-        respect_protection: bool,
-    ) -> BackendResult<bool> {
+    fn peek_memory(&mut self, address: u16) -> BackendResult<Option<u8>> { self.inner.peek_memory(address) }
+    fn write_memory(&mut self, address: u16, value: u8, respect_protection: bool) -> BackendResult<bool> {
         self.invalidate_partial_trace_for_external_memory_change();
         self.inner.write_memory(address, value, respect_protection)
     }
@@ -650,13 +548,8 @@ impl MachineBackend for CycleHostBackend {
         self.reset_debugger_epoch();
         Ok(())
     }
-    fn memory_is_protected(&mut self, address: u16) -> BackendResult<bool> {
-        Ok(self.inner.machine().bus.is_protected(address))
-    }
-    fn clear_memory_protection(&mut self) -> BackendResult<()> {
-        self.inner.machine_mut().bus.clear_protection();
-        Ok(())
-    }
+    fn memory_is_protected(&mut self, address: u16) -> BackendResult<bool> { Ok(self.inner.machine().bus.is_protected(address)) }
+    fn clear_memory_protection(&mut self) -> BackendResult<()> { self.inner.machine_mut().bus.clear_protection(); Ok(()) }
     fn clear_transient_memory_guards(&mut self) -> BackendResult<()> {
         self.invalidate_partial_trace_for_external_memory_change();
         self.inner.machine_mut().bus.clear_transient_memory_guards();
@@ -675,11 +568,7 @@ impl MachineBackend for CycleHostBackend {
         expected_t_states: Option<u64>,
     ) -> BackendResult<()> {
         self.inner.machine_mut().begin_cpu_diagnostic_meter(
-            name,
-            bdos_start,
-            bdos_len,
-            expected_instructions,
-            expected_t_states,
+            name, bdos_start, bdos_len, expected_instructions, expected_t_states,
         );
         Ok(())
     }
@@ -691,35 +580,20 @@ impl MachineBackend for CycleHostBackend {
         Ok(self.inner.machine_mut().take_cpu_diagnostic_result())
     }
     fn peek_io_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.inner.machine().bus.peek_io_port(port)) }
-    fn io_port_activity(&mut self, port: u8) -> BackendResult<IoPortActivity> {
-        Ok(self.inner.machine().bus.io_port_activity(port))
-    }
-    fn io_trace_snapshot(&mut self) -> BackendResult<IoTraceSnapshot> {
-        Ok(self.inner.machine().bus.io_trace_snapshot())
-    }
-    fn io_trace_enabled(&mut self) -> BackendResult<bool> {
-        Ok(self.inner.machine().bus.io_trace_enabled())
-    }
+    fn io_port_activity(&mut self, port: u8) -> BackendResult<IoPortActivity> { Ok(self.inner.machine().bus.io_port_activity(port)) }
+    fn io_trace_snapshot(&mut self) -> BackendResult<IoTraceSnapshot> { Ok(self.inner.machine().bus.io_trace_snapshot()) }
+    fn io_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.inner.machine().bus.io_trace_enabled()) }
     fn set_io_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> {
         self.inner.machine_mut().bus.set_io_trace_enabled(enabled);
         Ok(())
     }
-    fn clear_io_trace(&mut self) -> BackendResult<()> {
-        self.inner.machine_mut().bus.clear_io_trace();
-        Ok(())
-    }
-    fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> {
-        Ok(self.instruction_trace.snapshot())
-    }
+    fn clear_io_trace(&mut self) -> BackendResult<()> { self.inner.machine_mut().bus.clear_io_trace(); Ok(()) }
+    fn instruction_trace_snapshot(&mut self) -> BackendResult<InstructionTraceSnapshot> { Ok(self.instruction_trace.snapshot()) }
     fn instruction_trace_enabled(&mut self) -> BackendResult<bool> { Ok(self.instruction_trace.enabled()) }
-    fn instruction_trace_metadata(&mut self) -> BackendResult<InstructionTraceMetadata> {
-        Ok(self.instruction_trace.metadata())
-    }
+    fn instruction_trace_metadata(&mut self) -> BackendResult<InstructionTraceMetadata> { Ok(self.instruction_trace.metadata()) }
     fn set_instruction_trace_enabled(&mut self, enabled: bool) -> BackendResult<()> {
         self.instruction_trace.set_enabled(enabled);
-        if !enabled {
-            self.clear_pending_instruction_trace();
-        }
+        if !enabled { self.clear_pending_instruction_trace(); }
         Ok(())
     }
     fn clear_instruction_trace(&mut self) -> BackendResult<()> {
@@ -728,10 +602,7 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
-        let mut snapshot = self
-            .inner
-            .teaching_snapshot()
-            .unwrap_or_else(|| self.control_teaching_snapshot());
+        let mut snapshot = self.inner.teaching_snapshot().unwrap_or_else(|| self.control_teaching_snapshot());
         snapshot.current_chassis = Some(BusChassisSnapshot::from_altair_machine(
             EmulationEngine::RustCycleAccurate8080,
             self.inner.machine(),
@@ -746,25 +617,13 @@ impl MachineBackend for CycleHostBackend {
         self.debug_control.set_breakpoint(address, enabled);
         Ok(())
     }
-    fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> {
-        self.debug_control.clear_breakpoints();
-        Ok(())
-    }
-    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> {
-        Ok(self.debug_control.watchpoints())
-    }
-    fn debugger_set_watchpoint(
-        &mut self,
-        address: u16,
-        access: Option<MemoryWatchAccess>,
-    ) -> BackendResult<()> {
+    fn debugger_clear_breakpoints(&mut self) -> BackendResult<()> { self.debug_control.clear_breakpoints(); Ok(()) }
+    fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> { Ok(self.debug_control.watchpoints()) }
+    fn debugger_set_watchpoint(&mut self, address: u16, access: Option<MemoryWatchAccess>) -> BackendResult<()> {
         self.debug_control.set_watchpoint(address, access);
         Ok(())
     }
-    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
-        self.debug_control.clear_watchpoints();
-        Ok(())
-    }
+    fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> { self.debug_control.clear_watchpoints(); Ok(()) }
     fn debugger_run_to(&mut self, address: u16) -> BackendResult<()> {
         self.debug_control.set_run_to(address);
         self.run()
@@ -773,19 +632,10 @@ impl MachineBackend for CycleHostBackend {
         self.debug_control.set_run_to_with_sp(address, required_sp);
         self.run()
     }
-    fn debugger_cancel_run_to(&mut self) -> BackendResult<()> {
-        self.debug_control.cancel_run_to();
-        Ok(())
-    }
-    fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> {
-        Ok(self.debug_control.run_to())
-    }
-    fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> {
-        Ok(self.debug_control.stop_reason())
-    }
-    fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> {
-        Ok(self.inner.machine_mut().bus.debugger_input_port(port))
-    }
+    fn debugger_cancel_run_to(&mut self) -> BackendResult<()> { self.debug_control.cancel_run_to(); Ok(()) }
+    fn debugger_run_to_target(&mut self) -> BackendResult<Option<u16>> { Ok(self.debug_control.run_to()) }
+    fn debugger_stop_reason(&mut self) -> BackendResult<Option<DebugStopReason>> { Ok(self.debug_control.stop_reason()) }
+    fn debugger_input_port(&mut self, port: u8) -> BackendResult<u8> { Ok(self.inner.machine_mut().bus.debugger_input_port(port)) }
     fn debugger_output_port(&mut self, port: u8, value: u8) -> BackendResult<()> {
         self.inner.machine_mut().bus.debugger_output_port(port, value);
         Ok(())
@@ -866,8 +716,6 @@ mod tests {
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.inner.machine_mut().bus.load(0, &[0xa5]);
-        // Rebuild the stable STOP-WAIT bus state so DI reflects the newly loaded
-        // memory byte while the optical snapshot is then deliberately corrupted.
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.inner.machine_mut().bus.debug_set_panel_lamp_snapshot_for_test(
