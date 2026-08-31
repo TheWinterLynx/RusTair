@@ -77,11 +77,15 @@ impl HardwareConfig {
 enum WorkerCommand {
     Write(u8),
     ClearRx,
+    SetBreak(bool),
 }
 
 enum WorkerEvent {
     Opened,
     Rx(Vec<u8>),
+    /// Host API semantics: booleans mean the RS-232 signal is asserted. The
+    /// app converts these to MC6850 TTL pin levels, whose active state is LOW.
+    ModemPins { cts_asserted: bool, dcd_asserted: bool },
     Error(String),
     Closed,
 }
@@ -106,8 +110,9 @@ struct ComTraceEvent {
 /// Host-side physical/virtual serial transport.
 ///
 /// The worker thread owns the OS serial handle. The emulator thread only moves
-/// bytes through bounded channels, so unplugged USB adapters, slow drivers and
-/// hardware flow control cannot block egui or the Altair CPU loop.
+/// bytes and electrical-control requests through bounded channels, so unplugged
+/// USB adapters, slow drivers and hardware flow control cannot block egui or the
+/// Altair CPU loop.
 pub(crate) struct ComSerialTransport {
     command_tx: Option<SyncSender<WorkerCommand>>,
     event_rx: Option<Receiver<WorkerEvent>>,
@@ -122,6 +127,8 @@ pub(crate) struct ComSerialTransport {
     dropped_rx_bytes: u64,
     dropped_tx_bytes: u64,
     last_error: Option<String>,
+    modem_pins_asserted: Option<(bool, bool)>,
+    break_sent: Option<bool>,
     trace_enabled: bool,
     trace: VecDeque<ComTraceEvent>,
     next_trace_sequence: u64,
@@ -143,6 +150,8 @@ impl Default for ComSerialTransport {
             dropped_rx_bytes: 0,
             dropped_tx_bytes: 0,
             last_error: None,
+            modem_pins_asserted: None,
+            break_sent: None,
             trace_enabled: false,
             trace: VecDeque::new(),
             next_trace_sequence: 1,
@@ -193,6 +202,8 @@ impl ComSerialTransport {
         self.stop_worker();
         self.rx_queue.clear();
         self.last_error = None;
+        self.modem_pins_asserted = None;
+        self.break_sent = None;
         self.state = ComTransportState::Opening;
 
         let (command_tx, command_rx) = mpsc::sync_channel(WORKER_TX_QUEUE);
@@ -257,6 +268,9 @@ impl ComSerialTransport {
                         }
                     }
                 }
+                WorkerEvent::ModemPins { cts_asserted, dcd_asserted } => {
+                    self.modem_pins_asserted = Some((cts_asserted, dcd_asserted));
+                }
                 WorkerEvent::Error(error) => {
                     self.state = ComTransportState::Error;
                     self.last_error = Some(error);
@@ -286,6 +300,30 @@ impl ComSerialTransport {
                 self.dropped_tx_bytes = self.dropped_tx_bytes.saturating_add(1);
             }
         }
+    }
+
+    /// Apply the emulated MC6850 BREAK output to a real host serial line. BREAK
+    /// is an out-of-band continuous spacing condition and must never be encoded
+    /// as a magic byte in the COM data stream.
+    pub(crate) fn set_break_active(&mut self, active: bool) {
+        if self.break_sent == Some(active) {
+            return;
+        }
+        let Some(sender) = self.command_tx.as_ref() else {
+            self.break_sent = None;
+            return;
+        };
+        match sender.try_send(WorkerCommand::SetBreak(active)) {
+            Ok(()) => self.break_sent = Some(active),
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                self.break_sent = None;
+            }
+        }
+    }
+
+    /// RS-232/OS assertion semantics, not MC6850 TTL pin levels.
+    pub(crate) fn modem_pins_asserted(&self) -> Option<(bool, bool)> {
+        self.modem_pins_asserted
     }
 
     pub(crate) fn pop_rx(&mut self) -> Option<u8> {
@@ -392,6 +430,8 @@ impl ComSerialTransport {
         }
         self.active_config = None;
         self.rx_queue.clear();
+        self.modem_pins_asserted = None;
+        self.break_sent = None;
     }
 }
 
@@ -427,6 +467,7 @@ fn run_worker(
 
     let _ = event_tx.send(WorkerEvent::Opened);
     let mut buffer = [0_u8; 256];
+    let mut last_modem_pins = None;
 
     'worker: loop {
         if stop_flag.load(Ordering::Acquire) {
@@ -456,6 +497,17 @@ fn run_worker(
                         break 'worker;
                     }
                 }
+                Ok(WorkerCommand::SetBreak(active)) => {
+                    let result = if active { port.set_break() } else { port.clear_break() };
+                    if let Err(error) = result {
+                        let action = if active { "assert" } else { "clear" };
+                        let _ = event_tx.send(WorkerEvent::Error(format!(
+                            "Could not {action} BREAK on {}: {error}",
+                            config.port_name
+                        )));
+                        break 'worker;
+                    }
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break 'worker,
             }
@@ -463,6 +515,24 @@ fn run_worker(
 
         if stop_flag.load(Ordering::Acquire) {
             break;
+        }
+
+        // serialport reports logical RS-232 assertion state. Keep that contract
+        // here; conversion to the active-LOW MC6850 CTS/DCD pins belongs at the
+        // emulated cable boundary in the app.
+        if let (Ok(cts_asserted), Ok(dcd_asserted)) =
+            (port.read_clear_to_send(), port.read_carrier_detect())
+        {
+            let pins = (cts_asserted, dcd_asserted);
+            if last_modem_pins != Some(pins) {
+                if event_tx
+                    .send(WorkerEvent::ModemPins { cts_asserted, dcd_asserted })
+                    .is_err()
+                {
+                    break;
+                }
+                last_modem_pins = Some(pins);
+            }
         }
 
         match port.read(&mut buffer) {
