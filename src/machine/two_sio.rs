@@ -80,12 +80,15 @@ impl TwoSioPort {
     pub(super) fn read_data(&mut self) -> u8 { self.acia.read_data() }
     pub(super) fn peek_data(&self) -> u8 { self.acia.peek_data() }
     pub(super) fn interrupt_request(&self) -> bool { self.acia.interrupt_request() }
-    pub(super) fn receive_len(&self) -> usize { self.acia.receive_len() }
 
-    /// Host-endpoint receive-line occupancy, not MC6850 RDRF. Another physical
-    /// frame may start after the current frame finishes even if software has not
-    /// read the previous RDR byte; a later completed frame can therefore produce
-    /// the real MC6850 overrun condition instead of RDRF acting as fake flow control.
+    /// Host-facing pending receive depth. This intentionally counts a character
+    /// still in the timed receiver shift path as pending even while MC6850 RDRF
+    /// is zero. Guest status remains governed only by `peek_status/read_status`.
+    pub(super) fn receive_len(&self) -> usize {
+        self.acia.receive_len() + usize::from(self.rx_shift.is_some())
+    }
+
+    /// Raw physical receive-line occupancy, independent from RDR/RDRF.
     pub(super) fn receive_line_idle(&self) -> bool {
         self.rx_shift.is_none()
     }
@@ -112,16 +115,14 @@ impl TwoSioPort {
     }
 
     /// A normal endpoint starts one physical serial character. There is no hidden
-    /// byte FIFO in front of the MC6850 receiver. Callers should check
-    /// `receive_line_idle`; an overlapping host presentation is rejected rather
-    /// than silently accumulating a non-historical queue behind the ACIA.
-    pub(super) fn queue_received_character(&mut self, value: u8) -> bool {
+    /// byte FIFO in front of the MC6850 receiver. An overlapping host presentation
+    /// is rejected rather than accumulating a non-historical queue behind it.
+    pub(super) fn queue_received_character(&mut self, value: u8) {
         if !self.receive_line_idle() {
-            return false;
+            return;
         }
         self.rx_shift = Some((value, false, false));
         self.rx_bits_remaining = self.acia.frame_bits();
-        true
     }
 
     /// The I/O Inspector explicitly says “directly into UART RX”. This debugger
@@ -298,8 +299,9 @@ mod tests {
     fn receive_character_reaches_rdr_only_after_full_card_timed_frame() {
         let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
         port.write_control(0x95); // RX IRQ, 8N1, /16 => 110 baud
-        assert!(port.queue_received_character(b'R'));
+        port.queue_received_character(b'R');
         assert!(!port.receive_line_idle());
+        assert_eq!(port.receive_len(), 1);
         assert_eq!(port.peek_status() & 0x81, 0);
 
         port.advance_t_states(181_818, TWO_MHZ);
@@ -308,15 +310,17 @@ mod tests {
         port.advance_t_states(1, TWO_MHZ);
         assert!(port.receive_line_idle());
         assert_eq!(port.peek_status() & 0x81, 0x81);
+        assert_eq!(port.receive_len(), 1);
         assert_eq!(port.read_data(), b'R');
+        assert_eq!(port.receive_len(), 0);
     }
 
     #[test]
-    fn receive_line_never_hides_a_second_character_queue() {
+    fn receive_path_does_not_hide_an_unbounded_pre_acia_queue() {
         let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
         port.write_control(0x15);
-        assert!(port.queue_received_character(b'A'));
-        assert!(!port.queue_received_character(b'B'));
+        port.queue_received_character(b'A');
+        port.queue_received_character(b'B');
 
         port.advance_t_states(181_819, TWO_MHZ);
         assert!(port.receive_line_idle());
@@ -325,15 +329,17 @@ mod tests {
     }
 
     #[test]
-    fn unread_rdr_does_not_block_next_physical_frame_and_can_overrun() {
+    fn unread_rdr_does_not_block_next_raw_physical_frame_and_can_overrun() {
         let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
         port.write_control(0x15);
-        assert!(port.queue_received_character(b'A'));
+        port.queue_received_character(b'A');
         port.advance_t_states(181_819, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x01, 0x01);
-        assert!(port.receive_line_idle(), "RDRF must not masquerade as line busy");
+        assert!(port.receive_line_idle(), "RDRF must not masquerade as raw line busy");
 
-        assert!(port.queue_received_character(b'B'));
+        // Exercise the card primitive directly: a real source can begin its next
+        // frame even while software has left the previous RDR unread.
+        port.queue_received_character(b'B');
         port.advance_t_states(181_819, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x21, 0x01, "overrun remains latent until valid RDR is read");
         assert_eq!(port.read_data(), b'A');
