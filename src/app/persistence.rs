@@ -3,7 +3,7 @@ use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
-    TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap,
+    TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
@@ -12,7 +12,7 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION: u32 = 3;
 const DEFAULT_LED_BRIGHTNESS: f32 = 1.0;
 const DEFAULT_LED_AURA: f32 = 1.0;
 const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -144,6 +144,8 @@ impl SavedSettings {
                 "machine.two_sio_base" => if let Some(v) = parse_two_sio_address(value) { saved.config.machine.two_sio_straps.address = v; },
                 "machine.two_sio_port0_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port0_baud = v; },
                 "machine.two_sio_port1_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port1_baud = v; },
+                "machine.two_sio_port0_irq" => if let Some(v) = TwoSioInterruptTarget::from_persistence_key(value) { saved.config.machine.two_sio_interrupt_wiring.port0 = v; },
+                "machine.two_sio_port1_irq" => if let Some(v) = TwoSioInterruptTarget::from_persistence_key(value) { saved.config.machine.two_sio_interrupt_wiring.port1 = v; },
                 "peripherals.asr33_speed" => if let Some(v) = parse_asr_speed(value) { saved.config.peripherals.asr33_speed = v; },
                 "peripherals.terminal_speed" => if let Some(v) = parse_terminal_speed(value) { saved.config.peripherals.terminal_speed = v; },
                 "compatibility.basic32_64k_probe_workaround" => if let Ok(v) = value.parse() { saved.config.compatibility.basic32_64k_probe_workaround = v; },
@@ -199,6 +201,8 @@ impl SavedSettings {
         let _ = writeln!(out, "machine.two_sio_base={:02X}", self.config.machine.two_sio_straps.address.base());
         let _ = writeln!(out, "machine.two_sio_port0_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port0_baud));
         let _ = writeln!(out, "machine.two_sio_port1_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port1_baud));
+        let _ = writeln!(out, "machine.two_sio_port0_irq={}", self.config.machine.two_sio_interrupt_wiring.port0.persistence_key());
+        let _ = writeln!(out, "machine.two_sio_port1_irq={}", self.config.machine.two_sio_interrupt_wiring.port1.persistence_key());
         let _ = writeln!(out, "peripherals.asr33_speed={}", asr_speed_key(self.config.peripherals.asr33_speed));
         let _ = writeln!(out, "peripherals.terminal_speed={}", terminal_speed_key(self.config.peripherals.terminal_speed));
         let _ = writeln!(out, "compatibility.basic32_64k_probe_workaround={}", self.config.compatibility.basic32_64k_probe_workaround);
@@ -318,6 +322,7 @@ impl RusTairApp {
         self.machine.configure_memory_board_profile(self.config.machine.ram_board_profile);
         self.machine.configure_serial_board(self.config.machine.serial_board);
         self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
+        self.machine.configure_two_sio_interrupt_wiring(self.config.machine.two_sio_interrupt_wiring);
 
         self.serial_router.reset_for_board(self.config.machine.serial_board);
         let board = self.config.machine.serial_board;
@@ -527,6 +532,8 @@ mod tests {
         saved.config.machine.two_sio_straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
         saved.config.machine.two_sio_straps.port0_baud = TwoSioBaudTap::Baud300;
         saved.config.machine.two_sio_straps.port1_baud = TwoSioBaudTap::Baud4800;
+        saved.config.machine.two_sio_interrupt_wiring.port0 = TwoSioInterruptTarget::Vi3;
+        saved.config.machine.two_sio_interrupt_wiring.port1 = TwoSioInterruptTarget::Disconnected;
         saved.config.preferences.emulation_speed = EmulationSpeed::X5;
         saved.external_tcp_connection = SerialConnection::Port0;
         saved.external_com_connection = SerialConnection::Port1;
@@ -554,6 +561,17 @@ mod tests {
         let decoded = SavedSettings::from_text("machine.two_sio_base=FC\nmachine.two_sio_port0_baud=300\n");
         assert_eq!(decoded.config.machine.two_sio_straps.address, TwoSioAddressBlock::DEFAULT);
         assert_eq!(decoded.config.machine.two_sio_straps.port0_baud, TwoSioBaudTap::Baud300);
+    }
+
+    #[test]
+    fn old_or_invalid_interrupt_wiring_keeps_safe_migration_default() {
+        let old = SavedSettings::from_text("machine.serial_board=88-2sio\n");
+        assert_eq!(old.config.machine.two_sio_interrupt_wiring.port0, TwoSioInterruptTarget::Pint);
+        assert_eq!(old.config.machine.two_sio_interrupt_wiring.port1, TwoSioInterruptTarget::Pint);
+
+        let invalid = SavedSettings::from_text("machine.two_sio_port0_irq=rst7\nmachine.two_sio_port1_irq=vi6\n");
+        assert_eq!(invalid.config.machine.two_sio_interrupt_wiring.port0, TwoSioInterruptTarget::Pint);
+        assert_eq!(invalid.config.machine.two_sio_interrupt_wiring.port1, TwoSioInterruptTarget::Vi6);
     }
 
     #[test]
@@ -586,6 +604,8 @@ mod tests {
         assert!(text.contains("machine.two_sio_base=10"));
         assert!(text.contains("machine.two_sio_port0_baud=110"));
         assert!(text.contains("machine.two_sio_port1_baud=9600"));
+        assert!(text.contains("machine.two_sio_port0_irq=pint"));
+        assert!(text.contains("machine.two_sio_port1_irq=pint"));
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
         assert!(text.contains("asr33.tape_visual_order=8to1"));
