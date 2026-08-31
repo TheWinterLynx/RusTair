@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioStraps};
+use crate::config::{
+    RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioInterruptWiring, TwoSioStraps,
+};
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::CpuDiagnosticResult;
@@ -335,6 +337,27 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> { Ok(self.inner.machine().two_sio_straps()) }
+    fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) -> BackendResult<()> {
+        if self.inner.machine().bus.two_sio_interrupt_wiring() == wiring { return Ok(()); }
+        let powered = self.inner.machine().powered;
+        self.reset_debugger_epoch();
+        if powered { self.inner.halt()?; }
+        self.inner.machine_mut().bus.configure_two_sio_interrupt_wiring(wiring);
+        self.inner.machine_mut().bus.clear_transient_memory_guards();
+        if powered {
+            self.inner.assert_reset()?;
+            self.inner.release_reset()?;
+            self.teaching_reset_seen = true;
+        }
+        self.reset_idle_chassis_clock_tracking();
+        Ok(())
+    }
+    fn two_sio_interrupt_wiring(&mut self) -> BackendResult<TwoSioInterruptWiring> {
+        Ok(self.inner.machine().bus.two_sio_interrupt_wiring())
+    }
+    fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
+        Ok(self.inner.machine().bus.two_sio_vector_interrupt_requests())
+    }
     fn serial_receive(&mut self, p: BackendSerialPort, b: u8) -> BackendResult<()> { self.inner.serial_receive(p, b) }
     fn serial_rx_empty(&mut self, p: BackendSerialPort) -> BackendResult<bool> { self.inner.serial_rx_empty(p) }
     fn serial_rx_len(&mut self, p: BackendSerialPort) -> BackendResult<usize> { self.inner.serial_rx_len(p) }
