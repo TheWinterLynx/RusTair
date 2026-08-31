@@ -377,7 +377,6 @@ impl RusTairApp {
         self.serial_connection(SerialDevice::TextTerminal)
     }
 
-    fn terminal_serial_rx_empty(&mut self) -> bool { let c = self.terminal_connection(); self.serial_rx_empty_at(c) }
     fn terminal_serial_rx_len(&mut self) -> usize { let c = self.terminal_connection(); self.serial_rx_len_at(c) }
     fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
     fn terminal_serial_tx_busy(&mut self) -> bool { let c = self.terminal_connection(); self.serial_tx_busy_at(c) }
