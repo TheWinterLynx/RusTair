@@ -3,7 +3,7 @@ use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
-    TerminalDuplex,
+    TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
@@ -12,7 +12,7 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const CONFIG_VERSION: u32 = 1;
+const CONFIG_VERSION: u32 = 2;
 const DEFAULT_LED_BRIGHTNESS: f32 = 1.0;
 const DEFAULT_LED_AURA: f32 = 1.0;
 const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -141,6 +141,9 @@ impl SavedSettings {
                 "machine.ram_init" => if let Some(v) = parse_ram_init(value) { saved.config.machine.ram_init = v; },
                 "machine.ram_board_profile" => if let Some(v) = parse_ram_board_profile(value) { saved.config.machine.ram_board_profile = v; },
                 "machine.serial_board" => if let Some(v) = parse_serial_board(value) { saved.config.machine.serial_board = v; },
+                "machine.two_sio_base" => if let Some(v) = parse_two_sio_address(value) { saved.config.machine.two_sio_straps.address = v; },
+                "machine.two_sio_port0_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port0_baud = v; },
+                "machine.two_sio_port1_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port1_baud = v; },
                 "peripherals.asr33_speed" => if let Some(v) = parse_asr_speed(value) { saved.config.peripherals.asr33_speed = v; },
                 "peripherals.terminal_speed" => if let Some(v) = parse_terminal_speed(value) { saved.config.peripherals.terminal_speed = v; },
                 "compatibility.basic32_64k_probe_workaround" => if let Ok(v) = value.parse() { saved.config.compatibility.basic32_64k_probe_workaround = v; },
@@ -193,6 +196,9 @@ impl SavedSettings {
         let _ = writeln!(out, "machine.ram_init={}", ram_init_key(self.config.machine.ram_init));
         let _ = writeln!(out, "machine.ram_board_profile={}", ram_board_profile_key(self.config.machine.ram_board_profile));
         let _ = writeln!(out, "machine.serial_board={}", serial_board_key(self.config.machine.serial_board));
+        let _ = writeln!(out, "machine.two_sio_base={:02X}", self.config.machine.two_sio_straps.address.base());
+        let _ = writeln!(out, "machine.two_sio_port0_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port0_baud));
+        let _ = writeln!(out, "machine.two_sio_port1_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port1_baud));
         let _ = writeln!(out, "peripherals.asr33_speed={}", asr_speed_key(self.config.peripherals.asr33_speed));
         let _ = writeln!(out, "peripherals.terminal_speed={}", terminal_speed_key(self.config.peripherals.terminal_speed));
         let _ = writeln!(out, "compatibility.basic32_64k_probe_workaround={}", self.config.compatibility.basic32_64k_probe_workaround);
@@ -311,6 +317,7 @@ impl RusTairApp {
         self.machine.configure_memory(self.config.machine.ram_size, self.config.machine.ram_init);
         self.machine.configure_memory_board_profile(self.config.machine.ram_board_profile);
         self.machine.configure_serial_board(self.config.machine.serial_board);
+        self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
 
         self.serial_router.reset_for_board(self.config.machine.serial_board);
         let board = self.config.machine.serial_board;
@@ -470,6 +477,9 @@ fn ram_board_profile_key(v: RamBoardProfile) -> &'static str { match v { RamBoar
 fn parse_ram_board_profile(v: &str) -> Option<RamBoardProfile> { Some(match v { "fast-no-wait" => RamBoardProfile::FastNoWait, "mits-1k-static-1975" => RamBoardProfile::Mits1KStatic1975, _ => return None }) }
 fn serial_board_key(v: SerialBoard) -> &'static str { match v { SerialBoard::Sio88 => "88-sio", SerialBoard::TwoSio88 => "88-2sio" } }
 fn parse_serial_board(v: &str) -> Option<SerialBoard> { Some(match v { "88-sio" => SerialBoard::Sio88, "88-2sio" => SerialBoard::TwoSio88, _ => return None }) }
+fn parse_two_sio_address(v: &str) -> Option<TwoSioAddressBlock> { TwoSioAddressBlock::try_new(u8::from_str_radix(v, 16).ok()?) }
+fn two_sio_baud_key(v: TwoSioBaudTap) -> &'static str { v.label() }
+fn parse_two_sio_baud(v: &str) -> Option<TwoSioBaudTap> { Some(match v { "110" => TwoSioBaudTap::Baud110, "150" => TwoSioBaudTap::Baud150, "300" => TwoSioBaudTap::Baud300, "1200" => TwoSioBaudTap::Baud1200, "1800" => TwoSioBaudTap::Baud1800, "2400" => TwoSioBaudTap::Baud2400, "4800" => TwoSioBaudTap::Baud4800, "9600" => TwoSioBaudTap::Baud9600, _ => return None }) }
 fn asr_speed_key(v: Asr33Speed) -> &'static str { match v { Asr33Speed::Authentic110 => "110", Asr33Speed::Accelerated2x => "2x", Asr33Speed::Accelerated4x => "4x", Asr33Speed::Instant => "instant" } }
 fn parse_asr_speed(v: &str) -> Option<Asr33Speed> { Some(match v { "110" => Asr33Speed::Authentic110, "2x" => Asr33Speed::Accelerated2x, "4x" => Asr33Speed::Accelerated4x, "instant" => Asr33Speed::Instant, _ => return None }) }
 fn terminal_speed_key(v: TerminalSpeed) -> &'static str { match v { TerminalSpeed::Instant => "instant", TerminalSpeed::Baud300 => "300", TerminalSpeed::Baud1200 => "1200", TerminalSpeed::Baud2400 => "2400", TerminalSpeed::Baud9600 => "9600" } }
@@ -514,6 +524,9 @@ mod tests {
         saved.config.machine.ram_size = RamSize::K48;
         saved.config.machine.ram_board_profile = RamBoardProfile::Mits1KStatic1975;
         saved.config.machine.serial_board = SerialBoard::TwoSio88;
+        saved.config.machine.two_sio_straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
+        saved.config.machine.two_sio_straps.port0_baud = TwoSioBaudTap::Baud300;
+        saved.config.machine.two_sio_straps.port1_baud = TwoSioBaudTap::Baud4800;
         saved.config.preferences.emulation_speed = EmulationSpeed::X5;
         saved.external_tcp_connection = SerialConnection::Port0;
         saved.external_com_connection = SerialConnection::Port1;
@@ -534,6 +547,13 @@ mod tests {
 
         let decoded = SavedSettings::from_text(&saved.to_text());
         assert_eq!(decoded, saved);
+    }
+
+    #[test]
+    fn persisted_invalid_two_sio_block_cannot_override_safe_default() {
+        let decoded = SavedSettings::from_text("machine.two_sio_base=FC\nmachine.two_sio_port0_baud=300\n");
+        assert_eq!(decoded.config.machine.two_sio_straps.address, TwoSioAddressBlock::DEFAULT);
+        assert_eq!(decoded.config.machine.two_sio_straps.port0_baud, TwoSioBaudTap::Baud300);
     }
 
     #[test]
@@ -563,6 +583,9 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("machine.ram_size=48k"));
         assert!(text.contains("machine.ram_board_profile=fast-no-wait"));
+        assert!(text.contains("machine.two_sio_base=10"));
+        assert!(text.contains("machine.two_sio_port0_baud=110"));
+        assert!(text.contains("machine.two_sio_port1_baud=9600"));
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
         assert!(text.contains("asr33.tape_visual_order=8to1"));
