@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::two_sio::{TwoSioInterruptTarget, TwoSioInterruptWiring, TwoSioStraps};
+use super::two_sio::{TwoSioInterruptWiring, TwoSioStraps};
 
 /// Processor model carried by an installed S-100 CPU board.
 ///
@@ -490,7 +490,7 @@ pub struct AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TwoSioAddressBlock;
+    use crate::config::{TwoSioAddressBlock, TwoSioInterruptTarget};
 
     #[test]
     fn classic_altair_maps_to_mits_8080_board_at_two_megahertz() {
