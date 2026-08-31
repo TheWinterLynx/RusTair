@@ -58,6 +58,19 @@ Explain where physical hardware ends and the host UI, terminal, ASR-33, TCP sock
 
 List exact unit/integration tests and what physical invariant each one protects. A green test name without the invariant is insufficient documentation.
 
+### How the user can validate it
+
+Whenever the behavior is observable through the normal application, document a manual validation procedure that a user can reproduce without reading Rust source. It should state:
+
+1. the physical/configuration setup to select;
+2. the exact operator or guest-software actions to perform;
+3. the UI, panel, terminal, I/O Inspector, Bus Teacher or external instrument observation expected;
+4. the corresponding physical-machine behavior and why the observation is meaningful;
+5. any prerequisite hardware such as a real COM adapter, loopback, scope/logic analyzer or second serial endpoint;
+6. what result would indicate a fidelity regression.
+
+Prefer procedures that expose the actual hardware state rather than merely proving that an application still runs. If a behavior cannot currently be observed manually, state that explicitly and identify the automated regression that covers it. User validation does not replace deterministic tests; both are required when practical.
+
 ### Validation history
 
 Record meaningful local validation checkpoints (date and command class, not necessarily every run). Do not claim GitHub Actions validation unless it was explicitly requested and run.
@@ -79,6 +92,7 @@ From this point forward, a hardware item may move to `PASS` only when all of the
 - implementation snippets are included;
 - relevant Fast/Cycle differences are documented;
 - focused regressions exist;
+- a user-observable validation procedure is documented wherever practical;
 - the normal local suite is green after the change;
 - the dedicated Markdown document has no undocumented fidelity blockers.
 
@@ -86,7 +100,7 @@ The live closeout ledger (`docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md`) should link
 
 ## 4. Change discipline
 
-When implementation changes invalidate a snippet, status table or fidelity claim, update the hardware document in the same logical change set. Documentation that describes an older model is considered a regression even if the Rust compiler is green.
+When implementation changes invalidate a snippet, status table, user-validation procedure or fidelity claim, update the hardware document in the same logical change set. Documentation that describes an older model is considered a regression even if the Rust compiler is green.
 
 When a source is ambiguous or revision-specific, write the uncertainty down. RusTair prefers an explicit `UNKNOWN / revision-sensitive` statement over an invented universal behavior.
 
