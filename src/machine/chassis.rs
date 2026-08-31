@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, SerialBoard};
+use crate::config::{RamBoardProfile, SerialBoard, TwoSioStraps};
 
 use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 
@@ -91,6 +91,26 @@ impl AltairChassis {
 
     pub fn serial_board(&self) -> SerialBoard {
         self.bus.serial_board()
+    }
+
+    /// Move the physical A2-A7/baud-generator jumpers on the installed 88-2SIO.
+    ///
+    /// The bus owns the actual strap state and decoder. The chassis façade only
+    /// applies the same physical reconfiguration boundary as a card swap: RUN
+    /// and READY are withdrawn before the backend resets its processor core.
+    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
+        if self.bus.two_sio_straps() == straps {
+            return;
+        }
+        self.running = false;
+        self.bus.set_run(false);
+        self.bus.cycle_set_ready_input(false);
+        self.bus.configure_two_sio_straps(straps);
+        self.bus.clear_transient_memory_guards();
+    }
+
+    pub fn two_sio_straps(&self) -> TwoSioStraps {
+        self.bus.two_sio_straps()
     }
 
     pub fn release_run_stop(&mut self, run: bool) {
