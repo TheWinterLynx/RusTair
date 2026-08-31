@@ -3,6 +3,39 @@ use std::time::{Duration, Instant};
 use crate::config::TerminalDuplex;
 use crate::peripherals::asr33::{Answerback, MechanicsState};
 
+/// Physical reader motor control wiring.
+///
+/// `Manual` models the operator starting/stopping the reader locally. `Mits88TyaRts`
+/// models the MITS 88-TYA Reader Control option where the 88-2SIO MC6850 RTS
+/// output drives ReaderRun+: physical RTS HIGH runs the reader, LOW stops it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum ReaderControlMode {
+    #[default]
+    Manual,
+    Mits88TyaRts,
+}
+
+impl ReaderControlMode {
+    pub(super) const ALL: [Self; 2] = [Self::Manual, Self::Mits88TyaRts];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Manual => "Manual reader switch",
+            Self::Mits88TyaRts => "MITS 88-TYA — 88-2SIO RTS",
+        }
+    }
+
+    /// Whether the reader motor is electrically commanded to run. In RTS mode
+    /// absence of an MC6850 RTS pin means the optional Reader Control wiring has
+    /// no valid source and therefore cannot energize ReaderRun+.
+    pub(super) const fn effective_running(self, manual_running: bool, rts_high: Option<bool>) -> bool {
+        match self {
+            Self::Manual => manual_running,
+            Self::Mits88TyaRts => matches!(rts_high, Some(true)),
+        }
+    }
+}
+
 /// Independent paper-tape transport speed. Historical Model 33 media advances
 /// at the same 10 character/s cadence as its 110-baud distributor; accelerated
 /// modes intentionally remove only the mechanical delay, not UART/CPU timing.
@@ -72,7 +105,10 @@ pub(super) struct Asr33State {
     pub(super) tx_started: Option<Instant>,
     pub(super) duplex: TerminalDuplex,
     pub(super) answerback: Answerback,
+    /// Local operator reader switch. In 88-TYA RTS mode this state is retained
+    /// but ignored electrically; the guest's MC6850 RTS pin becomes authority.
     pub(super) reader_running: bool,
+    pub(super) reader_control: ReaderControlMode,
     pub(super) reader_speed: TapeTransportSpeed,
     pub(super) last_reader_tick: Instant,
     /// Last physical tape character advanced past the reader and offered to the
@@ -97,6 +133,7 @@ impl Asr33State {
             duplex: TerminalDuplex::default(),
             answerback: Answerback::default(),
             reader_running: false,
+            reader_control: ReaderControlMode::default(),
             reader_speed: TapeTransportSpeed::default(),
             last_reader_tick: now,
             last_reader_byte: None,
@@ -172,6 +209,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reader_control_keeps_manual_and_88_tya_rts_wiring_distinct() {
+        assert!(ReaderControlMode::Manual.effective_running(true, None));
+        assert!(!ReaderControlMode::Manual.effective_running(false, Some(true)));
+        assert!(!ReaderControlMode::Mits88TyaRts.effective_running(true, None));
+        assert!(!ReaderControlMode::Mits88TyaRts.effective_running(true, Some(false)));
+        assert!(ReaderControlMode::Mits88TyaRts.effective_running(false, Some(true)));
+    }
+
+    #[test]
     fn tape_transport_speeds_match_requested_character_rates() {
         assert_eq!(TapeTransportSpeed::Historical1x.char_time(), Duration::from_millis(100));
         assert_eq!(TapeTransportSpeed::X5.char_time(), Duration::from_millis(20));
@@ -184,6 +230,7 @@ mod tests {
         let state = Asr33State::new(Instant::now());
         assert_eq!(state.last_reader_byte, None);
         assert_eq!(state.tape_bit_order, TapeBitOrder::Historical8To1);
+        assert_eq!(state.reader_control, ReaderControlMode::Manual);
     }
 
     #[test]
