@@ -1,6 +1,6 @@
 # MITS 88-2SIO / Motorola MC6850 hardware fidelity
 
-Status: **IN PROGRESS — core ACIA, S-100 wait timing, card clock and modem pins implemented; endpoint/reader wiring and physical strap configuration remain open.**
+Status: **IN PROGRESS — core ACIA, S-100 wait timing, independent card clock, modem pins, physical RX pacing and optional 88-TYA Reader Control are implemented; physical strap configuration and remaining endpoint signal propagation are still open.**
 
 This document describes the physical MITS 88-2SIO, the Motorola MC6850 behavior required to emulate it, how RusTair maps that hardware into Rust state, what Fast and Cycle Accurate can truthfully claim, and which pieces still prevent a final `PASS`.
 
@@ -20,7 +20,9 @@ The target is the digital/electrical behavior visible to the Altair CPU and to a
 - independent serial clocks and baud-generator taps;
 - continued card operation while the 8080 is STOPped, RESET-held or in HOLD/HLDA;
 - guest-visible interrupt projection onto the canonical Altair PINT path;
-- physical endpoint boundary: bytes only reach the host after a complete emulated serial frame.
+- physical endpoint boundary: bytes only reach the host after a complete emulated serial frame;
+- host-to-ACIA receive pacing based on the physical receive shift path rather than RDR emptiness;
+- optional MITS 88-TYA Reader Control where physical MC6850 RTS HIGH drives ReaderRun+.
 
 Out of scope for the digital fidelity claim are analog voltage rise/fall times, exact RS-232 driver slew, cable capacitance, relay bounce and acoustic/mechanical presentation. Those may be modeled later for presentation, but they must not change register/bus truth.
 
@@ -125,8 +127,12 @@ The wording intentionally uses **physical HIGH/LOW**, not “asserted/deasserted
 | exact Cycle READY sampling | shared S-100 READY arbitration | `src/backend/cycle.rs` / machine bus |
 | idle card clock while CPU parked | backend idle chassis clock service | `src/backend/native.rs`, `src/backend/cycle_host.rs` |
 | backend-neutral modem pin API | `SerialModemLines` | `src/backend/mod.rs` |
+| physical RX line/RDR distinction exposed to endpoints | `serial_rx_line_idle` + `serial_rx_empty` | backend contract + `src/app/serial_hardware.rs` |
+| ASR-33 Reader Control wiring selection | `ReaderControlMode` | `src/app/asr33_state.rs` |
+| RTS -> ReaderRun+ resolution | `RusTairApp::asr_reader_motor_running` | `src/app/serial_hardware.rs` |
+| ASR reader transport | `update_paper_tape_reader` | `src/app/ui/asr33_window.rs` |
 
-The important architectural rule is that **the terminal/ASR/TCP/COM endpoint does not own MC6850 status bits or baud timing**.
+The important architectural rule is that **the terminal/ASR/TCP/COM endpoint does not own MC6850 status bits or baud timing**. Endpoints can present bytes to a physical line or consume bytes that have completed transmission, but RDRF, TDRE, IRQ and error bits remain card state.
 
 ## 5. Supporting code snippets
 
@@ -168,7 +174,7 @@ pub(crate) fn transfer_tdr_to_shift_if_idle(&mut self) -> bool {
 }
 ```
 
-This is a major fidelity difference from the old implementation. Once TDR transfers into the transmit shift register, TDRE may rise even though the character is still physically shifting and has not yet reached ASR/Terminal/TCP/COM.
+Once TDR transfers into the transmit shift register, TDRE may rise even though the character is still physically shifting and has not yet reached ASR/Terminal/TCP/COM.
 
 ### 5.3 Receiver and RDR are distinct physical stages
 
@@ -231,9 +237,80 @@ This gives the historical 88-TYA values their literal electrical meaning:
 - `021` octal = `11h`: RTS LOW, reader control off;
 - `121` octal = `51h`: RTS HIGH, ReaderRun enabled when that cable option is installed.
 
-The physical ASR-33 ReaderRun connection is not yet wired into the RusTair endpoint; this is an open integration item, not a missing MC6850 feature.
+The ASR endpoint now exposes this as an explicit physical wiring choice rather than forcing all tape readers to obey RTS.
 
-### 5.6 Board-level input wait
+### 5.6 Explicit manual versus 88-TYA reader wiring
+
+`src/app/asr33_state.rs`:
+
+```rust
+pub(super) enum ReaderControlMode {
+    Manual,
+    Mits88TyaRts,
+}
+
+pub(super) const fn effective_running(
+    self,
+    manual_running: bool,
+    rts_high: Option<bool>,
+) -> bool {
+    match self {
+        Self::Manual => manual_running,
+        Self::Mits88TyaRts => matches!(rts_high, Some(true)),
+    }
+}
+```
+
+The default remains `Manual`. This is intentional: an Altair with a normal/manual tape-reader workflow is a valid physical installation, and the authentic bootstrap writes `11h`/`021` octal, which leaves RTS LOW. Selecting `Mits88TyaRts` instead models the optional program-controlled 88-TYA wiring.
+
+`src/app/serial_hardware.rs` resolves the actual motor command from the MC6850 pin:
+
+```rust
+fn asr_reader_motor_running(&mut self) -> bool {
+    let rts_high = self.asr_serial_rts_high();
+    self.asr33
+        .reader_control
+        .effective_running(self.asr33.reader_running, rts_high)
+}
+```
+
+No UI shadow register is involved.
+
+### 5.7 Reader transport is independent from CPU RUN and RDR occupancy
+
+`src/app/ui/asr33_window.rs`:
+
+```rust
+if self.tty.mode != TtyMode::Line
+    || !self.asr_connection().is_connected()
+    || !self.machine.powered()
+    || !self.asr_serial_rx_line_idle()
+{
+    return;
+}
+```
+
+There is deliberately no `machine.running()` requirement. A physical reader motor and the 88-2SIO oscillator do not stop just because the 8080 is STOPped. There is also deliberately no `asr_serial_rx_empty()` requirement: an unread RDR byte must not pause the next physical serial frame.
+
+### 5.8 Host endpoints gate on line occupancy, not RDRF
+
+Terminal/TCP/COM input paths now call the shared physical-line query:
+
+```rust
+if !self.terminal_serial_rx_line_idle() { ... }
+```
+
+or:
+
+```rust
+if self.serial_rx_line_idle_at(connection) {
+    self.serial_receive_at(connection, byte);
+}
+```
+
+This permits a second physical frame to arrive while RDR still contains an unread prior character, which is necessary for the MC6850 to set OVRN naturally.
+
+### 5.9 Board-level input wait
 
 `src/machine/io_devices.rs`:
 
@@ -256,7 +333,7 @@ pub(super) fn ready_for_input_t_state(
 
 The card releases its wait in Tw; output and unmapped I/O remain unaffected.
 
-### 5.7 Board clock is independent from endpoint presentation
+### 5.10 Board clock is independent from endpoint presentation
 
 `src/machine/two_sio.rs` accumulates exact integer phase:
 
@@ -290,7 +367,7 @@ RusTair retains the complete physical tap set in `TwoSioBaudTap`. The current de
 - Port 0: 110 baud, intended for ASR-33;
 - Port 1: 9600 baud, intended for text terminal.
 
-The MITS tap is treated as a 16x source and the MC6850 CR1:CR0 divider applies `/1`, `/16` or `/64`. This allows the model to represent non-integer-looking rates such as 27.5 baud without floating-point drift.
+The MITS tap is treated as a 16x source and the MC6850 CR1:CR0 divider applies `/1`, `/16` or `/64`. This allows the model to represent rates such as 27.5 baud without floating-point drift.
 
 **Open blocker:** these taps are not yet exposed as physical configuration straps in the user configuration. Until that is complete the digital clock engine is implemented, but the installed-board configuration is not fully user-selectable like the physical card.
 
@@ -353,7 +430,7 @@ The serial board advances once per real Cycle T-state while the CPU is running. 
 
 ### Shared invariant
 
-Neither backend may double-count serial elapsed time: CPU T-states are authority while they exist; wall/chassis elapsed time fills only intervals where the CPU core is electrically parked.
+Neither backend may double-count serial elapsed time: CPU T-states are authority while they exist; wall/chassis elapsed time fills only intervals where the CPU core is electrically parked. Both expose the same MC6850 modem-pin and RX-line contracts to the ASR/terminal host layer.
 
 ## 10. STOP, RESET and HOLD/HLDA
 
@@ -368,7 +445,7 @@ The regression explicitly covers:
 - HOLD/HLDA;
 - normal RUN without double advancement.
 
-This matters for both RX and TX. A character already travelling through the ACIA must continue to completion while the operator stops the CPU.
+This matters for both RX and TX. A character already travelling through the ACIA must continue to completion while the operator stops the CPU. It also matters for 88-TYA Reader Control: once RTS is HIGH, the reader is not implicitly frozen by the CPU RUN/STOP latch.
 
 ## 11. Modem/control pins
 
@@ -397,6 +474,8 @@ DCD high:
 - RDRF is suppressed;
 - with RX interrupt enabled, IRQ is generated/latches according to the MC6850 sequence.
 
+BREAK is represented as a distinct MC6850 output state. Propagating that continuous spacing condition into every possible attached endpoint remains an open integration item.
+
 ## 12. 88-TYA / ASR-33 Reader Control relationship
 
 The MITS 88-TYA Call/Control unit provides a program-controlled paper-tape reader input. The 88-TYA manual specifically describes control from the 88-2SIO RTS output.
@@ -404,27 +483,45 @@ The MITS 88-TYA Call/Control unit provides a program-controlled paper-tape reade
 The important historical distinction is between two valid installations:
 
 1. **Manual reader control** — the operator starts/stops the reader using the ASR-33 controls. The computer need not raise RTS.
-2. **88-TYA Reader Control via RTS** — physical RTS HIGH energizes ReaderRun and RTS LOW stops the reader.
+2. **88-TYA Reader Control via RTS** — physical RTS HIGH energizes ReaderRun+ and RTS LOW stops the reader.
 
 The MITS manual identifies the corresponding 88-2SIO initialization values:
 
 - octal `021` (`11h`) keeps reader control off while preserving 8 data bits, 2 stop bits and divide-16;
 - octal `121` (`51h`) raises RTS and turns the reader on while preserving the remaining configuration bits.
 
-This is why RusTair must **not** unconditionally make the ASR reader depend on RTS. The authentic bootstrap currently writes `11h` and historically can be used with manual operator-started input. Reader-control wiring must therefore be an explicit physical configuration option.
+RusTair models these as **physical wiring choices**, not compatibility modes. `Manual` is the default so the existing authentic loader workflow can continue to model an operator-started reader after the bootstrap writes `11h`. Selecting `Mits88TyaRts` disables the local Read/Pause authority and makes the actual MC6850 RTS pin authoritative.
 
-**Implementation status:** MC6850 RTS physical level is complete and exposed. The ASR endpoint wiring selector and ReaderRun behavior are the next open implementation step.
+The UI exposes the current electrical condition explicitly:
+
+- `WAIT RTS SOURCE` — no installed/connected MC6850 RTS pin is available;
+- `WAIT RTS LOW` — 88-TYA wiring is selected and the guest is holding RTS LOW;
+- `RX FRAME` — a serial character is currently occupying the receive shift path;
+- `READING` — the reader is commanded on and can present the next character.
+
+A particularly important fidelity property is that **CPU RUN is not part of this state machine**. The reader may continue while the CPU is STOPped; if the CPU fails to consume RDR in time, the correct hardware consequence is MC6850 overrun.
+
+Implementation status: **implemented in code; local validation of this new endpoint/UI block is still required before it is marked validated.**
 
 ## 13. RX host-boundary correction
 
-A critical model distinction is now explicit:
+A critical model distinction is explicit:
 
 - `serial_rx_empty()` represents pending receiver content/state;
 - `serial_rx_line_idle()` represents whether the external serial line / receiver shift path can start another character.
 
 The old host pacing rule “only send another byte when RDR is empty” was too generous: real serial equipment can deliver another character while RDR is still occupied, causing overrun if software fails to read fast enough.
 
-The hardware API now supports the correct behavior. **Open blocker:** ASR/Terminal/TCP/COM endpoint loops still need to migrate to the physical line-idle contract and, where appropriate, their own real flow-control signals.
+The following endpoint paths now use physical line occupancy rather than RDR emptiness:
+
+- internal ASR-33 paper-tape reader;
+- Text Terminal host input;
+- raw TCP serial input;
+- external COM input.
+
+This does **not** mean two characters can occupy the receive shift register simultaneously. `serial_rx_line_idle()` still prevents overlapping frames in the single physical receiver path. It only removes the non-historical pause caused by an unread RDR.
+
+The COM bridge deserves one additional distinction: the host OS/UART has already applied the real external baud/framing before RusTair sees a byte, so RusTair does not add a second host-link delay. It still respects the emulated MC6850 receive shift-path occupancy before accepting the next completed host byte.
 
 ## 14. Regression evidence
 
@@ -461,6 +558,7 @@ Protect:
 - endpoint presentation independence from TDRE;
 - no hidden unlimited pre-ACIA RX FIFO;
 - receiver line occupancy versus RDR state;
+- a second frame can produce real OVRN while the previous RDR byte remains unread;
 - modem pin propagation.
 
 ### `tests/two_sio_idle_chassis_clock.rs`
@@ -470,6 +568,17 @@ Protects independent card operation during STOP, RESET and HOLD/HLDA, plus no do
 ### `tests/two_sio_modem_pins.rs`
 
 Protects the shared Fast/Cycle pin contract, exact `11h`/`51h`/`71h` RTS/BREAK behavior, CTS/DCD status projection and DCD clear sequence.
+
+### `tests/asr33_reader_control_architecture.rs`
+
+Protects the new host/peripheral boundary:
+
+- reader motor command is resolved from the selected wiring and real MC6850 RTS pin;
+- the reader update path contains no CPU `RUN` dependency;
+- the reader advances on physical RX-line availability, not RDR emptiness;
+- manual Read/Pause controls cannot override 88-TYA RTS mode;
+- Text Terminal, TCP and COM input also gate on line occupancy rather than RDRF/RDR emptiness;
+- repaint scheduling keeps the independently clocked reader alive while the CPU is stopped.
 
 ### Authentic loader regression
 
@@ -481,6 +590,7 @@ Protects the shared Fast/Cycle pin contract, exact `11h`/`51h`/`71h` RTS/BREAK b
 - 2026-08-31: authentic loader regression and full local suite green after timed RX/RDR separation.
 - 2026-08-31: idle chassis clock tests and full local suite green for STOP/RESET/HOLD behavior.
 - 2026-08-31: modem-pin/line-idle work reached a full local green suite after the unrelated debugger architecture guard was made semantic rather than dependent on a local variable name.
+- 2026-08-31: 88-TYA Reader Control + endpoint physical-line migration implemented; **local validation pending**.
 
 GitHub Actions were not used for these checkpoints.
 
@@ -488,13 +598,16 @@ GitHub Actions were not used for these checkpoints.
 
 Digital/electrical blockers still open:
 
-1. Migrate ASR/Terminal/TCP/COM RX pacing from RDR-empty policy to physical line-idle / real flow-control policy.
-2. Implement explicit 88-TYA reader-control wiring option and drive ReaderRun from physical RTS HIGH when selected.
-3. Ensure BREAK is propagated appropriately to the attached physical endpoint model rather than existing only as a pin/state observation.
-4. Expose CTS/DCD behavior/configuration sensibly for endpoint types that can provide them.
-5. Expose physical per-port baud-generator straps in configuration.
-6. Expose the board base-address strap block instead of permanently fixing `10h`–`13h`.
-7. Re-run complete serial/loader regressions and whole project suite after endpoint migration.
+1. Validate the new 88-TYA Reader Control / endpoint line-idle block locally in both engines and against the full suite.
+2. Propagate BREAK appropriately to attached endpoint models instead of exposing it only as a pin/state observation.
+3. Expose CTS/DCD behavior/configuration sensibly for endpoint types that can provide physical modem inputs.
+4. Expose physical per-port baud-generator straps in configuration.
+5. Expose the board base-address strap block instead of permanently fixing `10h`–`13h`.
+6. Re-run complete serial/loader regressions after the final strap/signal closeout.
+
+Configuration/UX gap that does not change the current electrical claim:
+
+- `ReaderControlMode` currently defaults to Manual each process start; persistence of this UI wiring choice can be added to saved settings without changing the underlying hardware behavior.
 
 Potentially acceptable non-blocking analog omissions:
 
@@ -546,7 +659,7 @@ https://www.manualslib.com/manual/4116676/Mits-88-Tya.html
 
 Reader Control / “Paper Tape Reader Control With 88-2SIO” is on scan page 9. It identifies RTS/bit 6 as the reader-control signal and documents octal `021` versus `121` initialization behavior.
 
-Contemporary corroboration: **MITS Computer Notes, March 1976**, description of the 88-TYA Call-Control Kit and its circuit for program control of the reader:
+Contemporary corroboration: **MITS Computer Notes, 1976**, description of the 88-TYA Call-Control Kit and its circuit for program control of the reader:
 https://altairclone.com/downloads/computer_notes/1976_01_10.pdf
 
 ### Intel 8080 timing context
