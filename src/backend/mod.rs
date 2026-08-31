@@ -8,7 +8,9 @@ mod native;
 use std::fmt;
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioStraps};
+use crate::config::{
+    RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioInterruptWiring, TwoSioStraps,
+};
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
 use cycle_host::CycleHostBackend;
@@ -211,6 +213,15 @@ pub trait MachineBackend {
     }
     fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> {
         Err(BackendError::Unsupported { operation: "query 88-2SIO straps", engine: self.engine() })
+    }
+    fn configure_two_sio_interrupt_wiring(&mut self, _wiring: TwoSioInterruptWiring) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure 88-2SIO interrupt wiring", engine: self.engine() })
+    }
+    fn two_sio_interrupt_wiring(&mut self) -> BackendResult<TwoSioInterruptWiring> {
+        Err(BackendError::Unsupported { operation: "query 88-2SIO interrupt wiring", engine: self.engine() })
+    }
+    fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
+        Err(BackendError::Unsupported { operation: "query 88-2SIO VI lines", engine: self.engine() })
     }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
@@ -425,6 +436,15 @@ impl BackendHost {
     pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
     pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) { Self::call(self.backend.configure_two_sio_straps(straps)); }
     pub fn two_sio_straps(&mut self) -> TwoSioStraps { Self::call(self.backend.two_sio_straps()) }
+    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
+        Self::call(self.backend.configure_two_sio_interrupt_wiring(wiring));
+    }
+    pub fn two_sio_interrupt_wiring(&mut self) -> TwoSioInterruptWiring {
+        Self::call(self.backend.two_sio_interrupt_wiring())
+    }
+    pub fn two_sio_vector_interrupt_requests(&mut self) -> u8 {
+        Self::call(self.backend.two_sio_vector_interrupt_requests())
+    }
     pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) { Self::call(self.backend.power_with_historical_run_latch(on, historical)); }
     pub fn set_running(&mut self, run: bool) { if run { Self::call(self.backend.run()); } else { Self::call(self.backend.halt()); } }
@@ -519,7 +539,9 @@ impl BackendHost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{TwoSioAddressBlock, TwoSioBaudTap};
+    use crate::config::{
+        TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
+    };
 
     #[test]
     fn both_builtin_rust_8080_engines_are_available() {
@@ -565,6 +587,23 @@ mod tests {
             assert_eq!(host.two_sio_straps(), straps);
             assert_eq!(host.peek_io_port(0x44) & 0x02, 0x02);
             assert_eq!(host.peek_io_port(0x10), 0xff);
+        }
+    }
+
+    #[test]
+    fn both_backends_preserve_interrupt_wiring_and_expose_vi_boundary() {
+        let wiring = TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Vi3,
+            port1: TwoSioInterruptTarget::Disconnected,
+        };
+        for engine in EmulationEngine::ALL {
+            let mut host = BackendHost::from_engine(engine).unwrap();
+            host.configure_serial_board(SerialBoard::TwoSio88);
+            host.configure_two_sio_interrupt_wiring(wiring);
+            assert_eq!(host.two_sio_interrupt_wiring(), wiring);
+            host.debugger_output_port(0x10, 0x95); // /16 8N1 + receive IRQ enable
+            assert!(host.debugger_inject_serial_rx(0x11, b'I'));
+            assert_eq!(host.two_sio_vector_interrupt_requests(), 1 << 3);
         }
     }
 }
