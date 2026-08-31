@@ -254,9 +254,6 @@ impl IoDevices {
 
     fn sio_status_port(&self) -> u8 { self.sio.config().address.status() }
     fn sio_data_port(&self) -> u8 { self.sio.config().address.data() }
-    fn sio_decodes_port(&self, port: u8) -> bool {
-        self.serial_board == SerialBoard::Sio88 && self.sio.config().address.contains(port)
-    }
 
     fn data_port_for_index(&self, index: usize) -> u8 {
         match (self.serial_board, index) {
