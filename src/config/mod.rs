@@ -1,6 +1,7 @@
 mod external_com;
 mod external_serial;
 mod machine;
+mod sio;
 mod terminal;
 mod two_sio;
 
@@ -14,6 +15,10 @@ pub use machine::{
     AppConfig, Asr33Speed, CompatibilityConfig, CpuBoard, CpuModel, EmulationSpeed, MachineConfig,
     PeripheralConfig, PreferencesConfig, RamBoardProfile, RamInit, RamSize, SerialBoard,
     TerminalSpeed,
+};
+pub use sio::{
+    SioAddressPair, SioBaudRate, SioDataBits, SioHardwareConfig, SioInterface, SioParity,
+    SioRevision, SioStopBits, SioWordFormat,
 };
 pub use terminal::TerminalDuplex;
 pub use two_sio::{
