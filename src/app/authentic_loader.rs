@@ -167,7 +167,7 @@ const SIO_BOOTSTRAP_INSTRUCTIONS: &[BootstrapInstructionInfo] = &[
         len: 2,
         mnemonic: "STACK RETURN VECTOR $0003",
         effect: "These two bytes form the little-endian address 0003h; they are data, not an instruction executed in sequence.",
-        purpose: "RC, RZ and RNZ pop this address as their return target, producing a compact loop back to LXI SP at 0003h.",
+        purpose: "RC, RZ and RNZ pop this address as their return target, producing a compact loop back to LXI SP at 0003h without needing a longer JMP instruction.",
     },
 ];
 
@@ -1480,9 +1480,9 @@ mod tests {
                 machine.set_running(true);
 
                 // Let the guest reach the actual status-poll loop before putting
-                // the first byte into RX. This matters for 88-2SIO because its
-                // opening master-reset OUT would legitimately clear a byte that
-                // had been unrealistically pre-injected before initialization.
+                // the first byte on the serial line. The 88-2SIO bootstrap first
+                // performs an MC6850 master reset, which legitimately aborts any
+                // character that had been unrealistically presented beforehand.
                 for _ in 0..400 {
                     machine.run_cycles(32);
                     if definition.pc_is_polling(machine.intel8080_state().pc) {
@@ -1491,24 +1491,63 @@ mod tests {
                 }
                 assert!(definition.pc_is_polling(machine.intel8080_state().pc));
 
+                // I/O activity is the unambiguous proof that the guest itself
+                // executed IN on the DATA port. RDRF cannot be used as a completion
+                // signal now that the 88-2SIO models the receiver shift register:
+                // it is false both while a character is still arriving and after
+                // the CPU has consumed the completed RDR byte.
+                machine.set_io_trace_enabled(true);
+                let (_, _, leader_reads_before, _) =
+                    machine.io_port_activity(definition.data_port);
                 machine.serial_receive(BackendSerialPort::Port0, 0xAE);
-                for _ in 0..200 {
+                if board == SerialBoard::TwoSio88 {
+                    assert!(
+                        machine.serial_rx_empty(BackendSerialPort::Port0),
+                        "88-2SIO must not expose a just-started wire character in RDR before its 110-baud frame completes"
+                    );
+                }
+                // 88-2SIO Port 0 is strapped for 110 baud and the historical 11h
+                // bootstrap control word selects 8N2: one 11-bit character is
+                // 100 ms, or 200,000 T-states at the stock 2 MHz board clock.
+                // 4096 * 64 leaves ample polling margin without bypassing timing.
+                for _ in 0..4_096 {
                     machine.run_cycles(64);
-                    if machine.serial_rx_empty(BackendSerialPort::Port0) {
+                    let (_, _, data_reads, _) =
+                        machine.io_port_activity(definition.data_port);
+                    if data_reads > leader_reads_before {
                         break;
                     }
                 }
+                let (_, _, leader_reads_after, _) =
+                    machine.io_port_activity(definition.data_port);
+                assert!(
+                    leader_reads_after > leader_reads_before,
+                    "{engine:?} / {board:?} never consumed the AEh leader through guest IN"
+                );
                 assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
                 assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x00));
 
+                let payload_reads_before = leader_reads_after;
                 machine.serial_receive(BackendSerialPort::Port0, 0x42);
-                for _ in 0..400 {
+                if board == SerialBoard::TwoSio88 {
+                    assert!(
+                        machine.serial_rx_empty(BackendSerialPort::Port0),
+                        "88-2SIO payload must traverse the timed receiver shift register before RDRF"
+                    );
+                }
+                for _ in 0..4_096 {
                     machine.run_cycles(64);
                     if machine.peek_memory(CHECKSUM_LOADER_END) == Some(0x42) {
                         break;
                     }
                 }
                 assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x42));
+                let (_, _, payload_reads_after, _) =
+                    machine.io_port_activity(definition.data_port);
+                assert!(
+                    payload_reads_after > payload_reads_before,
+                    "{engine:?} / {board:?} stored the payload without a guest DATA-port IN"
+                );
                 assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
             }
         }
