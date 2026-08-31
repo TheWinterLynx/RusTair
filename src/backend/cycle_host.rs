@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard};
+use crate::config::{RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioStraps};
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::CpuDiagnosticResult;
@@ -321,6 +321,20 @@ impl MachineBackend for CycleHostBackend {
         self.reset_idle_chassis_clock_tracking(); Ok(())
     }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { self.inner.serial_board() }
+    fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) -> BackendResult<()> {
+        if self.inner.machine().two_sio_straps() == straps { return Ok(()); }
+        let powered = self.inner.machine().powered;
+        self.reset_debugger_epoch();
+        self.inner.machine_mut().configure_two_sio_straps(straps);
+        if powered {
+            self.inner.assert_reset()?;
+            self.inner.release_reset()?;
+            self.teaching_reset_seen = true;
+        }
+        self.reset_idle_chassis_clock_tracking();
+        Ok(())
+    }
+    fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> { Ok(self.inner.machine().two_sio_straps()) }
     fn serial_receive(&mut self, p: BackendSerialPort, b: u8) -> BackendResult<()> { self.inner.serial_receive(p, b) }
     fn serial_rx_empty(&mut self, p: BackendSerialPort) -> BackendResult<bool> { self.inner.serial_rx_empty(p) }
     fn serial_rx_len(&mut self, p: BackendSerialPort) -> BackendResult<usize> { self.inner.serial_rx_len(p) }
