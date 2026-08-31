@@ -91,20 +91,31 @@ Dedicated implementation/evidence document: **`docs/88_2SIO_MC6850_HARDWARE_FIDE
 - DCD status/IRQ clearing follows status-read then data-read sequencing.
 - Card baud timing belongs to the installed board, not ASR/Terminal pacing; integer phase accumulation retains fractional effective rates.
 - The 88-2SIO oscillator continues during CPU STOP, sustained RESET and HOLD/HLDA while avoiding double advancement during RUN.
-- Host-visible RX state now distinguishes pending receiver contents from physical receive-line occupancy, enabling real overrun instead of mandatory RDR-empty flow control.
+- Host-visible RX state distinguishes pending receiver contents from physical receive-line occupancy, enabling real overrun instead of mandatory RDR-empty flow control.
 - Authentic paper-tape loader regression consumes bytes through timed hardware and a genuine guest `IN 11h` in both Rust engines.
 
 The full local `cargo test` suite was green on 2026-08-31 through these changes after the debugger architecture guard was made semantic rather than dependent on a local variable name.
 
+### Implemented after the last local green — validation required
+
+- Text Terminal, raw TCP and external COM RX delivery now wait only for the physical receive shift path to become free; an unread MC6850 RDR no longer acts as hidden flow control.
+- ASR-33 paper-tape reader uses the same physical RX-line contract and no longer depends on the 8080 RUN latch.
+- `ReaderControlMode` models two real installations: local/manual reader control and optional MITS 88-TYA Reader Control via 88-2SIO RTS.
+- In 88-TYA mode, the local Read/Pause buttons have no electrical authority; physical MC6850 RTS HIGH runs ReaderRun+, RTS LOW stops it.
+- Historical values are exposed directly: `11h` / octal `021` leaves RTS LOW; `51h` / octal `121` raises RTS HIGH.
+- UI states distinguish missing RTS source, RTS LOW and a character currently occupying the RX shift path.
+- `tests/asr33_reader_control_architecture.rs` guards against reintroducing CPU-RUN or RDR-empty pacing.
+
 ### Remaining blockers before `PASS`
 
-- migrate ASR/Terminal/TCP/COM RX delivery to physical line-idle / appropriate real flow-control semantics rather than RDR-empty pacing;
-- add explicit 88-TYA Reader Control wiring option so physical RTS HIGH drives ReaderRun only when that historical wiring is installed;
+- locally validate the new Reader Control / endpoint physical-line block and full suite;
 - propagate BREAK appropriately to attached endpoint models;
 - expose CTS/DCD behavior/configuration for endpoints that can provide those signals;
 - expose per-port baud-generator straps instead of retaining only the current default 110/9600 installation;
 - expose the physical A2-A7 base-address strap block instead of permanently fixing `10h`-`13h`;
-- re-run complete serial/loader/full-suite validation after endpoint migration.
+- re-run complete serial/loader/full-suite validation after final strap/signal closeout.
+
+`ReaderControlMode` persistence across application restarts is a configuration/UX follow-up, not an electrical-fidelity blocker; the hardware mode currently defaults to Manual on each process start.
 
 ## 5. MITS 88-SIO — OPEN
 
