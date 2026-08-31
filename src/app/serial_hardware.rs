@@ -19,6 +19,26 @@ impl RusTairApp {
             .map(|lines| lines.rts_high)
     }
 
+    /// Continuous MC6850 spacing/BREAK output at the selected cable boundary.
+    pub(in crate::app) fn serial_break_active_at(&mut self, connection: SerialConnection) -> Option<bool> {
+        Self::backend_serial_port(connection)
+            .and_then(|port| self.machine.serial_modem_lines(port))
+            .map(|lines| lines.break_active)
+    }
+
+    /// Drive the physical CTS/DCD input levels presented to the installed ACIA.
+    /// The caller supplies literal MC6850 TTL levels, not RS-232 assertion state.
+    pub(in crate::app) fn serial_set_modem_inputs_at(
+        &mut self,
+        connection: SerialConnection,
+        cts_high: bool,
+        dcd_high: bool,
+    ) -> bool {
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_set_modem_inputs(port, cts_high, dcd_high))
+            .unwrap_or(false)
+    }
+
     pub(in crate::app) fn asr_serial_rx_line_idle(&mut self) -> bool {
         let connection = self.asr_connection();
         self.serial_rx_line_idle_at(connection)
