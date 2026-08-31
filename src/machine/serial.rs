@@ -1,10 +1,19 @@
 use std::collections::VecDeque;
 
-/// Byte-level state of the emulated Altair serial interface.
+// Keep the audited COM2502 implementation next to the legacy byte-level
+// SerialPort while the 88-SIO production path is migrated in controlled steps.
+// Exposing it only to the parent machine module prevents application code from
+// bypassing the S-100 board wrapper.
+#[path = "sio.rs"]
+pub(super) mod sio;
+
+/// Byte-level state retained temporarily for serial paths that have not yet
+/// migrated to a board-owned UART implementation.
 ///
-/// The receive side may buffer host-originated input. The transmit side behaves
-/// as a one-byte holding register: guest software observes BUSY until the active
-/// endpoint explicitly completes the pending character.
+/// The audited 88-SIO no longer belongs conceptually to this type; its finite
+/// COM2502 implementation is `serial::sio::SioPort` above. Keeping this legacy
+/// helper during the staged migration avoids mixing a core-chip rewrite with a
+/// large S-100 decoder change in one untestable commit.
 #[derive(Default)]
 pub(super) struct SerialPort {
     rx: VecDeque<u8>,
@@ -56,7 +65,7 @@ impl SerialPort {
     }
 
     /// Correct software polls READY before writing. Preserve the previous
-    /// hardware model by replacing an outstanding byte on an unchecked write.
+    /// byte-level model by replacing an outstanding byte on an unchecked write.
     pub(super) fn write_tx(&mut self, byte: u8) {
         self.tx.clear();
         self.tx.push_back(byte);
