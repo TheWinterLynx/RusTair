@@ -120,6 +120,37 @@ impl TwoSioInterruptTarget {
         }
     }
 
+    pub const fn persistence_key(self) -> &'static str {
+        match self {
+            Self::Disconnected => "disconnected",
+            Self::Pint => "pint",
+            Self::Vi0 => "vi0",
+            Self::Vi1 => "vi1",
+            Self::Vi2 => "vi2",
+            Self::Vi3 => "vi3",
+            Self::Vi4 => "vi4",
+            Self::Vi5 => "vi5",
+            Self::Vi6 => "vi6",
+            Self::Vi7 => "vi7",
+        }
+    }
+
+    pub fn from_persistence_key(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "disconnected" | "none" => Some(Self::Disconnected),
+            "pint" => Some(Self::Pint),
+            "vi0" => Some(Self::Vi0),
+            "vi1" => Some(Self::Vi1),
+            "vi2" => Some(Self::Vi2),
+            "vi3" => Some(Self::Vi3),
+            "vi4" => Some(Self::Vi4),
+            "vi5" => Some(Self::Vi5),
+            "vi6" => Some(Self::Vi6),
+            "vi7" => Some(Self::Vi7),
+            _ => None,
+        }
+    }
+
     pub const fn drives_pint(self) -> bool { matches!(self, Self::Pint) }
 
     pub const fn vector_level(self) -> Option<u8> {
@@ -327,5 +358,17 @@ mod tests {
         let wiring = TwoSioInterruptWiring::default();
         assert_eq!(wiring.port0, TwoSioInterruptTarget::Pint);
         assert_eq!(wiring.port1, TwoSioInterruptTarget::Pint);
+    }
+
+    #[test]
+    fn interrupt_target_persistence_keys_round_trip_and_reject_unknown_values() {
+        for target in TwoSioInterruptTarget::ALL {
+            assert_eq!(
+                TwoSioInterruptTarget::from_persistence_key(target.persistence_key()),
+                Some(target)
+            );
+        }
+        assert_eq!(TwoSioInterruptTarget::from_persistence_key("NONE"), Some(TwoSioInterruptTarget::Disconnected));
+        assert_eq!(TwoSioInterruptTarget::from_persistence_key("irq7"), None);
     }
 }
