@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
+use crate::app::asr33_state::{ReaderControlMode, TapeBitOrder, TapeTransportSpeed};
 use crate::config::TerminalDuplex;
 
 impl RusTairApp {
@@ -9,24 +9,31 @@ impl RusTairApp {
     }
 
     fn update_paper_tape_reader(&mut self) {
-        if !self.asr33.reader_running {
+        // The reader motor is independent of the 8080 RUN latch. In manual mode
+        // it follows the local reader switch; with the MITS 88-TYA Reader
+        // Control option it follows the selected 88-2SIO MC6850 RTS pin.
+        if !self.asr_reader_motor_running() {
             return;
         }
 
         if !self.tty.tape_input_pending() {
-            self.asr33.reader_running = false;
+            // This is only the local switch. In 88-TYA mode the guest may leave
+            // RTS HIGH at end-of-tape; no host state is allowed to override it.
+            if self.asr33.reader_control == ReaderControlMode::Manual {
+                self.asr33.reader_running = false;
+            }
             self.status = "ASR-33 paper tape reader: end of tape".into();
             return;
         }
 
-        // Reading is a real LINE-mode input operation. Mounting/rewinding is
-        // allowed with the computer stopped, but physical tape cannot advance
-        // into the UART until the Altair is powered, RUNning and connected.
+        // A physical reader does not know whether the 8080 is RUNning. Once its
+        // motor is commanded on, a character can enter the serial line whenever
+        // the receiver shift path is free. RDR may still contain an older byte;
+        // allowing the next frame is required for genuine MC6850 OVRN behavior.
         if self.tty.mode != TtyMode::Line
             || !self.asr_connection().is_connected()
             || !self.machine.powered()
-            || !self.machine.running()
-            || !self.asr_serial_rx_empty()
+            || !self.asr_serial_rx_line_idle()
         {
             return;
         }
@@ -47,7 +54,9 @@ impl RusTairApp {
         }
 
         if !self.tty.tape_input_pending() {
-            self.asr33.reader_running = false;
+            if self.asr33.reader_control == ReaderControlMode::Manual {
+                self.asr33.reader_running = false;
+            }
             self.status = "ASR-33 paper tape reader: end of tape".into();
         }
     }
@@ -174,7 +183,6 @@ impl RusTairApp {
             && self.tty.mode == TtyMode::Line
             && self.asr_connection().is_connected()
             && self.machine.powered()
-            && self.machine.running()
     }
 
     fn reader_state_label(&mut self) -> (&'static str, Color32) {
@@ -189,13 +197,6 @@ impl RusTairApp {
             return ("END", Color32::from_rgb(110, 190, 120));
         }
 
-        if !self.asr33.reader_running {
-            return if self.tty.tape_input_position() == 0 {
-                ("READY", Color32::from_rgb(110, 190, 120))
-            } else {
-                ("PAUSED", Color32::from_rgb(220, 170, 70))
-            };
-        }
         if self.tty.mode != TtyMode::Line {
             return ("WAIT LINE", Color32::from_rgb(220, 170, 70));
         }
@@ -205,11 +206,25 @@ impl RusTairApp {
         if !self.machine.powered() {
             return ("WAIT POWER", Color32::from_rgb(220, 170, 70));
         }
-        if !self.machine.running() {
-            return ("WAIT RUN", Color32::from_rgb(220, 170, 70));
+
+        match self.asr33.reader_control {
+            ReaderControlMode::Manual if !self.asr33.reader_running => {
+                return if self.tty.tape_input_position() == 0 {
+                    ("READY", Color32::from_rgb(110, 190, 120))
+                } else {
+                    ("PAUSED", Color32::from_rgb(220, 170, 70))
+                };
+            }
+            ReaderControlMode::Mits88TyaRts => match self.asr_serial_rts_high() {
+                None => return ("WAIT RTS SOURCE", Color32::from_rgb(220, 170, 70)),
+                Some(false) => return ("WAIT RTS LOW", Color32::from_rgb(220, 170, 70)),
+                Some(true) => {}
+            },
+            ReaderControlMode::Manual => {}
         }
-        if !self.asr_serial_rx_empty() {
-            return ("WAIT GUEST RX", Color32::from_rgb(235, 145, 65));
+
+        if !self.asr_serial_rx_line_idle() {
+            return ("RX FRAME", Color32::from_rgb(235, 145, 65));
         }
         ("READING", Color32::from_rgb(110, 190, 120))
     }
@@ -325,9 +340,28 @@ impl RusTairApp {
             self.load_paper_tape();
         }
 
+        ui.label("Control:");
+        let current_control = self.asr33.reader_control;
+        let mut selected_control = current_control;
+        egui::ComboBox::from_id_salt("asr33-reader-control")
+            .selected_text(current_control.label())
+            .show_ui(ui, |ui| {
+                for control in ReaderControlMode::ALL {
+                    ui.selectable_value(&mut selected_control, control, control.label());
+                }
+            });
+        if selected_control != current_control {
+            self.asr33.reader_control = selected_control;
+            self.asr33.last_reader_tick = Instant::now()
+                .checked_sub(self.asr33.reader_speed.char_time())
+                .unwrap_or_else(Instant::now);
+            self.status = format!("ASR-33 reader control: {}", selected_control.label());
+        }
+
+        let manual = self.asr33.reader_control == ReaderControlMode::Manual;
         let can_run = self.reader_can_run();
         let read = ui.add_enabled(
-            can_run && !self.asr33.reader_running,
+            manual && can_run && !self.asr33.reader_running,
             egui::Button::new(if self.tty.tape_input_position() == 0 { "Read" } else { "Resume" }),
         );
         if read.clicked() {
@@ -338,13 +372,17 @@ impl RusTairApp {
             self.audio.play_once("assets/click.mp3");
             self.status = format!("ASR-33 reader started — {}", self.asr33.reader_speed.label());
         }
-        if !can_run {
+        if !manual {
             read.on_disabled_hover_text(
-                "Reading requires a mounted tape, ASR-33 LINE mode, a connected serial port, and an Altair that is powered and RUNning.",
+                "MITS 88-TYA Reader Control is wired to the selected 88-2SIO MC6850 RTS output. Use guest control value 51h (121 octal) for RTS HIGH / reader run, and 11h (021 octal) for RTS LOW / stop.",
+            );
+        } else if !can_run {
+            read.on_disabled_hover_text(
+                "Manual reading requires a mounted tape, ASR-33 LINE mode, a connected serial port, and Altair power. CPU RUN is not a physical reader requirement.",
             );
         }
 
-        if ui.add_enabled(self.asr33.reader_running, egui::Button::new("Pause")).clicked() {
+        if ui.add_enabled(manual && self.asr33.reader_running, egui::Button::new("Pause")).clicked() {
             self.asr33.reader_running = false;
             self.audio.play_once("assets/click.mp3");
             self.status = "ASR-33 paper tape reader paused".into();
@@ -402,8 +440,17 @@ impl RusTairApp {
 
         let (reader_state, state_color) = self.reader_state_label();
         let state = ui.colored_label(state_color, reader_state);
-        if reader_state == "WAIT GUEST RX" {
-            state.on_hover_text("The reader has already placed the displayed byte in the emulated UART. It cannot advance until the program running on the Altair reads that RX byte from the selected serial port.");
+        match reader_state {
+            "RX FRAME" => {
+                state.on_hover_text("A character is currently traversing the emulated serial receive line / MC6850 receive shift path. RDR may independently contain an older unread character.");
+            }
+            "WAIT RTS LOW" => {
+                state.on_hover_text("88-TYA Reader Control is active and the selected MC6850 RTS output is physically LOW. Guest control value 51h / 121 octal raises RTS and starts ReaderRun+.");
+            }
+            "WAIT RTS SOURCE" => {
+                state.on_hover_text("88-TYA Reader Control requires an ASR-33 cable connected to an installed 88-2SIO MC6850 channel. The 88-SIO does not expose these MC6850 RTS pins.");
+            }
+            _ => {}
         }
     }
 
@@ -501,17 +548,15 @@ impl RusTairApp {
 
     fn request_tape_transport_repaint(&mut self, ctx: &egui::Context) {
         // Do not wake the viewport at the media cadence while a transport is
-        // physically blocked. User input or the running guest will repaint us
-        // when the condition changes. This is especially important on native
-        // child viewports, where pointless timer wakeups make window dragging
-        // visibly step at the tape cadence.
-        let reader_can_advance = self.asr33.reader_running
+        // physically blocked. CPU RUN is intentionally absent: the reader motor
+        // and 88-2SIO oscillator remain physical hardware while the CPU is stopped.
+        let reader_motor_running = self.asr_reader_motor_running();
+        let reader_can_advance = reader_motor_running
             && self.tty.tape_input_pending()
             && self.tty.mode == TtyMode::Line
             && self.asr_connection().is_connected()
             && self.machine.powered()
-            && self.machine.running()
-            && self.asr_serial_rx_empty();
+            && self.asr_serial_rx_line_idle();
         let reader = reader_can_advance.then(|| self.asr33.reader_speed.char_time());
 
         let punch_can_advance = self.asr33.punch_running
@@ -558,9 +603,18 @@ impl RusTairApp {
                 self.asr33.duplex.label()
             };
             let (reader, _) = self.reader_state_label();
+            let reader_control = self.asr33.reader_control.label();
+            let rts = match self.asr33.reader_control {
+                ReaderControlMode::Manual => "manual",
+                ReaderControlMode::Mits88TyaRts => match self.asr_serial_rts_high() {
+                    Some(true) => "RTS HIGH",
+                    Some(false) => "RTS LOW",
+                    None => "no RTS",
+                },
+            };
             let punch = if self.asr33.punch_running { "PUNCH" } else { "STOP" };
             ui.small(format!(
-                "ASR-33 {}  |  {}  |  {}  |  {}  |  RX {}  |  TX {}  |  READER {} {}  |  PUNCH {} {}  |  column {}/{}",
+                "ASR-33 {}  |  {}  |  {}  |  {}  |  RX {}  |  TX {}  |  READER {} {} [{}; {}]  |  PUNCH {} {}  |  column {}/{}",
                 match self.tty.mode {
                     TtyMode::Off => "OFF",
                     TtyMode::Line => "LINE",
@@ -573,6 +627,8 @@ impl RusTairApp {
                 tx,
                 reader,
                 self.asr33.reader_speed.short_label(),
+                reader_control,
+                rts,
                 punch,
                 self.asr33.punch_speed.short_label(),
                 self.tty.column,
