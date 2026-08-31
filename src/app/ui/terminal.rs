@@ -79,12 +79,13 @@ impl RusTairApp {
 
     fn draw_terminal_connection_selector(&mut self, ui: &mut egui::Ui) {
         let board = self.config.machine.serial_board;
+        let straps = self.config.machine.two_sio_straps;
         let current = self.terminal_connection();
         let mut selected = current;
 
         ui.label("Connection:");
         egui::ComboBox::from_id_salt("text-terminal-serial-connection")
-            .selected_text(Self::serial_connection_label(board, current))
+            .selected_text(Self::serial_connection_label(board, straps, current))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
                     &mut selected,
@@ -94,13 +95,13 @@ impl RusTairApp {
                 ui.selectable_value(
                     &mut selected,
                     SerialConnection::Port0,
-                    Self::serial_connection_label(board, SerialConnection::Port0),
+                    Self::serial_connection_label(board, straps, SerialConnection::Port0),
                 );
                 if board == SerialBoard::TwoSio88 {
                     ui.selectable_value(
                         &mut selected,
                         SerialConnection::Port1,
-                        Self::serial_connection_label(board, SerialConnection::Port1),
+                        Self::serial_connection_label(board, straps, SerialConnection::Port1),
                     );
                 }
             });
@@ -166,8 +167,11 @@ impl RusTairApp {
 
         egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
             let connection = self.terminal_connection();
-            let connection_label =
-                Self::serial_connection_label(self.config.machine.serial_board, connection);
+            let connection_label = Self::serial_connection_label(
+                self.config.machine.serial_board,
+                self.config.machine.two_sio_straps,
+                connection,
+            );
             let tx = if connection.is_connected() {
                 if self.terminal_serial_tx_busy() {
                     "BUSY"
