@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::{
-    ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig,
+    ComDataBits, ComFlowControl, ComModemInputMode, ComParity, ComStopBits, ExternalComConfig,
     ExternalSerialCharacterMode, TerminalDuplex,
 };
 use crate::io::com_serial::{ComSerialTransport, ComTransportState};
@@ -11,6 +11,11 @@ const COMMON_BAUD_RATES: [u32; 10] = [
     110, 300, 1_200, 2_400, 4_800, 9_600, 19_200, 38_400, 57_600, 115_200,
 ];
 
+/// `serialport` reports whether an RS-232 signal is asserted. The MC6850 CTS
+/// and DCD inputs are active LOW: asserted CTS/carrier therefore means a LOW
+/// TTL level at the ACIA pin, while deasserted means HIGH.
+const fn mc6850_active_low_pin_high(host_asserted: bool) -> bool { !host_asserted }
+
 pub(super) struct ExternalComState {
     pub(super) window_open: bool,
     pub(super) config: ExternalComConfig,
@@ -18,6 +23,7 @@ pub(super) struct ExternalComState {
     pub(super) available_ports: Vec<String>,
     pub(super) port_scan_error: Option<String>,
     tx_started: Option<Instant>,
+    last_connection: SerialConnection,
 }
 
 impl Default for ExternalComState {
@@ -29,6 +35,7 @@ impl Default for ExternalComState {
             available_ports: Vec::new(),
             port_scan_error: None,
             tx_started: None,
+            last_connection: SerialConnection::Disconnected,
         }
     }
 }
@@ -48,11 +55,50 @@ impl RusTairApp {
         if config.enabled { ctx.request_repaint_after(COM_POLL_INTERVAL); }
 
         let connection = self.external_com_connection();
+        let previous_connection = self.external_com.last_connection;
+        if previous_connection != connection {
+            // Removing a modem cable must not leave stale HIGH inputs behind.
+            // MITS requires unused 88-2SIO CTS/DCD inputs to be grounded.
+            if previous_connection.is_connected() {
+                let _ = self.serial_set_modem_inputs_at(previous_connection, false, false);
+            }
+            self.external_com.last_connection = connection;
+        }
+
         if !self.machine.powered() || !connection.is_connected() {
+            self.external_com.port.set_break_active(false);
+            if connection.is_connected() {
+                let _ = self.serial_set_modem_inputs_at(connection, false, false);
+            }
             self.external_com.port.clear_rx();
             self.external_com.reset_line_timing();
             return;
         }
+
+        // MC6850 BREAK is a continuous spacing level on Tx Data, not a byte.
+        // A physical COM endpoint can therefore project it directly onto the
+        // host serial driver's BREAK control.
+        let break_active = self.serial_break_active_at(connection).unwrap_or(false);
+        self.external_com.port.set_break_active(break_active);
+
+        // Default/no-modem wiring follows the MITS installation notice: both
+        // inputs are jumpered to ground. When host pins are selected, convert
+        // logical RS-232 assertion to the active-LOW MC6850 TTL input levels.
+        let (cts_high, dcd_high) = match config.modem_inputs {
+            ComModemInputMode::Grounded => (false, false),
+            ComModemInputMode::HostPins => self
+                .external_com
+                .port
+                .modem_pins_asserted()
+                .map(|(cts_asserted, dcd_asserted)| {
+                    (
+                        mc6850_active_low_pin_high(cts_asserted),
+                        mc6850_active_low_pin_high(dcd_asserted),
+                    )
+                })
+                .unwrap_or((false, false)),
+        };
+        let _ = self.serial_set_modem_inputs_at(connection, cts_high, dcd_high);
 
         if self.external_com.port.rx_pending() != 0 {
             // The OS has already paced the physical host link. We only prevent
@@ -167,6 +213,16 @@ impl RusTairApp {
                 for value in ComFlowControl::ALL { ui.selectable_value(&mut config.flow_control, value, value.label()); }
             });
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("88-2SIO CTS/DCD wiring:");
+            egui::ComboBox::from_id_salt("external-com-modem-inputs")
+                .selected_text(config.modem_inputs.label())
+                .show_ui(ui, |ui| {
+                    for value in ComModemInputMode::ALL {
+                        ui.selectable_value(&mut config.modem_inputs, value, value.label());
+                    }
+                });
+        });
         ui.horizontal(|ui| {
             ui.label("Character mode:");
             egui::ComboBox::from_id_salt("external-com-character-mode").selected_text(config.character_mode.label()).show_ui(ui, |ui| {
@@ -183,6 +239,8 @@ impl RusTairApp {
         if explanatory {
             ui.small("Framing configures the real host serial port. Character mode is a separate byte-level terminal model applied at the Altair boundary.");
             ui.small("COM RX is already physically paced by the host UART/driver, so RusTair does not add a second receive delay. A full MC6850 RDR does not pause the next frame; falling behind may set OVRN.");
+            ui.small("Grounded CTS/DCD reproduces the MITS-required jumpers for unconnected modem inputs. Host Pins reads actual host CTS/CD and converts RS-232 assertion to the MC6850 active-LOW pin levels.");
+            ui.small("MC6850 BREAK is projected as a real serial BREAK condition on the host COM line, never as a fabricated data byte.");
             ui.small("Altair TX-ready timing follows the selected real framing: start bit + data bits + optional parity + stop bits.");
             ui.small("Duplex describes the attached terminal. RusTair does not fabricate local-echo bytes; a physical terminal or host terminal program performs its own local echo when configured for half duplex.");
         }
@@ -223,7 +281,7 @@ impl RusTairApp {
             ComTransportState::Disabled => "COM endpoint: disabled".into(),
             ComTransportState::Closed => format!("COM endpoint: closed — {port}"),
             ComTransportState::Opening => format!("COM endpoint: opening {port}…"),
-            ComTransportState::Open => format!("COM endpoint: open {} — {} — {}", port, config.framing_label(), config.character_mode.label()),
+            ComTransportState::Open => format!("COM endpoint: open {} — {} — {} — {}", port, config.framing_label(), config.character_mode.label(), config.modem_inputs.label()),
             ComTransportState::Error => format!("COM endpoint: error — {port}"),
         }
     }
@@ -240,12 +298,18 @@ impl RusTairApp {
             ui.label("Connect a real RS-232/USB serial adapter, virtual COM pair or Unix serial device to one emulated MITS serial port.");
             ui.separator();
             let config = self.external_com.config.clone();
+            let host_pins = self.external_com.port.modem_pins_asserted();
+            let connection = self.external_com_connection();
+            let break_active = self.serial_break_active_at(connection);
 
             ui::collapsible_section(ui, "Transport state", true, |ui| {
                 egui::Grid::new("external-com-counters").num_columns(2).show(ui, |ui| {
                     ui.label("Host port"); ui.monospace(if config.port_name.is_empty() { "--" } else { config.port_name.as_str() }); ui.end_row();
                     ui.label("Framing"); ui.monospace(config.framing_label()); ui.end_row();
                     ui.label("Flow control"); ui.monospace(config.flow_control.label()); ui.end_row();
+                    ui.label("CTS/DCD wiring"); ui.monospace(config.modem_inputs.label()); ui.end_row();
+                    ui.label("Host CTS / CD"); ui.monospace(match host_pins { Some((cts, cd)) => format!("{} / {}", if cts { "ASSERTED" } else { "clear" }, if cd { "ASSERTED" } else { "clear" }), None => "unavailable".into() }); ui.end_row();
+                    ui.label("MC6850 BREAK"); ui.monospace(match break_active { Some(true) => "ACTIVE", Some(false) => "clear", None => "N/A" }); ui.end_row();
                     ui.label("Character mode"); ui.monospace(config.character_mode.label()); ui.end_row();
                     ui.label("Terminal duplex"); ui.monospace(config.duplex.label()); ui.end_row();
                     ui.label("Host RX bytes"); ui.monospace(self.external_com.port.rx_bytes().to_string()); ui.end_row();
@@ -270,6 +334,9 @@ impl RusTairApp {
                 ui.label("• The host COM device is a transport only; guest software still sees the selected 88-SIO/88-2SIO and its normal I/O addresses.");
                 ui.label("• The OS serial driver applies baud rate, data bits, parity, stop bits and flow control to the actual host port.");
                 ui.label("• Received host bytes enter the emulated receive line when its shift path is free; an unread MC6850 RDR does not stop a later frame and can therefore produce OVRN.");
+                ui.label("• With Host Pins selected, asserted host CTS/CD become LOW on the active-LOW MC6850 CTS/DCD inputs; deasserted host signals become HIGH.");
+                ui.label("• With Grounded selected, CTS and DCD remain LOW exactly as MITS specifies for unconnected inputs.");
+                ui.label("• MC6850 BREAK drives the host COM line's native BREAK control rather than inserting a byte into the stream.");
                 ui.label("• Guest TX-ready timing is based on the complete selected asynchronous frame, even if the host driver buffers the byte immediately.");
                 ui.label("• ASR-33 style strips bit 7 and uppercases host a-z on input. 7-bit ASCII preserves case. Raw 8-bit is byte-transparent.");
                 ui.label("• Duplex never creates extra serial traffic. Any half-duplex local echo belongs to the attached terminal or terminal application.");
@@ -292,5 +359,16 @@ impl RusTairApp {
                 if external_ctx.input(|input| input.viewport().close_requested()) { self.external_com.window_open = false; }
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_modem_assertion_maps_to_active_low_mc6850_pin() {
+        assert!(!mc6850_active_low_pin_high(true));
+        assert!(mc6850_active_low_pin_high(false));
     }
 }
