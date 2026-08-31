@@ -4,9 +4,19 @@ const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
 
 #[test]
 fn engine_recreation_reapplies_physical_interrupt_wiring() {
-    assert!(APP_SOURCE.contains(
-        "self.machine.configure_two_sio_interrupt_wiring(\n                    self.config.machine.two_sio_interrupt_wiring,"
-    ));
+    let start = APP_SOURCE
+        .find("fn select_emulation_engine")
+        .expect("app must own the engine-recreation boundary");
+    let tail = &APP_SOURCE[start..];
+    let end = tail
+        .find("fn apply_memory_configuration")
+        .expect("helper after engine-recreation boundary");
+    let function = &tail[..end];
+
+    assert!(function.contains("self.machine.replace_engine(engine)"));
+    assert!(function.contains("self.machine.configure_two_sio_straps"));
+    assert!(function.contains("self.machine.configure_two_sio_interrupt_wiring"));
+    assert!(function.contains("self.config.machine.two_sio_interrupt_wiring"));
 }
 
 #[test]
