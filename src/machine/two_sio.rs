@@ -49,9 +49,11 @@ pub(super) struct TwoSioPort {
     bit_phase_numerator: u64,
     tx_bits_remaining: u8,
     wire_tx: VecDeque<u8>,
+    /// Complete character currently traversing the external receive line / ACIA
+    /// receiver shift register. This is deliberately not RDR/RDRF: status bit 0
+    /// remains low until the configured serial frame has completed.
     rx_shift: Option<(u8, bool, bool)>,
     rx_bits_remaining: u8,
-    wire_rx: VecDeque<(u8, bool, bool)>,
 }
 
 impl TwoSioPort {
@@ -65,7 +67,6 @@ impl TwoSioPort {
             wire_tx: VecDeque::new(),
             rx_shift: None,
             rx_bits_remaining: 0,
-            wire_rx: VecDeque::new(),
         }
     }
 
@@ -81,12 +82,21 @@ impl TwoSioPort {
     pub(super) fn interrupt_request(&self) -> bool { self.acia.interrupt_request() }
     pub(super) fn receive_len(&self) -> usize { self.acia.receive_len() }
 
+    /// Host-endpoint receive-line occupancy, not MC6850 RDRF. Another physical
+    /// frame may start after the current frame finishes even if software has not
+    /// read the previous RDR byte; a later completed frame can therefore produce
+    /// the real MC6850 overrun condition instead of RDRF acting as fake flow control.
+    pub(super) fn receive_line_idle(&self) -> bool {
+        self.rx_shift.is_none()
+    }
+
     pub(super) fn write_control(&mut self, value: u8) {
         self.control = value;
         self.acia.write_control(value);
         if value & 0x03 == 0x03 {
             // Reset aborts the character currently inside the ACIA. Bytes that
-            // already left the shift register remain on the external wire queue.
+            // already left the transmit shift register remain on the external
+            // wire queue.
             self.bit_phase_numerator = 0;
             self.tx_bits_remaining = 0;
             self.rx_shift = None;
@@ -101,11 +111,17 @@ impl TwoSioPort {
         self.acia.write_data(value);
     }
 
-    /// A normal endpoint puts a character on the serial line. It must traverse
-    /// a complete configured receive frame before the MC6850 can set RDRF.
-    pub(super) fn queue_received_character(&mut self, value: u8) {
-        self.wire_rx.push_back((value, false, false));
-        self.start_receiver_if_idle();
+    /// A normal endpoint starts one physical serial character. There is no hidden
+    /// byte FIFO in front of the MC6850 receiver. Callers should check
+    /// `receive_line_idle`; an overlapping host presentation is rejected rather
+    /// than silently accumulating a non-historical queue behind the ACIA.
+    pub(super) fn queue_received_character(&mut self, value: u8) -> bool {
+        if !self.receive_line_idle() {
+            return false;
+        }
+        self.rx_shift = Some((value, false, false));
+        self.rx_bits_remaining = self.acia.frame_bits();
+        true
     }
 
     /// The I/O Inspector explicitly says “directly into UART RX”. This debugger
@@ -119,7 +135,6 @@ impl TwoSioPort {
         self.acia.clear_receive_for_debugger();
         self.rx_shift = None;
         self.rx_bits_remaining = 0;
-        self.wire_rx.clear();
     }
 
     pub(super) fn clear_transmit_for_debugger(&mut self) {
@@ -170,13 +185,6 @@ impl TwoSioPort {
         }
     }
 
-    fn start_receiver_if_idle(&mut self) {
-        if self.rx_shift.is_some() { return; }
-        let Some(next) = self.wire_rx.pop_front() else { return; };
-        self.rx_shift = Some(next);
-        self.rx_bits_remaining = self.acia.frame_bits();
-    }
-
     fn transmitter_bit_boundary(&mut self) {
         if self.acia.tx_shift_front().is_none() {
             if self.acia.transfer_tdr_to_shift_if_idle() {
@@ -216,9 +224,6 @@ impl TwoSioPort {
             self.rx_bits_remaining = 0;
             self.rx_shift = None;
             self.acia.receive_character(value, framing_error, parity_error);
-            // A physically back-to-back next start bit can begin at this same
-            // character boundary.
-            self.start_receiver_if_idle();
         }
     }
 
@@ -293,14 +298,46 @@ mod tests {
     fn receive_character_reaches_rdr_only_after_full_card_timed_frame() {
         let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
         port.write_control(0x95); // RX IRQ, 8N1, /16 => 110 baud
-        port.queue_received_character(b'R');
+        assert!(port.queue_received_character(b'R'));
+        assert!(!port.receive_line_idle());
         assert_eq!(port.peek_status() & 0x81, 0);
 
         port.advance_t_states(181_818, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x81, 0);
+        assert!(!port.receive_line_idle());
         port.advance_t_states(1, TWO_MHZ);
+        assert!(port.receive_line_idle());
         assert_eq!(port.peek_status() & 0x81, 0x81);
         assert_eq!(port.read_data(), b'R');
+    }
+
+    #[test]
+    fn receive_line_never_hides_a_second_character_queue() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x15);
+        assert!(port.queue_received_character(b'A'));
+        assert!(!port.queue_received_character(b'B'));
+
+        port.advance_t_states(181_819, TWO_MHZ);
+        assert!(port.receive_line_idle());
+        assert_eq!(port.read_data(), b'A');
+        assert_eq!(port.peek_status() & 0x01, 0);
+    }
+
+    #[test]
+    fn unread_rdr_does_not_block_next_physical_frame_and_can_overrun() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x15);
+        assert!(port.queue_received_character(b'A'));
+        port.advance_t_states(181_819, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x01, 0x01);
+        assert!(port.receive_line_idle(), "RDRF must not masquerade as line busy");
+
+        assert!(port.queue_received_character(b'B'));
+        port.advance_t_states(181_819, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x21, 0x01, "overrun remains latent until valid RDR is read");
+        assert_eq!(port.read_data(), b'A');
+        assert_eq!(port.peek_status() & 0x21, 0x21);
     }
 
     #[test]
