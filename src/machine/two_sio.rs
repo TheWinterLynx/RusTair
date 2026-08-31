@@ -81,6 +81,16 @@ impl TwoSioPort {
     pub(super) fn peek_data(&self) -> u8 { self.acia.peek_data() }
     pub(super) fn interrupt_request(&self) -> bool { self.acia.interrupt_request() }
 
+    /// Physical modem/control pins of this MC6850 channel. The 88-2SIO board
+    /// does not reinterpret their polarity: attached cables/peripherals decide
+    /// what a TTL HIGH/LOW means at the far end.
+    pub(super) fn rts_high(&self) -> bool { self.acia.rts_high() }
+    pub(super) fn break_active(&self) -> bool { self.acia.break_active() }
+    pub(super) fn cts_high(&self) -> bool { self.acia.cts_high() }
+    pub(super) fn dcd_high(&self) -> bool { self.acia.dcd_high() }
+    pub(super) fn set_cts_high(&mut self, high: bool) { self.acia.set_cts_high(high); }
+    pub(super) fn set_dcd_high(&mut self, high: bool) { self.acia.set_dcd_high(high); }
+
     /// Host-facing pending receive depth. This intentionally counts a character
     /// still in the timed receiver shift path as pending even while MC6850 RDRF
     /// is zero. Guest status remains governed only by `peek_status/read_status`.
@@ -261,6 +271,45 @@ mod tests {
     use super::*;
 
     const TWO_MHZ: u32 = 2_000_000;
+
+    #[test]
+    fn modem_control_pins_follow_mc6850_transmitter_control_bits() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x11);
+        assert!(!port.rts_high());
+        assert!(!port.break_active());
+        assert!(!port.cts_high());
+        assert!(!port.dcd_high());
+
+        port.write_control(0x51);
+        assert!(port.rts_high(), "MITS 121-octal/51h reader-control value must drive RTS physically HIGH");
+        assert!(!port.break_active());
+
+        port.write_control(0x71);
+        assert!(!port.rts_high(), "BREAK encoding drives RTS LOW");
+        assert!(port.break_active());
+    }
+
+    #[test]
+    fn external_cts_and_dcd_levels_reach_the_acia_status_logic() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.write_control(0x95); // RX IRQ enabled
+        port.set_cts_high(true);
+        assert!(port.cts_high());
+        assert_eq!(port.peek_status() & 0x0a, 0x08);
+        port.set_cts_high(false);
+        assert_eq!(port.peek_status() & 0x08, 0);
+
+        port.set_dcd_high(true);
+        assert!(port.dcd_high());
+        assert_eq!(port.peek_status() & 0x84, 0x84);
+        port.set_dcd_high(false);
+        assert!(!port.dcd_high());
+        assert_eq!(port.peek_status() & 0x84, 0x84, "DCD transition remains latched until status/data clear sequence");
+        let _ = port.read_status();
+        let _ = port.read_data();
+        assert_eq!(port.peek_status() & 0x84, 0);
+    }
 
     #[test]
     fn tx_tdr_waits_for_next_bit_clock_then_tdre_returns_before_character_finishes() {
