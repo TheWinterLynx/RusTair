@@ -227,22 +227,86 @@ impl eframe::App for RusTairApp {
 
                     ui.menu_button("Serial board", |ui| {
                         let current = self.config.machine.serial_board;
+                        let straps = self.config.machine.two_sio_straps;
                         ui.label(format!("Installed board: {}", current.label()));
                         match current {
                             SerialBoard::Sio88 => {
                                 ui.small(format!("Port 0: {:02X}h status / {:02X}h data", current.status_port(), current.data_port()));
                             }
                             SerialBoard::TwoSio88 => {
-                                ui.small(format!("Port 0: {:02X}h status/control / {:02X}h data", current.status_port(), current.data_port()));
-                                ui.small(format!("Port 1: {:02X}h status/control / {:02X}h data", current.port1_status_port().unwrap_or(0), current.port1_data_port().unwrap_or(0)));
+                                ui.small(format!(
+                                    "Port 0: {:02X}h status/control / {:02X}h data · {} baud-generator tap",
+                                    straps.address.port0_status(), straps.address.port0_data(), straps.port0_baud.label()
+                                ));
+                                ui.small(format!(
+                                    "Port 1: {:02X}h status/control / {:02X}h data · {} baud-generator tap",
+                                    straps.address.port1_status(), straps.address.port1_data(), straps.port1_baud.label()
+                                ));
                             }
                         }
+
+                        if current == SerialBoard::TwoSio88 {
+                            ui.separator();
+                            ui.label("Physical 88-2SIO straps:");
+                            let powered = self.machine.powered();
+                            ui.add_enabled_ui(!powered, |ui| {
+                                ui.menu_button(
+                                    format!("A2-A7 address block: {:02X}h-{:02X}h", straps.address.base(), straps.address.base() + 3),
+                                    |ui| {
+                                        for base in (0u8..=0xf8).step_by(4) {
+                                            let block = crate::config::TwoSioAddressBlock::try_new(base)
+                                                .expect("aligned non-FF 88-2SIO block");
+                                            let selected = straps.address == block;
+                                            let label = format!("{:02X}h-{:02X}h", base, base + 3);
+                                            if ui.selectable_label(selected, label).clicked() {
+                                                let mut next = straps;
+                                                next.address = block;
+                                                self.apply_two_sio_straps(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                                ui.menu_button(
+                                    format!("Port 0 baud tap: {}", straps.port0_baud.label()),
+                                    |ui| {
+                                        for tap in crate::config::TwoSioBaudTap::ALL {
+                                            if ui.selectable_label(straps.port0_baud == tap, tap.label()).clicked() {
+                                                let mut next = straps;
+                                                next.port0_baud = tap;
+                                                self.apply_two_sio_straps(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                                ui.menu_button(
+                                    format!("Port 1 baud tap: {}", straps.port1_baud.label()),
+                                    |ui| {
+                                        for tap in crate::config::TwoSioBaudTap::ALL {
+                                            if ui.selectable_label(straps.port1_baud == tap, tap.label()).clicked() {
+                                                let mut next = straps;
+                                                next.port1_baud = tap;
+                                                self.apply_two_sio_straps(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                            if powered {
+                                ui.small("POWER OFF required: these controls represent moving physical jumpers on the 88-2SIO board.");
+                            }
+                            ui.small("A2-A7 select one four-port block; A0/A1 select the two ACIAs/registers inside it. FCh-FFh is intentionally unavailable because FFh belongs to the Altair front-panel sense-switch input.");
+                            ui.small("The selected baud tap is the board clock source. MC6850 CR1:CR0 still selects /1, /16 or /64; the tap is not a terminal-speed override.");
+                        }
+
                         ui.separator();
                         ui.label("External wiring:");
-                        ui.small(format!("ASR-33 → {}", Self::serial_connection_label(current, self.asr_connection())));
-                        ui.small(format!("Text Terminal → {}", Self::serial_connection_label(current, self.terminal_connection())));
-                        ui.small(format!("External TCP → {}", Self::serial_connection_label(current, self.external_tcp_connection())));
-                        ui.small(format!("External COM → {}", Self::serial_connection_label(current, self.external_com_connection())));
+                        ui.small(format!("ASR-33 → {}", Self::serial_connection_label(current, straps, self.asr_connection())));
+                        ui.small(format!("Text Terminal → {}", Self::serial_connection_label(current, straps, self.terminal_connection())));
+                        ui.small(format!("External TCP → {}", Self::serial_connection_label(current, straps, self.external_tcp_connection())));
+                        ui.small(format!("External COM → {}", Self::serial_connection_label(current, straps, self.external_com_connection())));
                         ui.separator();
                         for serial_board in SerialBoard::ALL {
                             let selected = current == serial_board;
