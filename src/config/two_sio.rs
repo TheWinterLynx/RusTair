@@ -1,9 +1,14 @@
-//! Physical strap configuration for the MITS 88-2SIO board.
+//! Physical configuration for the MITS 88-2SIO board.
 //!
 //! The March 1977 MITS manual states that A2-A7 select one aligned block of
 //! four I/O addresses and A0/A1 select the ACIA register/port within that block.
 //! Address FFh belongs to the Altair front-panel sense switches, so RusTair does
 //! not offer the FCh-FFh block as an installable 88-2SIO configuration.
+//!
+//! Interrupt wiring is deliberately represented separately from address/baud
+//! straps. The assembly manual exposes DI (Port 0) and EI (Port 1) pads that may
+//! be left disconnected, wired to the single PINT line, or wired to one of the
+//! eight 88-Vector Interrupt inputs VI0..VI7.
 
 /// One of the eight baud-generator taps silk-screened on the MITS 88-2SIO.
 ///
@@ -65,6 +70,102 @@ impl Default for TwoSioBaudTap {
     fn default() -> Self { Self::Baud110 }
 }
 
+/// Where one MC6850 IRQ output is physically wired on the 88-2SIO PCB.
+///
+/// `Pint` means the corresponding DI/EI pad is hard-wired to the Altair's
+/// single processor interrupt request line. `Vi0`..`Vi7` mean the pad is wired
+/// to an 88-Vector Interrupt input; an installed 88-VI board is a separate
+/// system component and is responsible for turning that level into the opcode
+/// presented during interrupt acknowledge.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TwoSioInterruptTarget {
+    Disconnected,
+    Pint,
+    Vi0,
+    Vi1,
+    Vi2,
+    Vi3,
+    Vi4,
+    Vi5,
+    Vi6,
+    Vi7,
+}
+
+impl TwoSioInterruptTarget {
+    pub const ALL: [Self; 10] = [
+        Self::Disconnected,
+        Self::Pint,
+        Self::Vi0,
+        Self::Vi1,
+        Self::Vi2,
+        Self::Vi3,
+        Self::Vi4,
+        Self::Vi5,
+        Self::Vi6,
+        Self::Vi7,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Disconnected => "No interrupt connection",
+            Self::Pint => "PINT — single-level processor interrupt",
+            Self::Vi0 => "88-VI level 0 (VI0)",
+            Self::Vi1 => "88-VI level 1 (VI1)",
+            Self::Vi2 => "88-VI level 2 (VI2)",
+            Self::Vi3 => "88-VI level 3 (VI3)",
+            Self::Vi4 => "88-VI level 4 (VI4)",
+            Self::Vi5 => "88-VI level 5 (VI5)",
+            Self::Vi6 => "88-VI level 6 (VI6)",
+            Self::Vi7 => "88-VI level 7 (VI7)",
+        }
+    }
+
+    pub const fn drives_pint(self) -> bool { matches!(self, Self::Pint) }
+
+    pub const fn vector_level(self) -> Option<u8> {
+        match self {
+            Self::Vi0 => Some(0),
+            Self::Vi1 => Some(1),
+            Self::Vi2 => Some(2),
+            Self::Vi3 => Some(3),
+            Self::Vi4 => Some(4),
+            Self::Vi5 => Some(5),
+            Self::Vi6 => Some(6),
+            Self::Vi7 => Some(7),
+            Self::Disconnected | Self::Pint => None,
+        }
+    }
+}
+
+impl Default for TwoSioInterruptTarget {
+    fn default() -> Self {
+        // Preserve RusTair's pre-routing behavior once the new wiring is applied:
+        // both ACIAs historically projected to the shared PINT path in the model.
+        Self::Pint
+    }
+}
+
+/// Physical DI/EI jumper wiring for both ACIAs.
+///
+/// MITS names the Port 0 request pad DI and the Port 1 request pad EI. Each is
+/// independently wireable, so one port may be disconnected while the other
+/// uses PINT, or the two may feed different 88-VI levels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct TwoSioInterruptWiring {
+    pub port0: TwoSioInterruptTarget,
+    pub port1: TwoSioInterruptTarget,
+}
+
+impl TwoSioInterruptWiring {
+    pub const fn target(self, index: usize) -> Option<TwoSioInterruptTarget> {
+        match index {
+            0 => Some(self.port0),
+            1 => Some(self.port1),
+            _ => None,
+        }
+    }
+}
+
 /// A2-A7 address-select strap block on an 88-2SIO.
 ///
 /// `base` is always aligned to four. Valid installable bases are 00h through
@@ -107,7 +208,11 @@ impl Default for TwoSioAddressBlock {
     fn default() -> Self { Self::DEFAULT }
 }
 
-/// Physical installation straps for one MITS 88-2SIO board.
+/// Physical address and baud straps for one MITS 88-2SIO board.
+///
+/// Interrupt DI/EI wiring is intentionally a separate `TwoSioInterruptWiring`
+/// value because the assembly manual treats it as signal interconnect wiring,
+/// not as part of A2-A7 or the baud-generator strap bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TwoSioStraps {
     pub address: TwoSioAddressBlock,
@@ -179,5 +284,48 @@ mod tests {
     fn physical_taps_are_the_eight_mits_silkscreen_rates() {
         let rates = TwoSioBaudTap::ALL.map(TwoSioBaudTap::baud);
         assert_eq!(rates, [110, 150, 300, 1_200, 1_800, 2_400, 4_800, 9_600]);
+    }
+
+    #[test]
+    fn interrupt_wiring_models_disconnected_pint_and_all_eight_vi_levels() {
+        assert_eq!(TwoSioInterruptTarget::ALL.len(), 10);
+        assert!(!TwoSioInterruptTarget::Disconnected.drives_pint());
+        assert!(TwoSioInterruptTarget::Pint.drives_pint());
+        assert_eq!(TwoSioInterruptTarget::Disconnected.vector_level(), None);
+        assert_eq!(TwoSioInterruptTarget::Pint.vector_level(), None);
+        for (level, target) in [
+            TwoSioInterruptTarget::Vi0,
+            TwoSioInterruptTarget::Vi1,
+            TwoSioInterruptTarget::Vi2,
+            TwoSioInterruptTarget::Vi3,
+            TwoSioInterruptTarget::Vi4,
+            TwoSioInterruptTarget::Vi5,
+            TwoSioInterruptTarget::Vi6,
+            TwoSioInterruptTarget::Vi7,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(target.vector_level(), Some(level as u8));
+            assert!(!target.drives_pint());
+        }
+    }
+
+    #[test]
+    fn interrupt_wiring_is_independent_for_di_and_ei() {
+        let wiring = TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Disconnected,
+            port1: TwoSioInterruptTarget::Vi3,
+        };
+        assert_eq!(wiring.target(0), Some(TwoSioInterruptTarget::Disconnected));
+        assert_eq!(wiring.target(1), Some(TwoSioInterruptTarget::Vi3));
+        assert_eq!(wiring.target(2), None);
+    }
+
+    #[test]
+    fn interrupt_wiring_default_preserves_previous_pint_projection() {
+        let wiring = TwoSioInterruptWiring::default();
+        assert_eq!(wiring.port0, TwoSioInterruptTarget::Pint);
+        assert_eq!(wiring.port1, TwoSioInterruptTarget::Pint);
     }
 }
