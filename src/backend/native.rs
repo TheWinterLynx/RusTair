@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig, TwoSioInterruptWiring,
+    TwoSioStraps,
 };
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
@@ -270,6 +271,16 @@ impl MachineBackend for NativeMachineBackend {
         Ok(())
     }
     fn serial_board(&mut self) -> BackendResult<SerialBoard> { Ok(self.machine.serial_board()) }
+    fn configure_sio_hardware(&mut self, config: SioHardwareConfig) -> BackendResult<()> {
+        if self.machine.sio_hardware() != config {
+            self.machine.configure_sio_hardware(config);
+            self.idle_chassis_clock_units = 0;
+            self.last_panel_commit_cpu_t_states = None;
+            self.reset_debugger_epoch();
+        }
+        Ok(())
+    }
+    fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> { Ok(self.machine.sio_hardware()) }
     fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) -> BackendResult<()> {
         if self.machine.two_sio_straps() != straps {
             self.machine.configure_two_sio_straps(straps);
