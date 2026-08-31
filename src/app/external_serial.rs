@@ -60,7 +60,10 @@ impl RusTairApp {
             self.external_serial.rx_next_at = None;
         } else {
             if self.external_serial.rx_next_at.is_none() { self.external_serial.rx_next_at = Some(now); }
-            if self.serial_rx_empty_at(connection) {
+            // The host source is gated by the serial line / receive shift path,
+            // not by RDRF. A full RDR does not stop the next physical frame; if
+            // the guest is too slow the MC6850 must generate OVRN itself.
+            if self.serial_rx_line_idle_at(connection) {
                 let due_in = self.external_serial.rx_next_at
                     .and_then(|due| due.checked_duration_since(now)).unwrap_or(Duration::ZERO);
                 if due_in.is_zero() {
@@ -287,7 +290,7 @@ impl RusTairApp {
                 ui.label("• TCP is only the host transport; the guest still sees the selected 88-SIO/88-2SIO UART and normal I/O addresses.");
                 ui.label("• Duplex controls how the attached terminal should display typed input. RusTair does not create local-echo serial bytes.");
                 ui.label("• ASR-33 style masks bit 7 in both directions and uppercases host a-z on input; 7-bit ASCII preserves input case; Raw 8-bit performs no transformation.");
-                ui.label("• TCP may receive pasted text instantly, but bytes enter the UART at the configured line speed and only when its receive register is free.");
+                ui.label("• TCP may receive pasted text instantly, but bytes enter the physical receive line at the configured endpoint rate; a full MC6850 RDR does not pause the wire and may therefore produce OVRN.");
                 ui.label("• Guest transmit-ready timing is paced even when no TCP client is connected.");
                 ui.label("• Multiple-client mode broadcasts guest output to all clients and merges their input behind the one External TCP endpoint.");
             });
