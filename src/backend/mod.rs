@@ -209,6 +209,9 @@ pub trait MachineBackend {
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize>;
+    fn serial_rx_line_idle(&mut self, _port: BackendSerialPort) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "query serial RX line", engine: self.engine() })
+    }
     fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
@@ -367,7 +370,9 @@ pub trait MachineBackend {
 pub enum BackendCreateError { Unavailable(EmulationEngine) }
 impl fmt::Display for BackendCreateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self { Self::Unavailable(engine) => write!(f, "{} does not support {operation}", engine.label(), operation = "selected engine") }
+        match self {
+            Self::Unavailable(engine) => write!(f, "{} backend is not available in this build", engine.label()),
+        }
     }
 }
 impl std::error::Error for BackendCreateError {}
@@ -440,6 +445,7 @@ impl BackendHost {
     pub fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) { Self::call(self.backend.serial_receive(port, byte)); }
     pub fn serial_rx_empty(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_empty(port)) }
     pub fn serial_rx_len(&mut self, port: BackendSerialPort) -> usize { Self::call(self.backend.serial_rx_len(port)) }
+    pub fn serial_rx_line_idle(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_line_idle(port)) }
     pub fn serial_tx_busy(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_tx_busy(port)) }
     pub fn serial_tx_front(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_front(port)) }
     pub fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_complete(port)) }
