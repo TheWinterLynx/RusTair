@@ -144,6 +144,31 @@ impl IoDevices {
 
     pub(super) fn serial_board(&self) -> SerialBoard { self.serial_board }
 
+    fn two_sio_port(&self, index: usize) -> Option<&TwoSioPort> {
+        (self.serial_board == SerialBoard::TwoSio88)
+            .then(|| self.two_sio.get(index))
+            .flatten()
+    }
+
+    fn two_sio_port_mut(&mut self, index: usize) -> Option<&mut TwoSioPort> {
+        if self.serial_board != SerialBoard::TwoSio88 { return None; }
+        self.two_sio.get_mut(index)
+    }
+
+    /// `(RTS high, BREAK active, CTS high, DCD high)` at the physical MC6850
+    /// pins. None means there is no 88-2SIO ACIA at that channel index.
+    pub(super) fn modem_lines(&self, index: usize) -> Option<(bool, bool, bool, bool)> {
+        let port = self.two_sio_port(index)?;
+        Some((port.rts_high(), port.break_active(), port.cts_high(), port.dcd_high()))
+    }
+
+    pub(super) fn set_modem_inputs(&mut self, index: usize, cts_high: bool, dcd_high: bool) -> bool {
+        let Some(port) = self.two_sio_port_mut(index) else { return false; };
+        port.set_cts_high(cts_high);
+        port.set_dcd_high(dcd_high);
+        true
+    }
+
     fn data_port_for_index(&self, index: usize) -> u8 {
         match (self.serial_board, index) {
             (SerialBoard::Sio88, 0) => SIO_DATA_PORT,
@@ -405,6 +430,22 @@ impl AltairBus {
     }
     pub fn serial_board(&self) -> SerialBoard { self.io.serial_board() }
 
+    /// `(RTS high, BREAK active, CTS high, DCD high)` for one installed
+    /// 88-2SIO ACIA. The 88-SIO has different hardware and therefore returns
+    /// None instead of fabricating MC6850 modem pins.
+    pub fn serial_modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
+        self.io.modem_lines(port_index)
+    }
+
+    /// Drive the external active-low modem inputs as physical TTL levels. MITS
+    /// specifies grounded CTS/DCD for unused 88-2SIO inputs, represented by the
+    /// default `(false, false)` state.
+    pub fn set_serial_modem_inputs(&mut self, port_index: usize, cts_high: bool, dcd_high: bool) -> bool {
+        let changed = self.io.set_modem_inputs(port_index, cts_high, dcd_high);
+        if changed { self.refresh_interrupt_request_line(); }
+        changed
+    }
+
     pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
         self.io.advance_t_states(t_states);
         self.refresh_interrupt_request_line();
@@ -509,6 +550,41 @@ mod tests {
         assert_eq!(io.input(SIO_STATUS_PORT), S100_OPEN_BUS_VALUE);
         assert_eq!(io.input(SIO_DATA_PORT), S100_OPEN_BUS_VALUE);
         assert_eq!(io.input(0x7e), S100_OPEN_BUS_VALUE);
+    }
+
+    #[test]
+    fn two_sio_modem_pin_levels_are_card_state_not_host_endpoint_state() {
+        let mut machine = AltairMachine::default();
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(machine.bus.serial_modem_lines(0), Some((false, false, false, false)));
+        assert_eq!(machine.bus.serial_modem_lines(1), Some((false, false, false, false)));
+        assert_eq!(machine.bus.serial_modem_lines(2), None);
+
+        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x51);
+        assert_eq!(machine.bus.serial_modem_lines(0), Some((true, false, false, false)));
+        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x71);
+        assert_eq!(machine.bus.serial_modem_lines(0), Some((false, true, false, false)));
+
+        assert!(machine.bus.set_serial_modem_inputs(0, true, false));
+        assert_eq!(machine.bus.serial_modem_lines(0), Some((false, true, true, false)));
+        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_STATUS) & 0x08, 0x08);
+    }
+
+    #[test]
+    fn dcd_transition_reaches_status_and_canonical_pint() {
+        let mut machine = AltairMachine::default();
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x91); // RX IRQ enabled, 8N2, /16
+        assert!(!machine.bus.cpu_control_lines().interrupt);
+        assert!(machine.bus.set_serial_modem_inputs(0, false, true));
+        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_STATUS) & 0x84, 0x84);
+        assert!(machine.bus.cpu_control_lines().interrupt);
+
+        assert!(machine.bus.set_serial_modem_inputs(0, false, false));
+        let _ = machine.bus.debugger_input_port(SIO2_PORT0_STATUS);
+        assert!(machine.bus.cpu_control_lines().interrupt);
+        let _ = machine.bus.debugger_input_port(SIO2_PORT0_DATA);
+        assert!(!machine.bus.cpu_control_lines().interrupt);
     }
 
     #[test]
