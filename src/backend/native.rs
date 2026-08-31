@@ -14,10 +14,14 @@ use super::{
     IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
 };
 
+const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
+
 pub struct NativeMachineBackend {
     machine: AltairMachine,
     instruction_trace: InstructionTraceBuffer,
     debug_control: DebugExecutionControl,
+    idle_chassis_clock_units: u128,
+    last_panel_commit_cpu_t_states: Option<u64>,
 }
 
 impl Default for NativeMachineBackend {
@@ -26,6 +30,8 @@ impl Default for NativeMachineBackend {
             machine: AltairMachine::default(),
             instruction_trace: InstructionTraceBuffer::default(),
             debug_control: DebugExecutionControl::default(),
+            idle_chassis_clock_units: 0,
+            last_panel_commit_cpu_t_states: None,
         }
     }
 }
@@ -36,6 +42,8 @@ impl NativeMachineBackend {
             machine,
             instruction_trace: InstructionTraceBuffer::default(),
             debug_control: DebugExecutionControl::default(),
+            idle_chassis_clock_units: 0,
+            last_panel_commit_cpu_t_states: None,
         }
     }
     pub fn machine(&self) -> &AltairMachine { &self.machine }
@@ -84,6 +92,38 @@ impl NativeMachineBackend {
     fn reset_debugger_epoch(&mut self) {
         self.instruction_trace.clear();
         self.debug_control.clear_transient();
+    }
+
+    /// The 88-2SIO baud oscillator belongs to the powered card, not to the CPU.
+    /// While RUN is actively clocking the Fast core, instruction T-states already
+    /// advance the card. If STOP, RESET or HOLD parks the instruction engine,
+    /// advance only the wall-time quanta not already covered by CPU execution.
+    fn service_idle_chassis_clock(&mut self, dt: Duration) {
+        let current_cpu_t_states = self.machine.cpu.cycles;
+        let cpu_covered = self
+            .last_panel_commit_cpu_t_states
+            .map_or(0, |previous| current_cpu_t_states.saturating_sub(previous));
+        self.last_panel_commit_cpu_t_states = Some(current_cpu_t_states);
+
+        let lines = self.machine.bus.cpu_control_lines();
+        let cpu_parked = self.machine.powered
+            && (!self.machine.running || lines.reset || lines.hold);
+        if !cpu_parked {
+            self.idle_chassis_clock_units = 0;
+            return;
+        }
+
+        let added = dt
+            .as_nanos()
+            .saturating_mul(u128::from(crate::machine::CLOCK_HZ));
+        let total = self.idle_chassis_clock_units.saturating_add(added);
+        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
+        self.idle_chassis_clock_units = total % WALL_CLOCK_UNITS_PER_SECOND;
+
+        let missing = due.saturating_sub(cpu_covered);
+        if missing != 0 {
+            self.machine.bus.advance_serial_hardware_time(missing);
+        }
     }
 
     fn record_one_stopped_instruction(&mut self) {
@@ -220,6 +260,8 @@ impl MachineBackend for NativeMachineBackend {
     fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.machine.power_with_historical_run_latch(on, historical);
+        self.idle_chassis_clock_units = 0;
+        self.last_panel_commit_cpu_t_states = None;
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -252,7 +294,11 @@ impl MachineBackend for NativeMachineBackend {
         }
         Ok(())
     }
-    fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> { self.machine.commit_panel_activity(dt); Ok(()) }
+    fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
+        self.service_idle_chassis_clock(dt);
+        self.machine.commit_panel_activity(dt);
+        Ok(())
+    }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
         if run {
             self.debug_control.prepare_resume_with_sp(self.machine.cpu.pc, self.machine.cpu.sp);
@@ -294,6 +340,8 @@ impl MachineBackend for NativeMachineBackend {
     fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
         if self.machine.serial_board() != board {
             self.machine.configure_serial_board(board);
+            self.idle_chassis_clock_units = 0;
+            self.last_panel_commit_cpu_t_states = None;
             self.reset_debugger_epoch();
         }
         Ok(())
