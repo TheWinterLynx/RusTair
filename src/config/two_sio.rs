@@ -1,0 +1,183 @@
+//! Physical strap configuration for the MITS 88-2SIO board.
+//!
+//! The March 1977 MITS manual states that A2-A7 select one aligned block of
+//! four I/O addresses and A0/A1 select the ACIA register/port within that block.
+//! Address FFh belongs to the Altair front-panel sense switches, so RusTair does
+//! not offer the FCh-FFh block as an installable 88-2SIO configuration.
+
+/// One of the eight baud-generator taps silk-screened on the MITS 88-2SIO.
+///
+/// These are physical board straps. The MC6850 CR1:CR0 control bits still apply
+/// /1, /16 or /64 to the selected clock; selecting `Baud110` therefore gives
+/// 110 baud in the normal /16 mode and 27.5 baud in /64 mode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TwoSioBaudTap {
+    Baud110,
+    Baud150,
+    Baud300,
+    Baud1200,
+    Baud1800,
+    Baud2400,
+    Baud4800,
+    Baud9600,
+}
+
+impl TwoSioBaudTap {
+    pub const ALL: [Self; 8] = [
+        Self::Baud110,
+        Self::Baud150,
+        Self::Baud300,
+        Self::Baud1200,
+        Self::Baud1800,
+        Self::Baud2400,
+        Self::Baud4800,
+        Self::Baud9600,
+    ];
+
+    pub const fn baud(self) -> u32 {
+        match self {
+            Self::Baud110 => 110,
+            Self::Baud150 => 150,
+            Self::Baud300 => 300,
+            Self::Baud1200 => 1_200,
+            Self::Baud1800 => 1_800,
+            Self::Baud2400 => 2_400,
+            Self::Baud4800 => 4_800,
+            Self::Baud9600 => 9_600,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Baud110 => "110",
+            Self::Baud150 => "150",
+            Self::Baud300 => "300",
+            Self::Baud1200 => "1200",
+            Self::Baud1800 => "1800",
+            Self::Baud2400 => "2400",
+            Self::Baud4800 => "4800",
+            Self::Baud9600 => "9600",
+        }
+    }
+}
+
+impl Default for TwoSioBaudTap {
+    fn default() -> Self { Self::Baud110 }
+}
+
+/// A2-A7 address-select strap block on an 88-2SIO.
+///
+/// `base` is always aligned to four. Valid installable bases are 00h through
+/// F8h. FCh is deliberately rejected because the decoded block would include
+/// FFh, the Altair front-panel sense-switch port that MITS says should not be
+/// used for the 88-2SIO.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TwoSioAddressBlock {
+    base: u8,
+}
+
+impl TwoSioAddressBlock {
+    pub const DEFAULT: Self = Self { base: 0x10 };
+
+    pub const fn try_new(base: u8) -> Option<Self> {
+        if base & 0x03 != 0 || base > 0xf8 {
+            None
+        } else {
+            Some(Self { base })
+        }
+    }
+
+    pub const fn base(self) -> u8 { self.base }
+    pub const fn port0_status(self) -> u8 { self.base }
+    pub const fn port0_data(self) -> u8 { self.base + 1 }
+    pub const fn port1_status(self) -> u8 { self.base + 2 }
+    pub const fn port1_data(self) -> u8 { self.base + 3 }
+
+    pub const fn contains(self, port: u8) -> bool {
+        port >= self.base && port <= self.base + 3
+    }
+
+    /// A0/A1 decoded offset inside the four-address board block.
+    pub const fn offset(self, port: u8) -> Option<u8> {
+        if self.contains(port) { Some(port - self.base) } else { None }
+    }
+}
+
+impl Default for TwoSioAddressBlock {
+    fn default() -> Self { Self::DEFAULT }
+}
+
+/// Physical installation straps for one MITS 88-2SIO board.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TwoSioStraps {
+    pub address: TwoSioAddressBlock,
+    pub port0_baud: TwoSioBaudTap,
+    pub port1_baud: TwoSioBaudTap,
+}
+
+impl TwoSioStraps {
+    pub const fn port_status(self, index: usize) -> Option<u8> {
+        match index {
+            0 => Some(self.address.port0_status()),
+            1 => Some(self.address.port1_status()),
+            _ => None,
+        }
+    }
+
+    pub const fn port_data(self, index: usize) -> Option<u8> {
+        match index {
+            0 => Some(self.address.port0_data()),
+            1 => Some(self.address.port1_data()),
+            _ => None,
+        }
+    }
+}
+
+impl Default for TwoSioStraps {
+    fn default() -> Self {
+        Self {
+            address: TwoSioAddressBlock::DEFAULT,
+            port0_baud: TwoSioBaudTap::Baud110,
+            port1_baud: TwoSioBaudTap::Baud9600,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn address_strap_is_one_aligned_four_port_block() {
+        let block = TwoSioAddressBlock::try_new(0x44).expect("68 decimal / 44h is MITS manual example");
+        assert_eq!(block.port0_status(), 0x44);
+        assert_eq!(block.port0_data(), 0x45);
+        assert_eq!(block.port1_status(), 0x46);
+        assert_eq!(block.port1_data(), 0x47);
+        assert_eq!(block.offset(0x44), Some(0));
+        assert_eq!(block.offset(0x47), Some(3));
+        assert_eq!(block.offset(0x48), None);
+    }
+
+    #[test]
+    fn address_strap_rejects_unaligned_and_front_panel_conflicting_blocks() {
+        assert!(TwoSioAddressBlock::try_new(0x10).is_some());
+        assert!(TwoSioAddressBlock::try_new(0xf8).is_some());
+        assert!(TwoSioAddressBlock::try_new(0x11).is_none());
+        assert!(TwoSioAddressBlock::try_new(0xfc).is_none());
+    }
+
+    #[test]
+    fn default_straps_preserve_existing_installation() {
+        let straps = TwoSioStraps::default();
+        assert_eq!(straps.address.base(), 0x10);
+        assert_eq!(straps.port0_baud, TwoSioBaudTap::Baud110);
+        assert_eq!(straps.port1_baud, TwoSioBaudTap::Baud9600);
+    }
+
+    #[test]
+    fn physical_taps_are_the_eight_mits_silkscreen_rates() {
+        let rates = TwoSioBaudTap::ALL.map(TwoSioBaudTap::baud);
+        assert_eq!(rates, [110, 150, 300, 1_200, 1_800, 2_400, 4_800, 9_600]);
+    }
+}
