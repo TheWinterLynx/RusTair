@@ -277,11 +277,11 @@ impl RusTairApp {
             SerialBoard::Sio88 => "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset".into(),
             SerialBoard::TwoSio88 => format!(
                 "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} baud tap; Port 1 {:02X}h/{:02X}h @ {} baud tap; machine reset",
-                self.config.machine.serial_port0_status(),
-                self.config.machine.serial_port0_data(),
+                self.config.machine.serial_status_port(),
+                self.config.machine.serial_data_port(),
                 self.config.machine.two_sio_straps.port0_baud.label(),
-                self.config.machine.serial_port1_status().unwrap_or(0),
-                self.config.machine.serial_port1_data().unwrap_or(0),
+                self.config.machine.serial_port1_status_port().unwrap_or(0),
+                self.config.machine.serial_port1_data_port().unwrap_or(0),
                 self.config.machine.two_sio_straps.port1_baud.label(),
             ),
         };
