@@ -1,5 +1,9 @@
 const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
+const ASR33_SOURCE: &str = include_str!("../src/app/ui/asr33_window.rs");
+const TERMINAL_SOURCE: &str = include_str!("../src/app/ui/terminal.rs");
+const TCP_SOURCE: &str = include_str!("../src/app/external_serial.rs");
+const COM_SOURCE: &str = include_str!("../src/app/external_com.rs");
 
 #[test]
 fn engine_change_reapplies_physical_two_sio_straps() {
@@ -34,6 +38,27 @@ fn ui_uses_physical_address_and_baud_straps_not_fixed_10h_labels() {
     assert!(RUNTIME_SOURCE.contains("(0u8..=0xf8).step_by(4)"));
     assert!(!RUNTIME_SOURCE.contains("88-2SIO Port 0 [10h/11h]"));
     assert!(!RUNTIME_SOURCE.contains("88-2SIO Port 1 [12h/13h]"));
+}
+
+#[test]
+fn every_endpoint_label_receives_the_physical_straps() {
+    for (name, source) in [
+        ("ASR-33", ASR33_SOURCE),
+        ("Text Terminal", TERMINAL_SOURCE),
+        ("External TCP", TCP_SOURCE),
+        ("External COM", COM_SOURCE),
+    ] {
+        assert!(
+            source.contains("let straps = self.config.machine.two_sio_straps;")
+                || source.contains("self.config.machine.two_sio_straps,\n                connection"),
+            "{name} must source labels from the installed 88-2SIO straps",
+        );
+        assert!(
+            source.contains("serial_connection_label(board, straps" )
+                || source.contains("serial_connection_label(\n                self.config.machine.serial_board,\n                self.config.machine.two_sio_straps"),
+            "{name} must not fall back to a two-argument/fixed-address serial label",
+        );
+    }
 }
 
 #[test]
