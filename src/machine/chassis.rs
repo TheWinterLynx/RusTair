@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, SerialBoard, TwoSioStraps};
+use crate::config::{RamBoardProfile, SerialBoard, SioHardwareConfig, TwoSioStraps};
 
 use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 
@@ -91,6 +91,24 @@ impl AltairChassis {
 
     pub fn serial_board(&self) -> SerialBoard {
         self.bus.serial_board()
+    }
+
+    /// Move the physical revision/address/baud/format/interface configuration on
+    /// the installed or dormant 88-SIO card. Processor reset remains the
+    /// responsibility of the Cycle backend that owns the exact CPU core.
+    pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) {
+        if self.bus.sio_hardware() == config {
+            return;
+        }
+        self.running = false;
+        self.bus.set_run(false);
+        self.bus.cycle_set_ready_input(false);
+        self.bus.configure_sio_hardware(config);
+        self.bus.clear_transient_memory_guards();
+    }
+
+    pub fn sio_hardware(&self) -> SioHardwareConfig {
+        self.bus.sio_hardware()
     }
 
     /// Move the physical A2-A7/baud-generator jumpers on the installed 88-2SIO.
