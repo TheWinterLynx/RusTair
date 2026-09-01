@@ -280,6 +280,14 @@ impl RusTairApp {
         }
         self.execution_clock.reset_at(Instant::now());
         self.serial_router.reset_for_board(serial_board);
+        let asr_directly_compatible = serial_board != SerialBoard::Sio88
+            || self.config.machine.sio_hardware.interface == crate::config::SioInterface::TtyC;
+        if !asr_directly_compatible {
+            self.serial_router.connect(
+                SerialDevice::InternalAsr33,
+                SerialConnection::Disconnected,
+            );
+        }
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
         self.terminal.tx_started = None;
@@ -287,12 +295,17 @@ impl RusTairApp {
         self.external_com.reset_line_timing();
         self.status = match serial_board {
             SerialBoard::Sio88 => format!(
-                "Serial board configured: MITS 88-SIO — Port 0 {:02X}h/{:02X}h @ {} · {} · {}; machine reset",
+                "Serial board configured: MITS 88-SIO — Port 0 {:02X}h/{:02X}h @ {} · {} · {}; machine reset{}",
                 self.config.machine.sio_hardware.address.status(),
                 self.config.machine.sio_hardware.address.data(),
                 self.config.machine.sio_hardware.baud.label(),
                 self.config.machine.sio_hardware.revision.label(),
                 self.config.machine.sio_hardware.format.label(),
+                if asr_directly_compatible {
+                    ""
+                } else {
+                    " · ASR-33 left disconnected: direct cable requires 88-SIO C current loop"
+                },
             ),
             SerialBoard::TwoSio88 => format!(
                 "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} baud tap; Port 1 {:02X}h/{:02X}h @ {} baud tap; DI→{}; EI→{}; machine reset",
@@ -393,6 +406,14 @@ impl RusTairApp {
 
     fn set_serial_connection(&mut self, device: SerialDevice, connection: SerialConnection) {
         if self.config.machine.serial_board == SerialBoard::Sio88 && connection == SerialConnection::Port1 { return; }
+        if self.config.machine.serial_board == SerialBoard::Sio88
+            && device == SerialDevice::InternalAsr33
+            && connection == SerialConnection::Port0
+            && self.config.machine.sio_hardware.interface != crate::config::SioInterface::TtyC
+        {
+            self.status = "ASR-33 not connected: a direct 88-SIO cable requires the C current-loop interface; no hidden A/B level converter is installed".into();
+            return;
+        }
         if self.serial_router.connection(device) == connection { return; }
         let displaced = self.serial_router.connect(device, connection);
         self.asr33.tx_started = None;
