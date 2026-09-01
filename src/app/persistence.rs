@@ -2,8 +2,8 @@ use super::super::*;
 use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
-    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, TcpListenScope,
-    TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
+    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, SioHardwareConfig,
+    TcpListenScope, TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
@@ -12,7 +12,7 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const CONFIG_VERSION: u32 = 3;
+const CONFIG_VERSION: u32 = 4;
 const DEFAULT_LED_BRIGHTNESS: f32 = 1.0;
 const DEFAULT_LED_AURA: f32 = 1.0;
 const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -141,6 +141,7 @@ impl SavedSettings {
                 "machine.ram_init" => if let Some(v) = parse_ram_init(value) { saved.config.machine.ram_init = v; },
                 "machine.ram_board_profile" => if let Some(v) = parse_ram_board_profile(value) { saved.config.machine.ram_board_profile = v; },
                 "machine.serial_board" => if let Some(v) = parse_serial_board(value) { saved.config.machine.serial_board = v; },
+                "machine.sio_hardware" => if let Some(v) = SioHardwareConfig::from_persistence_key(value) { saved.config.machine.sio_hardware = v; },
                 "machine.two_sio_base" => if let Some(v) = parse_two_sio_address(value) { saved.config.machine.two_sio_straps.address = v; },
                 "machine.two_sio_port0_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port0_baud = v; },
                 "machine.two_sio_port1_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port1_baud = v; },
@@ -198,6 +199,7 @@ impl SavedSettings {
         let _ = writeln!(out, "machine.ram_init={}", ram_init_key(self.config.machine.ram_init));
         let _ = writeln!(out, "machine.ram_board_profile={}", ram_board_profile_key(self.config.machine.ram_board_profile));
         let _ = writeln!(out, "machine.serial_board={}", serial_board_key(self.config.machine.serial_board));
+        let _ = writeln!(out, "machine.sio_hardware={}", self.config.machine.sio_hardware.persistence_key());
         let _ = writeln!(out, "machine.two_sio_base={:02X}", self.config.machine.two_sio_straps.address.base());
         let _ = writeln!(out, "machine.two_sio_port0_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port0_baud));
         let _ = writeln!(out, "machine.two_sio_port1_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port1_baud));
@@ -320,6 +322,7 @@ impl RusTairApp {
         }
         self.machine.configure_memory(self.config.machine.ram_size, self.config.machine.ram_init);
         self.machine.configure_memory_board_profile(self.config.machine.ram_board_profile);
+        self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
         self.machine.configure_serial_board(self.config.machine.serial_board);
         self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
         self.machine.configure_two_sio_interrupt_wiring(self.config.machine.two_sio_interrupt_wiring);
@@ -528,6 +531,7 @@ mod tests {
         saved.engine = EmulationEngine::RustCycleAccurate8080;
         saved.config.machine.ram_size = RamSize::K48;
         saved.config.machine.ram_board_profile = RamBoardProfile::Mits1KStatic1975;
+        saved.config.machine.sio_hardware = SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1").unwrap();
         saved.config.machine.serial_board = SerialBoard::TwoSio88;
         saved.config.machine.two_sio_straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
         saved.config.machine.two_sio_straps.port0_baud = TwoSioBaudTap::Baud300;
@@ -554,6 +558,15 @@ mod tests {
 
         let decoded = SavedSettings::from_text(&saved.to_text());
         assert_eq!(decoded, saved);
+    }
+
+    #[test]
+    fn old_or_invalid_sio_hardware_keeps_safe_default_as_one_atomic_card() {
+        let old = SavedSettings::from_text("machine.serial_board=88-sio\n");
+        assert_eq!(old.config.machine.sio_hardware, SioHardwareConfig::default());
+
+        let invalid = SavedSettings::from_text("machine.sio_hardware=rev0,a-rs232,07,9600,7,even,1\n");
+        assert_eq!(invalid.config.machine.sio_hardware, SioHardwareConfig::default());
     }
 
     #[test]
@@ -601,6 +614,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("machine.ram_size=48k"));
         assert!(text.contains("machine.ram_board_profile=fast-no-wait"));
+        assert!(text.contains("machine.sio_hardware=rev1,c-tty,00,110,8,none,2"));
         assert!(text.contains("machine.two_sio_base=10"));
         assert!(text.contains("machine.two_sio_port0_baud=110"));
         assert!(text.contains("machine.two_sio_port1_baud=9600"));
