@@ -1,6 +1,6 @@
 # MITS 88-SIO hardware fidelity
 
-Status: **IMPLEMENTED — ready for final local validation.**
+Status: **PASS — final focused and full local validation green on 2026-09-01.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
@@ -293,4 +293,4 @@ The 88-SIO base-card item intentionally does not claim:
 
 These limits do not require compatibility hacks: unsupported physical behavior remains un-driven or explicitly outside the claim.
 
-No known implementation blocker remains inside the stated digital 88-SIO claim. Final `PASS` is withheld only until the post-endpoint focused and full local test checkpoint is reported green.
+No known implementation blocker remains inside the stated digital 88-SIO claim. The final focused endpoint tests, physical-boundary tests and complete local `cargo test` suite were reported green on 2026-09-01. GitHub Actions were not run.
