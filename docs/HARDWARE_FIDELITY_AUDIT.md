@@ -1,6 +1,8 @@
 # RusTair hardware-fidelity audit
 
-Status snapshot: 2026-08-29, `agent/cycle-hardware-fidelity-audit`.
+Status snapshot: **historical CPU/chassis checkpoint from 2026-08-29**, `agent/cycle-hardware-fidelity-audit`.
+
+Current base-hardware closeout status is tracked in `docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md`. In particular, the 88-SIO and 88-2SIO serial workstreams that were still separate from this snapshot are now **PASS** after final local validation on 2026-09-02. The architectural-debt list below is retained as the historical CPU/chassis audit record and must be re-audited against current code before treating any item as an active blocker.
 
 This document is the durable checkpoint for the Altair 8800 / Intel 8080 electrical-fidelity work. It separates verified fixes from remaining architectural debt. UI presentation must consume backend/chassis truth; it must never become an electrical authority.
 
@@ -104,15 +106,17 @@ Primary reference: MITS *Altair 8800 Theory of Operation Manual & Schematics* (1
 
 ### Backend authority
 
-Regression tests deliberately poison the legacy `AltairMachine.cpu` object while Cycle Accurate is running and prove that `Cpu8080Cycle` remains execution authority. The mirror is therefore currently architectural debt, not a demonstrated split-brain execution bug.
+Regression tests deliberately poison the legacy `AltairMachine.cpu` object while Cycle Accurate is running and prove that `Cpu8080Cycle` remains execution authority. The mirror is therefore architectural debt in this historical snapshot, not a demonstrated split-brain execution bug.
 
-## Remaining work for this audit
+## Remaining work recorded by the 2026-08-29 snapshot
 
-### 1. Remove the Cycle compatibility `AltairMachine.cpu` mirror — main remaining item
+The entries in this section are preserved for traceability. They are **not automatically current blockers**; compare them with present code before resuming this audit.
 
-Cycle still copies exact registers/HALT/INTE/timing into a second `Cpu8080` because several common chassis/front-panel helpers were originally written around the Fast CPU object. Power-on undefined CPU-state generation also currently passes through that structure.
+### 1. Remove the Cycle compatibility `AltairMachine.cpu` mirror
 
-Safe removal order:
+At this snapshot, Cycle still copied exact registers/HALT/INTE/timing into a second `Cpu8080` because several common chassis/front-panel helpers were originally written around the Fast CPU object. Power-on undefined CPU-state generation also passed through that structure.
+
+Recorded safe removal order:
 
 1. replace shared chassis reads of `cpu.halted`/CPU-specific state with explicit CPU-agnostic inputs;
 2. move undefined power-on register generation into a neutral state structure/function;
@@ -124,24 +128,24 @@ Do not replace it with another shadow CPU-state structure that becomes a second 
 
 ### 2. Propagate Cycle core faults explicitly
 
-Some Cycle execution loops currently stop when `TickTrace.fault` is present but return success to higher layers. Backend errors/diagnostics should carry the fault so execution cannot appear to have silently stopped.
+At this snapshot, some Cycle execution loops could stop when `TickTrace.fault` was present while returning success to higher layers. A future re-audit should verify whether backend errors/diagnostics now carry such faults explicitly.
 
 ### 3. Preserve chassis state during Cycle memory reconfiguration
 
-The unpowered Cycle reconfiguration path can rebuild the backend and preserve only selected settings. Rework it so changing RAM configuration does not accidentally discard unrelated chassis/device state.
+At this snapshot, the unpowered Cycle reconfiguration path could rebuild the backend while preserving only selected settings. A future re-audit should verify that RAM reconfiguration cannot discard unrelated chassis/device state.
 
-## Broader architecture backlog, not required to close this electrical audit
+## Broader architecture backlog recorded by the snapshot
 
-These remain worthwhile but should not keep this audit open indefinitely:
+These were considered worthwhile but not required to keep this historical electrical audit open:
 
 - harden `BackendHost` error handling and remove panic-style application paths;
 - gate UI operations strictly through backend capabilities;
 - restrict concrete `machine()/machine_mut()/into_machine()` escape hatches;
 - add a regression preventing `src/app` from depending on concrete machine/CPU internals;
-- eventually consolidate the duplicated `AltairMachine.running` / S-100 RUN representation after callers are migrated. No active divergence is currently demonstrated.
+- eventually consolidate duplicated RUN representation after callers are migrated.
 
-Full serial/UART fidelity, ASR-33 mechanics, UI scheduling/performance, persistence and optical LED tuning are separate project workstreams.
+Serial/UART base hardware is no longer an open item here: its current status is PASS in `docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md`.
 
-## Validation policy from this checkpoint
+## Validation policy
 
-Long CPUTEST/8080EXM runs were repeatedly certified during this audit and are no longer executed on every checkpoint. The branch workflow is validation-only and read-only: focused hardware/authority regressions, the normal all-target suite, release build and artifact. Long CPU diagnostics can be run again as a dedicated CPU-validation pass when needed.
+Long CPUTEST/8080EXM runs were repeatedly certified during the CPU/chassis audit and are not executed on every unrelated checkpoint. Focused hardware/authority regressions plus the normal all-target suite are the default. Long CPU diagnostics should be run again when CPU semantics/timing are changed or for a dedicated release/CPU certification pass.
