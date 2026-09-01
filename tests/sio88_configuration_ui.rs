@@ -32,7 +32,8 @@ fn sio_interrupt_ui_keeps_runtime_enables_separate_from_physical_routing() {
     assert!(RUNTIME_SOURCE.contains("D0 enables the input interrupt source and D1 enables the output source at runtime"));
     assert!(RUNTIME_SOURCE.contains("Selecting the same destination for both sources represents the equivalent combined BH wiring result."));
     assert!(RUNTIME_SOURCE.contains("VI0..VI7 are raw requests for a separate 88-Vector Interrupt system"));
-    assert!(RUNTIME_SOURCE.contains("Rev 0 interrupt assertion depends on the original external input/output device-ready flip-flops"));
+    assert!(RUNTIME_SOURCE.contains("Rev 0 uses the original external RIN/ROT device-ready flip-flops"));
+    assert!(RUNTIME_SOURCE.contains("COM2502 RDA/TBMT remain separate signals"));
 }
 
 #[test]
