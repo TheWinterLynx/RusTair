@@ -1,6 +1,6 @@
 # MITS 88-SIO A/B/C electrical interface fidelity
 
-Status: **IMPLEMENTED — endpoint wiring audited; ready for final local validation.**
+Status: **PASS — endpoint wiring audit and final local validation green on 2026-09-01.**
 
 Parent hardware document: `docs/88_SIO_HARDWARE_FIDELITY.md`.
 
@@ -175,4 +175,4 @@ This block does not claim:
 
 Unsupported behavior remains explicit rather than being replaced by compatibility magic.
 
-No implementation blocker remains in the stated A/B/C digital electrical/cable claim. Final `PASS` awaits only the final post-endpoint local test checkpoint.
+No implementation blocker remains in the stated A/B/C digital electrical/cable claim. The focused endpoint/physical-boundary tests and complete local `cargo test` suite were reported green on 2026-09-01. GitHub Actions were not run.
