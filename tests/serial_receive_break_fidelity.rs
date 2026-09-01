@@ -75,11 +75,11 @@ fn short_break_release_never_fabricates_a_nul_character_in_either_serial_board()
         for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
             let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
             host.configure_serial_board(board);
+            host.power(true);
+            host.front_panel_reset();
             if board == SerialBoard::TwoSio88 {
                 host.debugger_output_port(0x10, 0x15); // /16, 8N1
             }
-            host.power(true);
-            host.front_panel_reset();
 
             assert!(host.serial_set_receive_break(BackendSerialPort::Port0, true));
             host.commit_panel_activity(Duration::from_millis(20));
