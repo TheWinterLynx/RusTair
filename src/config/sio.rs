@@ -49,6 +49,23 @@ impl SioInterface {
             Self::TtyC => "88-SIO C — TTY/current-loop interface",
         }
     }
+
+    pub const fn persistence_key(self) -> &'static str {
+        match self {
+            Self::Rs232A => "a-rs232",
+            Self::TtlB => "b-ttl",
+            Self::TtyC => "c-tty",
+        }
+    }
+
+    pub fn from_persistence_key(value: &str) -> Option<Self> {
+        Some(match value {
+            "a-rs232" => Self::Rs232A,
+            "b-ttl" => Self::TtlB,
+            "c-tty" => Self::TtyC,
+            _ => return None,
+        })
+    }
 }
 
 impl Default for SioInterface {
@@ -63,6 +80,9 @@ impl SioDataBits {
     pub const fn bits(self) -> u8 {
         match self { Self::Five => 5, Self::Six => 6, Self::Seven => 7, Self::Eight => 8 }
     }
+    pub const fn label(self) -> &'static str {
+        match self { Self::Five => "5 data bits", Self::Six => "6 data bits", Self::Seven => "7 data bits", Self::Eight => "8 data bits" }
+    }
 }
 
 impl Default for SioDataBits {
@@ -71,12 +91,20 @@ impl Default for SioDataBits {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SioParity { None, Even, Odd }
+impl SioParity {
+    pub const ALL: [Self; 3] = [Self::None, Self::Even, Self::Odd];
+    pub const fn label(self) -> &'static str {
+        match self { Self::None => "No parity", Self::Even => "Even parity", Self::Odd => "Odd parity" }
+    }
+}
 impl Default for SioParity { fn default() -> Self { Self::None } }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SioStopBits { One, Two }
 impl SioStopBits {
+    pub const ALL: [Self; 2] = [Self::One, Self::Two];
     pub const fn bits(self) -> u8 { match self { Self::One => 1, Self::Two => 2 } }
+    pub const fn label(self) -> &'static str { match self { Self::One => "1 stop bit", Self::Two => "2 stop bits" } }
 }
 impl Default for SioStopBits { fn default() -> Self { Self::Two } }
 
@@ -90,6 +118,11 @@ pub struct SioWordFormat {
 impl SioWordFormat {
     pub const fn frame_bits(self) -> u8 {
         1 + self.data_bits.bits() + match self.parity { SioParity::None => 0, _ => 1 } + self.stop_bits.bits()
+    }
+
+    pub fn label(self) -> String {
+        let parity = match self.parity { SioParity::None => 'N', SioParity::Even => 'E', SioParity::Odd => 'O' };
+        format!("{}{}{}", self.data_bits.bits(), parity, self.stop_bits.bits())
     }
 }
 
@@ -113,17 +146,30 @@ impl Default for SioAddressPair {
 }
 
 /// Nominal serial bit rate produced by the 88-SIO baud generator.
-/// MITS documents a selectable range through 25,000 baud and drives the
-/// COM2502 with a 16x clock.
+///
+/// The board uses a 12-bit preset counter and a 16x UART clock. MITS published
+/// a standard wiring table for 110, 150, 300, 600, 1200, 2400, 4800, 9600 and
+/// 19200 baud, while also documenting how a different preset count can produce
+/// another rate up to 25,000 baud. `STANDARD` is therefore the authentic menu
+/// of published presets, not the complete electrical state space.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SioBaudRate(u32);
 
 impl SioBaudRate {
     pub const MAX: u32 = 25_000;
+    pub const STANDARD: [Self; 9] = [
+        Self(110), Self(150), Self(300), Self(600), Self(1_200), Self(2_400),
+        Self(4_800), Self(9_600), Self(19_200),
+    ];
+
     pub const fn try_new(baud: u32) -> Option<Self> {
         if baud <= Self::MAX { Some(Self(baud)) } else { None }
     }
     pub const fn baud(self) -> u32 { self.0 }
+    pub fn label(self) -> String { format!("{} baud", self.0) }
+    pub fn is_standard(self) -> bool {
+        matches!(self.0, 110 | 150 | 300 | 600 | 1_200 | 2_400 | 4_800 | 9_600 | 19_200)
+    }
 }
 
 impl Default for SioBaudRate {
@@ -164,10 +210,18 @@ mod tests {
     }
 
     #[test]
+    fn published_mits_baud_table_is_exposed_without_forbidding_custom_presets() {
+        assert_eq!(SioBaudRate::STANDARD.map(SioBaudRate::baud), [110, 150, 300, 600, 1_200, 2_400, 4_800, 9_600, 19_200]);
+        assert!(SioBaudRate::try_new(4_800).unwrap().is_standard());
+        assert!(!SioBaudRate::try_new(2_000).unwrap().is_standard());
+    }
+
+    #[test]
     fn default_tty_configuration_is_110_baud_8n2() {
         let c = SioHardwareConfig::default();
         assert_eq!(c.interface, SioInterface::TtyC);
         assert_eq!(c.baud.baud(), 110);
         assert_eq!(c.format.frame_bits(), 11);
+        assert_eq!(c.format.label(), "8N2");
     }
 }
