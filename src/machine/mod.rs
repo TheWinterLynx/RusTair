@@ -242,14 +242,12 @@ impl AltairBus {
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
     /// Active 88-SIO interrupt sources after software D0/D1 enables but before
-    /// the physical IN/OUT/BH routing pads. The Rev1/internal-ready modification
-    /// uses COM2502 RDA/TBMT directly. Original Rev0 external device-ready
-    /// flip-flops are intentionally not guessed here; that path is closed with
-    /// the A/B/C handshake audit.
+    /// the physical IN/OUT/BH routing pads. D0/D7 are already resolved by the
+    /// selected board revision: Rev0 exposes the external RIN/ROT device-ready
+    /// flip-flops there, while Rev1 exposes the internal COM2502 RDA/TBMT ready
+    /// conditions. Routing therefore stays revision-agnostic at this boundary.
     fn sio_internal_interrupt_sources(&self) -> (bool, bool) {
-        if self.io.serial_board() != SerialBoard::Sio88
-            || self.io.sio_hardware().revision != SioRevision::Rev1
-        {
+        if self.io.serial_board() != SerialBoard::Sio88 {
             return (false, false);
         }
         let status = self.peek_io_port(self.io.sio_hardware().address.status());
@@ -1010,5 +1008,39 @@ mod tests {
         assert!(bus.debugger_inject_serial_rx(0x01, b'R'));
         assert!(!bus.cpu_control_lines().interrupt, "unmodified Rev0 requires external device-ready flip-flops; COM2502 RDA/TBMT must not be silently substituted");
         assert_eq!(bus.sio_vector_interrupt_requests(), 0);
+    }
+
+    #[test]
+    fn rev0_external_device_ready_interrupts_follow_rin_rot_and_data_handshake() {
+        let mut bus = AltairBus::default();
+        let mut config = bus.sio_hardware();
+        config.revision = SioRevision::Rev0;
+        bus.configure_sio_hardware(config);
+
+        bus.configure_sio_interrupt_wiring(SioInterruptWiring {
+            input: SioInterruptTarget::Pint,
+            output: SioInterruptTarget::Disconnected,
+        });
+        bus.output(0x00, 0x01);
+        assert!(!bus.cpu_control_lines().interrupt);
+        assert!(bus.pulse_sio_input_device_ready());
+        assert!(bus.cpu_control_lines().interrupt, "RIN ready plus D0 enable must reach PINT");
+        assert_eq!(bus.sio_handshake_lines(), Some((true, false, true, false)));
+        let _ = bus.debugger_input_port(0x01);
+        assert!(!bus.cpu_control_lines().interrupt, "DATA IN resets the Rev0 input-ready flip-flop");
+        assert_eq!(bus.sio_handshake_lines(), Some((false, false, false, false)));
+
+        bus.configure_sio_interrupt_wiring(SioInterruptWiring {
+            input: SioInterruptTarget::Disconnected,
+            output: SioInterruptTarget::Vi4,
+        });
+        bus.output(0x00, 0x02);
+        assert!(bus.pulse_sio_output_device_ready());
+        assert!(!bus.cpu_control_lines().interrupt, "VI4 must remain a raw vector request, not direct PINT");
+        assert_eq!(bus.sio_vector_interrupt_requests(), 1 << 4);
+        assert_eq!(bus.sio_handshake_lines(), Some((false, true, false, true)));
+        bus.debugger_output_port(0x01, b'O');
+        assert_eq!(bus.sio_vector_interrupt_requests(), 0, "DATA OUT resets the Rev0 output-ready flip-flop");
+        assert_eq!(bus.sio_handshake_lines(), Some((false, false, false, false)));
     }
 }
