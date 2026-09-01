@@ -378,20 +378,17 @@ impl RusTairApp {
         }
     }
 
+    /// Generic cable label used by endpoint selectors that do not own the
+    /// complete 88-SIO card configuration. Never print the old fixed 00h/01h
+    /// pair because the physical card address is jumper-selectable.
     fn serial_connection_label(
         board: SerialBoard,
-        sio: crate::config::SioHardwareConfig,
         straps: TwoSioStraps,
         connection: SerialConnection,
     ) -> String {
         match (board, connection) {
             (_, SerialConnection::Disconnected) => "Disconnected".into(),
-            (SerialBoard::Sio88, SerialConnection::Port0) => format!(
-                "88-SIO {} [{:02X}h/{:02X}h]",
-                sio.interface.label(),
-                sio.address.status(),
-                sio.address.data(),
-            ),
+            (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [configured I/O]".into(),
             (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable".into(),
             (SerialBoard::TwoSio88, SerialConnection::Port0) => format!(
                 "88-2SIO Port 0 [{:02X}h/{:02X}h]",
@@ -404,6 +401,24 @@ impl RusTairApp {
                 straps.address.port1_data(),
             ),
         }
+    }
+
+    /// Exact label when the caller owns the selected 88-SIO hardware config.
+    fn serial_connection_label_with_sio(
+        board: SerialBoard,
+        sio: crate::config::SioHardwareConfig,
+        straps: TwoSioStraps,
+        connection: SerialConnection,
+    ) -> String {
+        if board == SerialBoard::Sio88 && connection == SerialConnection::Port0 {
+            return format!(
+                "88-SIO {} [{:02X}h/{:02X}h]",
+                sio.interface.label(),
+                sio.address.status(),
+                sio.address.data(),
+            );
+        }
+        Self::serial_connection_label(board, straps, connection)
     }
 
     fn serial_connection(&self, device: SerialDevice) -> SerialConnection {
@@ -435,7 +450,7 @@ impl RusTairApp {
             self.asr33.answerback.clear();
         }
         let device_name = Self::serial_device_name(device);
-        let connection_name = Self::serial_connection_label(
+        let connection_name = Self::serial_connection_label_with_sio(
             self.config.machine.serial_board,
             self.config.machine.sio_hardware,
             self.config.machine.two_sio_straps,
