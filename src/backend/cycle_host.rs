@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig, TwoSioInterruptWiring,
-    TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioConnectorOutputs, SioElectricalLevel,
+    SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
@@ -18,7 +18,7 @@ use super::{
     BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState, CpuState,
     CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
     InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
-    SerialModemLines,
+    SerialModemLines, SioLogicalLines,
 };
 
 const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
@@ -338,6 +338,24 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> { Ok(self.inner.machine().sio_hardware()) }
+    fn sio_logical_lines(&mut self) -> BackendResult<Option<SioLogicalLines>> {
+        Ok(self.inner.machine().bus.sio_logical_lines().map(SioLogicalLines::from))
+    }
+    fn sio_connector_outputs(&mut self) -> BackendResult<Option<SioConnectorOutputs>> {
+        Ok(self.inner.machine().bus.sio_connector_outputs())
+    }
+    fn sio_decode_connector_input(
+        &mut self,
+        level: SioElectricalLevel,
+    ) -> BackendResult<Option<bool>> {
+        Ok(self.inner.machine().bus.sio_decode_connector_input(level))
+    }
+    fn sio_pulse_input_device_ready(&mut self) -> BackendResult<bool> {
+        Ok(self.inner.machine_mut().bus.pulse_sio_input_device_ready())
+    }
+    fn sio_pulse_output_device_ready(&mut self) -> BackendResult<bool> {
+        Ok(self.inner.machine_mut().bus.pulse_sio_output_device_ready())
+    }
     fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) -> BackendResult<()> {
         if self.inner.machine().two_sio_straps() == straps { return Ok(()); }
         let powered = self.inner.machine().powered;
