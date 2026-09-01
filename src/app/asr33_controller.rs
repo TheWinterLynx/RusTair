@@ -120,6 +120,11 @@ impl RusTairApp {
         if mode == self.tty.mode {
             return;
         }
+        if self.tty.mode == TtyMode::Line {
+            // LINE owns the external serial circuit. Leaving it must return the
+            // wire to MARK even if the operator changes mode while BREAK is held.
+            let _ = self.asr_serial_set_receive_break(false);
+        }
         self.tty.set_mode(mode);
         self.asr33.keyboard.reset_distributor(Instant::now());
         self.audio.play_once("assets/powerbtn.mp3");
@@ -467,6 +472,15 @@ impl RusTairApp {
         let key = teletype::KEYS[index];
         let accepted = match key.kind {
             KeyKind::Shift | KeyKind::Control | KeyKind::HereIs | KeyKind::Repeat => true,
+            KeyKind::Break => {
+                // BREAK is a held physical SPACE condition, not ASCII NUL and
+                // not a distributor-timed character. LOCAL keeps the line
+                // disconnected from the computer; LINE drives the actual cable.
+                if self.tty.mode == TtyMode::Line && self.asr_connection().is_connected() {
+                    let _ = self.asr_serial_set_receive_break(true);
+                }
+                true
+            }
             kind => {
                 let modifiers = ctx.input(|input| input.modifiers);
                 let shifted = self.tty.shift_down || modifiers.shift;
@@ -517,6 +531,9 @@ impl RusTairApp {
             match teletype::KEYS[index].kind {
                 KeyKind::Shift => self.tty.shift_down = false,
                 KeyKind::Control => self.tty.control_down = false,
+                KeyKind::Break => {
+                    let _ = self.asr_serial_set_receive_break(false);
+                }
                 _ => {}
             }
         }
