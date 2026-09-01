@@ -13,8 +13,24 @@ impl RusTairApp {
             self.status = "Power OFF the Altair before changing 88-SIO hardware wiring".into();
             return;
         }
+
+        // The built-in ASR-33 represents a direct TTY/current-loop device. If
+        // the physical card is changed to the A (RS-232) or B (TTL) interface,
+        // keeping that same virtual cable attached would silently invent a level
+        // converter. Unplug it instead; reconnecting through an explicit future
+        // adapter remains possible without falsifying the base hardware.
+        let disconnect_asr = self.config.machine.serial_board == SerialBoard::Sio88
+            && config.interface != crate::config::SioInterface::TtyC
+            && self.asr_connection().is_connected();
+
         self.config.machine.sio_hardware = config;
         self.machine.configure_sio_hardware(config);
+        if disconnect_asr {
+            self.serial_router.connect(
+                SerialDevice::InternalAsr33,
+                SerialConnection::Disconnected,
+            );
+        }
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
         self.terminal.tx_started = None;
@@ -24,7 +40,7 @@ impl RusTairApp {
         self.last_tick = now;
         self.execution_clock.reset_at(now);
         self.status = format!(
-            "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {} · IN→{} · OUT→{}",
+            "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {} · IN→{} · OUT→{}{}",
             config.revision.label(),
             config.address.status(),
             config.address.data(),
@@ -33,6 +49,11 @@ impl RusTairApp {
             config.format.label(),
             config.interrupt_wiring.input.label(),
             config.interrupt_wiring.output.label(),
+            if disconnect_asr {
+                " · ASR-33 cable disconnected: direct connection requires 88-SIO C current loop"
+            } else {
+                ""
+            },
         );
     }
 
