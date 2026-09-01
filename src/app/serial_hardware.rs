@@ -14,22 +14,25 @@ impl RusTairApp {
             return;
         }
 
-        // The built-in ASR-33 represents a direct TTY/current-loop device. If
-        // the physical card is changed to the A (RS-232) or B (TTL) interface,
-        // keeping that same virtual cable attached would silently invent a level
-        // converter. Unplug it instead; reconnecting through an explicit future
-        // adapter remains possible without falsifying the base hardware.
-        let disconnect_asr = self.config.machine.serial_board == SerialBoard::Sio88
-            && config.interface != crate::config::SioInterface::TtyC
-            && self.asr_connection().is_connected();
+        // Changing A/B/C changes the physical connector family. Preserve a
+        // virtual data-only peer that explicitly follows the selected family,
+        // but unplug any direct physical endpoint that would require an
+        // unconfigured level converter (ASR-33 outside C, COM outside A).
+        let disconnected_endpoint = if self.config.machine.serial_board == SerialBoard::Sio88 {
+            self.serial_router
+                .device_on(SerialConnection::Port0)
+                .filter(|device| !device.supports_sio_interface(config.interface))
+        } else {
+            None
+        };
 
         self.config.machine.sio_hardware = config;
         self.machine.configure_sio_hardware(config);
-        if disconnect_asr {
-            self.serial_router.connect(
-                SerialDevice::InternalAsr33,
-                SerialConnection::Disconnected,
-            );
+        if let Some(device) = disconnected_endpoint {
+            self.serial_router.connect(device, SerialConnection::Disconnected);
+            if device == SerialDevice::InternalAsr33 {
+                self.asr33.answerback.clear();
+            }
         }
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
@@ -39,6 +42,13 @@ impl RusTairApp {
         let now = Instant::now();
         self.last_tick = now;
         self.execution_clock.reset_at(now);
+        let disconnected_suffix = disconnected_endpoint.map_or_else(String::new, |device| {
+            format!(
+                " · {} cable disconnected: {}",
+                Self::serial_device_name(device),
+                device.sio_requirement_label(),
+            )
+        });
         self.status = format!(
             "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {} · IN→{} · OUT→{}{}",
             config.revision.label(),
@@ -49,11 +59,7 @@ impl RusTairApp {
             config.format.label(),
             config.interrupt_wiring.input.label(),
             config.interrupt_wiring.output.label(),
-            if disconnect_asr {
-                " · ASR-33 cable disconnected: direct connection requires 88-SIO C current loop"
-            } else {
-                ""
-            },
+            disconnected_suffix,
         );
     }
 
