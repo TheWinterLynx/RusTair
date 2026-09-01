@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use rand::RngCore;
 
-use crate::config::{RamBoardProfile, RamInit, RamSize};
+use crate::config::{
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioInterruptTarget, SioInterruptWiring,
+    SioRevision,
+};
 use crate::cpu8080::{Bus, Cpu8080};
 use cpu_board::{Fast8080S100Adapter, S100Cycle};
 use front_panel::FrontPanelController;
@@ -84,6 +87,13 @@ pub struct AltairBus {
     panel: FrontPanelController,
     s100: S100BusState,
     fast_wait_t_states: u32,
+    /// Physical routing of the original 88-SIO IN/OUT interrupt request pads.
+    /// This belongs to chassis/card wiring rather than the COM2502 UART core.
+    sio_interrupt_wiring: SioInterruptWiring,
+    /// D0=input-enable and D1=output-enable flip-flops written through the
+    /// 88-SIO control channel. Kept here because routing occurs after those
+    /// software-controlled sources, at the board/chassis wiring boundary.
+    sio_interrupt_control: u8,
     /// True only for the chassis owned by the exact Cycle backend. Every call to
     /// `drive_cpu_board_sample` is then one real 8080 clock T-state and may advance
     /// independent card oscillators without making the Fast adapter double-count
@@ -101,6 +111,8 @@ impl Default for AltairBus {
             panel: FrontPanelController::default(),
             s100: S100BusState::default(),
             fast_wait_t_states: 0,
+            sio_interrupt_wiring: SioInterruptWiring::default(),
+            sio_interrupt_control: 0,
             exact_t_state_clock_owner: false,
             diagnostic_meter: None,
             diagnostic_result: None,
@@ -147,6 +159,7 @@ impl AltairBus {
     pub fn tx_busy(&self) -> bool { self.io.serial_tx_busy() }
     pub fn clear_serial(&mut self) {
         self.io.clear_serial();
+        self.sio_interrupt_control = 0;
         self.refresh_interrupt_request_line();
     }
 
@@ -232,8 +245,61 @@ impl AltairBus {
     fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
+    /// Active 88-SIO interrupt sources after software D0/D1 enables but before
+    /// the physical IN/OUT/BH routing pads. The Rev1/internal-ready modification
+    /// uses COM2502 RDA/TBMT directly. Original Rev0 external device-ready
+    /// flip-flops are intentionally not guessed here; that path is closed with
+    /// the A/B/C handshake audit.
+    fn sio_internal_interrupt_sources(&self) -> (bool, bool) {
+        if self.io.serial_board() != SerialBoard::Sio88
+            || self.io.sio_hardware().revision != SioRevision::Rev1
+        {
+            return (false, false);
+        }
+        let status = self.io.peek_input(self.io.sio_hardware().address.status());
+        let input = self.sio_interrupt_control & 0x01 != 0 && status & 0x01 == 0;
+        let output = self.sio_interrupt_control & 0x02 != 0 && status & 0x80 == 0;
+        (input, output)
+    }
+
+    fn sio_pint_request(&self) -> bool {
+        let (input, output) = self.sio_internal_interrupt_sources();
+        (input && self.sio_interrupt_wiring.input.drives_pint())
+            || (output && self.sio_interrupt_wiring.output.drives_pint())
+    }
+
+    pub fn configure_sio_interrupt_wiring(&mut self, wiring: SioInterruptWiring) {
+        self.sio_interrupt_wiring = wiring;
+        self.refresh_interrupt_request_line();
+    }
+
+    pub fn sio_interrupt_wiring(&self) -> SioInterruptWiring { self.sio_interrupt_wiring }
+
+    /// Active raw 88-SIO requests presented to an optional 88-VI board. Bit n is
+    /// VIn. These raw lines never fabricate a processor restart opcode by
+    /// themselves; only a separate 88-VI implementation may arbitrate them.
+    pub fn sio_vector_interrupt_requests(&self) -> u8 {
+        if self.io.serial_board() != SerialBoard::Sio88 { return 0; }
+        let (input, output) = self.sio_internal_interrupt_sources();
+        let mut mask = 0u8;
+        if input {
+            if let Some(level) = self.sio_interrupt_wiring.input.vector_level() {
+                mask |= 1u8 << level;
+            }
+        }
+        if output {
+            if let Some(level) = self.sio_interrupt_wiring.output.vector_level() {
+                mask |= 1u8 << level;
+            }
+        }
+        mask
+    }
+
     pub(crate) fn refresh_interrupt_request_line(&mut self) {
-        let asserted = self.serial_interrupt_request();
+        let asserted = match self.io.serial_board() {
+            SerialBoard::Sio88 => self.sio_pint_request(),
+            SerialBoard::TwoSio88 => self.serial_interrupt_request(),
+        };
         self.s100.set_interrupt_request(asserted);
     }
 
@@ -314,6 +380,7 @@ impl AltairBus {
         self.s100.set_ext_clear(asserted);
         if asserted && !was_asserted {
             self.io.clear_serial();
+            self.sio_interrupt_control = 0;
             self.refresh_interrupt_request_line();
         }
     }
@@ -359,6 +426,11 @@ impl Bus for AltairBus {
     fn output(&mut self, port: u8, value: u8) {
         self.drive_cpu_cycle(Self::io_bus_address(port), value, S100Cycle::OutputWrite);
         if port != 0xff {
+            if self.io.serial_board() == SerialBoard::Sio88
+                && port == self.io.sio_hardware().address.status()
+            {
+                self.sio_interrupt_control = value & 0x03;
+            }
             self.io.output(port, value);
             self.refresh_interrupt_request_line();
         }
@@ -656,6 +728,20 @@ impl AltairMachine {
     pub fn panel_lamps(&self) -> PanelLampSnapshot { self.bus.panel_lamps() }
     pub fn wait_led(&self) -> bool { self.powered && self.bus.s100.signals().wait }
     pub fn ext_clear_asserted(&self) -> bool { self.powered && self.bus.ext_clear_asserted() }
+
+    pub fn configure_sio_interrupt_wiring(&mut self, wiring: SioInterruptWiring) {
+        if self.bus.sio_interrupt_wiring() == wiring { return; }
+        self.running = false;
+        self.bus.configure_sio_interrupt_wiring(wiring);
+        self.bus.clear_transient_memory_guards();
+        if self.powered && self.bus.serial_board() == SerialBoard::Sio88 {
+            self.reset();
+        } else {
+            self.cpu.reset();
+        }
+    }
+
+    pub fn sio_interrupt_wiring(&self) -> SioInterruptWiring { self.bus.sio_interrupt_wiring() }
 }
 
 #[cfg(test)]
@@ -875,5 +961,55 @@ mod tests {
         assert!(!machine.cpu.inte);
         assert_eq!(machine.cpu.pc, 0x0038);
         assert_eq!(machine.cpu.sp, 0x03fe);
+    }
+
+    #[test]
+    fn sio_rev1_input_and_output_sources_route_independently() {
+        let mut bus = AltairBus::default();
+        bus.configure_sio_interrupt_wiring(SioInterruptWiring {
+            input: SioInterruptTarget::Vi3,
+            output: SioInterruptTarget::Disconnected,
+        });
+        bus.output(0x00, 0x01);
+        assert!(bus.debugger_inject_serial_rx(0x01, b'I'));
+        assert!(!bus.cpu_control_lines().interrupt, "VI3 must not masquerade as direct PINT");
+        assert_eq!(bus.sio_vector_interrupt_requests(), 1 << 3);
+
+        bus.configure_sio_interrupt_wiring(SioInterruptWiring {
+            input: SioInterruptTarget::Disconnected,
+            output: SioInterruptTarget::Pint,
+        });
+        bus.output(0x00, 0x02);
+        assert!(bus.cpu_control_lines().interrupt, "enabled TBMT source wired to PINT must assert direct request");
+        assert_eq!(bus.sio_vector_interrupt_requests(), 0);
+    }
+
+    #[test]
+    fn sio_rev1_input_and_output_vi_lines_can_have_different_priorities() {
+        let mut bus = AltairBus::default();
+        bus.configure_sio_interrupt_wiring(SioInterruptWiring {
+            input: SioInterruptTarget::Vi2,
+            output: SioInterruptTarget::Vi5,
+        });
+        bus.output(0x00, 0x03);
+        assert!(bus.debugger_inject_serial_rx(0x01, b'B'));
+        assert!(!bus.cpu_control_lines().interrupt);
+        assert_eq!(bus.sio_vector_interrupt_requests(), (1 << 2) | (1 << 5));
+    }
+
+    #[test]
+    fn rev0_external_device_ready_interrupt_path_is_not_fabricated_from_com2502_ready() {
+        let mut bus = AltairBus::default();
+        let mut config = bus.sio_hardware();
+        config.revision = SioRevision::Rev0;
+        bus.configure_sio_hardware(config);
+        bus.configure_sio_interrupt_wiring(SioInterruptWiring {
+            input: SioInterruptTarget::Pint,
+            output: SioInterruptTarget::Pint,
+        });
+        bus.output(0x00, 0x03);
+        assert!(bus.debugger_inject_serial_rx(0x01, b'R'));
+        assert!(!bus.cpu_control_lines().interrupt, "unmodified Rev0 requires external device-ready flip-flops; COM2502 RDA/TBMT must not be silently substituted");
+        assert_eq!(bus.sio_vector_interrupt_requests(), 0);
     }
 }
