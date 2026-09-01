@@ -1,373 +1,296 @@
 # MITS 88-SIO hardware fidelity
 
-Status: **IN PROGRESS — primary-source audit complete for the COM2502 core/status revisions; finite UART core implemented and entering production integration.**
+Status: **IMPLEMENTED — ready for final local validation.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
-## 1. Scope and fidelity claim
+Related documents:
 
-This document covers the original single-channel MITS 88-SIO serial board. It is intentionally separate from `docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`: the two boards use different UART hardware, different status words and different physical configuration mechanisms.
+- `docs/88_SIO_INTERRUPT_ROUTING.md`
+- `docs/88_SIO_ABC_ELECTRICAL_INTERFACES.md`
+- `docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md`
 
-The target fidelity boundary includes:
+## 1. Scope
 
-- the COM2502-family UART used by the 88-SIO;
-- original Rev 0 and later Rev 1 status-word behavior;
-- finite receiver/transmitter holding and shift registers;
-- RDA, TBMT, overrun, framing and parity status;
-- board-owned serial clock/baud timing;
-- 5/6/7/8 data-bit, parity and stop-bit hardwiring;
-- selectable even control/status address plus following odd data address;
-- 88-SIO A/B/C electrical interface variants;
-- input/output interrupt enable flip-flops and their physical IN/OUT/BH routing;
-- direct PINT versus VI0..VI7 boundary;
-- continued board operation when the 8080 is STOPped, RESET-held or in HOLD/HLDA;
-- truthful Fast versus Cycle behavior;
-- user-observable validation from the normal application.
+This item models the original single-channel MITS 88-SIO as a physical card rather than as a generic host serial queue. The fidelity claim covers:
 
-Analog line voltage/slew, cable capacitance and current-loop analog faults are outside the present digital claim unless they affect a documented digital status input.
+- COM2502-style finite receive/transmit state;
+- Rev0 versus Rev1 status semantics;
+- configurable I/O address, baud preset and word format;
+- board-owned serial timing;
+- original Rev0 external RIN/ROT ready flip-flops and BIN/BOT outputs;
+- D0/D1 interrupt enables and physical PINT/VI routing;
+- A/B/C electrical-interface families;
+- a backend-neutral six-signal digital boundary shared by Fast and Cycle;
+- explicit endpoint/cable compatibility without hidden level converters.
 
-## 2. Primary hardware
+Analog voltage/current tolerances, cable capacitance, transistor slew, noise and independent remote-clock drift are outside this digital claim.
 
-The 88-SIO is a single serial I/O board built around a COM2502-family universal asynchronous receiver/transmitter. Unlike the later 88-2SIO it does **not** contain an MC6850 and therefore must not inherit MC6850 register or modem-pin semantics.
+## 2. Primary MITS evidence
 
-MITS offered three line-interface assemblies around the same board/UART logic:
+Primary source:
 
-| Variant | Physical interface |
-| --- | --- |
-| 88-SIO A | EIA / RS-232 levels |
-| 88-SIO B | TTL levels |
-| 88-SIO C | TTY / current-loop-oriented interface |
+**MITS, _Serial I/O Board Documentation_, 1975**
 
-RusTair represents this separately from the UART/status revision through `SioInterface`.
+`https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/88-SIO%20Documentation.pdf`
 
-## 3. Address selection
+Additional primary material in the same archive includes the Rev0 errata and Rev1 schematic.
 
-The board uses seven address jumpers and occupies two consecutive I/O addresses:
+The manual establishes the common logical signals:
 
-- even address = control OUT / status IN;
-- following odd address = data IN/OUT.
+- `RSI` — Receive Serial Input;
+- `RIN` — Input device Ready pulse;
+- `ROT` — Output device Ready pulse;
+- `TSO` — Transmit Serial Output;
+- `BIN` — input busy output;
+- `BOT` — output busy output.
 
-The MITS chart permits every even control address from `00h` through `FEh`; the data channel is therefore the following odd address from `01h` through `FFh`.
+It also distinguishes Rev0 external device-ready state from COM2502 RDA/TBMT and documents A/B/C as electrical-interface variants rather than different UART register sets.
 
-This means `FEh/FFh` is physically selectable even though `FFh` collides with the Altair front-panel sense-switch input. RusTair must not claim that a historically possible jumper setting is impossible merely because it is inconvenient. The UI may warn about the collision, but the hardware configuration model permits it.
+## 3. Physical configuration
 
-`src/config/sio.rs` models the pair as:
+`SioHardwareConfig` is the atomic dormant/installed card configuration:
 
 ```rust
-pub struct SioAddressPair { base: u8 }
-
-pub const fn try_new(base: u8) -> Option<Self> {
-    if base & 1 == 0 { Some(Self { base }) } else { None }
+pub struct SioHardwareConfig {
+    pub revision: SioRevision,
+    pub interface: SioInterface,
+    pub address: SioAddressPair,
+    pub baud: SioBaudRate,
+    pub format: SioWordFormat,
+    pub interrupt_wiring: SioInterruptWiring,
 }
 ```
 
-## 4. Baud and hardwired word format
+Changing these fields represents moving board hardware/jumpers and is POWER-OFF-only in the normal application UI.
 
-MITS documents a selectable serial rate through **25,000 baud**. The COM2502 receives a clock at sixteen times the serial bit rate.
+The I/O decoder follows the configured even status/control address and adjacent odd data address. The old fixed `00h/01h` assumption is no longer the production authority; endpoint labels no longer claim that pair when the card has been readdressed.
 
-The UART format is selected by physical logic/jumpers rather than a runtime control register. The audited configuration therefore keeps these as board hardware:
+## 4. Rev0 status register
 
-- data bits: 5, 6, 7 or 8;
-- parity: none, even or odd;
-- stop bits: 1 or 2;
-- nominal baud: 0 through 25,000.
+Rev0 is intentionally not reduced to only the COM2502 flags:
 
-The default RusTair installation remains the historical teletype-oriented configuration used by the project: 110 baud, 8 data bits, no parity, 2 stop bits.
-
-## 5. Rev 0 versus Rev 1 status words
-
-This is a critical compatibility distinction, not a cosmetic label.
-
-### 5.1 Rev 0 / original status word
-
-The original board exposes the COM2502 ready outputs directly:
-
-| Status bit | Meaning | Polarity |
+| Bit | Meaning | Polarity |
 | ---: | --- | --- |
-| D5 | RDA / receiver data available | HIGH = ready |
-| D4 | receiver overrun | HIGH = error |
-| D3 | framing error | HIGH = error |
-| D2 | parity error | HIGH = error |
-| D1 | TBMT / transmitter buffer empty | HIGH = ready |
+| D7 | external Output Device Ready FF | active LOW |
+| D6 | unused/not claimed | — |
+| D5 | COM2502 RDA | active HIGH |
+| D4 | overrun error | active HIGH |
+| D3 | framing error | active HIGH |
+| D2 | parity error | active HIGH |
+| D1 | COM2502 TBMT | active HIGH |
+| D0 | external Input Device Ready FF | active LOW |
 
-Period MITS software documentation describes polling D5 for input and D1 for output on this revision.
+With both external ready flip-flops reset and an empty transmitter holding register, the modeled clear/idle Rev0 status is `83h`.
 
-### 5.2 Rev 1 / modified status word
+A serial character completing reception sets RDA/D5 but **does not** set the external input-device-ready flip-flop. Likewise COM2502 TBMT does not set the external output-device-ready flip-flop.
 
-The later board modification moves the two software-ready indications and inverts them:
+## 5. Rev0 external ready handshake
 
-| Status bit | Meaning | Polarity |
-| ---: | --- | --- |
-| D7 | transmitter **not ready** | LOW = ready |
-| D4 | receiver overrun | HIGH = error |
-| D3 | framing error | HIGH = error |
-| D2 | parity error | HIGH = error |
-| D0 | receiver **not ready** | LOW = ready |
-
-Thus common Rev 1 polling code waits for D0 to clear before input and D7 to clear before output.
-
-The revision is represented explicitly:
-
-```rust
-pub enum SioRevision {
-    Rev0,
-    Rev1,
-}
-```
-
-Default is Rev 1 because that preserves the later/common MITS software environment RusTair previously approximated. Rev 0 remains a real selectable hardware revision rather than a software hack.
-
-## 6. Pre-audit RusTair behavior and defects
-
-Before this closeout the 88-SIO path reused `SerialPort`, a generic byte queue whose state was owned partly by host endpoints.
-
-The status value was synthesized as:
-
-```rust
-(if rx_empty { 0x01 } else { 0 }) | (if tx_busy { 0xc0 } else { 0 })
-```
-
-This happened to approximate two visible Rev 1 tests but was not the real board:
-
-1. D0 approximately represented active-low receive ready.
-2. D7 approximately represented active-low transmit ready.
-3. **D6 was falsely duplicated with D7.**
-4. D4/D3/D2 error outputs did not exist.
-5. Rev 0 D5/D1 active-high ready status was impossible.
-6. RX was an unbounded `VecDeque`, not a finite COM2502 receiver.
-7. TX readiness followed host endpoint drain rather than COM2502 TBMT.
-8. a completed unread receive character prevented the next host frame from starting, hiding real overrun.
-9. board serial time was not advanced by a hardware-owned clock.
-10. the address pair was fixed at `00h/01h` even though the physical card has address jumpers.
-
-These are hardware-fidelity blockers, not presentation differences.
-
-## 7. COM2502 receive pipeline
-
-The receiver is double buffered:
+The original external handshake is explicit:
 
 ```text
-serial input
-    -> receiver shift register
-    -> receiver data-bits holding register
-    -> CPU data bus
+RIN pulse -> input-device-ready FF set -> D0 becomes active LOW -> BIN high
+DATA IN  -> RDAR + input-ready FF reset
+
+ROT pulse -> output-device-ready FF set -> D7 becomes active LOW -> BOT high
+DATA OUT  -> output-ready FF reset + UART transmit-data strobe
 ```
 
-`RDA` describes the holding register, not line occupancy.
+RusTair exposes explicit RIN/ROT pulse operations through `AltairBus`, `MachineBackend` and `BackendHost`.
 
-A crucial COM2502 overrun behavior differs from the MC6850 used by the 88-2SIO. When a new frame completes while RDA is already HIGH, the UART:
+No byte-oriented endpoint automatically calls them. This is deliberate: a terminal producing a byte is not evidence that the separate MITS ready-contact wire pulsed.
 
-1. records overrun;
-2. transfers the **new** shift-register character into the holding register;
-3. leaves RDA HIGH.
+## 6. Rev1/internal-ready behavior
 
-The old unread character is therefore overwritten. RusTair must not reuse MC6850's “retain old byte / lose new byte” behavior here.
+The supported Rev1/internal-ready behavior uses the later D0/D7 convention:
 
-`src/machine/sio.rs` implements:
+- D0 active LOW reflects COM2502 receive ready;
+- D7 active LOW reflects transmitter-buffer availability;
+- D4:D2 remain the error bits.
 
-```rust
-self.overrun = self.rx_full;
-self.rx_data = value & mask;
-self.rx_full = true;
-```
+This keeps Rev1 software polling separate from the original Rev0 external-ready protocol.
 
-A CPU data-channel read pulses the board's RDAR path and resets RDA. It does not fabricate an unrelated clearing rule for the error flags.
+## 7. Finite COM2502 model
 
-## 8. COM2502 transmit pipeline
+`src/machine/sio.rs` separates UART storage and shift activity:
 
-The transmitter is also double buffered:
+### Receive
 
-```text
-CPU data bus
-    -> transmitter holding register
-    -> transmitter shift register
-    -> serial output
-```
+- receive shift register / frame in progress;
+- finite receiver holding register (`rx_data` / RDA);
+- a second completed frame while RDA is still set records overrun and overwrites the old unread character with the newly completed one;
+- framing/parity error state is associated with the completed receive frame;
+- DATA IN resets RDA, not all error state by fiat.
 
-TDS loads the holding register and drives TBMT LOW. If the shift register is idle, the UART transfers the holding byte into the shift register immediately; TBMT therefore returns HIGH even though that character is still physically being transmitted.
+### Transmit
 
-A second byte may occupy the holding register while the first frame is in progress. At the first frame boundary it transfers immediately, giving back-to-back serial characters without a fabricated idle gap.
-
-This is fundamentally different from the old rule “TX busy until the host terminal has displayed/acknowledged the byte.”
-
-## 9. Current RusTair implementation
-
-### 9.1 Physical configuration
-
-`src/config/sio.rs` now defines:
-
-- `SioRevision`;
-- `SioInterface`;
-- `SioAddressPair`;
-- `SioBaudRate`;
-- `SioDataBits`;
-- `SioParity`;
-- `SioStopBits`;
-- `SioWordFormat`;
-- `SioHardwareConfig`.
-
-### 9.2 Finite UART core
-
-`src/machine/sio.rs` owns:
-
-- receiver holding register and RDA;
-- receiver shift path;
-- ROR/RFE/RPE;
-- transmitter holding register and TBMT;
+- transmitter holding register;
 - transmitter shift register;
-- completed downstream wire-byte queue;
-- exact integer serial phase accumulation.
+- TBMT follows holding-register availability rather than host presentation completion;
+- when the shift register is idle, a written byte is promoted immediately, so TBMT may return ready while the character is still physically shifting;
+- a second byte may occupy the holding register while the first is in flight.
 
-The board clock advances by chassis T-states:
+The completed endpoint byte queue is downstream of the UART shift process and is not the hardware-ready source.
 
-```rust
-let total = self.bit_phase_numerator
-    .saturating_add(t_states.saturating_mul(u64::from(baud)));
-let boundaries = total / u64::from(cpu_clock_hz);
-self.bit_phase_numerator = total % u64::from(cpu_clock_hz);
+## 8. Board-owned timing
+
+The 88-SIO owns its baud/format clock. `SioPort::advance_t_states()` advances frame phase from elapsed chassis T-states using the selected card baud.
+
+This has two important consequences:
+
+1. serial hardware timing is not derived from UI animation or terminal presentation pacing;
+2. Fast and Cycle observe the same card state after the same elapsed physical card time.
+
+The serial-card oscillator also has an idle-chassis path so hardware can continue advancing while the CPU is stopped rather than freezing merely because no instruction executes.
+
+## 9. RSI and TSO digital line state
+
+RusTair exposes instantaneous board-side `RSI` and `TSO` logic levels for an asynchronous frame:
+
+```text
+start LOW
+then data bits LSB first
+then configured parity if present
+then configured stop bit(s) HIGH
+idle HIGH / MARK
 ```
 
-The physical COM2502 16x clock is represented by its resulting bit-boundary rate; no host endpoint owns TBMT/RDA timing.
+This is a real bit-phase projection of the modeled in-flight frame, not a boolean such as “RX queue non-empty”.
 
-### 9.3 Staged integration
+### Important receive-side boundary
 
-The COM2502 module is compiled through `src/machine/serial.rs` while the production 88-SIO path is migrated from the old generic `SerialPort` to `SioPort`. This staging is deliberate: chip/core failures can be validated independently from the larger S-100 decoder/backend/UI change.
+The current endpoint API accepts a character and the 88-SIO then represents the corresponding **baud-matched accepted frame** on RSI using the card timing. RusTair does not yet run an independently clocked remote transmitter bitstream against the COM2502 sampling clock.
 
-## 10. Interrupt control and physical routing
+Therefore the current fidelity claim does **not** include automatically generating framing/parity corruption from endpoint baud mismatch, phase drift, electrical noise or marginal sampling. Those remain explicit out-of-scope fault-injection/analog work and must not be inferred from the presence of `rsi_high`.
 
-The MITS control output uses D0 and D1 as independent interrupt enable flip-flops:
+## 10. A/B/C electrical interfaces
 
-| D1 | D0 | Enabled source(s) |
-| ---: | ---: | --- |
-| 0 | 0 | none |
-| 0 | 1 | input |
-| 1 | 0 | output |
-| 1 | 1 | input + output |
+The common board logic is converted at the connector boundary:
 
-The PCB exposes input, output and combined interrupt request points, plus VI0..VI7 connections for the MITS vectored-interrupt system. MITS also documents direct connection to the processor interrupt line, which results in the usual 8080 restart at octal 70 (`RST 7`, opcode `FFh`).
+### A — RS-232
 
-This routing is not yet closed in RusTair. The same rule used for the audited 88-2SIO applies: a raw board interrupt and a CPU PINT request are not synonyms. VIx routing must terminate at a raw vector-line boundary until a real 88-VI component consumes it.
+Board HIGH outputs (`TSO/BIN/BOT`) become negative RS-232 levels; board LOW becomes positive. Inputs are converted back with the inverse electrical mapping.
 
-## 11. Fast versus Cycle requirements
+### B — TTL
 
-### Fast
+Non-inverting TTL LOW/HIGH mapping in both directions.
 
-Fast may account board activity at instruction boundaries using elapsed T-state deltas, but it must expose the same RDA/TBMT/error values and the same total serial elapsed time as Cycle.
+### C — TTY/current loop
 
-### Cycle Accurate
+For the documented output circuit, board HIGH drives the output transistor/conducting state; board LOW produces open/high-impedance state. Receiver circuitry restores the common logical polarity on inputs.
 
-Cycle advances the board from real elapsed chassis/CPU T-states. No 88-SIO-specific wait state is currently claimed by the primary evidence used in this audit; one must not be copied from the later 88-2SIO PRDY circuit.
+Typed external states are used (`Rs232Positive`, `Rs232Negative`, `TtlLow`, `TtlHigh`, `CurrentLoopOpen`, `CurrentLoopConducting`) so incompatible electrical families cannot accidentally be accepted as the same bool.
 
-### CPU parked
+See `docs/88_SIO_ABC_ELECTRICAL_INTERFACES.md` for the detailed mapping.
 
-The 88-SIO clock is independent hardware. A frame already in flight must continue while the 8080 is STOPped, RESET-held or in HOLD/HLDA. RusTair's shared idle-chassis serial clock mechanism will be used once the production SIO path is connected.
+## 11. Endpoint/cable contract
 
-## 12. Regression evidence already added
+The endpoint audit deliberately distinguishes physical devices from virtual peers:
 
-`src/config/sio.rs` protects:
+| Endpoint | 88-SIO direct/virtual compatibility | Ready-wire behavior |
+| --- | --- | --- |
+| Built-in ASR-33 | direct C / current-loop only | data only; does not invent RIN/ROT |
+| Text Terminal | virtual peer instantiated in selected A/B/C family | data only; does not invent RIN/ROT |
+| External TCP | virtual peer instantiated in selected A/B/C family | data only; does not invent RIN/ROT |
+| External COM | direct A / RS-232 only | data only for 88-SIO; does not invent RIN/ROT |
 
-- Rev 1 as migration/default revision;
-- even status/data address-pair selection through `FEh/FFh`;
-- 25,000-baud documented ceiling;
-- default 110-baud 8N2 TTY configuration.
+Changing the physical 88-SIO interface automatically disconnects an attached physical endpoint that is no longer electrically compatible. Attempting to reconnect it is rejected with an explicit message rather than installing a hidden adapter.
 
-`src/machine/sio.rs` protects:
+The virtual Text Terminal/TCP peers are not claims about a historical physical terminal model; they are explicit host-side peers whose connector side follows the selected digital electrical family. They still do not gain separate MITS ready contacts.
 
-- exact Rev 0 D5/D1 active-high ready positions;
-- exact Rev 1 D0/D7 active-low ready positions;
-- absence of the old fabricated D6 ready bit;
-- COM2502 overrun overwriting old unread data with the newly completed character;
-- RDAR clearing RDA without inventing an error-clear side effect;
-- double-buffered TX/TBMT returning ready before the character finishes;
-- next-byte promotion at the exact previous-frame boundary;
-- receive shift continuing while the previous holding-register byte remains unread.
+External COM framing/baud remains independently configurable. RusTair does not silently synchronize a real host COM endpoint to the 88-SIO board; a mismatch represents a misconfigured peer, although receive-bit sampling faults from that mismatch are outside the current endpoint model as described above.
 
-These tests require local validation before this implementation phase is considered green.
+## 12. Interrupt routing
 
-## 13. How the user will validate it
+OUT to the status/control address stores D0 input-enable and D1 output-enable. The source conditions are revision-sensitive:
 
-The full manual procedure becomes available after configuration/UI integration. Required user-visible checks are already defined:
+- Rev0: external input/output ready flip-flops;
+- Rev1: internal COM2502 ready state.
 
-### 13.1 Rev 0 versus Rev 1
+Each resulting IN/OUT request can be wired to:
 
-1. POWER OFF.
-2. Install/select MITS 88-SIO.
-3. Select Rev 0.
-4. POWER ON and inspect the status port while RX is empty/TX ready: D1 must be HIGH; D5 LOW until a character is received.
-5. Present one receive character. After its complete frame, D5 must become HIGH.
-6. POWER OFF and select Rev 1.
-7. Repeat: empty RX must expose D0 HIGH; a completed received character must clear D0. TX ready must be represented by D7 LOW.
-8. D6 must never mirror TX-ready merely because old RusTair once did so.
+- `Disconnected`;
+- direct `Pint`;
+- raw `Vi0..Vi7`.
 
-### 13.2 Finite receiver and overrun
+VI lines remain raw chassis requests. The 88-SIO does not fabricate an interrupt vector for them. See `docs/88_SIO_INTERRUPT_ROUTING.md`.
 
-1. Configure a known baud/format.
-2. Let one complete character reach RDA but do not read it.
-3. Allow the next physical frame to complete.
-4. Overrun D4 must set.
-5. Reading DATA must return the **second/newer** character, demonstrating COM2502 overwrite semantics rather than MC6850 semantics.
+## 13. Fast versus Cycle ownership
 
-### 13.3 Double-buffered transmitter
+There is one physical 88-SIO model per backend chassis, not two behaviorally independent UART implementations.
 
-1. Write one byte while transmitter idle.
-2. TBMT must return to its ready state after the holding byte transfers into the shift register, before the full serial frame finishes.
-3. Write a second byte during the first frame. TBMT must become not-ready while that second byte occupies the holding register.
-4. At the first frame boundary the second byte must promote immediately and TBMT must become ready again.
+The backend-neutral API exposes:
 
-### 13.4 Board clock while CPU parked
+- `SioLogicalLines` — RSI, latched RIN/ROT ready state, TSO, BIN, BOT;
+- `sio_connector_outputs()` — STSO/SBIN/SBOT after A/B/C conversion;
+- `sio_decode_connector_input()` — selected-family connector input conversion;
+- explicit RIN/ROT pulse operations.
 
-1. Begin an RX or TX frame.
-2. STOP the CPU before the frame completes.
-3. Leave the chassis powered for longer than the remaining frame duration.
-4. The 88-SIO frame must complete even though the CPU executed no instructions.
-5. Repeat under sustained RESET and HOLD/HLDA in the diagnostic views.
+Regression tests require Fast and Cycle to project identical 88-SIO logical/electrical state for the same card configuration.
 
-## 14. Remaining blockers before PASS
+Cycle additionally owns exact CPU T-state visibility; Fast remains instruction-level and must not claim exact CPU pin timing that it does not possess.
 
-1. Replace the production generic `SerialPort` 88-SIO path with `SioPort`.
-2. Move status/data decoding to `SioAddressPair`.
-3. Advance the 88-SIO baud clock during RUN and the shared idle-chassis path.
-4. Replace endpoint-owned RX/TX-ready timing with UART-owned RDA/TBMT state.
-5. Carry `SioHardwareConfig` through `MachineConfig`, Fast/Cycle backends and engine recreation.
-6. Persist revision, address, baud, format and A/B/C interface.
-7. Add POWER-OFF-only Configuration UI and dynamic endpoint labels.
-8. Model 88-SIO input/output interrupt routing to disconnected/PINT/VIx without fabricating 88-VI vectors.
-9. Validate endpoint behavior for A/B/C interfaces without inventing MC6850 modem pins.
-10. Run focused Fast/Cycle tests, full local suite and the manual procedures above.
-11. Update this document and the Point 1 ledger to `PASS` only after that green checkpoint.
+## 14. Physical-to-code mapping
 
-## 15. Primary references
+- `src/config/sio.rs` — revision, address, baud, framing, interface and interrupt wiring.
+- `src/config/sio_electrical.rs` — typed connector-level vocabulary.
+- `src/machine/sio.rs` — finite COM2502, frame timing, Rev0 ready flip-flops, RSI/TSO.
+- `src/machine/sio_interface.rs` — A/B/C electrical conversion.
+- `src/machine/io_devices.rs` — I/O decode, card ownership, explicit ready pulses.
+- `src/machine/serial.rs` — six-line/connector boundary on `AltairBus`.
+- `src/machine/mod.rs` — D0/D1 interrupt enables and PINT/VI projection.
+- `src/backend/mod.rs`, `native.rs`, `cycle_host.rs` — backend-neutral physical API.
+- `src/io/serial_router.rs` — endpoint electrical compatibility.
+- `src/app/serial_hardware.rs`, `src/app/mod.rs` — POWER-OFF reconfiguration and cable disconnect/reject policy.
 
-### MITS 88-SIO documentation
+## 15. Regression coverage
 
-MITS, *Altair 88-SIO Serial I/O Interface* documentation and schematics, including Rev 0/Rev 1 material.
+Important coverage includes:
 
-Archive index:
+- Rev0/Rev1 ready-bit positions and polarity;
+- Rev0 RIN/ROT independence from COM2502 RDA/TBMT;
+- DATA IN/OUT reset side effects;
+- finite receive overrun and transmit double buffering;
+- serial start/data/parity/stop bit progression;
+- A/B/C typed level conversion;
+- Fast/Cycle physical-boundary parity;
+- Rev0 PINT/VI routing and non-fabricated interrupts;
+- endpoint compatibility matrix;
+- no endpoint calls hidden RIN/ROT pulse APIs;
+- cable labels cannot regress to hard-coded `00h/01h`.
 
-https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/
+Relevant integration files include:
 
-The archive includes the main 88-SIO documentation, Rev 0 errata, Rev 1 schematic and COM2502 data sheet.
+- `tests/sio88_hardware_fidelity.rs`
+- `tests/sio88_physical_boundary.rs`
+- `tests/sio88_interrupt_configuration.rs`
+- `tests/sio88_configuration_ui.rs`
+- `tests/sio88_endpoint_wiring.rs`
 
-The MITS 88-ACR manual also reproduces the standard SIO-B documentation and is useful for the address/baud/format/interface descriptions:
+## 16. User-observable validation
 
-https://deramp.com/downloads/altair/hardware/cassette_interface/Altair%2088-ACR%20Cassette%20Interface.pdf
+1. POWER OFF and select MITS 88-SIO.
+2. Move its I/O address away from `00h/01h`; the configuration remains authoritative and connection status must not claim the old fixed pair.
+3. Select interface C and connect the ASR-33: direct connection is allowed.
+4. POWER OFF and change to A or B: the ASR-33 cable must be disconnected rather than silently converted.
+5. On A, External COM may be connected directly. Change to B or C while powered off: that COM cable must be disconnected.
+6. Text Terminal or External TCP may remain attached as explicit virtual A/B/C peers.
+7. On Rev0, receiving data may affect RDA/D5 but must not fabricate the external RIN-ready/D0 condition.
+8. Explicit RIN/ROT test events must affect their ready latches, and DATA IN/OUT must clear them.
+9. Switching Fast/Cycle while powered off must preserve the same physical SIO configuration.
 
-### COM2502
+## 17. Known limits / non-claims
 
-COM2502 / TR1602-family UART data sheet contained in the MITS archive above. Primary authority for:
+The 88-SIO base-card item intentionally does not claim:
 
-- RDA/RDAR;
-- TBMT/TDS;
-- double-buffered receiver/transmitter paths;
-- ROR, RFE and RPE;
-- receiver-overrun flow showing transfer of the new character into the holding register.
+- analog RS-232 voltage margins or rise/fall time;
+- current-loop current magnitude, cable resistance or opto/transistor analog behavior;
+- electromagnetic noise or contact bounce;
+- independently clocked remote receive-bit sampling and automatic baud-mismatch framing faults;
+- a complete 88-Vector Interrupt controller beyond raw VI request wires;
+- undocumented RIN/ROT contacts for endpoints whose historical wiring does not establish them.
 
-### Period MITS software/status revision evidence
+These limits do not require compatibility hacks: unsupported physical behavior remains un-driven or explicitly outside the claim.
 
-MITS *Computer Notes*, 1975 issues, documents the later status polling convention used by MITS software. The October 1975 material explicitly describes Rev 1-style receive ready on D0 active LOW and transmit ready on D7 active LOW.
-
-Archive example:
-
-https://altairclone.com/downloads/computer_notes/1975_01_05.pdf
-
-Period programming literature also records the transition from original D5/D1 active-HIGH ready bits to modified D0/D7 active-LOW polling. These period sources are used to distinguish physical Rev 0/Rev 1 behavior rather than treating one convention as a compatibility hack.
+No known implementation blocker remains inside the stated digital 88-SIO claim. Final `PASS` is withheld only until the post-endpoint focused and full local test checkpoint is reported green.
