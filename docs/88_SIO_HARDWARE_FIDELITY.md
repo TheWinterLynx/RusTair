@@ -1,6 +1,6 @@
 # MITS 88-SIO hardware fidelity
 
-Status: **IMPLEMENTED — PASS revalidation pending after the 2026-09-01 receive-BREAK correction.**
+Status: **PASS — receive-BREAK correction plus focused and full local validation green on 2026-09-02.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
@@ -306,4 +306,4 @@ The 88-SIO base-card item intentionally does not claim:
 
 These limits do not require compatibility hacks: unsupported physical behavior remains un-driven or explicitly outside the claim.
 
-No known implementation blocker remains inside the stated digital 88-SIO claim. The earlier focused endpoint/physical-boundary/full-suite validation was green on 2026-09-01, but the subsequently discovered ASR-33 receive-BREAK correction changes the UART receive path and therefore requires a fresh focused `serial_receive_break_fidelity` run plus the normal full local `cargo test` suite before restoring the PASS label. GitHub Actions are not required and have not been run.
+No known implementation blocker remains inside the stated digital 88-SIO claim. The receive-BREAK regression, focused 88-SIO/88-2SIO serial tests, physical-boundary tests and complete local `cargo test` suite were reported green on 2026-09-02. GitHub Actions were not run.
