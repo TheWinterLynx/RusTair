@@ -1,6 +1,6 @@
 # MITS 88-SIO interrupt routing fidelity
 
-Status: **IMPLEMENTED — ready for final local validation.**
+Status: **PASS — final focused and full local validation green on 2026-09-01.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
@@ -168,4 +168,4 @@ A regression exists if VI selection fabricates a CPU vector or if Rev0 RDA/TBMT 
 - A complete 88-VI board is outside this 88-SIO item; VI lines end at the raw chassis boundary.
 - Endpoint cables do not invent RIN/ROT. If a future modeled peripheral has documented ready contacts, those pulses must be added explicitly at that peripheral boundary.
 
-No remaining implementation blocker is known inside the 88-SIO interrupt-routing claim. The item remains labelled “ready for final local validation” until the final post-endpoint `cargo test` checkpoint is green.
+No remaining implementation blocker is known inside the 88-SIO interrupt-routing claim. The focused endpoint/physical-boundary tests and complete local `cargo test` suite were reported green on 2026-09-01. GitHub Actions were not run.
