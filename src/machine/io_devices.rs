@@ -897,6 +897,7 @@ mod tests {
             address: TwoSioAddressBlock::try_new(0x10).unwrap(),
             port0_baud: ConfigTwoSioBaudTap::Baud300,
             port1_baud: ConfigTwoSioBaudTap::Baud9600,
+            ..TwoSioStraps::default()
         });
         io.output(SIO2_PORT0_STATUS, 0x15); // /16, 8N1
         io.output(SIO2_PORT1_STATUS, 0x15);
