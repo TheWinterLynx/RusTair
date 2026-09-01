@@ -721,6 +721,7 @@ mod tests {
             address: TwoSioAddressBlock::try_new(0x44).unwrap(),
             port0_baud: TwoSioBaudTap::Baud300,
             port1_baud: TwoSioBaudTap::Baud9600,
+            ..TwoSioStraps::default()
         };
         for engine in EmulationEngine::ALL {
             let mut host = BackendHost::from_engine(engine).unwrap();
