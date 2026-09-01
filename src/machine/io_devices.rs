@@ -252,6 +252,23 @@ impl IoDevices {
         true
     }
 
+    /// Drive the physical receive wire to continuous SPACE/BREAK. Port 0 exists
+    /// on both serial boards; Port 1 exists only on the 88-2SIO.
+    pub(super) fn set_receive_break(&mut self, index: usize, active: bool) -> bool {
+        match self.serial_board {
+            SerialBoard::Sio88 if index == 0 => {
+                self.sio.set_receive_break(active);
+                true
+            }
+            SerialBoard::TwoSio88 => {
+                let Some(port) = self.two_sio.get_mut(index) else { return false; };
+                port.set_receive_break(active);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Original 88-SIO logical handshake boundary. These are not MC6850 modem
     /// pins: RIN/ROT are external ready pulses and BIN/BOT are board busy outputs.
     pub(super) fn sio_handshake_lines(&self) -> Option<SioHandshakeLines> {
@@ -579,6 +596,11 @@ impl AltairBus {
     }
     pub fn set_serial_modem_inputs(&mut self, port_index: usize, cts_high: bool, dcd_high: bool) -> bool {
         let changed = self.io.set_modem_inputs(port_index, cts_high, dcd_high);
+        if changed { self.refresh_interrupt_request_line(); }
+        changed
+    }
+    pub fn set_serial_receive_break(&mut self, port_index: usize, active: bool) -> bool {
+        let changed = self.io.set_receive_break(port_index, active);
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
@@ -1057,6 +1079,28 @@ mod tests {
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x81, 0x81);
         assert_eq!(io.input(SIO2_PORT0_DATA), b'A');
         assert_eq!(io.input(SIO2_PORT0_STATUS) & 0x01, 0);
+    }
+
+    #[test]
+    fn receive_break_routes_to_whichever_serial_card_is_installed() {
+        let mut io = IoDevices::default();
+        assert!(io.set_receive_break(0, true));
+        assert!(!io.serial_rx_line_idle());
+        io.advance_t_states(200_000);
+        assert_eq!(io.peek_input(SIO_STATUS_PORT) & 0x08, 0x08);
+        assert_eq!(io.peek_input(SIO_DATA_PORT), 0x00);
+        assert!(io.set_receive_break(0, false));
+
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        io.output(SIO2_PORT0_STATUS, 0x15);
+        assert!(io.set_receive_break(0, true));
+        io.advance_t_states(181_819);
+        assert_eq!(io.peek_input(SIO2_PORT0_STATUS) & 0x11, 0x11);
+        assert_eq!(io.peek_input(SIO2_PORT0_DATA), 0x00);
+        assert!(io.set_receive_break(0, false));
+        assert!(io.set_receive_break(1, true));
+        assert!(!io.port1_rx_line_idle());
+        assert!(io.set_receive_break(1, false));
     }
 
     #[test]
