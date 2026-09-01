@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use rustair::backend::{MachineBackend, NativeMachineBackend};
-use rustair::config::{SioAddressPair, SioHardwareConfig, SioRevision};
+use rustair::config::{
+    SioAddressPair, SioHardwareConfig, SioInterruptTarget, SioInterruptWiring, SioRevision,
+};
 use rustair::machine::AltairMachine;
 
 #[test]
@@ -43,16 +45,51 @@ fn physical_address_pair_moves_decode_and_old_ports_become_open_bus() {
 }
 
 #[test]
-fn rev0_exposes_original_active_high_rda_and_tbmt_bits() {
+fn rev0_exposes_uart_flags_and_external_device_ready_as_independent_status_sources() {
     let mut machine = AltairMachine::default();
     machine.configure_sio_hardware(SioHardwareConfig {
         revision: SioRevision::Rev0,
         ..SioHardwareConfig::default()
     });
 
-    assert_eq!(machine.bus.peek_io_port(0x00), 0x02, "Rev0 idle TBMT is D1 active high");
+    assert_eq!(machine.bus.peek_io_port(0x00), 0x83, "Rev0 starts with external D0/D7 ready latches reset and COM2502 TBMT on D1");
     assert!(machine.bus.debugger_inject_serial_rx(0x01, b'A'));
-    assert_eq!(machine.bus.peek_io_port(0x00) & 0x22, 0x22, "Rev0 RDA is D5 active high while TBMT remains D1 high");
+    assert_eq!(machine.bus.peek_io_port(0x00) & 0xa3, 0xa3, "COM2502 RDA/TBMT must not fabricate RIN/ROT device-ready state");
+    assert!(machine.bus.pulse_sio_input_device_ready());
+    assert_eq!(machine.bus.peek_io_port(0x00) & 0x21, 0x20, "explicit RIN ready pulls D0 low while RDA remains independently high");
+    assert_eq!(machine.bus.sio_handshake_lines(), Some((true, false, true, false)));
+    assert_eq!(machine.bus.debugger_input_port(0x01), b'A');
+    assert_eq!(machine.bus.peek_io_port(0x00) & 0x21, 0x01, "DATA IN clears RDA and the Rev0 input-ready latch");
+    assert_eq!(machine.bus.sio_handshake_lines(), Some((false, false, false, false)));
+}
+
+#[test]
+fn rev0_external_ready_routes_to_pint_and_vi_then_data_cycles_clear_it() {
+    let mut machine = AltairMachine::default();
+    machine.configure_sio_hardware(SioHardwareConfig {
+        revision: SioRevision::Rev0,
+        ..SioHardwareConfig::default()
+    });
+    machine.configure_sio_interrupt_wiring(SioInterruptWiring {
+        input: SioInterruptTarget::Pint,
+        output: SioInterruptTarget::Disconnected,
+    });
+    machine.bus.debugger_output_port(0x00, 0x01);
+    assert!(machine.bus.pulse_sio_input_device_ready());
+    assert!(machine.bus.cpu_control_lines().interrupt);
+    let _ = machine.bus.debugger_input_port(0x01);
+    assert!(!machine.bus.cpu_control_lines().interrupt);
+
+    machine.configure_sio_interrupt_wiring(SioInterruptWiring {
+        input: SioInterruptTarget::Disconnected,
+        output: SioInterruptTarget::Vi4,
+    });
+    machine.bus.debugger_output_port(0x00, 0x02);
+    assert!(machine.bus.pulse_sio_output_device_ready());
+    assert!(!machine.bus.cpu_control_lines().interrupt);
+    assert_eq!(machine.bus.sio_vector_interrupt_requests(), 1 << 4);
+    machine.bus.debugger_output_port(0x01, b'O');
+    assert_eq!(machine.bus.sio_vector_interrupt_requests(), 0);
 }
 
 #[test]
