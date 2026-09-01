@@ -227,12 +227,17 @@ impl eframe::App for RusTairApp {
 
                     ui.menu_button("Serial board", |ui| {
                         let current = self.config.machine.serial_board;
+                        let sio = self.config.machine.sio_hardware;
                         let straps = self.config.machine.two_sio_straps;
                         let irq_wiring = self.config.machine.two_sio_interrupt_wiring;
                         ui.label(format!("Installed board: {}", current.label()));
                         match current {
                             SerialBoard::Sio88 => {
-                                ui.small(format!("Port 0: {:02X}h status / {:02X}h data", current.status_port(), current.data_port()));
+                                ui.small(format!(
+                                    "Port 0: {:02X}h status/control / {:02X}h data · {} · {} · {}",
+                                    sio.address.status(), sio.address.data(), sio.revision.label(), sio.baud.label(), sio.format.label()
+                                ));
+                                ui.small(format!("Line interface: {}", sio.interface.label()));
                             }
                             SerialBoard::TwoSio88 => {
                                 ui.small(format!(
@@ -246,6 +251,94 @@ impl eframe::App for RusTairApp {
                                 ui.small(format!("DI / Port 0 IRQ → {}", irq_wiring.port0.label()));
                                 ui.small(format!("EI / Port 1 IRQ → {}", irq_wiring.port1.label()));
                             }
+                        }
+
+                        if current == SerialBoard::Sio88 {
+                            ui.separator();
+                            ui.label("Physical 88-SIO configuration:");
+                            let powered = self.machine.powered();
+                            ui.add_enabled_ui(!powered, |ui| {
+                                ui.menu_button(format!("Logic revision: {}", sio.revision.label()), |ui| {
+                                    for revision in crate::config::SioRevision::ALL {
+                                        if ui.selectable_label(sio.revision == revision, revision.label()).clicked() {
+                                            let mut next = sio;
+                                            next.revision = revision;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.menu_button(format!("Line interface: {}", sio.interface.label()), |ui| {
+                                    for interface in crate::config::SioInterface::ALL {
+                                        if ui.selectable_label(sio.interface == interface, interface.label()).clicked() {
+                                            let mut next = sio;
+                                            next.interface = interface;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.menu_button(
+                                    format!("I/O address: {:02X}h/{:02X}h", sio.address.status(), sio.address.data()),
+                                    |ui| {
+                                        for base in (0u8..=0xfe).step_by(2) {
+                                            let pair = crate::config::SioAddressPair::try_new(base).expect("even 88-SIO address pair");
+                                            let label = format!("{:02X}h/{:02X}h", pair.status(), pair.data());
+                                            if ui.selectable_label(sio.address == pair, label).clicked() {
+                                                let mut next = sio;
+                                                next.address = pair;
+                                                self.apply_sio_hardware(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                                ui.menu_button(format!("Baud preset: {}", sio.baud.label()), |ui| {
+                                    for baud in crate::config::SioBaudRate::STANDARD {
+                                        if ui.selectable_label(sio.baud == baud, baud.label()).clicked() {
+                                            let mut next = sio;
+                                            next.baud = baud;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.menu_button(format!("Data bits: {}", sio.format.data_bits.bits()), |ui| {
+                                    for bits in crate::config::SioDataBits::ALL {
+                                        if ui.selectable_label(sio.format.data_bits == bits, bits.label()).clicked() {
+                                            let mut next = sio;
+                                            next.format.data_bits = bits;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.menu_button(format!("Parity: {}", sio.format.parity.label()), |ui| {
+                                    for parity in crate::config::SioParity::ALL {
+                                        if ui.selectable_label(sio.format.parity == parity, parity.label()).clicked() {
+                                            let mut next = sio;
+                                            next.format.parity = parity;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.menu_button(format!("Stop bits: {}", sio.format.stop_bits.bits()), |ui| {
+                                    for stop_bits in crate::config::SioStopBits::ALL {
+                                        if ui.selectable_label(sio.format.stop_bits == stop_bits, stop_bits.label()).clicked() {
+                                            let mut next = sio;
+                                            next.format.stop_bits = stop_bits;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            });
+                            if powered {
+                                ui.small("POWER OFF required: revision wiring, address jumpers, baud counter preset, UART format pins and A/B/C interface are physical card configuration.");
+                            }
+                            ui.small("The MITS baud chart provides 110, 150, 300, 600, 1200, 2400, 4800, 9600 and 19200 baud presets. The hardware counter can also be wired for non-table rates up to 25 kbaud; persisted non-standard presets remain representable but are not fabricated as standard menu choices.");
+                            ui.small("88-SIO A is RS-232 level, B is TTL level, and C is the TTY/current-loop interface used with Teletypes.");
                         }
 
                         if current == SerialBoard::TwoSio88 {
