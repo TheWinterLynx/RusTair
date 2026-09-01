@@ -400,6 +400,9 @@ impl MachineBackend for CycleHostBackend {
             BackendSerialPort::Port1 => self.inner.machine().bus.serial_port1_rx_line_idle(),
         })
     }
+    fn serial_set_receive_break(&mut self, p: BackendSerialPort, active: bool) -> BackendResult<bool> {
+        Ok(self.inner.machine_mut().bus.set_serial_receive_break(p.index(), active))
+    }
     fn serial_tx_busy(&mut self, p: BackendSerialPort) -> BackendResult<bool> { self.inner.serial_tx_busy(p) }
     fn serial_tx_front(&mut self, p: BackendSerialPort) -> BackendResult<Option<u8>> { self.inner.serial_tx_front(p) }
     fn serial_tx_complete(&mut self, p: BackendSerialPort) -> BackendResult<Option<u8>> { self.inner.serial_tx_complete(p) }
