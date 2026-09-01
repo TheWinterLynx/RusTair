@@ -1,9 +1,8 @@
 /// Logic revision of the original MITS 88-SIO.
 ///
-/// Rev 0 exposes the COM2502 buffer-ready flags directly (active HIGH on
-/// status bits D5/D1). The later Rev 1/status-word modification moves those
-/// indications to D0/D7 and inverts them (active LOW), which is the form used
-/// by most later MITS software.
+/// Rev 0 exposes the original ready/status topology. The later Rev 1/status-word
+/// modification routes the internal COM2502 ready conditions to D0/D7 active LOW,
+/// which is the form used by most later MITS software.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SioRevision {
     Rev0,
@@ -78,6 +77,94 @@ impl SioInterface {
 
 impl Default for SioInterface {
     fn default() -> Self { Self::TtyC }
+}
+
+/// Physical destination of one 88-SIO interrupt-source pad.
+///
+/// MITS exposes separate IN and OUT source pads, a combined BH pad, eight VI
+/// priority inputs and a direct processor-interrupt pad. RusTair represents the
+/// electrically relevant result per source: disconnected, direct PINT, or one
+/// raw VI level. Wiring both sources to the same target is the logical result of
+/// using the board's combined BH pad at that target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SioInterruptTarget {
+    Disconnected,
+    Pint,
+    Vi0,
+    Vi1,
+    Vi2,
+    Vi3,
+    Vi4,
+    Vi5,
+    Vi6,
+    Vi7,
+}
+
+impl SioInterruptTarget {
+    pub const ALL: [Self; 10] = [
+        Self::Disconnected,
+        Self::Pint,
+        Self::Vi0,
+        Self::Vi1,
+        Self::Vi2,
+        Self::Vi3,
+        Self::Vi4,
+        Self::Vi5,
+        Self::Vi6,
+        Self::Vi7,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Disconnected => "Disconnected",
+            Self::Pint => "PINT — direct processor interrupt",
+            Self::Vi0 => "VI0",
+            Self::Vi1 => "VI1",
+            Self::Vi2 => "VI2",
+            Self::Vi3 => "VI3",
+            Self::Vi4 => "VI4",
+            Self::Vi5 => "VI5",
+            Self::Vi6 => "VI6",
+            Self::Vi7 => "VI7",
+        }
+    }
+
+    pub const fn drives_pint(self) -> bool { matches!(self, Self::Pint) }
+
+    pub const fn vector_level(self) -> Option<u8> {
+        Some(match self {
+            Self::Vi0 => 0,
+            Self::Vi1 => 1,
+            Self::Vi2 => 2,
+            Self::Vi3 => 3,
+            Self::Vi4 => 4,
+            Self::Vi5 => 5,
+            Self::Vi6 => 6,
+            Self::Vi7 => 7,
+            Self::Disconnected | Self::Pint => return None,
+        })
+    }
+}
+
+impl Default for SioInterruptTarget {
+    fn default() -> Self { Self::Pint }
+}
+
+/// Physical routing of the 88-SIO input/output interrupt request sources.
+///
+/// Defaulting both sources to PINT preserves RusTair's historical direct-RST7
+/// behavior as a migration default. It is not asserted to be a MITS factory
+/// jumper configuration; the UI/documentation must identify it as wiring.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SioInterruptWiring {
+    pub input: SioInterruptTarget,
+    pub output: SioInterruptTarget,
+}
+
+impl Default for SioInterruptWiring {
+    fn default() -> Self {
+        Self { input: SioInterruptTarget::Pint, output: SioInterruptTarget::Pint }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,5 +373,18 @@ mod tests {
         assert_eq!(SioHardwareConfig::from_persistence_key(&config.persistence_key()), Some(config));
         assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,07,9600,7,even,1").is_none());
         assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even").is_none());
+    }
+
+    #[test]
+    fn interrupt_targets_keep_pint_separate_from_raw_vi_levels() {
+        assert!(SioInterruptTarget::Pint.drives_pint());
+        assert!(!SioInterruptTarget::Vi3.drives_pint());
+        assert_eq!(SioInterruptTarget::Vi3.vector_level(), Some(3));
+        assert_eq!(SioInterruptTarget::Pint.vector_level(), None);
+        assert_eq!(SioInterruptTarget::Disconnected.vector_level(), None);
+        assert_eq!(SioInterruptWiring::default(), SioInterruptWiring {
+            input: SioInterruptTarget::Pint,
+            output: SioInterruptTarget::Pint,
+        });
     }
 }
