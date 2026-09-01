@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig, TwoSioInterruptWiring,
-    TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioConnectorOutputs, SioElectricalLevel,
+    SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
@@ -15,6 +15,7 @@ use super::{
     BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
     DebugStopReason, EmulationEngine, FrontPanelState, InstructionTraceSnapshot, Intel8080State,
     IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess, SerialModemLines,
+    SioLogicalLines,
 };
 
 const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
@@ -281,6 +282,24 @@ impl MachineBackend for NativeMachineBackend {
         Ok(())
     }
     fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> { Ok(self.machine.sio_hardware()) }
+    fn sio_logical_lines(&mut self) -> BackendResult<Option<SioLogicalLines>> {
+        Ok(self.machine.bus.sio_logical_lines().map(SioLogicalLines::from))
+    }
+    fn sio_connector_outputs(&mut self) -> BackendResult<Option<SioConnectorOutputs>> {
+        Ok(self.machine.bus.sio_connector_outputs())
+    }
+    fn sio_decode_connector_input(
+        &mut self,
+        level: SioElectricalLevel,
+    ) -> BackendResult<Option<bool>> {
+        Ok(self.machine.bus.sio_decode_connector_input(level))
+    }
+    fn sio_pulse_input_device_ready(&mut self) -> BackendResult<bool> {
+        Ok(self.machine.bus.pulse_sio_input_device_ready())
+    }
+    fn sio_pulse_output_device_ready(&mut self) -> BackendResult<bool> {
+        Ok(self.machine.bus.pulse_sio_output_device_ready())
+    }
     fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) -> BackendResult<()> {
         if self.machine.two_sio_straps() != straps {
             self.machine.configure_two_sio_straps(straps);
