@@ -243,12 +243,12 @@ impl eframe::App for RusTairApp {
                             }
                             SerialBoard::TwoSio88 => {
                                 ui.small(format!(
-                                    "Port 0: {:02X}h status/control / {:02X}h data · {} baud-generator tap",
-                                    straps.address.port0_status(), straps.address.port0_data(), straps.port0_baud.label()
+                                    "Port 0: {:02X}h status/control / {:02X}h data · {} baud-generator tap · {}",
+                                    straps.address.port0_status(), straps.address.port0_data(), straps.port0_baud.label(), straps.port0_interface.label()
                                 ));
                                 ui.small(format!(
-                                    "Port 1: {:02X}h status/control / {:02X}h data · {} baud-generator tap",
-                                    straps.address.port1_status(), straps.address.port1_data(), straps.port1_baud.label()
+                                    "Port 1: {:02X}h status/control / {:02X}h data · {} baud-generator tap · {}",
+                                    straps.address.port1_status(), straps.address.port1_data(), straps.port1_baud.label(), straps.port1_interface.label()
                                 ));
                                 ui.small(format!("DI / Port 0 IRQ → {}", irq_wiring.port0.label()));
                                 ui.small(format!("EI / Port 1 IRQ → {}", irq_wiring.port1.label()));
@@ -364,13 +364,13 @@ impl eframe::App for RusTairApp {
                             ui.small("D0 enables the input interrupt source and D1 enables the output source at runtime; these menus model the separate physical IN/OUT routing pads after those enables. Selecting the same destination for both sources represents the equivalent combined BH wiring result.");
                             ui.small("PINT is the direct processor interrupt path. VI0..VI7 are raw requests for a separate 88-Vector Interrupt system and never fabricate an 8080 RST opcode inside the 88-SIO.");
                             if sio.revision == crate::config::SioRevision::Rev0 {
-                                ui.small("Rev 0 interrupt assertion depends on the original external input/output device-ready flip-flops; that handshake path remains under hardware-fidelity audit and is not replaced by COM2502 RDA/TBMT.");
+                                ui.small("Rev 0 uses the original external RIN/ROT device-ready flip-flops for interrupt source state; COM2502 RDA/TBMT remain separate signals.");
                             }
                         }
 
                         if current == SerialBoard::TwoSio88 {
                             ui.separator();
-                            ui.label("Physical 88-2SIO straps:");
+                            ui.label("Physical 88-2SIO straps and signal interconnects:");
                             let powered = self.machine.powered();
                             ui.add_enabled_ui(!powered, |ui| {
                                 ui.menu_button(
@@ -416,12 +416,39 @@ impl eframe::App for RusTairApp {
                                         }
                                     },
                                 );
+                                ui.menu_button(
+                                    format!("Port 0 signal interface: {}", straps.port0_interface.label()),
+                                    |ui| {
+                                        for interface in crate::config::TwoSioSignalInterface::ALL {
+                                            if ui.selectable_label(straps.port0_interface == interface, interface.label()).clicked() {
+                                                let mut next = straps;
+                                                next.port0_interface = interface;
+                                                self.apply_two_sio_straps(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
+                                ui.menu_button(
+                                    format!("Port 1 signal interface: {}", straps.port1_interface.label()),
+                                    |ui| {
+                                        for interface in crate::config::TwoSioSignalInterface::ALL {
+                                            if ui.selectable_label(straps.port1_interface == interface, interface.label()).clicked() {
+                                                let mut next = straps;
+                                                next.port1_interface = interface;
+                                                self.apply_two_sio_straps(next);
+                                                ui.close();
+                                            }
+                                        }
+                                    },
+                                );
                             });
                             if powered {
-                                ui.small("POWER OFF required: these controls represent moving physical jumpers on the 88-2SIO board.");
+                                ui.small("POWER OFF required: these controls represent moving physical jumpers/hardwiring on the 88-2SIO board.");
                             }
                             ui.small("A2-A7 select one four-port block; A0/A1 select the two ACIAs/registers inside it. FCh-FFh is intentionally unavailable because FFh belongs to the Altair front-panel sense-switch input.");
                             ui.small("The selected baud tap is the board clock source. MC6850 CR1:CR0 still selects /1, /16 or /64; the tap is not a terminal-speed override.");
+                            ui.small("MITS allows each port to be hardwired independently for RS-232 voltage levels, TTL voltage levels, or a TTY 20 mA current loop. Direct ASR-33 requires the current-loop option; direct External COM requires RS-232. No hidden level converter is inserted.");
 
                             ui.separator();
                             ui.label("Physical 88-2SIO interrupt wiring:");
