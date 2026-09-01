@@ -1,6 +1,6 @@
 # MITS 88-SIO hardware fidelity
 
-Status: **PASS — final focused and full local validation green on 2026-09-01.**
+Status: **IMPLEMENTED — PASS revalidation pending after the 2026-09-01 receive-BREAK correction.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
@@ -22,7 +22,8 @@ This item models the original single-channel MITS 88-SIO as a physical card rath
 - D0/D1 interrupt enables and physical PINT/VI routing;
 - A/B/C electrical-interface families;
 - a backend-neutral six-signal digital boundary shared by Fast and Cycle;
-- explicit endpoint/cable compatibility without hidden level converters.
+- explicit endpoint/cable compatibility without hidden level converters;
+- physical receive BREAK as a held SPACE condition rather than a fabricated NUL byte.
 
 Analog voltage/current tolerances, cable capacitance, transistor slew, noise and independent remote-clock drift are outside this digital claim.
 
@@ -121,7 +122,9 @@ This keeps Rev1 software polling separate from the original Rev0 external-ready 
 - finite receiver holding register (`rx_data` / RDA);
 - a second completed frame while RDA is still set records overrun and overwrites the old unread character with the newly completed one;
 - framing/parity error state is associated with the completed receive frame;
-- DATA IN resets RDA, not all error state by fiat.
+- DATA IN resets RDA, not all error state by fiat;
+- a held external BREAK forces RSI to SPACE/LOW, completes as zero data with framing error after one configured frame time, and can continue into natural overrun while held;
+- releasing BREAK before a complete frame aborts that incomplete BREAK frame and does not fabricate an ASCII NUL character.
 
 ### Transmit
 
@@ -156,13 +159,15 @@ then configured stop bit(s) HIGH
 idle HIGH / MARK
 ```
 
-This is a real bit-phase projection of the modeled in-flight frame, not a boolean such as “RX queue non-empty”.
+This is a real bit-phase projection of the modeled in-flight frame, not a boolean such as “RX queue non-empty”. A held receive BREAK overrides RSI to continuous LOW/SPACE for the duration of the physical condition.
 
 ### Important receive-side boundary
 
-The current endpoint API accepts a character and the 88-SIO then represents the corresponding **baud-matched accepted frame** on RSI using the card timing. RusTair does not yet run an independently clocked remote transmitter bitstream against the COM2502 sampling clock.
+The normal endpoint byte API accepts a character and the 88-SIO then represents the corresponding **baud-matched accepted frame** on RSI using the card timing. RusTair does not yet run an independently clocked remote transmitter bitstream against the COM2502 sampling clock.
 
-Therefore the current fidelity claim does **not** include automatically generating framing/parity corruption from endpoint baud mismatch, phase drift, electrical noise or marginal sampling. Those remain explicit out-of-scope fault-injection/analog work and must not be inferred from the presence of `rsi_high`.
+BREAK is modeled separately because it is a persistent physical line condition, not a byte. Therefore the current fidelity claim includes held BREAK/SPACE and its framing-error consequence without claiming arbitrary analog or independently clocked remote waveform sampling.
+
+The current fidelity claim does **not** include automatically generating framing/parity corruption from endpoint baud mismatch, phase drift, electrical noise or marginal sampling. Those remain explicit out-of-scope fault-injection/analog work and must not be inferred from the presence of `rsi_high`.
 
 ## 10. A/B/C electrical interfaces
 
@@ -190,12 +195,14 @@ The endpoint audit deliberately distinguishes physical devices from virtual peer
 
 | Endpoint | 88-SIO direct/virtual compatibility | Ready-wire behavior |
 | --- | --- | --- |
-| Built-in ASR-33 | direct C / current-loop only | data only; does not invent RIN/ROT |
+| Built-in ASR-33 | direct C / current-loop only | serial data plus physical held BREAK; does not invent RIN/ROT |
 | Text Terminal | virtual peer instantiated in selected A/B/C family | data only; does not invent RIN/ROT |
 | External TCP | virtual peer instantiated in selected A/B/C family | data only; does not invent RIN/ROT |
 | External COM | direct A / RS-232 only | data only for 88-SIO; does not invent RIN/ROT |
 
 Changing the physical 88-SIO interface automatically disconnects an attached physical endpoint that is no longer electrically compatible. Attempting to reconnect it is rejected with an explicit message rather than installing a hidden adapter.
+
+The built-in ASR-33 BREAK key is not passed through `key_to_byte()`. In LINE mode it drives the selected UART receive line to BREAK/SPACE while held and returns it to MARK when released. Leaving LINE, disconnecting/moving the ASR cable, or displacing the ASR with another endpoint restores MARK on the old physical port before routing changes.
 
 The virtual Text Terminal/TCP peers are not claims about a historical physical terminal model; they are explicit host-side peers whose connector side follows the selected digital electrical family. They still do not gain separate MITS ready contacts.
 
@@ -225,7 +232,8 @@ The backend-neutral API exposes:
 - `SioLogicalLines` — RSI, latched RIN/ROT ready state, TSO, BIN, BOT;
 - `sio_connector_outputs()` — STSO/SBIN/SBOT after A/B/C conversion;
 - `sio_decode_connector_input()` — selected-family connector input conversion;
-- explicit RIN/ROT pulse operations.
+- explicit RIN/ROT pulse operations;
+- `serial_set_receive_break()` — a backend-neutral physical receive BREAK/SPACE line operation used by the ASR-33 rather than a special byte.
 
 Regression tests require Fast and Cycle to project identical 88-SIO logical/electrical state for the same card configuration.
 
@@ -235,14 +243,14 @@ Cycle additionally owns exact CPU T-state visibility; Fast remains instruction-l
 
 - `src/config/sio.rs` — revision, address, baud, framing, interface and interrupt wiring.
 - `src/config/sio_electrical.rs` — typed connector-level vocabulary.
-- `src/machine/sio.rs` — finite COM2502, frame timing, Rev0 ready flip-flops, RSI/TSO.
+- `src/machine/sio.rs` — finite COM2502, frame timing, receive BREAK, Rev0 ready flip-flops, RSI/TSO.
 - `src/machine/sio_interface.rs` — A/B/C electrical conversion.
-- `src/machine/io_devices.rs` — I/O decode, card ownership, explicit ready pulses.
+- `src/machine/io_devices.rs` — I/O decode, card ownership, explicit ready pulses and receive-BREAK dispatch.
 - `src/machine/serial.rs` — six-line/connector boundary on `AltairBus`.
 - `src/machine/mod.rs` — D0/D1 interrupt enables and PINT/VI projection.
 - `src/backend/mod.rs`, `native.rs`, `cycle_host.rs` — backend-neutral physical API.
 - `src/io/serial_router.rs` — endpoint electrical compatibility.
-- `src/app/serial_hardware.rs`, `src/app/mod.rs` — POWER-OFF reconfiguration and cable disconnect/reject policy.
+- `src/app/serial_hardware.rs`, `src/app/mod.rs`, `src/app/asr33_controller.rs` — POWER-OFF reconfiguration, cable disconnect/reject policy and physical ASR BREAK handling.
 
 ## 15. Regression coverage
 
@@ -253,11 +261,14 @@ Important coverage includes:
 - DATA IN/OUT reset side effects;
 - finite receive overrun and transmit double buffering;
 - serial start/data/parity/stop bit progression;
+- held receive BREAK as SPACE/LOW with zero+FE after a complete frame;
+- short BREAK release without fabricated NUL;
 - A/B/C typed level conversion;
 - Fast/Cycle physical-boundary parity;
 - Rev0 PINT/VI routing and non-fabricated interrupts;
 - endpoint compatibility matrix;
 - no endpoint calls hidden RIN/ROT pulse APIs;
+- ASR BREAK release before cable rerouting;
 - cable labels cannot regress to hard-coded `00h/01h`.
 
 Relevant integration files include:
@@ -267,6 +278,7 @@ Relevant integration files include:
 - `tests/sio88_interrupt_configuration.rs`
 - `tests/sio88_configuration_ui.rs`
 - `tests/sio88_endpoint_wiring.rs`
+- `tests/serial_receive_break_fidelity.rs`
 
 ## 16. User-observable validation
 
@@ -278,7 +290,8 @@ Relevant integration files include:
 6. Text Terminal or External TCP may remain attached as explicit virtual A/B/C peers.
 7. On Rev0, receiving data may affect RDA/D5 but must not fabricate the external RIN-ready/D0 condition.
 8. Explicit RIN/ROT test events must affect their ready latches, and DATA IN/OUT must clear them.
-9. Switching Fast/Cycle while powered off must preserve the same physical SIO configuration.
+9. With the ASR in LINE mode on interface C, holding BREAK must drive a physical receive BREAK rather than inject one immediate NUL byte; releasing it returns the line to MARK.
+10. Switching Fast/Cycle while powered off must preserve the same physical SIO configuration.
 
 ## 17. Known limits / non-claims
 
@@ -293,4 +306,4 @@ The 88-SIO base-card item intentionally does not claim:
 
 These limits do not require compatibility hacks: unsupported physical behavior remains un-driven or explicitly outside the claim.
 
-No known implementation blocker remains inside the stated digital 88-SIO claim. The final focused endpoint tests, physical-boundary tests and complete local `cargo test` suite were reported green on 2026-09-01. GitHub Actions were not run.
+No known implementation blocker remains inside the stated digital 88-SIO claim. The earlier focused endpoint/physical-boundary/full-suite validation was green on 2026-09-01, but the subsequently discovered ASR-33 receive-BREAK correction changes the UART receive path and therefore requires a fresh focused `serial_receive_break_fidelity` run plus the normal full local `cargo test` suite before restoring the PASS label. GitHub Actions are not required and have not been run.
