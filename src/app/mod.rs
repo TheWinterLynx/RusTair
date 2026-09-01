@@ -214,6 +214,7 @@ impl RusTairApp {
                 );
                 self.machine
                     .configure_memory_board_profile(self.config.machine.ram_board_profile);
+                self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
                 self.machine.configure_serial_board(self.config.machine.serial_board);
                 self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
                 self.machine.configure_two_sio_interrupt_wiring(
@@ -266,11 +267,16 @@ impl RusTairApp {
         if self.config.machine.serial_board == serial_board { return; }
         self.config.machine.serial_board = serial_board;
         self.machine.configure_serial_board(serial_board);
-        if serial_board == SerialBoard::TwoSio88 {
-            self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
-            self.machine.configure_two_sio_interrupt_wiring(
-                self.config.machine.two_sio_interrupt_wiring,
-            );
+        match serial_board {
+            SerialBoard::Sio88 => {
+                self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
+            }
+            SerialBoard::TwoSio88 => {
+                self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
+                self.machine.configure_two_sio_interrupt_wiring(
+                    self.config.machine.two_sio_interrupt_wiring,
+                );
+            }
         }
         self.execution_clock.reset_at(Instant::now());
         self.serial_router.reset_for_board(serial_board);
@@ -280,7 +286,14 @@ impl RusTairApp {
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
         self.status = match serial_board {
-            SerialBoard::Sio88 => "Serial board configured: MITS 88-SIO — ASR-33 connected to 00h/01h; machine reset".into(),
+            SerialBoard::Sio88 => format!(
+                "Serial board configured: MITS 88-SIO — Port 0 {:02X}h/{:02X}h @ {} · {} · {}; machine reset",
+                self.config.machine.sio_hardware.address.status(),
+                self.config.machine.sio_hardware.address.data(),
+                self.config.machine.sio_hardware.baud.label(),
+                self.config.machine.sio_hardware.revision.label(),
+                self.config.machine.sio_hardware.format.label(),
+            ),
             SerialBoard::TwoSio88 => format!(
                 "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} baud tap; Port 1 {:02X}h/{:02X}h @ {} baud tap; DI→{}; EI→{}; machine reset",
                 self.config.machine.serial_status_port(),
