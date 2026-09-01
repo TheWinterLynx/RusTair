@@ -101,3 +101,15 @@ fn asr_keyboard_break_is_not_encoded_as_a_byte() {
     assert!(!source.contains("KeyKind::Break => return Some(0)"));
     assert!(!source.contains("KeyKind::Break => return Some(0x00)"));
 }
+
+#[test]
+fn asr_break_is_released_before_its_cable_is_rerouted() {
+    let app = include_str!("../src/app/mod.rs");
+    let release = app
+        .find("serial_set_receive_break_at(old_asr_connection, false)")
+        .expect("ASR reroute must explicitly restore MARK on the old cable");
+    let reroute = app
+        .find("let displaced = self.serial_router.connect(device, connection)")
+        .expect("serial router connection point");
+    assert!(release < reroute, "old ASR UART must leave BREAK before cable routing changes");
+}
