@@ -19,6 +19,14 @@ impl SioRevision {
             Self::Rev1 => "Rev 1 — modified status word",
         }
     }
+
+    const fn persistence_key(self) -> &'static str {
+        match self { Self::Rev0 => "rev0", Self::Rev1 => "rev1" }
+    }
+
+    fn from_persistence_key(value: &str) -> Option<Self> {
+        Some(match value { "rev0" => Self::Rev0, "rev1" => Self::Rev1, _ => return None })
+    }
 }
 
 impl Default for SioRevision {
@@ -83,6 +91,9 @@ impl SioDataBits {
     pub const fn label(self) -> &'static str {
         match self { Self::Five => "5 data bits", Self::Six => "6 data bits", Self::Seven => "7 data bits", Self::Eight => "8 data bits" }
     }
+    fn from_bits(bits: u8) -> Option<Self> {
+        Some(match bits { 5 => Self::Five, 6 => Self::Six, 7 => Self::Seven, 8 => Self::Eight, _ => return None })
+    }
 }
 
 impl Default for SioDataBits {
@@ -96,6 +107,12 @@ impl SioParity {
     pub const fn label(self) -> &'static str {
         match self { Self::None => "No parity", Self::Even => "Even parity", Self::Odd => "Odd parity" }
     }
+    const fn persistence_key(self) -> &'static str {
+        match self { Self::None => "none", Self::Even => "even", Self::Odd => "odd" }
+    }
+    fn from_persistence_key(value: &str) -> Option<Self> {
+        Some(match value { "none" => Self::None, "even" => Self::Even, "odd" => Self::Odd, _ => return None })
+    }
 }
 impl Default for SioParity { fn default() -> Self { Self::None } }
 
@@ -105,6 +122,7 @@ impl SioStopBits {
     pub const ALL: [Self; 2] = [Self::One, Self::Two];
     pub const fn bits(self) -> u8 { match self { Self::One => 1, Self::Two => 2 } }
     pub const fn label(self) -> &'static str { match self { Self::One => "1 stop bit", Self::Two => "2 stop bits" } }
+    fn from_bits(bits: u8) -> Option<Self> { Some(match bits { 1 => Self::One, 2 => Self::Two, _ => return None }) }
 }
 impl Default for SioStopBits { fn default() -> Self { Self::Two } }
 
@@ -185,6 +203,37 @@ pub struct SioHardwareConfig {
     pub format: SioWordFormat,
 }
 
+impl SioHardwareConfig {
+    /// Compact persistence form for one atomic physical card configuration.
+    /// Invalid or partial text is rejected as a whole so configuration loading
+    /// can retain a known-safe default rather than constructing a hybrid board.
+    pub fn persistence_key(self) -> String {
+        format!(
+            "{},{},{:02X},{},{},{},{}",
+            self.revision.persistence_key(),
+            self.interface.persistence_key(),
+            self.address.base(),
+            self.baud.baud(),
+            self.format.data_bits.bits(),
+            self.format.parity.persistence_key(),
+            self.format.stop_bits.bits(),
+        )
+    }
+
+    pub fn from_persistence_key(value: &str) -> Option<Self> {
+        let mut fields = value.split(',');
+        let revision = SioRevision::from_persistence_key(fields.next()?)?;
+        let interface = SioInterface::from_persistence_key(fields.next()?)?;
+        let address = SioAddressPair::try_new(u8::from_str_radix(fields.next()?, 16).ok()?)?;
+        let baud = SioBaudRate::try_new(fields.next()?.parse().ok()?)?;
+        let data_bits = SioDataBits::from_bits(fields.next()?.parse().ok()?)?;
+        let parity = SioParity::from_persistence_key(fields.next()?)?;
+        let stop_bits = SioStopBits::from_bits(fields.next()?.parse().ok()?)?;
+        if fields.next().is_some() { return None; }
+        Some(Self { revision, interface, address, baud, format: SioWordFormat { data_bits, parity, stop_bits } })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +272,19 @@ mod tests {
         assert_eq!(c.baud.baud(), 110);
         assert_eq!(c.format.frame_bits(), 11);
         assert_eq!(c.format.label(), "8N2");
+    }
+
+    #[test]
+    fn persistence_round_trip_is_atomic_and_rejects_partial_hardware() {
+        let config = SioHardwareConfig {
+            revision: SioRevision::Rev0,
+            interface: SioInterface::Rs232A,
+            address: SioAddressPair::try_new(0x06).unwrap(),
+            baud: SioBaudRate::try_new(9_600).unwrap(),
+            format: SioWordFormat { data_bits: SioDataBits::Seven, parity: SioParity::Even, stop_bits: SioStopBits::One },
+        };
+        assert_eq!(SioHardwareConfig::from_persistence_key(&config.persistence_key()), Some(config));
+        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,07,9600,7,even,1").is_none());
+        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even").is_none());
     }
 }
