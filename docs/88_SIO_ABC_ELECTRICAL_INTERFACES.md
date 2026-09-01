@@ -1,6 +1,6 @@
 # MITS 88-SIO A/B/C electrical interface fidelity
 
-Status: **IMPLEMENTED AT THE CARD/CHASSIS BOUNDARY — endpoint wiring validation pending.**
+Status: **IMPLEMENTED — endpoint wiring audited; ready for final local validation.**
 
 Parent hardware document: `docs/88_SIO_HARDWARE_FIDELITY.md`.
 
@@ -8,12 +8,12 @@ Project documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.m
 
 ## 1. Scope
 
-The original MITS 88-SIO has one COM2502-family UART and one common set of board-side serial/handshake signals. The suffixes A, B and C do **not** identify different UART register sets or software protocols. They identify the electrical interface fitted between the common TTL-domain board logic and the external wafer connector.
+The original MITS 88-SIO has one COM2502-family UART and one common set of board-side serial/handshake signals. A, B and C do **not** identify different UART register sets or software protocols. They identify the electrical interface fitted between common TTL-domain board logic and the external connector.
 
-RusTair therefore keeps two separate layers:
+RusTair therefore keeps two layers:
 
-1. COM2502 + 88-SIO board logic: `RSI`, `RIN`, `ROT`, `TSO`, `BIN`, `BOT`.
-2. Selected line interface: A/RS-232, B/TTL or C/TTY current loop.
+1. COM2502 + board logic: `RSI`, `RIN`, `ROT`, `TSO`, `BIN`, `BOT`;
+2. A/RS-232, B/TTL or C/TTY current-loop adaptation.
 
 No MC6850 `RTS`, `CTS`, `DCD` or BREAK semantics are imported from the later 88-2SIO.
 
@@ -21,76 +21,66 @@ No MC6850 `RTS`, `CTS`, `DCD` or BREAK semantics are imported from the later 88-
 
 Primary source:
 
-**MITS, _Serial I/O Board Documentation_, 1975**, especially the section **Serial I/O Interface Operation** and the preceding status/handshake description.
+**MITS, _Serial I/O Board Documentation_, 1975**, especially *Serial I/O Interface Operation* and the status/handshake description.
 
-Archive:
+`https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/88-SIO%20Documentation.pdf`
 
-https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/88-SIO%20Documentation.pdf
+The manual names the common signals:
 
-The manual names the common logical signals:
+- `RSI` receive serial input;
+- `RIN` input-device-ready pulse;
+- `ROT` output-device-ready pulse;
+- `TSO` transmit serial output;
+- `BIN` input busy;
+- `BOT` output busy.
 
-- receive serial input `RSI`;
-- input-device-ready pulse `RIN`;
-- output-device-ready pulse `ROT`;
-- transmit serial output `TSO`;
-- input busy `BIN`;
-- output busy `BOT`.
+At the external interface the corresponding connections are `SRSI`, `SRIN`, `SROT`, `STSO`, `SBIN`, `SBOT`.
 
-At the external interface these appear as the corresponding `SRSI`, `SRIN`, `SROT`, `STSO`, `SBIN` and `SBOT` connections.
+DATA IN resets the input-ready flip-flop and DATA OUT resets the output-ready flip-flop. Thus RIN/ROT are independent external-device events, not aliases for COM2502 RDA/TBMT.
 
-The same manual states that DATA IN resets the input-ready flip-flop and DATA OUT resets the output-ready flip-flop. Thus `RIN`/`ROT` are independent external-device events, not aliases for COM2502 RDA/TBMT.
+## 3. 88-SIO A — RS-232
 
-## 3. 88-SIO A — RS-232 level interface
+For board outputs (`TSO`, `BIN`, `BOT`):
 
-MITS describes the A interface as its standard RS-232 interface.
-
-For signals driven **from the 88-SIO** (`TSO`, `BIN`, `BOT`):
-
-| Board TTL level | External A-interface level |
+| Board TTL | External A |
 | --- | --- |
-| HIGH | negative RS-232 level, nominally about -12 V |
-| LOW | positive RS-232 level, approximately +3 V or greater |
+| HIGH | negative RS-232 |
+| LOW | positive RS-232 |
 
-For signals driven **into the 88-SIO** (`SRSI`, `SRIN`, `SROT`), the conversion is the inverse mapping back to TTL:
+For inputs, the inverse electrical mapping restores the board TTL level:
 
-| External A-interface level | Board TTL level |
+| External A | Board TTL |
 | --- | --- |
 | positive RS-232 | LOW |
 | negative RS-232 | HIGH |
 
-RusTair represents the external states as typed values `Rs232Positive` and `Rs232Negative`; they are not collapsed into the same boolean type used for TTL.
+RusTair uses typed `Rs232Positive` / `Rs232Negative` states rather than pretending they are TTL booleans.
 
-## 4. 88-SIO B — TTL level interface
+## 4. 88-SIO B — TTL
 
-MITS describes B as the standard TTL-level interface and explicitly uses non-inverting buffers.
+MITS uses non-inverting TTL buffers:
 
-Therefore:
-
-| Board logic | External B interface |
+| Board logic | External B |
 | --- | --- |
 | LOW | TTL LOW |
 | HIGH | TTL HIGH |
 
-The mapping is non-inverting in both directions for `RSI/RIN/ROT` and `TSO/BIN/BOT`.
+The relationship is non-inverting in both directions.
 
-RusTair represents these as `TtlLow` and `TtlHigh`.
+## 5. 88-SIO C — TTY/current loop
 
-## 5. 88-SIO C — TTY/current-loop interface
+For board outputs (`TSO`, `BIN`, `BOT`) in the documented circuit:
 
-MITS describes C as the TTY-level/current-loop interface.
+- board TTL HIGH drives the output transistor into the conducting/current state;
+- board TTL LOW turns it off and presents an open/high-impedance output.
 
-For board outputs (`TSO`, `BIN`, `BOT`):
+The input circuitry restores the common logical polarity at `RSI/RIN/ROT`.
 
-- board TTL HIGH drives the interface transistor into conduction and supplies loop current to the external device;
-- board TTL LOW turns that transistor off, presenting a high-impedance/open current-loop output.
-
-For board inputs (`SRSI`, `SRIN`, `SROT`), the receiver stages restore the same logical state at `RSI`, `RIN` and `ROT`; the logical relationship is therefore non-inverting even though the physical circuit contains transistor inversions internally.
-
-RusTair represents the two external states as `CurrentLoopConducting` and `CurrentLoopOpen`. It does not claim analog current magnitude, loop voltage, cable resistance or transistor slew fidelity.
+RusTair represents connector state as `CurrentLoopConducting` / `CurrentLoopOpen`. It does not claim analog loop current, voltage, cable resistance or transistor slew fidelity.
 
 ## 6. Six-signal logical boundary
 
-`src/machine/sio.rs` exposes a stable board-side observation containing:
+`AltairBus::sio_logical_lines()` and backend `SioLogicalLines` expose:
 
 ```text
 RSI
@@ -101,23 +91,13 @@ BIN
 BOT
 ```
 
-`RIN` and `ROT` are pulses, so a snapshot cannot truthfully report an historical edge as a continuously asserted signal. Instead the observable state records the ready flip-flop that the corresponding pulse sets. The explicit pulse methods remain the event boundary.
+RIN/ROT are pulse events, so their stable observable representation is the ready flip-flop they set. Explicit pulse methods represent the event itself.
 
-`RSI` and `TSO` are not inferred from completed host bytes. They are generated from the actual in-flight asynchronous frame:
-
-```text
-start LOW
-then data bits LSB first
-then configured parity if present
-then configured stop bit(s) HIGH
-idle HIGH / MARK
-```
-
-The frame phase advances from the same chassis T-state clock already used by the COM2502 model, so Fast and Cycle observe the same serial-line state for the same elapsed hardware time.
+RSI/TSO expose asynchronous frame phase (start, LSB-first data, parity if configured, stop, idle MARK). Receive-side RSI represents an accepted baud-matched frame; RusTair does not currently simulate an independently clocked external transmitter against the COM2502 sampling clock.
 
 ## 7. Electrical boundary types
 
-`src/config/sio_electrical.rs` defines the public connector vocabulary:
+`src/config/sio_electrical.rs` defines:
 
 ```rust
 pub enum SioElectricalLevel {
@@ -128,11 +108,7 @@ pub enum SioElectricalLevel {
     CurrentLoopOpen,
     CurrentLoopConducting,
 }
-```
 
-and:
-
-```rust
 pub struct SioConnectorOutputs {
     pub stso: SioElectricalLevel,
     pub sbin: SioElectricalLevel,
@@ -140,36 +116,63 @@ pub struct SioConnectorOutputs {
 }
 ```
 
-Using distinct variants is intentional. A TTL HIGH cannot accidentally be passed to a configured RS-232 A input and accepted as though the cable were electrically compatible. `sio_decode_connector_input` returns `None` for a level from the wrong interface family.
+A level from the wrong family is rejected by `sio_decode_connector_input()` instead of silently coerced.
 
-## 8. Fast versus Cycle ownership
+## 8. Fast versus Cycle
 
-Both engines contain the same `AltairBus`/88-SIO card state. The electrical interface is therefore not implemented independently in each CPU engine.
+Both engines expose the same card state through the backend-neutral 88-SIO API. The A/B/C conversion is not independently reimplemented per CPU engine.
 
-`AltairBus` exposes:
+Regression coverage compares Fast and Cycle for:
 
-- `sio_physical_wiring()` — revision plus IN/OUT interrupt destinations;
-- `sio_logical_lines()` — the six common logical line states;
-- `sio_connector_outputs()` — STSO/SBIN/SBOT after A/B/C conversion;
-- `sio_decode_connector_input()` — connector input conversion back to board logic.
+- revision/interrupt wiring;
+- six logical signals;
+- STSO/SBIN/SBOT electrical output family;
+- rejection of wrong-family connector inputs.
 
-`tests/sio88_physical_boundary.rs` verifies that the Fast and Cycle chassis project identical logical and electrical states for the same installed card configuration.
+## 9. Endpoint wiring audit
 
-## 9. Deliberately not fabricated
+The cable contract is explicit:
 
-This implementation does **not** assume that receiving a host byte automatically pulses `RIN`, nor that COM2502 TBMT or host consumption automatically pulses `ROT`.
+| Endpoint | 88-SIO compatibility | Nature |
+| --- | --- | --- |
+| ASR-33 | C only | direct current-loop endpoint |
+| Text Terminal | A/B/C | explicit virtual peer matching selected family |
+| External TCP | A/B/C | explicit virtual peer matching selected family |
+| External COM | A only | direct host RS-232 endpoint |
 
-Those are separate wires/events on the original board. A specific virtual endpoint may drive them only when its modeled cable/device wiring justifies doing so. This prevents a byte-oriented terminal abstraction from silently changing Rev0 hardware behavior.
+This means:
 
-Likewise, no 88-2SIO/MC6850 modem signal is reused as a substitute.
+- an ASR-33 cable is automatically disconnected if the physical card changes from C to A/B;
+- an External COM cable is automatically disconnected if the physical card changes from A to B/C;
+- reconnecting either incompatible physical endpoint is rejected rather than inserting an invisible converter;
+- Text Terminal and TCP may remain connected when A/B/C changes because they are explicitly virtual peers, not claims about one fixed physical device interface.
 
-## 10. Remaining endpoint closeout
+None of these endpoint byte paths fabricates `RIN` or `ROT`. Those wires remain un-driven unless a modeled peripheral supplies explicit ready events based on documented hardware.
 
-The card/chassis electrical boundary is now representable and shared. The remaining work before the A/B/C block can be declared fully PASS is to audit each user-selectable endpoint connection and specify which physical 88-SIO signals that cable/device actually drives:
+## 10. Address/cable UI boundary
 
-- ASR-33 / TTY current loop;
-- Text Terminal virtual endpoint;
-- external serial/TCP endpoint;
-- physical host COM endpoint where applicable.
+The 88-SIO address is jumper-selectable. The serial-router UI no longer claims the stale fixed `00h/01h` pair for every 88-SIO connection.
 
-Until that cable-level audit is complete, RusTair must prefer a disconnected/un-driven handshake line over an invented ready pulse.
+Where the complete card config is available, status text can identify the selected interface and exact configured status/data addresses. Generic selectors use a neutral `configured I/O` label rather than lying about an address they do not own.
+
+## 11. Regression coverage
+
+- `tests/sio88_physical_boundary.rs` — Fast/Cycle six-line and A/B/C parity.
+- `tests/sio88_endpoint_wiring.rs` — endpoint compatibility, no automatic RIN/ROT, no old fixed-address cable label.
+- `src/io/serial_router.rs` unit tests — direct endpoint compatibility matrix.
+- machine unit tests — connector conversion and Rev0 ready-latch behavior.
+
+## 12. Deliberate non-claims
+
+This block does not claim:
+
+- analog RS-232 voltage margins;
+- exact TTL thresholds;
+- current-loop current magnitude or cable effects;
+- propagation delay/noise/contact bounce;
+- automatic framing faults caused by remote-clock mismatch;
+- undocumented device-ready contacts on generic terminal/TCP/COM endpoints.
+
+Unsupported behavior remains explicit rather than being replaced by compatibility magic.
+
+No implementation blocker remains in the stated A/B/C digital electrical/cable claim. Final `PASS` awaits only the final post-endpoint local test checkpoint.
