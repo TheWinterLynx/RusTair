@@ -256,7 +256,7 @@ impl AltairBus {
         {
             return (false, false);
         }
-        let status = self.io.peek_input(self.io.sio_hardware().address.status());
+        let status = self.peek_io_port(self.io.sio_hardware().address.status());
         let input = self.sio_interrupt_control & 0x01 != 0 && status & 0x01 == 0;
         let output = self.sio_interrupt_control & 0x02 != 0 && status & 0x80 == 0;
         (input, output)
