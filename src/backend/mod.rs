@@ -9,8 +9,8 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig,
-    TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioConnectorOutputs, SioElectricalLevel,
+    SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 
@@ -86,6 +86,45 @@ pub struct SerialModemLines {
 impl From<(bool, bool, bool, bool)> for SerialModemLines {
     fn from((rts_high, break_active, cts_high, dcd_high): (bool, bool, bool, bool)) -> Self {
         Self { rts_high, break_active, cts_high, dcd_high }
+    }
+}
+
+/// Logical states at the original MITS 88-SIO board/interface boundary.
+///
+/// This is intentionally separate from `SerialModemLines`: the 88-SIO does not
+/// have an MC6850 and its RIN/ROT/BIN/BOT wiring must never be renamed to
+/// RTS/CTS/DCD. `input_device_ready_latched` and
+/// `output_device_ready_latched` are the stable flip-flop states set by the
+/// external RIN/ROT pulses; the pulse itself is an event, not a level.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SioLogicalLines {
+    pub rsi_high: bool,
+    pub input_device_ready_latched: bool,
+    pub output_device_ready_latched: bool,
+    pub tso_high: bool,
+    pub bin_high: bool,
+    pub bot_high: bool,
+}
+
+impl From<(bool, bool, bool, bool, bool, bool)> for SioLogicalLines {
+    fn from(
+        (
+            rsi_high,
+            input_device_ready_latched,
+            output_device_ready_latched,
+            tso_high,
+            bin_high,
+            bot_high,
+        ): (bool, bool, bool, bool, bool, bool),
+    ) -> Self {
+        Self {
+            rsi_high,
+            input_device_ready_latched,
+            output_device_ready_latched,
+            tso_high,
+            bin_high,
+            bot_high,
+        }
     }
 }
 
@@ -214,6 +253,24 @@ pub trait MachineBackend {
     }
     fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> {
         Err(BackendError::Unsupported { operation: "query 88-SIO hardware", engine: self.engine() })
+    }
+    fn sio_logical_lines(&mut self) -> BackendResult<Option<SioLogicalLines>> {
+        Err(BackendError::Unsupported { operation: "read 88-SIO logical lines", engine: self.engine() })
+    }
+    fn sio_connector_outputs(&mut self) -> BackendResult<Option<SioConnectorOutputs>> {
+        Err(BackendError::Unsupported { operation: "read 88-SIO connector outputs", engine: self.engine() })
+    }
+    fn sio_decode_connector_input(
+        &mut self,
+        _level: SioElectricalLevel,
+    ) -> BackendResult<Option<bool>> {
+        Err(BackendError::Unsupported { operation: "decode 88-SIO connector input", engine: self.engine() })
+    }
+    fn sio_pulse_input_device_ready(&mut self) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "pulse 88-SIO RIN", engine: self.engine() })
+    }
+    fn sio_pulse_output_device_ready(&mut self) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "pulse 88-SIO ROT", engine: self.engine() })
     }
     fn configure_two_sio_straps(&mut self, _straps: TwoSioStraps) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "configure 88-2SIO straps", engine: self.engine() })
@@ -443,6 +500,13 @@ impl BackendHost {
     pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
     pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) { Self::call(self.backend.configure_sio_hardware(config)); }
     pub fn sio_hardware(&mut self) -> SioHardwareConfig { Self::call(self.backend.sio_hardware()) }
+    pub fn sio_logical_lines(&mut self) -> Option<SioLogicalLines> { Self::call(self.backend.sio_logical_lines()) }
+    pub fn sio_connector_outputs(&mut self) -> Option<SioConnectorOutputs> { Self::call(self.backend.sio_connector_outputs()) }
+    pub fn sio_decode_connector_input(&mut self, level: SioElectricalLevel) -> Option<bool> {
+        Self::call(self.backend.sio_decode_connector_input(level))
+    }
+    pub fn sio_pulse_input_device_ready(&mut self) -> bool { Self::call(self.backend.sio_pulse_input_device_ready()) }
+    pub fn sio_pulse_output_device_ready(&mut self) -> bool { Self::call(self.backend.sio_pulse_output_device_ready()) }
     pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) { Self::call(self.backend.configure_two_sio_straps(straps)); }
     pub fn two_sio_straps(&mut self) -> TwoSioStraps { Self::call(self.backend.two_sio_straps()) }
     pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
@@ -549,7 +613,7 @@ impl BackendHost {
 mod tests {
     use super::*;
     use crate::config::{
-        SioAddressPair, SioBaudRate, SioRevision, TwoSioAddressBlock,
+        SioAddressPair, SioBaudRate, SioInterface, SioRevision, TwoSioAddressBlock,
         TwoSioBaudTap, TwoSioInterruptTarget,
     };
 
@@ -596,6 +660,48 @@ mod tests {
             assert_eq!(host.sio_hardware(), hardware);
             assert_eq!(host.peek_io_port(0x06), 0x83, "Rev0 idle status includes external input/output-not-ready latches on D0/D7 plus COM2502 TBMT on D1");
             assert_eq!(host.peek_io_port(0x00), 0xff);
+        }
+    }
+
+    #[test]
+    fn both_backends_expose_same_sio_lines_through_backend_contract() {
+        let mut hardware = SioHardwareConfig::default();
+        hardware.revision = SioRevision::Rev0;
+        hardware.interface = SioInterface::TtyC;
+        for engine in EmulationEngine::ALL {
+            let mut host = BackendHost::from_engine(engine).unwrap();
+            host.configure_serial_board(SerialBoard::Sio88);
+            host.configure_sio_hardware(hardware);
+
+            assert_eq!(
+                host.sio_logical_lines(),
+                Some(SioLogicalLines {
+                    rsi_high: true,
+                    input_device_ready_latched: false,
+                    output_device_ready_latched: false,
+                    tso_high: true,
+                    bin_high: false,
+                    bot_high: false,
+                })
+            );
+            assert!(host.sio_pulse_input_device_ready());
+            assert!(host.sio_pulse_output_device_ready());
+            let lines = host.sio_logical_lines().unwrap();
+            assert!(lines.input_device_ready_latched && lines.output_device_ready_latched);
+            assert!(lines.bin_high && lines.bot_high);
+            assert_eq!(
+                host.sio_connector_outputs(),
+                Some(SioConnectorOutputs {
+                    stso: SioElectricalLevel::CurrentLoopConducting,
+                    sbin: SioElectricalLevel::CurrentLoopConducting,
+                    sbot: SioElectricalLevel::CurrentLoopConducting,
+                })
+            );
+            assert_eq!(
+                host.sio_decode_connector_input(SioElectricalLevel::CurrentLoopConducting),
+                Some(true)
+            );
+            assert_eq!(host.sio_decode_connector_input(SioElectricalLevel::TtlHigh), None);
         }
     }
 
