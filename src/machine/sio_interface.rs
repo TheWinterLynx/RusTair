@@ -1,35 +1,4 @@
-use crate::config::SioInterface;
-
-/// Electrical state at the external 88-SIO wafer connector.
-///
-/// This deliberately does not pretend that RS-232 voltage, TTL voltage and a
-/// TTY current loop are interchangeable booleans. The COM2502 and board logic
-/// remain TTL-domain; the selected A/B/C daughter/interface circuitry converts
-/// those logic levels at the physical connector boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::machine) enum SioElectricalLevel {
-    /// 88-SIO A: approximately +3 V or greater at the RS-232 connector.
-    Rs232Positive,
-    /// 88-SIO A: negative RS-232 level (nominally around -12 V in MITS' circuit).
-    Rs232Negative,
-    /// 88-SIO B: TTL LOW.
-    TtlLow,
-    /// 88-SIO B: TTL HIGH.
-    TtlHigh,
-    /// 88-SIO C: output transistor presents high impedance / no loop current.
-    CurrentLoopOpen,
-    /// 88-SIO C: output transistor conducts current to the external device.
-    CurrentLoopConducting,
-}
-
-/// External states of the three signals driven *out* of an 88-SIO interface:
-/// STSO, SBIN and SBOT. RSI/RIN/ROT travel in the opposite direction.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::machine) struct SioConnectorOutputs {
-    pub stso: SioElectricalLevel,
-    pub sbin: SioElectricalLevel,
-    pub sbot: SioElectricalLevel,
-}
+use crate::config::{SioConnectorOutputs, SioElectricalLevel, SioInterface};
 
 /// Convert one board-internal TTL output to the selected physical interface.
 ///
