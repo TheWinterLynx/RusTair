@@ -1,4 +1,5 @@
-use crate::config::{SioConnectorOutputs, SioElectricalLevel, SioInterface};
+pub(in crate::machine) use crate::config::{SioConnectorOutputs, SioElectricalLevel};
+use crate::config::SioInterface;
 
 /// Convert one board-internal TTL output to the selected physical interface.
 ///
