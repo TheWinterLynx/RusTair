@@ -1,4 +1,4 @@
-use crate::config::{SerialBoard, SioInterface};
+use crate::config::{SerialBoard, SioInterface, TwoSioSignalInterface};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SerialDevice {
@@ -33,6 +33,31 @@ impl SerialDevice {
             Self::ExternalCom => "External COM direct cable requires 88-SIO A RS-232",
             Self::TextTerminal => "virtual terminal matches the selected 88-SIO A/B/C interface",
             Self::ExternalTcp => "virtual TCP peer matches the selected 88-SIO A/B/C interface",
+        }
+    }
+
+    /// Whether this endpoint can occupy an 88-2SIO port hardwired for the
+    /// selected MITS signal family without inserting an invisible converter.
+    /// The Model 33 is a direct 20 mA current-loop device; a host COM port is a
+    /// direct RS-232 endpoint. Text Terminal and raw TCP are explicitly virtual
+    /// peers and may instantiate their connector side in any selected family.
+    pub(crate) const fn supports_two_sio_interface(
+        self,
+        interface: TwoSioSignalInterface,
+    ) -> bool {
+        match self {
+            Self::InternalAsr33 => matches!(interface, TwoSioSignalInterface::Tty20mA),
+            Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232),
+            Self::TextTerminal | Self::ExternalTcp => true,
+        }
+    }
+
+    pub(crate) const fn two_sio_requirement_label(self) -> &'static str {
+        match self {
+            Self::InternalAsr33 => "direct ASR-33 cable requires an 88-2SIO TTY 20 mA current-loop port",
+            Self::ExternalCom => "External COM direct cable requires an 88-2SIO RS-232 port",
+            Self::TextTerminal => "virtual terminal matches the selected 88-2SIO signal interface",
+            Self::ExternalTcp => "virtual TCP peer matches the selected 88-2SIO signal interface",
         }
     }
 }
@@ -251,6 +276,22 @@ mod tests {
         for interface in [SioInterface::Rs232A, SioInterface::TtlB, SioInterface::TtyC] {
             assert!(SerialDevice::TextTerminal.supports_sio_interface(interface));
             assert!(SerialDevice::ExternalTcp.supports_sio_interface(interface));
+        }
+    }
+
+    #[test]
+    fn two_sio_direct_endpoint_wiring_does_not_invent_level_converters() {
+        assert!(SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA));
+        assert!(!SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Rs232));
+        assert!(!SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Ttl));
+
+        assert!(SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Rs232));
+        assert!(!SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Ttl));
+        assert!(!SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA));
+
+        for interface in TwoSioSignalInterface::ALL {
+            assert!(SerialDevice::TextTerminal.supports_two_sio_interface(interface));
+            assert!(SerialDevice::ExternalTcp.supports_two_sio_interface(interface));
         }
     }
 }
