@@ -9,13 +9,6 @@ pub(crate) enum SerialDevice {
 }
 
 impl SerialDevice {
-    pub(crate) const ALL: [Self; 4] = [
-        Self::InternalAsr33,
-        Self::TextTerminal,
-        Self::ExternalTcp,
-        Self::ExternalCom,
-    ];
-
     /// Whether this endpoint can truthfully occupy the external connector of the
     /// selected original 88-SIO interface without inventing an unconfigured
     /// physical level converter.
