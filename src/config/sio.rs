@@ -144,6 +144,37 @@ impl SioInterruptTarget {
             Self::Disconnected | Self::Pint => return None,
         })
     }
+
+    pub const fn persistence_key(self) -> &'static str {
+        match self {
+            Self::Disconnected => "disconnected",
+            Self::Pint => "pint",
+            Self::Vi0 => "vi0",
+            Self::Vi1 => "vi1",
+            Self::Vi2 => "vi2",
+            Self::Vi3 => "vi3",
+            Self::Vi4 => "vi4",
+            Self::Vi5 => "vi5",
+            Self::Vi6 => "vi6",
+            Self::Vi7 => "vi7",
+        }
+    }
+
+    pub fn from_persistence_key(value: &str) -> Option<Self> {
+        Some(match value {
+            "disconnected" => Self::Disconnected,
+            "pint" => Self::Pint,
+            "vi0" => Self::Vi0,
+            "vi1" => Self::Vi1,
+            "vi2" => Self::Vi2,
+            "vi3" => Self::Vi3,
+            "vi4" => Self::Vi4,
+            "vi5" => Self::Vi5,
+            "vi6" => Self::Vi6,
+            "vi7" => Self::Vi7,
+            _ => return None,
+        })
+    }
 }
 
 impl Default for SioInterruptTarget {
@@ -288,6 +319,9 @@ pub struct SioHardwareConfig {
     pub address: SioAddressPair,
     pub baud: SioBaudRate,
     pub format: SioWordFormat,
+    /// Physical routing from the board's input/output IRQ source pads to the
+    /// direct processor interrupt line or raw 88-VI inputs.
+    pub interrupt_wiring: SioInterruptWiring,
 }
 
 impl SioHardwareConfig {
@@ -296,7 +330,7 @@ impl SioHardwareConfig {
     /// can retain a known-safe default rather than constructing a hybrid board.
     pub fn persistence_key(self) -> String {
         format!(
-            "{},{},{:02X},{},{},{},{}",
+            "{},{},{:02X},{},{},{},{},{},{}",
             self.revision.persistence_key(),
             self.interface.persistence_key(),
             self.address.base(),
@@ -304,6 +338,8 @@ impl SioHardwareConfig {
             self.format.data_bits.bits(),
             self.format.parity.persistence_key(),
             self.format.stop_bits.bits(),
+            self.interrupt_wiring.input.persistence_key(),
+            self.interrupt_wiring.output.persistence_key(),
         )
     }
 
@@ -316,8 +352,17 @@ impl SioHardwareConfig {
         let data_bits = SioDataBits::from_bits(fields.next()?.parse().ok()?)?;
         let parity = SioParity::from_persistence_key(fields.next()?)?;
         let stop_bits = SioStopBits::from_bits(fields.next()?.parse().ok()?)?;
+        let input = SioInterruptTarget::from_persistence_key(fields.next()?)?;
+        let output = SioInterruptTarget::from_persistence_key(fields.next()?)?;
         if fields.next().is_some() { return None; }
-        Some(Self { revision, interface, address, baud, format: SioWordFormat { data_bits, parity, stop_bits } })
+        Some(Self {
+            revision,
+            interface,
+            address,
+            baud,
+            format: SioWordFormat { data_bits, parity, stop_bits },
+            interrupt_wiring: SioInterruptWiring { input, output },
+        })
     }
 }
 
@@ -359,6 +404,7 @@ mod tests {
         assert_eq!(c.baud.baud(), 110);
         assert_eq!(c.format.frame_bits(), 11);
         assert_eq!(c.format.label(), "8N2");
+        assert_eq!(c.interrupt_wiring, SioInterruptWiring::default());
     }
 
     #[test]
@@ -369,10 +415,15 @@ mod tests {
             address: SioAddressPair::try_new(0x06).unwrap(),
             baud: SioBaudRate::try_new(9_600).unwrap(),
             format: SioWordFormat { data_bits: SioDataBits::Seven, parity: SioParity::Even, stop_bits: SioStopBits::One },
+            interrupt_wiring: SioInterruptWiring {
+                input: SioInterruptTarget::Vi3,
+                output: SioInterruptTarget::Disconnected,
+            },
         };
         assert_eq!(SioHardwareConfig::from_persistence_key(&config.persistence_key()), Some(config));
-        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,07,9600,7,even,1").is_none());
-        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even").is_none());
+        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,07,9600,7,even,1,vi3,disconnected").is_none());
+        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none());
+        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,rst7,vi2").is_none());
     }
 
     #[test]
