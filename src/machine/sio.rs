@@ -2,13 +2,33 @@ use std::collections::VecDeque;
 
 use crate::config::{SioHardwareConfig, SioRevision};
 
-/// Digital COM2502/UART state used by one MITS 88-SIO card.
+/// Latched logical handshake state on the original 88-SIO connector side.
+///
+/// `RIN` and `ROT` are pulses driven *into* the card by an external device. The
+/// corresponding ready flip-flops drive the active-low Rev0 status bits and the
+/// board's `BIN` / `BOT` busy outputs. A/B/C interface cards change electrical
+/// levels (RS-232, TTL or current loop), not these logical relationships.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(in crate::machine) struct SioHandshakeLines {
+    pub input_device_ready: bool,
+    pub output_device_ready: bool,
+    pub bin_high: bool,
+    pub bot_high: bool,
+}
+
+/// Digital COM2502/UART plus board-local handshake state used by one MITS
+/// 88-SIO card.
 ///
 /// The UART is double buffered in both directions. `tx_holding` is the
 /// transmitter data-bits holding register (TBMT reflects this register), while
 /// `tx_shift` is the active serial shift register. `rx_shift` is the receiver
 /// shift register and `rx_data` is the receiver data-bits holding register
 /// (RDA reflects the latter).
+///
+/// The Rev0 input/output device-ready flip-flops are deliberately separate from
+/// COM2502 RDA/TBMT. An external device must pulse RIN/ROT explicitly; receiving
+/// a serial character or freeing the UART transmitter does not fabricate those
+/// handshake pulses.
 pub(in crate::machine) struct SioPort {
     config: SioHardwareConfig,
     bit_phase_numerator: u64,
@@ -25,6 +45,12 @@ pub(in crate::machine) struct SioPort {
     tx_shift: Option<u8>,
     tx_bits_remaining: u8,
     wire_tx: VecDeque<u8>,
+
+    /// Original Rev0 external device-ready latches (IC F-a/F-b in the MITS
+    /// documentation). `false` is the reset/not-ready state. The connector-side
+    /// RIN/ROT ready pulse sets the respective latch; DATA IN/DATA OUT reset it.
+    input_device_ready: bool,
+    output_device_ready: bool,
 }
 
 impl Default for SioPort {
@@ -47,6 +73,8 @@ impl SioPort {
             tx_shift: None,
             tx_bits_remaining: 0,
             wire_tx: VecDeque::new(),
+            input_device_ready: false,
+            output_device_ready: false,
         }
     }
 
@@ -69,6 +97,33 @@ impl SioPort {
     pub(in crate::machine) fn rx_full(&self) -> bool { self.rx_full }
     pub(in crate::machine) fn tx_buffer_empty(&self) -> bool { self.tx_holding.is_none() }
 
+    /// External connector RIN ready pulse. This sets only the original Rev0
+    /// input-device-ready flip-flop; it is intentionally independent of RDA.
+    pub(in crate::machine) fn pulse_input_device_ready(&mut self) {
+        self.input_device_ready = true;
+    }
+
+    /// External connector ROT ready pulse. This sets only the original Rev0
+    /// output-device-ready flip-flop; it is intentionally independent of TBMT.
+    pub(in crate::machine) fn pulse_output_device_ready(&mut self) {
+        self.output_device_ready = true;
+    }
+
+    pub(in crate::machine) fn input_device_ready(&self) -> bool { self.input_device_ready }
+    pub(in crate::machine) fn output_device_ready(&self) -> bool { self.output_device_ready }
+
+    pub(in crate::machine) fn handshake_lines(&self) -> SioHandshakeLines {
+        SioHandshakeLines {
+            input_device_ready: self.input_device_ready,
+            output_device_ready: self.output_device_ready,
+            // MITS describes DATA IN/OUT as resetting the corresponding ready
+            // latch to clear the busy signal to the device. The latch assertion
+            // therefore owns the logical BIN/BOT busy level.
+            bin_high: self.input_device_ready,
+            bot_high: self.output_device_ready,
+        }
+    }
+
     /// Begin one real serial receive frame. A full unread holding register does
     /// not stop the COM2502 receiver shift register; the resulting overwrite is
     /// handled only when this new frame completes.
@@ -79,7 +134,7 @@ impl SioPort {
     }
 
     /// Debugger injection bypasses serial line time but retains COM2502 holding
-    /// register / overrun semantics.
+    /// register / overrun semantics. It does NOT synthesize an external RIN pulse.
     pub(in crate::machine) fn debugger_inject_received_character(&mut self, value: u8) {
         self.complete_received_character(value, false, false);
     }
@@ -105,6 +160,11 @@ impl SioPort {
         // state and are refreshed by reception/master reset, not fabricated as
         // a side effect of this data read.
         self.rx_full = false;
+        // Original Rev0 DATA IN also resets IC F-a. This is a separate action
+        // from RDAR and is why RIN must be asserted again by the external device.
+        if self.config.revision == SioRevision::Rev0 {
+            self.input_device_ready = false;
+        }
         value
     }
 
@@ -120,6 +180,11 @@ impl SioPort {
     }
 
     pub(in crate::machine) fn write_data(&mut self, value: u8) {
+        // Original Rev0 DATA OUT resets IC F-b before/with the UART TDS strobe,
+        // clearing BOT/busy and requiring a later external ROT ready pulse.
+        if self.config.revision == SioRevision::Rev0 {
+            self.output_device_ready = false;
+        }
         self.tx_holding = Some(value);
         // COM2502 loads an idle transmitter shift register immediately from the
         // holding register. TBMT therefore returns HIGH even though the serial
@@ -161,11 +226,15 @@ impl SioPort {
             | (u8::from(self.framing_error) << 3)
             | (u8::from(self.parity_error) << 2);
         match self.config.revision {
-            // Original status word: RDA on D5 and TBMT on D1, both active HIGH.
-            // External device-ready inputs D7/D0 are modeled in their normal
-            // ready (LOW) state until the physical handshake lines are exposed.
+            // Original status word keeps COM2502 RDA on D5 and TBMT on D1, both
+            // active HIGH. D0/D7 are *separate* active-low external device-ready
+            // flip-flops: HIGH means no RIN/ROT ready pulse is currently latched.
             SioRevision::Rev0 => {
-                errors | (u8::from(self.rx_full) << 5) | (u8::from(self.tx_buffer_empty()) << 1)
+                errors
+                    | (u8::from(!self.output_device_ready) << 7)
+                    | (u8::from(self.rx_full) << 5)
+                    | (u8::from(self.tx_buffer_empty()) << 1)
+                    | u8::from(!self.input_device_ready)
             }
             // Rev 1 modification: receive ready is D0 active LOW and transmit
             // buffer empty is D7 active LOW. Error positions remain D4:D2.
@@ -242,12 +311,13 @@ mod tests {
     fn rev0_and_rev1_ready_flags_have_historical_positions_and_polarity() {
         let mut rev0 = SioPort::new(config(SioRevision::Rev0));
         let mut rev1 = SioPort::new(config(SioRevision::Rev1));
-        assert_eq!(rev0.status(), 0x02, "Rev0 TBMT is D1 active high");
+        assert_eq!(rev0.status(), 0x83, "Rev0 starts with external device-ready latches reset while TBMT is D1 active high");
         assert_eq!(rev1.status(), 0x01, "Rev1 not-RDA is D0 high while empty; D7 low means TX ready");
 
         rev0.debugger_inject_received_character(b'R');
         rev1.debugger_inject_received_character(b'R');
         assert_eq!(rev0.status() & 0x20, 0x20, "Rev0 RDA is D5 active high");
+        assert_eq!(rev0.status() & 0x81, 0x81, "COM2502 RDA must not fabricate external Rev0 RIN/ROT ready state");
         assert_eq!(rev1.status() & 0x01, 0x00, "Rev1 receive-ready is D0 active low");
 
         rev0.write_data(b'A');
@@ -260,6 +330,35 @@ mod tests {
         rev1.write_data(b'B');
         assert_eq!(rev0.status() & 0x02, 0x00, "second byte occupies Rev0 holding register");
         assert_eq!(rev1.status() & 0x80, 0x80, "second byte makes Rev1 active-low TX ready false");
+    }
+
+    #[test]
+    fn rev0_device_ready_flip_flops_follow_external_pulses_and_data_handshake() {
+        let mut p = SioPort::new(config(SioRevision::Rev0));
+        assert_eq!(p.status() & 0x81, 0x81);
+        assert_eq!(p.handshake_lines(), SioHandshakeLines::default());
+
+        p.pulse_input_device_ready();
+        let lines = p.handshake_lines();
+        assert!(lines.input_device_ready);
+        assert!(lines.bin_high);
+        assert_eq!(p.status() & 0x01, 0x00, "RIN sets the active-low D0 device-ready indication");
+        assert_eq!(p.status() & 0x20, 0x00, "RIN is not COM2502 RDA");
+
+        p.debugger_inject_received_character(b'I');
+        assert_eq!(p.status() & 0x21, 0x20, "RDA may coexist with independently latched RIN ready");
+        assert_eq!(p.read_data(), b'I');
+        assert_eq!(p.status() & 0x21, 0x01, "DATA IN resets both RDAR and the separate input-ready latch");
+        assert!(!p.handshake_lines().bin_high);
+
+        p.pulse_output_device_ready();
+        let lines = p.handshake_lines();
+        assert!(lines.output_device_ready);
+        assert!(lines.bot_high);
+        assert_eq!(p.status() & 0x80, 0x00, "ROT sets the active-low D7 output-device-ready indication");
+        p.write_data(b'O');
+        assert_eq!(p.status() & 0x80, 0x80, "DATA OUT resets F-b independently of COM2502 TBMT");
+        assert!(!p.handshake_lines().bot_high);
     }
 
     #[test]
