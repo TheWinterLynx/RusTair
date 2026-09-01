@@ -1,3 +1,4 @@
+const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const SERIAL_HARDWARE_SOURCE: &str = include_str!("../src/app/serial_hardware.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
@@ -28,4 +29,39 @@ fn sio_hardware_is_persisted_as_one_atomic_card_configuration() {
     assert!(PERSISTENCE_SOURCE.contains("machine.sio_hardware"));
     assert!(PERSISTENCE_SOURCE.contains("SioHardwareConfig::from_persistence_key"));
     assert!(PERSISTENCE_SOURCE.contains("self.machine.configure_sio_hardware(self.config.machine.sio_hardware);"));
+}
+
+#[test]
+fn engine_recreation_reapplies_physical_sio_hardware() {
+    let start = APP_SOURCE
+        .find("fn select_emulation_engine")
+        .expect("app must own the engine-recreation boundary");
+    let tail = &APP_SOURCE[start..];
+    let end = tail
+        .find("fn apply_memory_configuration")
+        .expect("helper after engine-recreation boundary");
+    let function = &tail[..end];
+
+    assert!(function.contains("self.machine.replace_engine(engine)"));
+    assert!(function.contains("self.machine.configure_sio_hardware"));
+    assert!(function.contains("self.config.machine.sio_hardware"));
+    assert!(function.contains("self.machine.configure_serial_board"));
+}
+
+#[test]
+fn selecting_sio_reapplies_its_dormant_physical_configuration() {
+    let start = APP_SOURCE
+        .find("fn apply_serial_board_configuration")
+        .expect("app must own serial-board selection");
+    let tail = &APP_SOURCE[start..];
+    let end = tail
+        .find("fn apply_two_sio_straps")
+        .expect("helper after serial-board selection");
+    let function = &tail[..end];
+
+    assert!(function.contains("SerialBoard::Sio88"));
+    assert!(function.contains("self.machine.configure_sio_hardware"));
+    assert!(function.contains("self.config.machine.sio_hardware"));
+    assert!(function.contains("address.status()"));
+    assert!(function.contains("address.data()"));
 }
