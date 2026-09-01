@@ -115,6 +115,8 @@ The Reader Control / physical RX pacing block passed the full local `cargo test`
 - the production `IoDevices` decoder, PRDY wait selection, debugger data-port mapping, trace data addresses and S-100 open-bus ownership now derive from the selected A2-A7 block instead of permanently decoding `10h-13h`.
 - a regression moves the board to the MITS manual example base 68 decimal / `44h` and requires `44h-47h` to decode while `10h-13h` become open bus with no 88-2SIO wait.
 - a second regression gives the two ACIAs different baud straps and requires their timed receive completions to diverge accordingly.
+- ASR-33 keyboard BREAK now reaches the selected 88-2SIO receive pin as a held SPACE condition through the same backend-neutral line API used by Fast and Cycle; it is not encoded as NUL. A complete held BREAK frame produces zero data plus MC6850 FE, continued BREAK may expose delayed OVRN, and releasing a short incomplete BREAK does not fabricate a character.
+- moving/disconnecting/displacing the ASR-33 cable explicitly returns the old UART RX line to MARK before the router changes ownership.
 
 ### Remaining blockers before `PASS`
 
@@ -126,11 +128,10 @@ The Reader Control / physical RX pacing block passed the full local `cargo test`
 - add shared public Fast/Cycle readdressing regressions;
 - add/validate user-observable strap procedures from `docs/88_2SIO_PHYSICAL_STRAPS.md`;
 - add the pending regression that debugger-only 88-2SIO `IN` activity cannot leave a stale Fast +1T wait for the next guest instruction;
-- finish BREAK semantics for internal non-COM endpoints only where primary device evidence supports an observable effect; raw TCP must not invent an electrical BREAK byte;
 - close the broader interrupt-routing/jumper question (direct interrupt vs no interrupt / 88-VI integration) at the machine-card boundary;
-- re-run complete serial/loader/full-suite validation after final strap/signal closeout.
+- re-run complete serial/loader/full-suite validation after final strap/signal closeout, including `tests/serial_receive_break_fidelity.rs`.
 
-## 5. MITS 88-SIO — PASS
+## 5. MITS 88-SIO — IMPLEMENTED / REVALIDATION PENDING
 
 Dedicated evidence:
 
@@ -138,7 +139,7 @@ Dedicated evidence:
 - `docs/88_SIO_INTERRUPT_ROUTING.md` — Rev0/Rev1 interrupt sources, D0/D1 enables and PINT/raw-VI routing;
 - `docs/88_SIO_ABC_ELECTRICAL_INTERFACES.md` — A/RS-232, B/TTL and C/current-loop connector conversion.
 
-Closed digital claim:
+Implemented digital claim:
 
 - finite COM2502 receive/transmit state and error behavior;
 - board-owned baud/format timing and continued card operation while CPU execution is parked;
@@ -151,11 +152,13 @@ Closed digital claim:
 - A/B/C typed electrical conversion without importing 88-2SIO modem semantics;
 - Fast/Cycle parity at the physical six-signal/electrical boundary;
 - endpoint cable truth: direct ASR-33 only on C, direct External COM only on A, virtual Text Terminal/TCP peers explicitly adapt to the selected family, and no endpoint fabricates RIN/ROT;
+- ASR-33 BREAK is a held physical SPACE condition, not `00h`: a complete BREAK frame produces zero data plus COM2502 framing error, while releasing an incomplete BREAK does not synthesize a character;
+- leaving LINE or moving/disconnecting/displacing the ASR cable restores MARK on its previous receive line before routing changes;
 - stale fixed `00h/01h` cable labeling removed.
 
-The focused endpoint test, physical-boundary test and complete normal `cargo test` suite were reported green by the user on **2026-09-01** after the final endpoint/cable changes. No GitHub Actions were run.
+The focused endpoint test, physical-boundary test and complete normal `cargo test` suite were reported green by the user on **2026-09-01** before the receive-BREAK correction. Because that correction changes the UART receive path, the PASS label is deliberately suspended until the new `tests/serial_receive_break_fidelity.rs` regressions and the normal full local suite are green. No GitHub Actions are required or have been run.
 
-Known non-claims are deliberately outside this PASS: analog voltage/current tolerances, noise/slew/cable effects, independently clocked remote receive sampling that automatically creates baud-mismatch framing faults, and a complete 88-VI controller beyond the raw VI wires.
+Known non-claims remain unchanged: analog voltage/current tolerances, noise/slew/cable effects, independently clocked remote receive sampling that automatically creates baud-mismatch framing faults, and a complete 88-VI controller beyond the raw VI wires.
 
 ## Validation policy
 
