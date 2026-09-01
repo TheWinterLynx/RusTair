@@ -1,6 +1,38 @@
 use super::*;
 
 impl RusTairApp {
+    /// Apply the physical 88-SIO jumper/UART configuration.
+    ///
+    /// Revision, interface variant, address decode, baud preset and COM2502 word
+    /// format are all board-level wiring. They therefore cannot be changed while
+    /// the emulated chassis is powered, just as the 88-2SIO strap controls cannot.
+    pub(in crate::app) fn apply_sio_hardware(&mut self, config: crate::config::SioHardwareConfig) {
+        if self.config.machine.sio_hardware == config { return; }
+        if self.machine.powered() {
+            self.status = "Power OFF the Altair before changing 88-SIO hardware wiring".into();
+            return;
+        }
+        self.config.machine.sio_hardware = config;
+        self.machine.configure_sio_hardware(config);
+        self.asr33.tx_started = None;
+        self.asr33.answerback.clear();
+        self.terminal.tx_started = None;
+        self.external_serial.reset_line_timing();
+        self.external_com.reset_line_timing();
+        let now = Instant::now();
+        self.last_tick = now;
+        self.execution_clock.reset_at(now);
+        self.status = format!(
+            "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {}",
+            config.revision.label(),
+            config.address.status(),
+            config.address.data(),
+            config.interface.label(),
+            config.baud.label(),
+            config.format.label(),
+        );
+    }
+
     /// Physical receive-line availability. This is intentionally different from
     /// RDR/RDRF emptiness: an MC6850 may have an unread byte in RDR while its
     /// receive shift register / external line is already ready for the next frame.
