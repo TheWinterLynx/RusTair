@@ -1,56 +1,85 @@
 # MITS 88-SIO interrupt routing fidelity
 
-Status: **IMPLEMENTED — machine-level routing locally validated; physical-configuration persistence/UI awaits the current local checkpoint. Rev 0 external device-ready handshake remains explicitly open.**
+Status: **IMPLEMENTED — ready for final local validation.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
 ## 1. Scope
 
-This document covers the interrupt-generation and interrupt-routing hardware of the original single-channel MITS 88-SIO. It deliberately separates three different layers that must not be collapsed into one emulator boolean:
+This document covers interrupt generation and physical routing on the original single-channel MITS 88-SIO. RusTair keeps three layers separate:
 
-1. the serial/device condition that requests service;
-2. the software-controlled input/output interrupt-enable flip-flops;
-3. the physical wiring that takes the resulting IN or OUT request to the processor interrupt line or to an 88-Vector Interrupt input.
+1. the revision-dependent source condition;
+2. the D0/D1 software interrupt-enable flip-flops;
+3. the physical IN/OUT routing to direct PINT, an 88-VI input, or no connection.
 
-The COM2502 UART core itself is documented in `docs/88_SIO_HARDWARE_FIDELITY.md`.
+The COM2502/card core is documented in `docs/88_SIO_HARDWARE_FIDELITY.md`; A/B/C connector behavior is documented in `docs/88_SIO_ABC_ELECTRICAL_INTERFACES.md`.
 
-## 2. Primary sources
+## 2. Primary MITS evidence
 
-Primary evidence used for this block:
+Primary sources:
 
-- MITS, *88-SIO Serial I/O Board Documentation* (original 1975 documentation):
+- MITS, *Serial I/O Board Documentation* (1975):
   `https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/88-SIO%20Documentation.pdf`
 - MITS, *88-SIOB Rev 1 Schematic*:
   `https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/88-SIOB%20Rev%201%20Schematic.pdf`
 - MITS, *88-SIO Rev 0 Errata*:
   `https://deramp.com/downloads/mfe_archive/010-S100%20Computers%20and%20Boards/00-MITS/10-MITS%20S100%20Boards/88-SIO%20Serial%20Board/88-SIO%20Rev%200%20Errata.pdf`
-- MITS *Computer Notes* Rev-1 software examples, used only to corroborate the later D0/D7 polling convention.
 
-## 3. Software interrupt-enable flip-flops
+The original manual is authoritative for the important Rev0 distinction: COM2502 RDA/TBMT and the external device-ready flip-flops are separate signals.
 
-The even 88-SIO I/O address is status on IN and control on OUT. For interrupt control, only D0 and D1 matter:
+## 3. Software interrupt enables
 
-| Control bit | Function |
+OUT to the even status/control address uses:
+
+| Control bit | Meaning |
 | ---: | --- |
 | D0 | input interrupt enable |
 | D1 | output interrupt enable |
 
-Therefore:
+RusTair stores these in `AltairBus::sio_interrupt_control`. They are runtime card state written by guest software, not configuration-menu options.
 
-| D1 | D0 | Enabled request sources |
-| ---: | ---: | --- |
-| 0 | 0 | none |
-| 0 | 1 | input only |
-| 1 | 0 | output only |
-| 1 | 1 | input + output |
+## 4. Rev0 request sources
 
-RusTair preserves these as a runtime latch (`sio_interrupt_control`). They are **not** configuration-menu settings: software running on the 8080 changes them by writing the card control address.
+The original Rev0 status register contains both UART and external-handshake state:
 
-## 4. Physical IN / OUT / BH routing
+| Bit | Rev0 meaning | Polarity |
+| ---: | --- | --- |
+| D7 | external Output Device Ready flip-flop | active LOW |
+| D5 | COM2502 RDA | active HIGH |
+| D4 | overrun | active HIGH |
+| D3 | framing error | active HIGH |
+| D2 | parity error | active HIGH |
+| D1 | COM2502 TBMT | active HIGH |
+| D0 | external Input Device Ready flip-flop | active LOW |
 
-The board exposes separate interrupt request paths for input and output, as well as a combined path historically identified as BH. The requests can be connected to the direct processor interrupt path or to one of the eight vector-interrupt inputs.
+Therefore Rev0 interrupt sources are **not** RDA/TBMT:
 
-RusTair models the electrically relevant result per source:
+```text
+external RIN pulse -> input-ready FF -> D0 active LOW
+                                    -> D0 software enable -> IN request
+
+external ROT pulse -> output-ready FF -> D7 active LOW
+                                     -> D1 software enable -> OUT request
+```
+
+DATA IN resets the input-ready flip-flop as well as COM2502 RDA. DATA OUT resets the output-ready flip-flop independently of COM2502 TBMT.
+
+RusTair models these flip-flops explicitly. A received character does not synthesize RIN, and transmitter readiness does not synthesize ROT.
+
+## 5. Rev1/internal-ready request sources
+
+For the later Rev1/internal-ready behavior represented by RusTair, D0/D7 instead expose internal UART readiness:
+
+```text
+COM2502 RDA  -> D0 active LOW -> D0 software enable -> IN request
+COM2502 TBMT -> D7 active LOW -> D1 software enable -> OUT request
+```
+
+The routing stage downstream of those revision-specific status bits is shared.
+
+## 6. Physical IN / OUT routing
+
+RusTair represents the resulting board wiring as:
 
 ```rust
 pub enum SioInterruptTarget {
@@ -65,150 +94,78 @@ pub struct SioInterruptWiring {
 }
 ```
 
-Wiring both input and output to the same destination represents the same resulting connectivity as using the combined BH path for that destination. Keeping the two source results independently configurable also permits historically meaningful arrangements where IN and OUT go to different VI priorities.
+Wiring both sources to the same destination represents the electrically relevant result of a combined BH arrangement. Keeping them independent also permits IN and OUT to use different VI priorities.
 
-## 5. PINT is not VIx
+## 7. PINT is not VIx
 
-`PINT` is the direct processor interrupt request path. In the current direct Altair interrupt mechanism, the interrupt acknowledge supplies `FFh`, the 8080 `RST 7` opcode.
+`PINT` is the direct CPU interrupt request path. In RusTair's direct Altair interrupt mechanism, interrupt acknowledge supplies `FFh` (`RST 7`).
 
-`VI0..VI7` are different physical wires. An 88-SIO wired to `VI3`, for example, does **not** itself tell the CPU to execute `RST 3` or any other opcode. The request terminates at the raw chassis boundary until a real 88-Vector Interrupt board is present to arbitrate requests and provide the interrupt instruction.
+`VI0..VI7` are raw request wires for a separate 88-Vector Interrupt system. The 88-SIO itself cannot convert `VI3` into `RST 3` or any other CPU opcode. RusTair therefore exposes a raw VI mask and does not fabricate CPU vectors.
 
-RusTair therefore exposes raw VI state separately and never converts a selected VI level into a fabricated direct CPU restart.
+## 8. Physical-to-code mapping
 
-## 6. Rev 1 request sources
-
-For the later Rev-1/internal-ready behavior represented by RusTair, the two request sources are derived from the same internal UART-ready conditions used by the modified D0/D7 status convention:
-
-- input source: D0 control enable set **and** receive-ready condition active;
-- output source: D1 control enable set **and** transmitter-buffer-empty condition active.
-
-The physical destination is then applied **after** this source logic:
-
-```text
-COM2502 receive ready
-        |
-        +-- D0 software enable -- IN request -- physical jumper --> PINT / VIx / disconnected
-
-COM2502 TBMT
-        |
-        +-- D1 software enable -- OUT request - physical jumper --> PINT / VIx / disconnected
-```
-
-This separation is why a UART can be requesting service while the CPU sees no PINT: the physical request may be disconnected or routed to an unimplemented 88-VI input.
-
-## 7. Rev 0 is deliberately not fabricated
-
-The original Rev-0 documentation distinguishes the UART RDA/TBMT flags from external **Input device Ready** and **Output device Ready** flip-flops:
-
-- D5 is UART receiver-data-available;
-- D1 is UART transmitter-buffer-empty;
-- D0 is the active-low input-device-ready state;
-- D7 is the active-low output-device-ready state.
-
-The data-channel handshakes reset those external ready flip-flops as part of the device protocol. Therefore an unmodified Rev-0 board must not silently use COM2502 RDA/TBMT as substitutes for the external device-ready interrupt sources.
-
-Until the A/B/C device-ready handshake is fully modeled, RusTair intentionally produces **no Rev-0 interrupt request from COM2502 ready state alone**. This is an explicit fidelity gap rather than a compatibility shortcut.
-
-## 8. Physical configuration and persistence
-
-Interrupt routing is physical board wiring, so it is stored inside the same atomic `SioHardwareConfig` as revision, interface, address, baud and word format.
-
-Current persistence form:
-
-```text
-revision,interface,address,baud,data,parity,stops,input_irq,output_irq
-```
-
-Example:
-
-```text
-rev1,c-tty,00,110,8,none,2,vi3,disconnected
-```
-
-The previous seven-field RusTair v4 form remains accepted. It preserves the old card fields and migrates only the newly explicit routing to `PINT/PINT`, matching the previous RusTair behavior. An eight-field half-configuration is rejected.
-
-The `PINT/PINT` default is a **RusTair migration default**, not a claim about a universal MITS factory jumper arrangement.
+- `src/machine/sio.rs`
+  - owns Rev0 ready flip-flops and COM2502 ready/error state;
+  - DATA IN/OUT perform their independent Rev0 handshake resets.
+- `src/machine/io_devices.rs`
+  - resolves revision-sensitive ready sources;
+  - exposes explicit RIN/ROT pulse entry points.
+- `src/machine/mod.rs`
+  - applies D0/D1 software enables;
+  - routes IN/OUT to PINT or raw VI lines.
+- `src/config/sio.rs`
+  - stores physical `SioInterruptWiring` inside `SioHardwareConfig`.
+- `src/backend/*`
+  - carries the same card state through Fast and Cycle.
 
 ## 9. Fast versus Cycle
 
-Both engines receive the same `SioHardwareConfig` through the backend-neutral hardware configuration path.
+Both engines use the same 88-SIO physical card state and routing configuration.
 
-Fast may observe interrupt requests at instruction boundaries because its CPU implementation is instruction-level, but the source condition and total serial T-state timing are the same physical model.
+Fast may service a newly asserted PINT at an instruction boundary because its CPU execution engine is instruction-level. Cycle sees the same chassis interrupt line at exact CPU T-state boundaries. This execution granularity difference does not change the source flip-flops, software enables or physical routing.
 
-Cycle observes the same request through the shared S-100 chassis while executing exact CPU T-states. A raw VI request remains raw in both engines.
+RIN/ROT may be pulsed while the CPU is stopped; they belong to the external card/device boundary rather than to guest instruction execution.
 
 ## 10. Regression coverage
 
-Machine-level tests protect:
+Coverage includes:
 
-- input request routed to VI3 does not assert PINT;
-- output request routed to PINT does assert the direct processor request;
-- input and output may simultaneously occupy different VI levels;
-- Rev 0 does not fabricate device-ready interrupts from COM2502 RDA/TBMT.
+- Rev0 RIN -> input-ready latch -> enabled PINT path;
+- DATA IN clears the Rev0 input request;
+- Rev0 ROT -> output-ready latch -> raw VI path;
+- DATA OUT clears the Rev0 output request;
+- COM2502 RDA/TBMT alone cannot fabricate Rev0 RIN/ROT interrupt state;
+- Rev1 uses internal RDA/TBMT readiness;
+- VI requests remain raw and never masquerade as direct PINT;
+- Fast and Cycle expose the same physical wiring and ready state.
 
-Configuration tests protect:
-
-- PINT and VI targets are distinct states;
-- legacy seven-field SIO hardware persistence migrates without losing card configuration;
-- partial eight-field configuration is rejected;
-- Fast and Cycle preserve the same interrupt wiring inside `SioHardwareConfig`.
-
-UI source guardrails protect:
-
-- input and output routing selectors exist;
-- the selectors live inside the POWER-OFF physical configuration block;
-- the UI explains D0/D1 runtime enables versus physical routing;
-- the UI explicitly states the raw VI boundary and the Rev-0 handshake gap.
+Relevant tests include `tests/sio88_hardware_fidelity.rs`, `tests/sio88_interrupt_configuration.rs`, `tests/sio88_physical_boundary.rs` and machine unit tests.
 
 ## 11. User validation
 
-### 11.1 Configuration persistence
+### Rev0 external-ready path
 
-1. POWER OFF.
-2. Select MITS 88-SIO, Rev 1.
-3. Set `Input IRQ source` to `VI3`.
-4. Set `Output IRQ source` to `Disconnected`.
-5. Change Fast ↔ Cycle while still powered off.
-6. Re-open `Configuration -> Serial board`.
-7. Expected: both selections remain exactly unchanged.
-8. Exit/restart RusTair and inspect the same menu.
-9. Expected: both selections remain unchanged after persistence reload.
+1. POWER OFF and select MITS 88-SIO Rev0.
+2. Route input to PINT and output to a VI level.
+3. POWER ON and have guest software enable D0/D1 as desired.
+4. A normal received byte may set D5/RDA but must not by itself assert the external-ready interrupt source.
+5. An explicit RIN event must set the input-ready latch / active-low D0 source.
+6. DATA IN must clear both RDA and that input-ready latch.
+7. An explicit ROT event must set the output-ready latch / active-low D7 source.
+8. DATA OUT must clear that output-ready latch independently of TBMT.
 
-A regression is present if an engine switch or application restart silently returns the wiring to PINT/PINT.
+### Direct PINT versus VI
 
-### 11.2 Direct PINT versus VI
+1. Route an active source to VI3: the raw VI3 request may assert, but the CPU must not take a direct restart merely because VI3 is high.
+2. POWER OFF and route the same source to PINT.
+3. Repeat with CPU interrupts enabled: the direct PINT path may now be accepted through the existing Altair interrupt-acknowledge mechanism.
 
-Using Rev 1 and a debugger/test program that enables the corresponding 88-SIO D0/D1 control bit:
+A regression exists if VI selection fabricates a CPU vector or if Rev0 RDA/TBMT silently substitutes for RIN/ROT.
 
-1. Route the active source to a VI level.
-2. Cause its ready condition.
-3. Expected: the CPU must **not** take the direct `RST 7` interrupt.
-4. POWER OFF and route the same source to PINT.
-5. Repeat the ready condition with CPU interrupts enabled.
-6. Expected: the direct interrupt path is now visible and the existing Altair PINT acknowledge mechanism supplies `FFh` / `RST 7`.
+## 12. Known limits
 
-A regression is present if selecting `VI3` makes the CPU jump directly to `0018h` or to `0038h` without an 88-VI board.
+- RusTair models the digital interrupt/handshake network, not analog pulse width, propagation delay or electrical noise.
+- A complete 88-VI board is outside this 88-SIO item; VI lines end at the raw chassis boundary.
+- Endpoint cables do not invent RIN/ROT. If a future modeled peripheral has documented ready contacts, those pulses must be added explicitly at that peripheral boundary.
 
-### 11.3 Rev 0 guardrail
-
-1. POWER OFF and select Rev 0.
-2. Route input to PINT.
-3. POWER ON and set D0 input-interrupt enable.
-4. Inject/receive a character so COM2502 RDA becomes active.
-5. Until external device-ready handshake support is enabled by the later closeout, expected: COM2502 RDA alone does **not** assert the Rev-0 PINT source.
-
-This is intentionally a temporary negative validation. The final Rev-0 validation will replace it once the documented external ready flip-flops are modeled.
-
-## 12. Remaining work
-
-This interrupt-routing block is complete for Rev 1 after local validation of the configuration/UI layer.
-
-The remaining 88-SIO blocker is the physical device-ready/handshake path, particularly:
-
-- original Rev-0 input-device-ready flip-flop;
-- original Rev-0 output-device-ready flip-flop;
-- effects of DATA IN / DATA OUT on those latches;
-- which external connector/interface signals drive or consume those ready states on the A/B/C variants;
-- resulting Rev-0 interrupt behavior.
-
-That work must be based on the original board schematic/interface documentation and must not borrow MC6850 CTS/DCD/RTS semantics from the later 88-2SIO.
+No remaining implementation blocker is known inside the 88-SIO interrupt-routing claim. The item remains labelled “ready for final local validation” until the final post-endpoint `cargo test` checkpoint is green.
