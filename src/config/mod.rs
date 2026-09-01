@@ -25,5 +25,5 @@ pub use sio_electrical::{SioConnectorOutputs, SioElectricalLevel};
 pub use terminal::TerminalDuplex;
 pub use two_sio::{
     TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget, TwoSioInterruptWiring,
-    TwoSioStraps,
+    TwoSioSignalInterface, TwoSioStraps,
 };
