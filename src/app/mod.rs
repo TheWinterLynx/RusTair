@@ -281,7 +281,7 @@ impl RusTairApp {
         self.execution_clock.reset_at(Instant::now());
         self.serial_router.reset_for_board(serial_board);
         let asr_directly_compatible = serial_board != SerialBoard::Sio88
-            || self.config.machine.sio_hardware.interface == crate::config::SioInterface::TtyC;
+            || SerialDevice::InternalAsr33.supports_sio_interface(self.config.machine.sio_hardware.interface);
         if !asr_directly_compatible {
             self.serial_router.connect(
                 SerialDevice::InternalAsr33,
@@ -380,12 +380,18 @@ impl RusTairApp {
 
     fn serial_connection_label(
         board: SerialBoard,
+        sio: crate::config::SioHardwareConfig,
         straps: TwoSioStraps,
         connection: SerialConnection,
     ) -> String {
         match (board, connection) {
             (_, SerialConnection::Disconnected) => "Disconnected".into(),
-            (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [00h/01h]".into(),
+            (SerialBoard::Sio88, SerialConnection::Port0) => format!(
+                "88-SIO {} [{:02X}h/{:02X}h]",
+                sio.interface.label(),
+                sio.address.status(),
+                sio.address.data(),
+            ),
             (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable".into(),
             (SerialBoard::TwoSio88, SerialConnection::Port0) => format!(
                 "88-2SIO Port 0 [{:02X}h/{:02X}h]",
@@ -407,11 +413,14 @@ impl RusTairApp {
     fn set_serial_connection(&mut self, device: SerialDevice, connection: SerialConnection) {
         if self.config.machine.serial_board == SerialBoard::Sio88 && connection == SerialConnection::Port1 { return; }
         if self.config.machine.serial_board == SerialBoard::Sio88
-            && device == SerialDevice::InternalAsr33
             && connection == SerialConnection::Port0
-            && self.config.machine.sio_hardware.interface != crate::config::SioInterface::TtyC
+            && !device.supports_sio_interface(self.config.machine.sio_hardware.interface)
         {
-            self.status = "ASR-33 not connected: a direct 88-SIO cable requires the C current-loop interface; no hidden A/B level converter is installed".into();
+            self.status = format!(
+                "{} not connected: {}; no hidden level converter is installed",
+                Self::serial_device_name(device),
+                device.sio_requirement_label(),
+            );
             return;
         }
         if self.serial_router.connection(device) == connection { return; }
@@ -428,6 +437,7 @@ impl RusTairApp {
         let device_name = Self::serial_device_name(device);
         let connection_name = Self::serial_connection_label(
             self.config.machine.serial_board,
+            self.config.machine.sio_hardware,
             self.config.machine.two_sio_straps,
             connection,
         );
