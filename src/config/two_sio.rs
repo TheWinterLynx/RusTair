@@ -5,6 +5,11 @@
 //! Address FFh belongs to the Altair front-panel sense switches, so RusTair does
 //! not offer the FCh-FFh block as an installable 88-2SIO configuration.
 //!
+//! The same assembly documentation also requires each serial port to be
+//! hardwired independently for one of three electrical interconnects: RS-232,
+//! TTL, or TTY 20 mA current loop. These are physical board/cable choices, not
+//! endpoint software preferences and not hidden level converters.
+//!
 //! Interrupt wiring is deliberately represented separately from address/baud
 //! straps. The assembly manual exposes DI (Port 0) and EI (Port 1) pads that may
 //! be left disconnected, wired to the single PINT line, or wired to one of the
@@ -68,6 +73,52 @@ impl TwoSioBaudTap {
 
 impl Default for TwoSioBaudTap {
     fn default() -> Self { Self::Baud110 }
+}
+
+/// Electrical signal interconnect hardwired on one 88-2SIO port.
+///
+/// This is the digital family at the external connector boundary. Exact RS-232
+/// voltages, TTL thresholds and current-loop current magnitude are analog
+/// non-claims; the important fidelity invariant is that these three families
+/// are not silently interchangeable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TwoSioSignalInterface {
+    Rs232,
+    Ttl,
+    Tty20mA,
+}
+
+impl TwoSioSignalInterface {
+    pub const ALL: [Self; 3] = [Self::Rs232, Self::Ttl, Self::Tty20mA];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Rs232 => "RS-232 voltage levels",
+            Self::Ttl => "TTL voltage levels",
+            Self::Tty20mA => "TTY 20 mA current loop",
+        }
+    }
+
+    pub const fn persistence_key(self) -> &'static str {
+        match self {
+            Self::Rs232 => "rs232",
+            Self::Ttl => "ttl",
+            Self::Tty20mA => "tty20ma",
+        }
+    }
+
+    pub fn from_persistence_key(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "rs232" | "rs-232" => Some(Self::Rs232),
+            "ttl" => Some(Self::Ttl),
+            "tty20ma" | "tty" | "current_loop" | "current-loop" => Some(Self::Tty20mA),
+            _ => None,
+        }
+    }
+}
+
+impl Default for TwoSioSignalInterface {
+    fn default() -> Self { Self::Rs232 }
 }
 
 /// Where one MC6850 IRQ output is physically wired on the 88-2SIO PCB.
@@ -239,16 +290,19 @@ impl Default for TwoSioAddressBlock {
     fn default() -> Self { Self::DEFAULT }
 }
 
-/// Physical address and baud straps for one MITS 88-2SIO board.
+/// Physical address, baud and line-interface straps/hardwiring for one MITS
+/// 88-2SIO board.
 ///
 /// Interrupt DI/EI wiring is intentionally a separate `TwoSioInterruptWiring`
-/// value because the assembly manual treats it as signal interconnect wiring,
-/// not as part of A2-A7 or the baud-generator strap bank.
+/// value because the assembly manual treats it as signal interconnect wiring to
+/// the chassis interrupt system rather than part of the port setup bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TwoSioStraps {
     pub address: TwoSioAddressBlock,
     pub port0_baud: TwoSioBaudTap,
     pub port1_baud: TwoSioBaudTap,
+    pub port0_interface: TwoSioSignalInterface,
+    pub port1_interface: TwoSioSignalInterface,
 }
 
 impl TwoSioStraps {
@@ -267,6 +321,14 @@ impl TwoSioStraps {
             _ => None,
         }
     }
+
+    pub const fn port_interface(self, index: usize) -> Option<TwoSioSignalInterface> {
+        match index {
+            0 => Some(self.port0_interface),
+            1 => Some(self.port1_interface),
+            _ => None,
+        }
+    }
 }
 
 impl Default for TwoSioStraps {
@@ -275,6 +337,11 @@ impl Default for TwoSioStraps {
             address: TwoSioAddressBlock::DEFAULT,
             port0_baud: TwoSioBaudTap::Baud110,
             port1_baud: TwoSioBaudTap::Baud9600,
+            // Preserve the intended default physical installation: the built-in
+            // Model 33 on Port 0 uses its 20 mA loop, while Port 1 is a normal
+            // RS-232 serial connector. Virtual endpoints may explicitly adapt.
+            port0_interface: TwoSioSignalInterface::Tty20mA,
+            port1_interface: TwoSioSignalInterface::Rs232,
         }
     }
 }
@@ -309,12 +376,39 @@ mod tests {
         assert_eq!(straps.address.base(), 0x10);
         assert_eq!(straps.port0_baud, TwoSioBaudTap::Baud110);
         assert_eq!(straps.port1_baud, TwoSioBaudTap::Baud9600);
+        assert_eq!(straps.port0_interface, TwoSioSignalInterface::Tty20mA);
+        assert_eq!(straps.port1_interface, TwoSioSignalInterface::Rs232);
     }
 
     #[test]
     fn physical_taps_are_the_eight_mits_silkscreen_rates() {
         let rates = TwoSioBaudTap::ALL.map(TwoSioBaudTap::baud);
         assert_eq!(rates, [110, 150, 300, 1_200, 1_800, 2_400, 4_800, 9_600]);
+    }
+
+    #[test]
+    fn each_port_can_be_hardwired_for_any_documented_signal_family() {
+        assert_eq!(TwoSioSignalInterface::ALL.len(), 3);
+        let straps = TwoSioStraps {
+            port0_interface: TwoSioSignalInterface::Ttl,
+            port1_interface: TwoSioSignalInterface::Tty20mA,
+            ..TwoSioStraps::default()
+        };
+        assert_eq!(straps.port_interface(0), Some(TwoSioSignalInterface::Ttl));
+        assert_eq!(straps.port_interface(1), Some(TwoSioSignalInterface::Tty20mA));
+        assert_eq!(straps.port_interface(2), None);
+    }
+
+    #[test]
+    fn signal_interface_persistence_keys_round_trip_and_reject_unknown_values() {
+        for interface in TwoSioSignalInterface::ALL {
+            assert_eq!(
+                TwoSioSignalInterface::from_persistence_key(interface.persistence_key()),
+                Some(interface)
+            );
+        }
+        assert_eq!(TwoSioSignalInterface::from_persistence_key("current-loop"), Some(TwoSioSignalInterface::Tty20mA));
+        assert_eq!(TwoSioSignalInterface::from_persistence_key("usb"), None);
     }
 
     #[test]
