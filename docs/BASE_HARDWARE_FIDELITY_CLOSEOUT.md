@@ -130,16 +130,32 @@ The Reader Control / physical RX pacing block passed the full local `cargo test`
 - close the broader interrupt-routing/jumper question (direct interrupt vs no interrupt / 88-VI integration) at the machine-card boundary;
 - re-run complete serial/loader/full-suite validation after final strap/signal closeout.
 
-## 5. MITS 88-SIO — OPEN
+## 5. MITS 88-SIO — PASS
 
-The 88-SIO must be audited by hardware revision rather than treated as a generic UART. Required closeout:
+Dedicated evidence:
 
-- establish the exact supported MITS revision(s) from primary documentation;
-- verify status-bit polarity and control semantics;
-- model finite receive/transmit hardware and overrun/error behavior where applicable;
-- move serial timing authority from ASR/Terminal/TCP/COM endpoints into the emulated card;
-- document any deliberate compatibility mode separately from historical behavior;
-- create its dedicated hardware-fidelity Markdown document before the item can become `PASS`.
+- `docs/88_SIO_HARDWARE_FIDELITY.md` — COM2502/card core, revision semantics, timing and endpoint contract;
+- `docs/88_SIO_INTERRUPT_ROUTING.md` — Rev0/Rev1 interrupt sources, D0/D1 enables and PINT/raw-VI routing;
+- `docs/88_SIO_ABC_ELECTRICAL_INTERFACES.md` — A/RS-232, B/TTL and C/current-loop connector conversion.
+
+Closed digital claim:
+
+- finite COM2502 receive/transmit state and error behavior;
+- board-owned baud/format timing and continued card operation while CPU execution is parked;
+- Rev0 external RIN/ROT ready flip-flops kept distinct from RDA/TBMT;
+- DATA IN/OUT handshake side effects;
+- Rev1 internal-ready polling semantics;
+- configurable even/odd I/O address pair, baud, word format and physical interrupt routing;
+- raw VI lines kept distinct from direct PINT;
+- real asynchronous RSI/TSO frame-bit projection for accepted baud-matched frames;
+- A/B/C typed electrical conversion without importing 88-2SIO modem semantics;
+- Fast/Cycle parity at the physical six-signal/electrical boundary;
+- endpoint cable truth: direct ASR-33 only on C, direct External COM only on A, virtual Text Terminal/TCP peers explicitly adapt to the selected family, and no endpoint fabricates RIN/ROT;
+- stale fixed `00h/01h` cable labeling removed.
+
+The focused endpoint test, physical-boundary test and complete normal `cargo test` suite were reported green by the user on **2026-09-01** after the final endpoint/cable changes. No GitHub Actions were run.
+
+Known non-claims are deliberately outside this PASS: analog voltage/current tolerances, noise/slew/cable effects, independently clocked remote receive sampling that automatically creates baud-mismatch framing faults, and a complete 88-VI controller beyond the raw VI wires.
 
 ## Validation policy
 
