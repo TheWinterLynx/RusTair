@@ -1,4 +1,4 @@
-use crate::config::SerialBoard;
+use crate::config::{SerialBoard, SioInterface};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SerialDevice {
@@ -6,6 +6,42 @@ pub(crate) enum SerialDevice {
     TextTerminal,
     ExternalTcp,
     ExternalCom,
+}
+
+impl SerialDevice {
+    pub(crate) const ALL: [Self; 4] = [
+        Self::InternalAsr33,
+        Self::TextTerminal,
+        Self::ExternalTcp,
+        Self::ExternalCom,
+    ];
+
+    /// Whether this endpoint can truthfully occupy the external connector of the
+    /// selected original 88-SIO interface without inventing an unconfigured
+    /// physical level converter.
+    ///
+    /// The built-in ASR-33 is a direct TTY/current-loop endpoint and therefore
+    /// requires the C interface. External COM is currently modeled as an
+    /// RS-232 host link and therefore requires A. Text Terminal and raw TCP are
+    /// explicitly virtual peers: their connector side is instantiated in the
+    /// selected A/B/C electrical family, but they remain data-only and never
+    /// fabricate the independent Rev0 RIN/ROT ready pulses.
+    pub(crate) const fn supports_sio_interface(self, interface: SioInterface) -> bool {
+        match self {
+            Self::InternalAsr33 => matches!(interface, SioInterface::TtyC),
+            Self::ExternalCom => matches!(interface, SioInterface::Rs232A),
+            Self::TextTerminal | Self::ExternalTcp => true,
+        }
+    }
+
+    pub(crate) const fn sio_requirement_label(self) -> &'static str {
+        match self {
+            Self::InternalAsr33 => "direct ASR-33 cable requires 88-SIO C current loop",
+            Self::ExternalCom => "External COM direct cable requires 88-SIO A RS-232",
+            Self::TextTerminal => "virtual terminal matches the selected 88-SIO A/B/C interface",
+            Self::ExternalTcp => "virtual TCP peer matches the selected 88-SIO A/B/C interface",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -207,5 +243,21 @@ mod tests {
             router.connection(SerialDevice::TextTerminal),
             SerialConnection::Disconnected
         );
+    }
+
+    #[test]
+    fn original_sio_direct_endpoint_wiring_does_not_invent_level_converters() {
+        assert!(SerialDevice::InternalAsr33.supports_sio_interface(SioInterface::TtyC));
+        assert!(!SerialDevice::InternalAsr33.supports_sio_interface(SioInterface::Rs232A));
+        assert!(!SerialDevice::InternalAsr33.supports_sio_interface(SioInterface::TtlB));
+
+        assert!(SerialDevice::ExternalCom.supports_sio_interface(SioInterface::Rs232A));
+        assert!(!SerialDevice::ExternalCom.supports_sio_interface(SioInterface::TtlB));
+        assert!(!SerialDevice::ExternalCom.supports_sio_interface(SioInterface::TtyC));
+
+        for interface in [SioInterface::Rs232A, SioInterface::TtlB, SioInterface::TtyC] {
+            assert!(SerialDevice::TextTerminal.supports_sio_interface(interface));
+            assert!(SerialDevice::ExternalTcp.supports_sio_interface(interface));
+        }
     }
 }
