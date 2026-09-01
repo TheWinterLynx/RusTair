@@ -87,12 +87,9 @@ pub struct AltairBus {
     panel: FrontPanelController,
     s100: S100BusState,
     fast_wait_t_states: u32,
-    /// Physical routing of the original 88-SIO IN/OUT interrupt request pads.
-    /// This belongs to chassis/card wiring rather than the COM2502 UART core.
-    sio_interrupt_wiring: SioInterruptWiring,
     /// D0=input-enable and D1=output-enable flip-flops written through the
-    /// 88-SIO control channel. Kept here because routing occurs after those
-    /// software-controlled sources, at the board/chassis wiring boundary.
+    /// 88-SIO control channel. Physical routing lives in SioHardwareConfig so
+    /// the whole dormant/installed card is one persisted hardware state.
     sio_interrupt_control: u8,
     /// True only for the chassis owned by the exact Cycle backend. Every call to
     /// `drive_cpu_board_sample` is then one real 8080 clock T-state and may advance
@@ -111,7 +108,6 @@ impl Default for AltairBus {
             panel: FrontPanelController::default(),
             s100: S100BusState::default(),
             fast_wait_t_states: 0,
-            sio_interrupt_wiring: SioInterruptWiring::default(),
             sio_interrupt_control: 0,
             exact_t_state_clock_owner: false,
             diagnostic_meter: None,
@@ -264,16 +260,22 @@ impl AltairBus {
 
     fn sio_pint_request(&self) -> bool {
         let (input, output) = self.sio_internal_interrupt_sources();
-        (input && self.sio_interrupt_wiring.input.drives_pint())
-            || (output && self.sio_interrupt_wiring.output.drives_pint())
+        let wiring = self.io.sio_hardware().interrupt_wiring;
+        (input && wiring.input.drives_pint()) || (output && wiring.output.drives_pint())
     }
 
     pub fn configure_sio_interrupt_wiring(&mut self, wiring: SioInterruptWiring) {
-        self.sio_interrupt_wiring = wiring;
+        let mut config = self.io.sio_hardware();
+        if config.interrupt_wiring == wiring { return; }
+        config.interrupt_wiring = wiring;
+        self.io.configure_sio_hardware(config);
+        self.sio_interrupt_control = 0;
         self.refresh_interrupt_request_line();
     }
 
-    pub fn sio_interrupt_wiring(&self) -> SioInterruptWiring { self.sio_interrupt_wiring }
+    pub fn sio_interrupt_wiring(&self) -> SioInterruptWiring {
+        self.io.sio_hardware().interrupt_wiring
+    }
 
     /// Active raw 88-SIO requests presented to an optional 88-VI board. Bit n is
     /// VIn. These raw lines never fabricate a processor restart opcode by
@@ -281,16 +283,13 @@ impl AltairBus {
     pub fn sio_vector_interrupt_requests(&self) -> u8 {
         if self.io.serial_board() != SerialBoard::Sio88 { return 0; }
         let (input, output) = self.sio_internal_interrupt_sources();
+        let wiring = self.io.sio_hardware().interrupt_wiring;
         let mut mask = 0u8;
         if input {
-            if let Some(level) = self.sio_interrupt_wiring.input.vector_level() {
-                mask |= 1u8 << level;
-            }
+            if let Some(level) = wiring.input.vector_level() { mask |= 1u8 << level; }
         }
         if output {
-            if let Some(level) = self.sio_interrupt_wiring.output.vector_level() {
-                mask |= 1u8 << level;
-            }
+            if let Some(level) = wiring.output.vector_level() { mask |= 1u8 << level; }
         }
         mask
     }
@@ -616,7 +615,7 @@ impl AltairMachine {
         let address = self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(self.cpu.inte);
         self.bus.set_hlda(false);
-        self.bus.release_front_panel_reset_bus(address, self.running);
+        self.bus.release_front_panel_reset(address, self.running);
     }
 
     pub fn release_front_panel_reset(&mut self) { self.release_front_panel_reset_common(true); }
