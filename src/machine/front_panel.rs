@@ -35,3 +35,12 @@ impl FrontPanelController {
         self.address_latch = address;
     }
 }
+
+// Keep the instruction-level Fast machine on the same physical RESET-release
+// path as the CPU-independent chassis. The bus-suffixed helper is the single
+// implementation; this façade only preserves the AltairMachine call boundary.
+impl super::AltairBus {
+    pub(super) fn release_front_panel_reset(&mut self, address: u16, run: bool) {
+        self.release_front_panel_reset_bus(address, run);
+    }
+}
