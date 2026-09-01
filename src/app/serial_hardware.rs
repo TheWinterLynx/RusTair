@@ -26,6 +26,13 @@ impl RusTairApp {
             None
         };
 
+        // BREAK belongs to the ASR's physical cable. Return the old connector to
+        // MARK before moving jumpers/unplugging it so no stale SPACE condition can
+        // survive on a backend boundary independently of the router state.
+        if disconnected_endpoint == Some(SerialDevice::InternalAsr33) {
+            let _ = self.serial_set_receive_break_at(SerialConnection::Port0, false);
+        }
+
         self.config.machine.sio_hardware = config;
         self.machine.configure_sio_hardware(config);
         if let Some(device) = disconnected_endpoint {
@@ -72,6 +79,19 @@ impl RusTairApp {
             .unwrap_or(true)
     }
 
+    /// Drive the attached UART's receive wire to continuous SPACE/BREAK or back
+    /// to MARK. This is deliberately a physical line operation rather than a
+    /// special byte, and works for either installed serial-card family.
+    pub(in crate::app) fn serial_set_receive_break_at(
+        &mut self,
+        connection: SerialConnection,
+        active: bool,
+    ) -> bool {
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_set_receive_break(port, active))
+            .unwrap_or(false)
+    }
+
     /// Physical RTS level driven by the MC6850 attached to this virtual cable.
     /// Returns None for disconnected cables and for the revision-sensitive 88-SIO,
     /// which must not fabricate MC6850 pins.
@@ -104,6 +124,11 @@ impl RusTairApp {
     pub(in crate::app) fn asr_serial_rx_line_idle(&mut self) -> bool {
         let connection = self.asr_connection();
         self.serial_rx_line_idle_at(connection)
+    }
+
+    pub(in crate::app) fn asr_serial_set_receive_break(&mut self, active: bool) -> bool {
+        let connection = self.asr_connection();
+        self.serial_set_receive_break_at(connection, active)
     }
 
     pub(in crate::app) fn asr_serial_rts_high(&mut self) -> Option<bool> {
