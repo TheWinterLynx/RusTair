@@ -238,6 +238,8 @@ impl eframe::App for RusTairApp {
                                     sio.address.status(), sio.address.data(), sio.revision.label(), sio.baud.label(), sio.format.label()
                                 ));
                                 ui.small(format!("Line interface: {}", sio.interface.label()));
+                                ui.small(format!("IN IRQ → {}", sio.interrupt_wiring.input.label()));
+                                ui.small(format!("OUT IRQ → {}", sio.interrupt_wiring.output.label()));
                             }
                             SerialBoard::TwoSio88 => {
                                 ui.small(format!(
@@ -333,12 +335,37 @@ impl eframe::App for RusTairApp {
                                         }
                                     }
                                 });
+                                ui.menu_button(format!("Input IRQ source: {}", sio.interrupt_wiring.input.label()), |ui| {
+                                    for target in crate::config::SioInterruptTarget::ALL {
+                                        if ui.selectable_label(sio.interrupt_wiring.input == target, target.label()).clicked() {
+                                            let mut next = sio;
+                                            next.interrupt_wiring.input = target;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                                ui.menu_button(format!("Output IRQ source: {}", sio.interrupt_wiring.output.label()), |ui| {
+                                    for target in crate::config::SioInterruptTarget::ALL {
+                                        if ui.selectable_label(sio.interrupt_wiring.output == target, target.label()).clicked() {
+                                            let mut next = sio;
+                                            next.interrupt_wiring.output = target;
+                                            self.apply_sio_hardware(next);
+                                            ui.close();
+                                        }
+                                    }
+                                });
                             });
                             if powered {
-                                ui.small("POWER OFF required: revision wiring, address jumpers, baud counter preset, UART format pins and A/B/C interface are physical card configuration.");
+                                ui.small("POWER OFF required: revision wiring, address jumpers, baud counter preset, UART format pins, A/B/C interface and interrupt jumpers are physical card configuration.");
                             }
                             ui.small("The MITS baud chart provides 110, 150, 300, 600, 1200, 2400, 4800, 9600 and 19200 baud presets. The hardware counter can also be wired for non-table rates up to 25 kbaud; persisted non-standard presets remain representable but are not fabricated as standard menu choices.");
                             ui.small("88-SIO A is RS-232 level, B is TTL level, and C is the TTY/current-loop interface used with Teletypes.");
+                            ui.small("D0 enables the input interrupt source and D1 enables the output source at runtime; these menus model the separate physical IN/OUT routing pads after those enables. Selecting the same destination for both sources represents the equivalent combined BH wiring result.");
+                            ui.small("PINT is the direct processor interrupt path. VI0..VI7 are raw requests for a separate 88-Vector Interrupt system and never fabricate an 8080 RST opcode inside the 88-SIO.");
+                            if sio.revision == crate::config::SioRevision::Rev0 {
+                                ui.small("Rev 0 interrupt assertion depends on the original external input/output device-ready flip-flops; that handshake path remains under hardware-fidelity audit and is not replaced by COM2502 RDA/TBMT.");
+                            }
                         }
 
                         if current == SerialBoard::TwoSio88 {
