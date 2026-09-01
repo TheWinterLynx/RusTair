@@ -134,7 +134,10 @@ pub fn key_to_byte(kind: KeyKind, shifted: bool, control: bool) -> Option<u8> {
         KeyKind::LineFeed => return Some(b'\n'),
         KeyKind::CarriageReturn => return Some(b'\r'),
         KeyKind::Delete => return Some(0x7f),
-        KeyKind::Break => return Some(0x00),
+        // BREAK is not an ASCII NUL character. The Model 33 opens/forces the
+        // serial circuit to the SPACE condition for as long as the key is held;
+        // the attached UART decides what character/error state that produces.
+        KeyKind::Break => return None,
         KeyKind::Space => return Some(b' '),
         KeyKind::Repeat | KeyKind::HereIs | KeyKind::Control | KeyKind::Shift => return None,
     };
@@ -171,8 +174,8 @@ mod tests {
     }
 
     #[test]
-    fn break_maps_to_nul_in_byte_level_serial_model() {
-        assert_eq!(key_to_byte(KeyKind::Break, false, false), Some(0));
+    fn break_is_a_line_condition_not_an_ascii_byte() {
+        assert_eq!(key_to_byte(KeyKind::Break, false, false), None);
         assert_eq!(key_to_byte(KeyKind::Repeat, false, false), None);
     }
 }
