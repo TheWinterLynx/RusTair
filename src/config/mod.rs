@@ -17,8 +17,8 @@ pub use machine::{
     TerminalSpeed,
 };
 pub use sio::{
-    SioAddressPair, SioBaudRate, SioDataBits, SioHardwareConfig, SioInterface, SioParity,
-    SioRevision, SioStopBits, SioWordFormat,
+    SioAddressPair, SioBaudRate, SioDataBits, SioHardwareConfig, SioInterface,
+    SioInterruptTarget, SioInterruptWiring, SioParity, SioRevision, SioStopBits, SioWordFormat,
 };
 pub use terminal::TerminalDuplex;
 pub use two_sio::{
