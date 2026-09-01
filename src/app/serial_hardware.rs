@@ -3,9 +3,10 @@ use super::*;
 impl RusTairApp {
     /// Apply the physical 88-SIO jumper/UART configuration.
     ///
-    /// Revision, interface variant, address decode, baud preset and COM2502 word
-    /// format are all board-level wiring. They therefore cannot be changed while
-    /// the emulated chassis is powered, just as the 88-2SIO strap controls cannot.
+    /// Revision, interface variant, address decode, baud preset, COM2502 word
+    /// format and interrupt routing are board-level wiring. They therefore cannot
+    /// be changed while the emulated chassis is powered, just as the 88-2SIO
+    /// strap controls cannot.
     pub(in crate::app) fn apply_sio_hardware(&mut self, config: crate::config::SioHardwareConfig) {
         if self.config.machine.sio_hardware == config { return; }
         if self.machine.powered() {
@@ -23,13 +24,15 @@ impl RusTairApp {
         self.last_tick = now;
         self.execution_clock.reset_at(now);
         self.status = format!(
-            "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {}",
+            "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {} · IN→{} · OUT→{}",
             config.revision.label(),
             config.address.status(),
             config.address.data(),
             config.interface.label(),
             config.baud.label(),
             config.format.label(),
+            config.interrupt_wiring.input.label(),
+            config.interrupt_wiring.output.label(),
         );
     }
 
