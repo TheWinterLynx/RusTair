@@ -439,6 +439,19 @@ impl RusTairApp {
             return;
         }
         if self.serial_router.connection(device) == connection { return; }
+
+        // BREAK belongs to the physical cable that is currently attached to the
+        // ASR-33. If that cable moves, is unplugged, or another endpoint displaces
+        // the ASR from its port, restore the old UART RX line to MARK *before*
+        // changing the router so a detached port can never retain BREAK/SPACE.
+        let old_asr_connection = self.asr_connection();
+        let moving_asr = device == SerialDevice::InternalAsr33;
+        let displacing_asr = connection.is_connected()
+            && self.serial_router.device_on(connection) == Some(SerialDevice::InternalAsr33);
+        if moving_asr || displacing_asr {
+            let _ = self.serial_set_receive_break_at(old_asr_connection, false);
+        }
+
         let displaced = self.serial_router.connect(device, connection);
         self.asr33.tx_started = None;
         self.terminal.tx_started = None;
