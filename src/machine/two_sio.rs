@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crate::mc6850::Mc6850;
+use crate::mc6850::{Mc6850, Parity};
 
 /// Physical baud-generator tap selected by the 88-2SIO board strap. The MITS
 /// manual exposes these eight taps independently for each ACIA. The complete set
@@ -59,6 +59,10 @@ pub(super) struct TwoSioPort {
     /// remains low until the configured serial frame has completed.
     rx_shift: Option<(u8, bool, bool)>,
     rx_bits_remaining: u8,
+    /// Literal receive-wire BREAK/SPACE level driven by the attached peripheral.
+    /// It is separate from the MC6850 transmitter BREAK control above.
+    rx_break_active: bool,
+    rx_shift_from_break: bool,
 }
 
 impl TwoSioPort {
@@ -73,6 +77,8 @@ impl TwoSioPort {
             wire_tx: VecDeque::new(),
             rx_shift: None,
             rx_bits_remaining: 0,
+            rx_break_active: false,
+            rx_shift_from_break: false,
         }
     }
 
@@ -109,6 +115,35 @@ impl TwoSioPort {
         self.rx_shift.is_none()
     }
 
+    fn break_parity_error(&self) -> bool {
+        // Continuous SPACE supplies a LOW parity bit. All-zero data requires a
+        // HIGH parity bit only in odd-parity modes.
+        matches!(self.acia.word_format().parity, Parity::Odd)
+    }
+
+    fn start_break_frame_if_idle(&mut self) {
+        if !self.rx_break_active || self.rx_shift.is_some() { return; }
+        self.rx_shift = Some((0, true, self.break_parity_error()));
+        self.rx_bits_remaining = self.acia.frame_bits();
+        self.rx_shift_from_break = true;
+    }
+
+    /// Drive/release the external receive wire's BREAK condition. A held BREAK
+    /// is continuous SPACE, so the receiver sees zero data followed by a missing
+    /// stop bit. Holding it across multiple frame times can therefore produce
+    /// normal MC6850 FE/RDRF and delayed OVRN behavior.
+    pub(super) fn set_receive_break(&mut self, active: bool) {
+        if self.rx_break_active == active { return; }
+        self.rx_break_active = active;
+        if active {
+            self.start_break_frame_if_idle();
+        } else if self.rx_shift_from_break {
+            self.rx_shift = None;
+            self.rx_bits_remaining = 0;
+            self.rx_shift_from_break = false;
+        }
+    }
+
     pub(super) fn write_control(&mut self, value: u8) {
         let was_break = self.acia.break_active();
         self.control = value;
@@ -125,12 +160,15 @@ impl TwoSioPort {
         if value & 0x03 == 0x03 {
             // Reset aborts the character currently inside the ACIA. Bytes that
             // already left the transmit shift register remain on the external
-            // wire queue.
+            // wire queue. The external RX BREAK level itself is not a chip state.
             self.bit_phase_numerator = 0;
             self.tx_bits_remaining = 0;
             self.tx_frame_corrupted_by_break = false;
             self.rx_shift = None;
             self.rx_bits_remaining = 0;
+            self.rx_shift_from_break = false;
+        } else {
+            self.start_break_frame_if_idle();
         }
     }
 
@@ -146,11 +184,12 @@ impl TwoSioPort {
     /// byte FIFO in front of the MC6850 receiver. An overlapping host presentation
     /// is rejected rather than accumulating a non-historical queue behind it.
     pub(super) fn queue_received_character(&mut self, value: u8) {
-        if !self.receive_line_idle() {
+        if !self.receive_line_idle() || self.rx_break_active {
             return;
         }
         self.rx_shift = Some((value, false, false));
         self.rx_bits_remaining = self.acia.frame_bits();
+        self.rx_shift_from_break = false;
     }
 
     /// The I/O Inspector explicitly says “directly into UART RX”. This debugger
@@ -164,6 +203,8 @@ impl TwoSioPort {
         self.acia.clear_receive_for_debugger();
         self.rx_shift = None;
         self.rx_bits_remaining = 0;
+        self.rx_shift_from_break = false;
+        self.start_break_frame_if_idle();
     }
 
     pub(super) fn clear_transmit_for_debugger(&mut self) {
@@ -261,7 +302,10 @@ impl TwoSioPort {
     }
 
     fn receiver_bit_boundary(&mut self) {
-        let Some((value, framing_error, parity_error)) = self.rx_shift else { return; };
+        let Some((value, framing_error, parity_error)) = self.rx_shift else {
+            self.start_break_frame_if_idle();
+            return;
+        };
 
         if self.rx_bits_remaining > 1 {
             self.rx_bits_remaining -= 1;
@@ -269,9 +313,18 @@ impl TwoSioPort {
         }
 
         if self.rx_bits_remaining == 1 {
+            let from_break = self.rx_shift_from_break;
             self.rx_bits_remaining = 0;
             self.rx_shift = None;
-            self.acia.receive_character(value, framing_error, parity_error);
+            self.rx_shift_from_break = false;
+            self.acia.receive_character(
+                value,
+                framing_error || self.rx_break_active,
+                parity_error || (self.rx_break_active && self.break_parity_error()),
+            );
+            if from_break || self.rx_break_active {
+                self.start_break_frame_if_idle();
+            }
         }
     }
 
@@ -437,6 +490,38 @@ mod tests {
         assert_eq!(port.receive_len(), 1);
         assert_eq!(port.read_data(), b'R');
         assert_eq!(port.receive_len(), 0);
+    }
+
+    #[test]
+    fn held_receive_break_produces_zero_with_framing_error_and_can_overrun() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x15); // /16, 8N1 => 110 baud
+        port.set_receive_break(true);
+        assert!(!port.receive_line_idle());
+
+        port.advance_t_states(181_819, TWO_MHZ);
+        assert_eq!(port.peek_data(), 0x00);
+        assert_eq!(port.peek_status() & 0x11, 0x11, "BREAK frame reaches RDR as zero with FE");
+        assert!(!port.receive_line_idle(), "held BREAK immediately starts the next frame");
+
+        port.advance_t_states(181_819, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x21, 0x01, "MC6850 overrun remains delayed while old RDR is unread");
+        assert_eq!(port.read_data(), 0x00);
+        assert_eq!(port.peek_status() & 0x21, 0x21, "reading the valid BREAK character exposes delayed OVRN");
+
+        port.set_receive_break(false);
+        assert!(port.receive_line_idle());
+    }
+
+    #[test]
+    fn short_receive_break_release_aborts_incomplete_break_frame() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x15);
+        port.set_receive_break(true);
+        port.advance_t_states(40_000, TWO_MHZ);
+        port.set_receive_break(false);
+        assert!(port.receive_line_idle());
+        assert_eq!(port.peek_status() & 0x11, 0);
     }
 
     #[test]
