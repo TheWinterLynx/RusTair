@@ -1,19 +1,39 @@
 use std::collections::VecDeque;
 
-use crate::config::{SioHardwareConfig, SioRevision};
+use crate::config::{SioHardwareConfig, SioParity, SioRevision};
 
-/// Latched logical handshake state on the original 88-SIO connector side.
+use super::sio_interface::{
+    connector_outputs, decode_input, SioConnectorOutputs, SioElectricalLevel,
+};
+
+/// Logical state at the original 88-SIO board/interface boundary.
 ///
-/// `RIN` and `ROT` are pulses driven *into* the card by an external device. The
-/// corresponding ready flip-flops drive the active-low Rev0 status bits and the
-/// board's `BIN` / `BOT` busy outputs. A/B/C interface cards change electrical
-/// levels (RS-232, TTL or current loop), not these logical relationships.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// RSI and TSO are the board-side TTL serial levels. RIN and ROT themselves are
+/// external pulses, so a stable snapshot cannot truthfully claim that a pulse is
+/// still asserted after its edge; the two `*_device_ready` fields expose the
+/// flip-flops set by those pulses. BIN/BOT are the resulting board busy outputs.
+/// Idle asynchronous serial lines are MARK/HIGH.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::machine) struct SioHandshakeLines {
+    pub rsi_high: bool,
     pub input_device_ready: bool,
     pub output_device_ready: bool,
+    pub tso_high: bool,
     pub bin_high: bool,
     pub bot_high: bool,
+}
+
+impl Default for SioHandshakeLines {
+    fn default() -> Self {
+        Self {
+            rsi_high: true,
+            input_device_ready: false,
+            output_device_ready: false,
+            tso_high: true,
+            bin_high: false,
+            bot_high: false,
+        }
+    }
 }
 
 /// Digital COM2502/UART plus board-local handshake state used by one MITS
@@ -112,16 +132,92 @@ impl SioPort {
     pub(in crate::machine) fn input_device_ready(&self) -> bool { self.input_device_ready }
     pub(in crate::machine) fn output_device_ready(&self) -> bool { self.output_device_ready }
 
+    fn parity_bit(&self, value: u8) -> bool {
+        let bits = self.config.format.data_bits.bits();
+        let mask = if bits == 8 { 0xff } else { ((1u16 << bits) - 1) as u8 };
+        let odd_ones = (value & mask).count_ones() & 1 != 0;
+        match self.config.format.parity {
+            SioParity::None => true,
+            // Even parity bit is HIGH exactly when the data contains an odd
+            // number of ones; odd parity is the inverse.
+            SioParity::Even => odd_ones,
+            SioParity::Odd => !odd_ones,
+        }
+    }
+
+    fn frame_bit(
+        &self,
+        value: u8,
+        bits_remaining: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) -> bool {
+        let frame_bits = self.config.format.frame_bits();
+        if bits_remaining == 0 || bits_remaining > frame_bits { return true; }
+        let index = frame_bits - bits_remaining;
+        if index == 0 { return false; } // start bit
+
+        let data_bits = self.config.format.data_bits.bits();
+        if index <= data_bits {
+            return value & (1u8 << (index - 1)) != 0; // asynchronous LSB first
+        }
+
+        let parity_present = self.config.format.parity != SioParity::None;
+        let parity_index = 1 + data_bits;
+        if parity_present && index == parity_index {
+            return self.parity_bit(value) ^ parity_error;
+        }
+
+        // Stop field. A framing error represents the first expected stop bit
+        // arriving as SPACE/LOW; any second configured stop bit remains MARK.
+        let first_stop_index = parity_index + u8::from(parity_present);
+        if framing_error && index == first_stop_index { false } else { true }
+    }
+
+    fn rsi_high(&self) -> bool {
+        self.rx_shift.map_or(true, |(value, framing_error, parity_error)| {
+            self.frame_bit(value, self.rx_bits_remaining, framing_error, parity_error)
+        })
+    }
+
+    fn tso_high(&self) -> bool {
+        self.tx_shift.map_or(true, |value| {
+            self.frame_bit(value, self.tx_bits_remaining, false, false)
+        })
+    }
+
     pub(in crate::machine) fn handshake_lines(&self) -> SioHandshakeLines {
         SioHandshakeLines {
+            rsi_high: self.rsi_high(),
             input_device_ready: self.input_device_ready,
             output_device_ready: self.output_device_ready,
+            tso_high: self.tso_high(),
             // MITS describes DATA IN/OUT as resetting the corresponding ready
             // latch to clear the busy signal to the device. The latch assertion
             // therefore owns the logical BIN/BOT busy level.
             bin_high: self.input_device_ready,
             bot_high: self.output_device_ready,
         }
+    }
+
+    /// Electrical STSO/SBIN/SBOT levels after the selected A/B/C interface.
+    pub(in crate::machine) fn connector_outputs(&self) -> SioConnectorOutputs {
+        let lines = self.handshake_lines();
+        connector_outputs(
+            self.config.interface,
+            lines.tso_high,
+            lines.bin_high,
+            lines.bot_high,
+        )
+    }
+
+    /// Translate one physical SRSI/SRIN/SROT level back into the common TTL
+    /// logic domain. Wrong-interface electrical families are rejected.
+    pub(in crate::machine) fn decode_connector_input(
+        &self,
+        level: SioElectricalLevel,
+    ) -> Option<bool> {
+        decode_input(self.config.interface, level)
     }
 
     /// Begin one real serial receive frame. A full unread holding register does
@@ -150,7 +246,7 @@ impl SioPort {
         self.rx_data = value & mask;
         self.rx_full = true;
         self.framing_error = framing_error;
-        self.parity_error = self.config.format.parity != crate::config::SioParity::None && parity_error;
+        self.parity_error = self.config.format.parity != SioParity::None && parity_error;
     }
 
     pub(in crate::machine) fn read_data(&mut self) -> u8 {
@@ -299,7 +395,7 @@ impl SioPort {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{SioBaudRate, SioRevision, SioStopBits, SioWordFormat};
+    use crate::config::{SioBaudRate, SioInterface, SioStopBits, SioWordFormat};
 
     const TWO_MHZ: u32 = 2_000_000;
 
@@ -359,6 +455,57 @@ mod tests {
         p.write_data(b'O');
         assert_eq!(p.status() & 0x80, 0x80, "DATA OUT resets F-b independently of COM2502 TBMT");
         assert!(!p.handshake_lines().bot_high);
+    }
+
+    #[test]
+    fn serial_rsi_and_tso_follow_real_async_frame_bits() {
+        let mut c = config(SioRevision::Rev1);
+        c.baud = SioBaudRate::try_new(9_600).unwrap();
+        c.format = SioWordFormat { stop_bits: SioStopBits::One, ..SioWordFormat::default() };
+        let mut p = SioPort::new(c);
+        assert!(p.handshake_lines().rsi_high && p.handshake_lines().tso_high, "idle asynchronous lines are MARK/HIGH");
+
+        // 0x01 8N1: start LOW, D0 HIGH, D1..D7 LOW, stop HIGH.
+        p.queue_received_character(0x01);
+        p.write_data(0x01);
+        assert!(!p.handshake_lines().rsi_high);
+        assert!(!p.handshake_lines().tso_high);
+        p.advance_t_states(209, TWO_MHZ); // first 9600-baud bit boundary
+        assert!(p.handshake_lines().rsi_high);
+        assert!(p.handshake_lines().tso_high);
+        p.advance_t_states(209, TWO_MHZ);
+        assert!(!p.handshake_lines().rsi_high);
+        assert!(!p.handshake_lines().tso_high);
+        p.advance_t_states(1_666, TWO_MHZ);
+        assert!(p.handshake_lines().rsi_high, "completed RX frame returns RSI to idle MARK");
+        assert!(p.handshake_lines().tso_high, "completed TX frame returns TSO to idle MARK");
+    }
+
+    #[test]
+    fn selected_interface_converts_tso_bin_bot_without_changing_board_logic() {
+        let mut c = config(SioRevision::Rev0);
+        c.interface = SioInterface::Rs232A;
+        let mut p = SioPort::new(c);
+        p.pulse_input_device_ready();
+        p.pulse_output_device_ready();
+        let logical = p.handshake_lines();
+        assert!(logical.tso_high && logical.bin_high && logical.bot_high);
+        let a = p.connector_outputs();
+        assert_eq!(a.stso, SioElectricalLevel::Rs232Negative);
+        assert_eq!(a.sbin, SioElectricalLevel::Rs232Negative);
+        assert_eq!(a.sbot, SioElectricalLevel::Rs232Negative);
+        assert_eq!(p.decode_connector_input(SioElectricalLevel::Rs232Negative), Some(true));
+        assert_eq!(p.decode_connector_input(SioElectricalLevel::TtlHigh), None);
+
+        c.interface = SioInterface::TtlB;
+        p.configure(c);
+        assert_eq!(p.connector_outputs().stso, SioElectricalLevel::TtlHigh);
+        assert_eq!(p.decode_connector_input(SioElectricalLevel::TtlHigh), Some(true));
+
+        c.interface = SioInterface::TtyC;
+        p.configure(c);
+        assert_eq!(p.connector_outputs().stso, SioElectricalLevel::CurrentLoopConducting);
+        assert_eq!(p.decode_connector_input(SioElectricalLevel::CurrentLoopConducting), Some(true));
     }
 
     #[test]
