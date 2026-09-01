@@ -342,6 +342,9 @@ impl MachineBackend for NativeMachineBackend {
     fn serial_rx_line_idle(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
         Ok(match port { BackendSerialPort::Port0 => self.machine.bus.serial_rx_line_idle(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_rx_line_idle() })
     }
+    fn serial_set_receive_break(&mut self, port: BackendSerialPort, active: bool) -> BackendResult<bool> {
+        Ok(self.machine.bus.set_serial_receive_break(port.index(), active))
+    }
     fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
         Ok(match port { BackendSerialPort::Port0 => self.machine.bus.tx_busy(), BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_busy() })
     }
