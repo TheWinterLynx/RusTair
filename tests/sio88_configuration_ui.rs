@@ -2,6 +2,7 @@ const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const SERIAL_HARDWARE_SOURCE: &str = include_str!("../src/app/serial_hardware.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
+const SIO_CONFIG_SOURCE: &str = include_str!("../src/config/sio.rs");
 
 #[test]
 fn sio_hardware_controls_are_power_off_only_and_physically_named() {
@@ -14,6 +15,8 @@ fn sio_hardware_controls_are_power_off_only_and_physically_named() {
     assert!(RUNTIME_SOURCE.contains("Data bits:"));
     assert!(RUNTIME_SOURCE.contains("Parity:"));
     assert!(RUNTIME_SOURCE.contains("Stop bits:"));
+    assert!(RUNTIME_SOURCE.contains("Input IRQ source:"));
+    assert!(RUNTIME_SOURCE.contains("Output IRQ source:"));
     assert!(SERIAL_HARDWARE_SOURCE.contains("Power OFF the Altair before changing 88-SIO hardware wiring"));
 }
 
@@ -24,11 +27,23 @@ fn sio_ui_uses_documented_baud_table_not_terminal_speed_as_board_clock() {
 }
 
 #[test]
+fn sio_interrupt_ui_keeps_runtime_enables_separate_from_physical_routing() {
+    assert!(RUNTIME_SOURCE.contains("crate::config::SioInterruptTarget::ALL"));
+    assert!(RUNTIME_SOURCE.contains("D0 enables the input interrupt source and D1 enables the output source at runtime"));
+    assert!(RUNTIME_SOURCE.contains("Selecting the same destination for both sources represents the equivalent combined BH wiring result."));
+    assert!(RUNTIME_SOURCE.contains("VI0..VI7 are raw requests for a separate 88-Vector Interrupt system"));
+    assert!(RUNTIME_SOURCE.contains("Rev 0 interrupt assertion depends on the original external input/output device-ready flip-flops"));
+}
+
+#[test]
 fn sio_hardware_is_persisted_as_one_atomic_card_configuration() {
     assert!(PERSISTENCE_SOURCE.contains("const CONFIG_VERSION: u32 = 4;"));
     assert!(PERSISTENCE_SOURCE.contains("machine.sio_hardware"));
     assert!(PERSISTENCE_SOURCE.contains("SioHardwareConfig::from_persistence_key"));
     assert!(PERSISTENCE_SOURCE.contains("self.machine.configure_sio_hardware(self.config.machine.sio_hardware);"));
+    assert!(SIO_CONFIG_SOURCE.contains("pub interrupt_wiring: SioInterruptWiring"));
+    assert!(SIO_CONFIG_SOURCE.contains("fields.len() != 7 && fields.len() != 9"));
+    assert!(SIO_CONFIG_SOURCE.contains("SioInterruptWiring::default()"));
 }
 
 #[test]
