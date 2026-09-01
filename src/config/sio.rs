@@ -326,8 +326,10 @@ pub struct SioHardwareConfig {
 
 impl SioHardwareConfig {
     /// Compact persistence form for one atomic physical card configuration.
-    /// Invalid or partial text is rejected as a whole so configuration loading
-    /// can retain a known-safe default rather than constructing a hybrid board.
+    /// New files carry nine fields including IN/OUT IRQ wiring. The historical
+    /// seven-field v4 form remains accepted and migrates to the old RusTair
+    /// PINT/PINT behavior. Eight fields are deliberately rejected rather than
+    /// constructing a half-migrated card.
     pub fn persistence_key(self) -> String {
         format!(
             "{},{},{:02X},{},{},{},{},{},{}",
@@ -344,24 +346,30 @@ impl SioHardwareConfig {
     }
 
     pub fn from_persistence_key(value: &str) -> Option<Self> {
-        let mut fields = value.split(',');
-        let revision = SioRevision::from_persistence_key(fields.next()?)?;
-        let interface = SioInterface::from_persistence_key(fields.next()?)?;
-        let address = SioAddressPair::try_new(u8::from_str_radix(fields.next()?, 16).ok()?)?;
-        let baud = SioBaudRate::try_new(fields.next()?.parse().ok()?)?;
-        let data_bits = SioDataBits::from_bits(fields.next()?.parse().ok()?)?;
-        let parity = SioParity::from_persistence_key(fields.next()?)?;
-        let stop_bits = SioStopBits::from_bits(fields.next()?.parse().ok()?)?;
-        let input = SioInterruptTarget::from_persistence_key(fields.next()?)?;
-        let output = SioInterruptTarget::from_persistence_key(fields.next()?)?;
-        if fields.next().is_some() { return None; }
+        let fields: Vec<_> = value.split(',').collect();
+        if fields.len() != 7 && fields.len() != 9 { return None; }
+        let revision = SioRevision::from_persistence_key(fields[0])?;
+        let interface = SioInterface::from_persistence_key(fields[1])?;
+        let address = SioAddressPair::try_new(u8::from_str_radix(fields[2], 16).ok()?)?;
+        let baud = SioBaudRate::try_new(fields[3].parse().ok()?)?;
+        let data_bits = SioDataBits::from_bits(fields[4].parse().ok()?)?;
+        let parity = SioParity::from_persistence_key(fields[5])?;
+        let stop_bits = SioStopBits::from_bits(fields[6].parse().ok()?)?;
+        let interrupt_wiring = if fields.len() == 7 {
+            SioInterruptWiring::default()
+        } else {
+            SioInterruptWiring {
+                input: SioInterruptTarget::from_persistence_key(fields[7])?,
+                output: SioInterruptTarget::from_persistence_key(fields[8])?,
+            }
+        };
         Some(Self {
             revision,
             interface,
             address,
             baud,
             format: SioWordFormat { data_bits, parity, stop_bits },
-            interrupt_wiring: SioInterruptWiring { input, output },
+            interrupt_wiring,
         })
     }
 }
@@ -424,6 +432,20 @@ mod tests {
         assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,07,9600,7,even,1,vi3,disconnected").is_none());
         assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none());
         assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,rst7,vi2").is_none());
+    }
+
+    #[test]
+    fn legacy_seven_field_hardware_migrates_without_losing_card_configuration() {
+        let migrated = SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1").unwrap();
+        assert_eq!(migrated.revision, SioRevision::Rev0);
+        assert_eq!(migrated.interface, SioInterface::Rs232A);
+        assert_eq!(migrated.address, SioAddressPair::try_new(0x06).unwrap());
+        assert_eq!(migrated.baud, SioBaudRate::try_new(9_600).unwrap());
+        assert_eq!(migrated.format.data_bits, SioDataBits::Seven);
+        assert_eq!(migrated.format.parity, SioParity::Even);
+        assert_eq!(migrated.format.stop_bits, SioStopBits::One);
+        assert_eq!(migrated.interrupt_wiring, SioInterruptWiring::default());
+        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none());
     }
 
     #[test]
