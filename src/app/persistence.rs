@@ -4,6 +4,7 @@ use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
     ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, SioHardwareConfig,
     TcpListenScope, TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
+    TwoSioSignalInterface,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
@@ -145,6 +146,8 @@ impl SavedSettings {
                 "machine.two_sio_base" => if let Some(v) = parse_two_sio_address(value) { saved.config.machine.two_sio_straps.address = v; },
                 "machine.two_sio_port0_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port0_baud = v; },
                 "machine.two_sio_port1_baud" => if let Some(v) = parse_two_sio_baud(value) { saved.config.machine.two_sio_straps.port1_baud = v; },
+                "machine.two_sio_port0_interface" => if let Some(v) = TwoSioSignalInterface::from_persistence_key(value) { saved.config.machine.two_sio_straps.port0_interface = v; },
+                "machine.two_sio_port1_interface" => if let Some(v) = TwoSioSignalInterface::from_persistence_key(value) { saved.config.machine.two_sio_straps.port1_interface = v; },
                 "machine.two_sio_port0_irq" => if let Some(v) = TwoSioInterruptTarget::from_persistence_key(value) { saved.config.machine.two_sio_interrupt_wiring.port0 = v; },
                 "machine.two_sio_port1_irq" => if let Some(v) = TwoSioInterruptTarget::from_persistence_key(value) { saved.config.machine.two_sio_interrupt_wiring.port1 = v; },
                 "peripherals.asr33_speed" => if let Some(v) = parse_asr_speed(value) { saved.config.peripherals.asr33_speed = v; },
@@ -203,6 +206,8 @@ impl SavedSettings {
         let _ = writeln!(out, "machine.two_sio_base={:02X}", self.config.machine.two_sio_straps.address.base());
         let _ = writeln!(out, "machine.two_sio_port0_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port0_baud));
         let _ = writeln!(out, "machine.two_sio_port1_baud={}", two_sio_baud_key(self.config.machine.two_sio_straps.port1_baud));
+        let _ = writeln!(out, "machine.two_sio_port0_interface={}", self.config.machine.two_sio_straps.port0_interface.persistence_key());
+        let _ = writeln!(out, "machine.two_sio_port1_interface={}", self.config.machine.two_sio_straps.port1_interface.persistence_key());
         let _ = writeln!(out, "machine.two_sio_port0_irq={}", self.config.machine.two_sio_interrupt_wiring.port0.persistence_key());
         let _ = writeln!(out, "machine.two_sio_port1_irq={}", self.config.machine.two_sio_interrupt_wiring.port1.persistence_key());
         let _ = writeln!(out, "peripherals.asr33_speed={}", asr_speed_key(self.config.peripherals.asr33_speed));
@@ -328,14 +333,14 @@ impl RusTairApp {
         self.machine.configure_two_sio_interrupt_wiring(self.config.machine.two_sio_interrupt_wiring);
 
         self.serial_router.reset_for_board(self.config.machine.serial_board);
-        let board = self.config.machine.serial_board;
+        let machine = self.config.machine;
         for (device, connection) in [
-            (SerialDevice::InternalAsr33, valid_connection(board, saved.asr_connection)),
-            (SerialDevice::TextTerminal, valid_connection(board, saved.terminal_connection)),
-            (SerialDevice::ExternalTcp, valid_connection(board, saved.external_tcp_connection)),
-            (SerialDevice::ExternalCom, valid_connection(board, saved.external_com_connection)),
+            (SerialDevice::InternalAsr33, saved.asr_connection),
+            (SerialDevice::TextTerminal, saved.terminal_connection),
+            (SerialDevice::ExternalTcp, saved.external_tcp_connection),
+            (SerialDevice::ExternalCom, saved.external_com_connection),
         ] {
-            self.serial_router.connect(device, connection);
+            self.serial_router.connect(device, valid_connection(machine, device, connection));
         }
 
         self.external_serial.config = saved.external_serial;
@@ -451,12 +456,25 @@ fn config_path() -> PathBuf {
     PathBuf::from("rustair-config.ini")
 }
 
-fn valid_connection(board: SerialBoard, connection: SerialConnection) -> SerialConnection {
-    if board == SerialBoard::Sio88 && connection == SerialConnection::Port1 {
-        SerialConnection::Disconnected
-    } else {
-        connection
-    }
+fn valid_connection(
+    machine: crate::config::MachineConfig,
+    device: SerialDevice,
+    connection: SerialConnection,
+) -> SerialConnection {
+    let compatible = match (machine.serial_board, connection) {
+        (_, SerialConnection::Disconnected) => true,
+        (SerialBoard::Sio88, SerialConnection::Port1) => false,
+        (SerialBoard::Sio88, SerialConnection::Port0) => {
+            device.supports_sio_interface(machine.sio_hardware.interface)
+        }
+        (SerialBoard::TwoSio88, SerialConnection::Port0) => {
+            device.supports_two_sio_interface(machine.two_sio_straps.port0_interface)
+        }
+        (SerialBoard::TwoSio88, SerialConnection::Port1) => {
+            device.supports_two_sio_interface(machine.two_sio_straps.port1_interface)
+        }
+    };
+    if compatible { connection } else { SerialConnection::Disconnected }
 }
 
 fn encode_hex_string(value: &str) -> String {
@@ -536,6 +554,8 @@ mod tests {
         saved.config.machine.two_sio_straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
         saved.config.machine.two_sio_straps.port0_baud = TwoSioBaudTap::Baud300;
         saved.config.machine.two_sio_straps.port1_baud = TwoSioBaudTap::Baud4800;
+        saved.config.machine.two_sio_straps.port0_interface = TwoSioSignalInterface::Ttl;
+        saved.config.machine.two_sio_straps.port1_interface = TwoSioSignalInterface::Rs232;
         saved.config.machine.two_sio_interrupt_wiring.port0 = TwoSioInterruptTarget::Vi3;
         saved.config.machine.two_sio_interrupt_wiring.port1 = TwoSioInterruptTarget::Disconnected;
         saved.config.preferences.emulation_speed = EmulationSpeed::X5;
@@ -574,6 +594,30 @@ mod tests {
         let decoded = SavedSettings::from_text("machine.two_sio_base=FC\nmachine.two_sio_port0_baud=300\n");
         assert_eq!(decoded.config.machine.two_sio_straps.address, TwoSioAddressBlock::DEFAULT);
         assert_eq!(decoded.config.machine.two_sio_straps.port0_baud, TwoSioBaudTap::Baud300);
+    }
+
+    #[test]
+    fn old_or_invalid_two_sio_signal_wiring_keeps_safe_physical_defaults() {
+        let old = SavedSettings::from_text("machine.serial_board=88-2sio\n");
+        assert_eq!(old.config.machine.two_sio_straps.port0_interface, TwoSioSignalInterface::Tty20mA);
+        assert_eq!(old.config.machine.two_sio_straps.port1_interface, TwoSioSignalInterface::Rs232);
+
+        let invalid = SavedSettings::from_text("machine.two_sio_port0_interface=usb\nmachine.two_sio_port1_interface=ttl\n");
+        assert_eq!(invalid.config.machine.two_sio_straps.port0_interface, TwoSioSignalInterface::Tty20mA);
+        assert_eq!(invalid.config.machine.two_sio_straps.port1_interface, TwoSioSignalInterface::Ttl);
+    }
+
+    #[test]
+    fn persisted_cables_cannot_bypass_selected_electrical_family() {
+        let mut machine = crate::config::MachineConfig::default();
+        machine.serial_board = SerialBoard::TwoSio88;
+        machine.two_sio_straps.port0_interface = TwoSioSignalInterface::Rs232;
+        machine.two_sio_straps.port1_interface = TwoSioSignalInterface::Tty20mA;
+        assert_eq!(valid_connection(machine, SerialDevice::InternalAsr33, SerialConnection::Port0), SerialConnection::Disconnected);
+        assert_eq!(valid_connection(machine, SerialDevice::InternalAsr33, SerialConnection::Port1), SerialConnection::Port1);
+        assert_eq!(valid_connection(machine, SerialDevice::ExternalCom, SerialConnection::Port0), SerialConnection::Port0);
+        assert_eq!(valid_connection(machine, SerialDevice::ExternalCom, SerialConnection::Port1), SerialConnection::Disconnected);
+        assert_eq!(valid_connection(machine, SerialDevice::TextTerminal, SerialConnection::Port1), SerialConnection::Port1);
     }
 
     #[test]
@@ -618,6 +662,8 @@ mod tests {
         assert!(text.contains("machine.two_sio_base=10"));
         assert!(text.contains("machine.two_sio_port0_baud=110"));
         assert!(text.contains("machine.two_sio_port1_baud=9600"));
+        assert!(text.contains("machine.two_sio_port0_interface=tty20ma"));
+        assert!(text.contains("machine.two_sio_port1_interface=rs232"));
         assert!(text.contains("machine.two_sio_port0_irq=pint"));
         assert!(text.contains("machine.two_sio_port1_irq=pint"));
         assert!(text.contains("asr33.reader_speed=1x"));
@@ -629,8 +675,9 @@ mod tests {
 
     #[test]
     fn sio_rejects_persisted_port_one_connections() {
+        let machine = crate::config::MachineConfig::default();
         assert_eq!(
-            valid_connection(SerialBoard::Sio88, SerialConnection::Port1),
+            valid_connection(machine, SerialDevice::TextTerminal, SerialConnection::Port1),
             SerialConnection::Disconnected
         );
     }
