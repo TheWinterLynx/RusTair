@@ -293,6 +293,13 @@ pub trait MachineBackend {
     fn serial_rx_line_idle(&mut self, _port: BackendSerialPort) -> BackendResult<bool> {
         Err(BackendError::Unsupported { operation: "query serial RX line", engine: self.engine() })
     }
+    fn serial_set_receive_break(
+        &mut self,
+        _port: BackendSerialPort,
+        _active: bool,
+    ) -> BackendResult<bool> {
+        Err(BackendError::Unsupported { operation: "drive serial RX BREAK", engine: self.engine() })
+    }
     fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_tx_front(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>>;
@@ -547,6 +554,9 @@ impl BackendHost {
     pub fn serial_rx_empty(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_empty(port)) }
     pub fn serial_rx_len(&mut self, port: BackendSerialPort) -> usize { Self::call(self.backend.serial_rx_len(port)) }
     pub fn serial_rx_line_idle(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_line_idle(port)) }
+    pub fn serial_set_receive_break(&mut self, port: BackendSerialPort, active: bool) -> bool {
+        Self::call(self.backend.serial_set_receive_break(port, active))
+    }
     pub fn serial_tx_busy(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_tx_busy(port)) }
     pub fn serial_tx_front(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_front(port)) }
     pub fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_complete(port)) }
