@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 
 use crate::config::{
-    SerialBoard, SioHardwareConfig, TwoSioBaudTap as ConfigTwoSioBaudTap,
+    SerialBoard, SioHardwareConfig, SioRevision, TwoSioBaudTap as ConfigTwoSioBaudTap,
     TwoSioInterruptTarget, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080::Bus;
 
 use super::memory::{MemoryReadyPhase, S100_OPEN_BUS_VALUE};
-use super::serial::sio::SioPort;
+use super::serial::sio::{SioHandshakeLines, SioPort};
 use super::{AltairBus, AltairMachine, CLOCK_HZ};
 
 #[path = "two_sio.rs"]
@@ -252,6 +252,26 @@ impl IoDevices {
         true
     }
 
+    /// Original 88-SIO logical handshake boundary. These are not MC6850 modem
+    /// pins: RIN/ROT are external ready pulses and BIN/BOT are board busy outputs.
+    pub(super) fn sio_handshake_lines(&self) -> Option<SioHandshakeLines> {
+        (self.serial_board == SerialBoard::Sio88).then(|| self.sio.handshake_lines())
+    }
+    pub(super) fn pulse_sio_input_device_ready(&mut self) -> bool {
+        if self.serial_board != SerialBoard::Sio88 || self.sio.config().revision != SioRevision::Rev0 {
+            return false;
+        }
+        self.sio.pulse_input_device_ready();
+        true
+    }
+    pub(super) fn pulse_sio_output_device_ready(&mut self) -> bool {
+        if self.serial_board != SerialBoard::Sio88 || self.sio.config().revision != SioRevision::Rev0 {
+            return false;
+        }
+        self.sio.pulse_output_device_ready();
+        true
+    }
+
     fn sio_status_port(&self) -> u8 { self.sio.config().address.status() }
     fn sio_data_port(&self) -> u8 { self.sio.config().address.data() }
 
@@ -303,8 +323,12 @@ impl IoDevices {
     pub(super) fn interrupt_request(&self) -> bool {
         match self.serial_board {
             SerialBoard::Sio88 => {
-                let rx_irq = self.sio_control & 0x01 != 0 && self.sio.rx_full();
-                let tx_irq = self.sio_control & 0x02 != 0 && self.sio.tx_buffer_empty();
+                let (input_ready, output_ready) = match self.sio.config().revision {
+                    SioRevision::Rev0 => (self.sio.input_device_ready(), self.sio.output_device_ready()),
+                    SioRevision::Rev1 => (self.sio.rx_full(), self.sio.tx_buffer_empty()),
+                };
+                let rx_irq = self.sio_control & 0x01 != 0 && input_ready;
+                let tx_irq = self.sio_control & 0x02 != 0 && output_ready;
                 rx_irq || tx_irq
             }
             SerialBoard::TwoSio88 => self.two_sio_pint_request(),
@@ -559,6 +583,30 @@ impl AltairBus {
         changed
     }
 
+    /// `(RIN ready latched, ROT ready latched, BIN high, BOT high)` at the
+    /// logical 88-SIO board/interface boundary. A/B/C change electrical levels,
+    /// but these named signal semantics remain the same.
+    pub fn sio_handshake_lines(&self) -> Option<(bool, bool, bool, bool)> {
+        self.io.sio_handshake_lines().map(|lines| {
+            (
+                lines.input_device_ready,
+                lines.output_device_ready,
+                lines.bin_high,
+                lines.bot_high,
+            )
+        })
+    }
+    pub fn pulse_sio_input_device_ready(&mut self) -> bool {
+        let changed = self.io.pulse_sio_input_device_ready();
+        if changed { self.refresh_interrupt_request_line(); }
+        changed
+    }
+    pub fn pulse_sio_output_device_ready(&mut self) -> bool {
+        let changed = self.io.pulse_sio_output_device_ready();
+        if changed { self.refresh_interrupt_request_line(); }
+        changed
+    }
+
     pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
         self.io.advance_t_states(t_states);
         self.refresh_interrupt_request_line();
@@ -733,15 +781,45 @@ mod tests {
     }
 
     #[test]
-    fn sio_rev0_ready_bits_use_original_active_high_positions() {
+    fn sio_rev0_ready_bits_keep_uart_and_external_handshake_independent() {
         let mut io = IoDevices::default();
         io.configure_sio_hardware(SioHardwareConfig {
             revision: SioRevision::Rev0,
             ..SioHardwareConfig::default()
         });
-        assert_eq!(io.input(SIO_STATUS_PORT), 0x02);
+        assert_eq!(io.input(SIO_STATUS_PORT), 0x83, "Rev0 starts with RIN/ROT ready latches reset while TBMT is high");
         assert!(io.debugger_inject_rx(SIO_DATA_PORT, b'R'));
-        assert_eq!(io.peek_input(SIO_STATUS_PORT) & 0x22, 0x22);
+        assert_eq!(io.peek_input(SIO_STATUS_PORT) & 0xa3, 0xa3, "RDA/TBMT must not silently set the external D0/D7 ready latches");
+    }
+
+    #[test]
+    fn sio_rev0_ready_pulses_drive_busy_outputs_and_interrupt_source() {
+        let mut io = IoDevices::default();
+        io.configure_sio_hardware(SioHardwareConfig {
+            revision: SioRevision::Rev0,
+            ..SioHardwareConfig::default()
+        });
+        io.output(SIO_STATUS_PORT, 0x03);
+        assert!(!io.interrupt_request());
+        assert_eq!(io.sio_handshake_lines(), Some(SioHandshakeLines::default()));
+
+        assert!(io.pulse_sio_input_device_ready());
+        assert!(io.interrupt_request());
+        let lines = io.sio_handshake_lines().unwrap();
+        assert!(lines.input_device_ready && lines.bin_high);
+        assert_eq!(io.peek_input(SIO_STATUS_PORT) & 0x01, 0x00);
+        let _ = io.input(SIO_DATA_PORT);
+        assert!(!io.interrupt_request());
+        assert!(!io.sio_handshake_lines().unwrap().bin_high);
+
+        assert!(io.pulse_sio_output_device_ready());
+        assert!(io.interrupt_request());
+        let lines = io.sio_handshake_lines().unwrap();
+        assert!(lines.output_device_ready && lines.bot_high);
+        assert_eq!(io.peek_input(SIO_STATUS_PORT) & 0x80, 0x00);
+        io.output(SIO_DATA_PORT, b'O');
+        assert!(!io.interrupt_request(), "DATA OUT resets F-b even though COM2502 TBMT may immediately return ready");
+        assert!(!io.sio_handshake_lines().unwrap().bot_high);
     }
 
     #[test]
