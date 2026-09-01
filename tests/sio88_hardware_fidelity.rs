@@ -64,29 +64,24 @@ fn rev0_exposes_uart_flags_and_external_device_ready_as_independent_status_sourc
 }
 
 #[test]
-fn rev0_external_ready_routes_to_pint_and_vi_then_data_cycles_clear_it() {
+fn rev0_external_ready_routes_to_vi_then_data_cycles_clear_it_at_public_boundary() {
     let mut machine = AltairMachine::default();
     machine.configure_sio_hardware(SioHardwareConfig {
         revision: SioRevision::Rev0,
         ..SioHardwareConfig::default()
     });
     machine.configure_sio_interrupt_wiring(SioInterruptWiring {
-        input: SioInterruptTarget::Pint,
-        output: SioInterruptTarget::Disconnected,
-    });
-    machine.bus.debugger_output_port(0x00, 0x01);
-    assert!(machine.bus.pulse_sio_input_device_ready());
-    assert!(machine.bus.cpu_control_lines().interrupt);
-    let _ = machine.bus.debugger_input_port(0x01);
-    assert!(!machine.bus.cpu_control_lines().interrupt);
-
-    machine.configure_sio_interrupt_wiring(SioInterruptWiring {
-        input: SioInterruptTarget::Disconnected,
+        input: SioInterruptTarget::Vi3,
         output: SioInterruptTarget::Vi4,
     });
-    machine.bus.debugger_output_port(0x00, 0x02);
+    machine.bus.debugger_output_port(0x00, 0x03);
+
+    assert!(machine.bus.pulse_sio_input_device_ready());
+    assert_eq!(machine.bus.sio_vector_interrupt_requests(), 1 << 3);
+    let _ = machine.bus.debugger_input_port(0x01);
+    assert_eq!(machine.bus.sio_vector_interrupt_requests(), 0);
+
     assert!(machine.bus.pulse_sio_output_device_ready());
-    assert!(!machine.bus.cpu_control_lines().interrupt);
     assert_eq!(machine.bus.sio_vector_interrupt_requests(), 1 << 4);
     machine.bus.debugger_output_port(0x01, b'O');
     assert_eq!(machine.bus.sio_vector_interrupt_requests(), 0);
