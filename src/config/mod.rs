@@ -2,6 +2,7 @@ mod external_com;
 mod external_serial;
 mod machine;
 mod sio;
+mod sio_electrical;
 mod terminal;
 mod two_sio;
 
@@ -20,6 +21,7 @@ pub use sio::{
     SioAddressPair, SioBaudRate, SioDataBits, SioHardwareConfig, SioInterface,
     SioInterruptTarget, SioInterruptWiring, SioParity, SioRevision, SioStopBits, SioWordFormat,
 };
+pub use sio_electrical::{SioConnectorOutputs, SioElectricalLevel};
 pub use terminal::TerminalDuplex;
 pub use two_sio::{
     TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget, TwoSioInterruptWiring,
