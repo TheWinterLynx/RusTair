@@ -2,10 +2,6 @@ use std::collections::VecDeque;
 
 use crate::config::{SioHardwareConfig, SioParity, SioRevision};
 
-use super::sio_interface::{
-    connector_outputs, decode_input, SioConnectorOutputs, SioElectricalLevel,
-};
-
 /// Logical state at the original 88-SIO board/interface boundary.
 ///
 /// RSI and TSO are the board-side TTL serial levels. RIN and ROT themselves are
@@ -200,26 +196,6 @@ impl SioPort {
         }
     }
 
-    /// Electrical STSO/SBIN/SBOT levels after the selected A/B/C interface.
-    pub(in crate::machine) fn connector_outputs(&self) -> SioConnectorOutputs {
-        let lines = self.handshake_lines();
-        connector_outputs(
-            self.config.interface,
-            lines.tso_high,
-            lines.bin_high,
-            lines.bot_high,
-        )
-    }
-
-    /// Translate one physical SRSI/SRIN/SROT level back into the common TTL
-    /// logic domain. Wrong-interface electrical families are rejected.
-    pub(in crate::machine) fn decode_connector_input(
-        &self,
-        level: SioElectricalLevel,
-    ) -> Option<bool> {
-        decode_input(self.config.interface, level)
-    }
-
     /// Begin one real serial receive frame. A full unread holding register does
     /// not stop the COM2502 receiver shift register; the resulting overwrite is
     /// handled only when this new frame completes.
@@ -246,7 +222,7 @@ impl SioPort {
         self.rx_data = value & mask;
         self.rx_full = true;
         self.framing_error = framing_error;
-        self.parity_error = self.config.format.parity != SioParity::None && parity_error;
+        self.parity_error = self.config.format.parity != crate::config::SioParity::None && parity_error;
     }
 
     pub(in crate::machine) fn read_data(&mut self) -> u8 {
@@ -395,7 +371,7 @@ impl SioPort {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{SioBaudRate, SioInterface, SioStopBits, SioWordFormat};
+    use crate::config::{SioBaudRate, SioStopBits, SioWordFormat};
 
     const TWO_MHZ: u32 = 2_000_000;
 
@@ -479,33 +455,6 @@ mod tests {
         p.advance_t_states(1_666, TWO_MHZ);
         assert!(p.handshake_lines().rsi_high, "completed RX frame returns RSI to idle MARK");
         assert!(p.handshake_lines().tso_high, "completed TX frame returns TSO to idle MARK");
-    }
-
-    #[test]
-    fn selected_interface_converts_tso_bin_bot_without_changing_board_logic() {
-        let mut c = config(SioRevision::Rev0);
-        c.interface = SioInterface::Rs232A;
-        let mut p = SioPort::new(c);
-        p.pulse_input_device_ready();
-        p.pulse_output_device_ready();
-        let logical = p.handshake_lines();
-        assert!(logical.tso_high && logical.bin_high && logical.bot_high);
-        let a = p.connector_outputs();
-        assert_eq!(a.stso, SioElectricalLevel::Rs232Negative);
-        assert_eq!(a.sbin, SioElectricalLevel::Rs232Negative);
-        assert_eq!(a.sbot, SioElectricalLevel::Rs232Negative);
-        assert_eq!(p.decode_connector_input(SioElectricalLevel::Rs232Negative), Some(true));
-        assert_eq!(p.decode_connector_input(SioElectricalLevel::TtlHigh), None);
-
-        c.interface = SioInterface::TtlB;
-        p.configure(c);
-        assert_eq!(p.connector_outputs().stso, SioElectricalLevel::TtlHigh);
-        assert_eq!(p.decode_connector_input(SioElectricalLevel::TtlHigh), Some(true));
-
-        c.interface = SioInterface::TtyC;
-        p.configure(c);
-        assert_eq!(p.connector_outputs().stso, SioElectricalLevel::CurrentLoopConducting);
-        assert_eq!(p.decode_connector_input(SioElectricalLevel::CurrentLoopConducting), Some(true));
     }
 
     #[test]
