@@ -594,7 +594,7 @@ mod tests {
             host.configure_serial_board(SerialBoard::Sio88);
             host.configure_sio_hardware(hardware);
             assert_eq!(host.sio_hardware(), hardware);
-            assert_eq!(host.peek_io_port(0x06), 0x02);
+            assert_eq!(host.peek_io_port(0x06), 0x83, "Rev0 idle status includes external input/output-not-ready latches on D0/D7 plus COM2502 TBMT on D1");
             assert_eq!(host.peek_io_port(0x00), 0xff);
         }
     }
