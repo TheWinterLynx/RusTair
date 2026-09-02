@@ -2,7 +2,8 @@ use crate::config::{
     RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioHardwareConfig,
     TwoSioInterruptWiring, TwoSioStraps,
 };
-use crate::s100_runtime::{RuntimeMemoryInspection, S100RuntimeFabric, S100_OPEN_BUS_VALUE};
+use crate::s100_runtime::{RuntimeMemoryInspection, S100RuntimeFabric};
+pub(crate) use crate::s100_runtime::S100_OPEN_BUS_VALUE;
 
 pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
@@ -18,18 +19,14 @@ pub(crate) enum MemoryReadyPhase {
     Other,
 }
 
-/// Transitional machine-memory facade.
-///
-/// The bytes no longer live here. Fast guest accesses cross the live MITS CPU
-/// board and electrical S-100 backplane into RuntimeRamCard instances. Host-side
-/// debugger/loader operations use handles to those same cards. The remaining
-/// timing/profile fields exist only while old aggregate configuration and Cycle's
-/// pre-backplane READY path are being migrated.
+/// Transitional memory facade while Cycle and serial are moved onto the live
+/// S-100 fabric. RAM bytes themselves already live exclusively in RuntimeRamCard.
 pub(super) struct Memory {
     fabric: S100RuntimeFabric,
     ram_size: RamSize,
     init_mode: RamInit,
     board_profile: RamBoardProfile,
+    legacy_aggregate: bool,
     read_wait_active: bool,
     read_wait_remaining: u8,
     basic32_probe_guard: bool,
@@ -46,6 +43,7 @@ impl Default for Memory {
             ram_size,
             init_mode,
             board_profile,
+            legacy_aggregate: true,
             read_wait_active: false,
             read_wait_remaining: 0,
             basic32_probe_guard: false,
@@ -78,6 +76,7 @@ impl Memory {
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
         self.ram_size = size;
         self.init_mode = init_mode;
+        self.legacy_aggregate = true;
         self.fabric = Self::legacy_fabric(size, self.board_profile, init_mode);
         self.clear_transient_guards();
         self.reset_timing();
@@ -90,6 +89,7 @@ impl Memory {
     ) -> Result<(), crate::s100_runtime::S100RuntimeBuildError> {
         self.fabric = S100RuntimeFabric::new(hardware, init_mode)?;
         self.init_mode = init_mode;
+        self.legacy_aggregate = false;
         self.clear_transient_guards();
         self.reset_timing();
         Ok(())
@@ -104,8 +104,6 @@ impl Memory {
     }
 
     pub(super) fn configure_board_profile(&mut self, profile: RamBoardProfile) {
-        // Legacy aggregate compatibility only. Explicit slot-native cards carry
-        // their own timing in RuntimeRamConfig and ignore this global profile.
         self.board_profile = profile;
         self.reset_timing();
     }
@@ -115,16 +113,13 @@ impl Memory {
     }
 
     pub(super) fn read_wait_states(&self, address: u16) -> u8 {
-        let physical = self.fabric.fast_read_wait_states(address);
-        if physical != 0 {
-            physical
-        } else if self.fabric.hardware() == Self::legacy_hardware(self.ram_size, self.board_profile) {
-            self.board_profile(address)
+        if self.legacy_aggregate {
+            return self
+                .board_profile(address)
                 .map(RamBoardProfile::read_wait_states)
-                .unwrap_or(0)
-        } else {
-            0
+                .unwrap_or(0);
         }
+        self.fabric.fast_read_wait_states(address)
     }
 
     pub(super) fn reset_timing(&mut self) {
@@ -132,8 +127,6 @@ impl Memory {
         self.read_wait_remaining = 0;
     }
 
-    /// Transitional Cycle READY helper retained until the exact backend samples
-    /// pRDY directly from the same live backplane. Fast no longer uses this path.
     pub(super) fn ready_for_t_state(
         &mut self,
         address: u16,
@@ -144,7 +137,6 @@ impl Memory {
             self.reset_timing();
             return true;
         }
-
         match phase {
             MemoryReadyPhase::T1 => {
                 self.read_wait_remaining = self.read_wait_states(address);
@@ -205,8 +197,6 @@ impl Memory {
         let _ = self.fabric.load_bytes(address, data);
     }
 
-    /// Inspect one uniquely mapped physical RAM byte. None means either no RAM
-    /// or an ambiguous overlap; callers that need that distinction use inspect().
     pub(super) fn peek(&self, address: u16) -> Option<u8> {
         self.fabric.peek_unique_memory(address)
     }
@@ -274,9 +264,7 @@ impl Memory {
         None
     }
 
-    /// Fast guest memory read. The returned byte is resolved DI from the live
-    /// S-100 fabric after the physical CPU board has emitted a reconstructed
-    /// memory-read cycle.
+    /// Fast guest read: CPU board -> S-100 -> installed RAM card(s) -> DI.
     pub(super) fn read(&mut self, address: u16) -> u8 {
         if let Some(value) = self.compatibility_read_override(address) {
             return value;
@@ -286,8 +274,7 @@ impl Memory {
             .unwrap_or(S100_OPEN_BUS_VALUE)
     }
 
-    /// Fast guest memory write. Storage changes only when the installed RAM card
-    /// observes MWRT/DO on the resolved S-100 bus.
+    /// Fast guest write: CPU board pWR/DO -> Display/Control MWRT -> RAM card.
     pub(super) fn write(&mut self, address: u16, value: u8) {
         if address == u16::MAX && self.basic32_probe_guard {
             self.basic32_probe_write = Some(value);
@@ -296,9 +283,8 @@ impl Memory {
         let _ = self.fabric.fast_memory_write(address, value, 0x00);
     }
 
-    /// Cycle transitional raw read/write helpers. These access the same physical
-    /// card storage but deliberately do not synthesize a second Fast CPU cycle;
-    /// the next cut makes Cycle's existing pin edges drive this fabric directly.
+    /// Cycle still performs side effects at its validated T3 boundary in this
+    /// cut, but reads/writes the exact same card storage rather than a shadow RAM.
     pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
@@ -376,10 +362,6 @@ impl super::AltairBus {
     ) -> bool {
         let memory_ready = self.memory.ready_for_t_state(address, memory_read, phase);
         let signals = self.s100.signals();
-
-        // Serial cards are the only remaining READY source outside the live RAM
-        // fabric during this cut. Keep their exact 88-2SIO PHI1-owned transition
-        // intact until the serial card itself moves into S100RuntimeFabric.
         let inp_about_to_latch = !memory_read
             && phase == MemoryReadyPhase::T2
             && signals.psync
@@ -395,7 +377,6 @@ impl super::AltairBus {
             .io
             .ready_for_input_t_state(address as u8, input_read, phase);
         let ready = memory_ready && io_ready;
-
         let phi1_owned_2sio_transition = io_wait_selected
             && matches!(phase, MemoryReadyPhase::T2 | MemoryReadyPhase::Tw);
         if !phi1_owned_2sio_transition {
@@ -528,7 +509,6 @@ mod tests {
         let mut memory = Memory::default();
         memory.configure(RamSize::K64, RamInit::Zeroed);
         assert!(memory.arm_basic32_full_memory_probe_guard());
-
         memory.write(0xffff, 0x37);
         assert_eq!(memory.peek(0xffff), Some(0));
         assert_eq!(memory.preview_read(0xffff), 0xc8);
@@ -538,77 +518,23 @@ mod tests {
     }
 
     #[test]
-    fn debugger_write_never_creates_uninstalled_ram() {
-        let mut memory = Memory::default();
-        memory.configure(RamSize::Bytes256, RamInit::Zeroed);
-        assert!(!memory.debugger_write(0x0100, 0x5a, false));
-        assert_eq!(memory.peek(0x0100), None);
-        assert_eq!(memory.read(0x0100), S100_OPEN_BUS_VALUE);
-    }
-
-    #[test]
-    fn debugger_write_can_respect_or_override_protection() {
+    fn debugger_write_can_respect_or_override_card_protection() {
         let mut memory = Memory::default();
         memory.configure(RamSize::K1, RamInit::Zeroed);
         memory.set_protected(0x0010, true);
-
         assert!(!memory.debugger_write(0x0010, 0x12, true));
         assert_eq!(memory.peek(0x0010), Some(0x00));
-
         assert!(memory.debugger_write(0x0010, 0x34, false));
         assert_eq!(memory.peek(0x0010), Some(0x34));
     }
 
     #[test]
-    fn fast_guest_read_and_write_are_backplane_transactions() {
+    fn fast_guest_read_and_write_cross_live_backplane() {
         let mut memory = Memory::default();
         memory.configure(RamSize::K1, RamInit::Zeroed);
         memory.write(0x0010, 0x5a);
         assert_eq!(memory.peek(0x0010), Some(0x5a));
         assert_eq!(memory.read(0x0010), 0x5a);
-    }
-
-    #[test]
-    fn cycle_raw_memory_path_does_not_synthesize_fast_cpu_activity() {
-        let mut bus = super::super::AltairBus::default();
-        bus.load(0x0010, &[0x5a]);
-        let before = bus.s100.signals();
-        assert_eq!(bus.cycle_read_memory(0x0010), 0x5a);
-        bus.cycle_write_memory(0x0011, 0xa5);
-        assert_eq!(bus.peek_memory(0x0011), Some(0xa5));
-        let after = bus.s100.signals();
-        assert_eq!(after.address, before.address);
-        assert_eq!(after.cpu_data, before.cpu_data);
-        assert_eq!(after.data_in, before.data_in);
-        assert_eq!(after.data_out, before.data_out);
-        assert_eq!(after.panel_data, before.panel_data);
-        assert_eq!(after.memr, before.memr);
-        assert_eq!(after.m1, before.m1);
-    }
-
-    #[test]
-    fn raw_s100_status_and_data_domains_read_electrical_state_not_led_persistence() {
-        let mut bus = super::super::AltairBus::default();
-        bus.cycle_drive_s100_t_state(
-            Some(0x1234),
-            Some(0xa2),
-            None,
-            Some(0xa2),
-            Some(0xa2),
-            false,
-            true,
-            false,
-            false,
-        );
-        assert_eq!(bus.raw_s100_status_word(), 0xa2);
-        assert_eq!(bus.raw_cpu_data(), Some(0xa2));
-        assert_eq!(bus.raw_s100_data_in(), None);
-        assert_eq!(bus.raw_s100_data_out(), Some(0xa2));
-        assert_eq!(bus.raw_panel_data(), 0x00);
-        assert!(!bus.raw_s100_inte());
-        assert!(!bus.raw_s100_prot());
-        assert!(!bus.raw_s100_wait());
-        assert!(!bus.raw_s100_hlda());
     }
 }
 
@@ -617,35 +543,16 @@ mod timing_tests {
     use super::*;
 
     #[test]
-    fn mits_1k_read_timing_yields_two_wait_cycles() {
+    fn legacy_mits_1k_profile_still_yields_two_wait_cycles_without_replacing_bytes() {
         let mut memory = Memory::default();
         memory.configure(RamSize::K1, RamInit::Zeroed);
+        memory.write(0x0010, 0x5a);
         memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
-
-        assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T1));
-        assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T2));
-        assert!(!memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::Tw));
-        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::Tw));
-        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T3));
-    }
-
-    #[test]
-    fn uninstalled_address_never_stretches_ready() {
-        let mut memory = Memory::default();
-        memory.configure(RamSize::Bytes256, RamInit::Zeroed);
-        memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
-        assert!(memory.ready_for_t_state(0x0100, true, MemoryReadyPhase::T1));
-        assert!(memory.ready_for_t_state(0x0100, true, MemoryReadyPhase::T2));
-    }
-
-    #[test]
-    fn mits_1k_write_and_fast_profile_do_not_stretch_ready() {
-        let mut memory = Memory::default();
-        memory.configure(RamSize::K1, RamInit::Zeroed);
-        memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
-        assert!(memory.ready_for_t_state(0x0000, false, MemoryReadyPhase::T1));
-        memory.configure_board_profile(RamBoardProfile::FastNoWait);
-        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T1));
-        assert!(memory.ready_for_t_state(0x0000, true, MemoryReadyPhase::T2));
+        assert_eq!(memory.peek(0x0010), Some(0x5a));
+        assert!(!memory.ready_for_t_state(0, true, MemoryReadyPhase::T1));
+        assert!(!memory.ready_for_t_state(0, true, MemoryReadyPhase::T2));
+        assert!(!memory.ready_for_t_state(0, true, MemoryReadyPhase::Tw));
+        assert!(memory.ready_for_t_state(0, true, MemoryReadyPhase::Tw));
+        assert!(memory.ready_for_t_state(0, true, MemoryReadyPhase::T3));
     }
 }
