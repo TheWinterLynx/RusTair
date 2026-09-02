@@ -52,6 +52,7 @@ pub enum ClockEdge {
     Phi2Falling,
 }
 
+#[cfg(test)]
 impl ClockEdge {
     pub const ALL: [Self; 4] = [
         Self::Phi1Rising,
