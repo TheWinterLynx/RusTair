@@ -1,0 +1,118 @@
+# Intel 8080 / MITS 8800 CPU-board hardware fidelity
+
+Status: **IN PROGRESS — ISA and T-state behavior certified; PHI1/PHI2 edge-level pin timing remains to be closed before PASS.**
+
+Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
+
+## 1. Fidelity claim boundary
+
+RusTair must not call the Cycle Accurate Intel 8080 "1:1 pin accurate" merely because instruction results and total T-state counts match. The physical CPU closeout is complete only when the digital behavior observable at the Intel 8080 package and the original MITS CPU-board/S-100 boundary follows the documented clock-edge relationships.
+
+The target claim is **digital edge/cycle fidelity**, not transistor/SPICE fidelity. Exact analog voltage, propagation-delay dispersion, loading, rise/fall shape and marginal setup/hold violations remain explicit analog non-claims.
+
+## 2. Already certified
+
+The current Cycle core is strongly certified at instruction and complete-T-state granularity:
+
+- all 256 opcode byte values have defined Intel-8080 behavior or documented silicon aliases;
+- Fast and Cycle differential regression compares architectural state, memory side effects, I/O effects and T-state counts;
+- READY/TW, HOLD/HLDA, RESET, HLT, EI/DI, interrupt acknowledge, stack, I/O and front-panel interactions have focused regressions;
+- the normal release suite is green;
+- local release certification on 2026-09-02 reported exact classic-diagnostic totals:
+  - CPUTEST: 33,971,311 instructions / 255,653,383 T-states;
+  - 8080EXM: 2,919,050,698 instructions / 23,803,381,171 T-states.
+
+These results certify the architectural and T-state totals. They do not by themselves prove transitions inside one T-state.
+
+## 3. Remaining physical CPU gap
+
+`Cpu8080Cycle::tick()` currently advances one complete T-state at a time. `Cpu8080Pins` exposes address/data plus SYNC, DBIN, /WR, INTE, WAIT and HLDA, but PHI1 and PHI2 are not yet authoritative clock inputs in the execution model.
+
+`src/cpu8080_cycle/timing.rs` explicitly records the current limitation: pin transitions inside a T-state are below the present abstraction and are intended to be derived from the PHI1/PHI2 edge-level reference.
+
+This prevents an honest final claim that every modeled digital package pin changes at the historical edge.
+
+## 4. Primary hardware contract
+
+### Intel 8080 package
+
+Primary Intel timing documentation establishes the important edge relationships, including:
+
+- address/data output timing referenced to PHI2;
+- DBIN transition timing referenced to PHI2;
+- /WR, WAIT and HLDA control-output timing referenced to PHI1/PHI2 as applicable;
+- READY, HOLD and INT setup relative to PHI2;
+- bus float timing under HLDA/HOLD;
+- INTE transition timing relative to PHI2.
+
+Jim Drygiannakis' MIT-licensed `jdryg/8080Emu` remains a useful independent edge-level implementation reference already attributed by the project. It explicitly clocks PHI1/PHI2 edges and updates /WR/WAIT/HOLD state on PHI1 and address/SYNC/DBIN/data/register state on PHI2.
+
+### Original MITS 8800 CPU board
+
+MITS, *Altair 8800 Theory of Operation Manual & Schematics* (1975), schematics 880-101 through 880-103, defines the board boundary:
+
+- the 8080 bidirectional D0-D7 package bus is split into separate S-100 DI and DO buses;
+- address, data, status and command/control signals are buffered by the CPU board;
+- CPU-board inputs are READY, HOLD, INT and RESET;
+- CPU outputs include SYNC, DBIN, WAIT, /WR, HLDA and INTE;
+- PRDY and PHOLD are synchronized on the CPU board to the leading edge of PHI2;
+- the board contains the 2.000 MHz crystal oscillator and generates the two non-overlapping 8080 clock phases;
+- TTL PHI1/PHI2 and CLOC are exported to the S-100 bus;
+- the processor status byte is emitted on D0-D7 at the start of each machine cycle and latched by the board's 8212 status latch.
+
+## 5. Required implementation shape
+
+The Cycle engine must acquire an authoritative PHI1/PHI2 edge step below the existing complete-T-state API.
+
+Required properties:
+
+1. A complete legacy `tick()` remains available for callers/tests that want one T-state, but it must be composed from the real edge steps rather than being a second timing implementation.
+2. CPU pin changes occur at their documented PHI1/PHI2 edges, not as a synthetic all-at-once T-state projection.
+3. Data/control inputs are sampled at the documented edge and become authoritative for CPU state only there.
+4. HOLD/HLDA tri-state behavior must release address/data at the modeled edge rather than at an arbitrary host boundary.
+5. Interrupt acknowledge must remain a bus transaction: external hardware drives the opcode onto the CPU data path; no device calls an internal `interrupt(RSTn)` shortcut.
+6. The MITS CPU-board adapter maps package truth to the historical S-100 signal domains; it must not reconstruct package pins from front-panel lamps or UI state.
+7. S-100 PHI1, PHI2 and CLOC become first-class digital bus signals generated by the installed MITS CPU board.
+8. Fast remains explicitly non-pin-exact and continues to approximate only information its instruction-level core cannot possess.
+
+## 6. S-100 interaction contract for future cards
+
+Future physical cards, including the MITS 88-VI, must communicate through the canonical S-100 bus rather than through CPU/backend object shortcuts.
+
+For the 88-VI path this means, at minimum:
+
+```text
+peripheral IRQ output
+    -> S-100 VI0..VI7
+    -> installed 88-VI priority hardware
+    -> S-100 PINT
+    -> MITS CPU-board INT buffer
+    -> Intel 8080 INT package input
+
+8080 interrupt acknowledge
+    -> CPU status byte / MITS status latch
+    -> S-100 SINTA
+    -> 88-VI drives selected RST opcode on S-100 DI
+    -> MITS CPU-board input buffer
+    -> Intel 8080 D0..D7
+    -> CPU samples external opcode
+```
+
+The CPU knows PINT/INT; it does not know which VI line caused it. The serial card knows only the VI line to which its physical interrupt output is wired; it does not manufacture a CPU restart instruction.
+
+## 7. PASS gate
+
+Do not mark this document PASS until all of the following are green locally:
+
+- PHI1/PHI2 edge-order and pin-transition regressions;
+- M1/read/write/TW edge waveforms;
+- READY sampling and WAIT assertion/release at the documented phase;
+- HOLD sampling, HLDA and address/data tri-state timing;
+- INT sampling, INTE clearing and INTA external-opcode path;
+- RESET behavior at the package and CPU-board boundary;
+- MITS CPU-board PHI1/PHI2/CLOC and package-to-S-100 mapping tests;
+- existing full `cargo test --release`;
+- all-256-opcode Fast/Cycle differential;
+- 8080PRE, TST8080, CPUTEST and 8080EXM with the existing exact reference totals.
+
+Only after this gate is green should the next hardware-fidelity block (88-VI) begin.
