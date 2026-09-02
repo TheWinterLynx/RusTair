@@ -122,6 +122,11 @@ impl eframe::App for RusTairApp {
                 });
 
                 ui.menu_button("Configuration", |ui| {
+                    ui.menu_button("S-100 Chassis / Cards", |ui| {
+                        super::ui::draw_s100_hardware_menu(self, ui);
+                    });
+                    ui.separator();
+
                     ui.menu_button("CPU", |ui| {
                         let active_engine = self.machine.engine();
                         ui.label(format!("Emulation engine: {}", active_engine.label()));
