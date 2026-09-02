@@ -15,6 +15,7 @@ pub mod memory_activity8080;
 pub mod peripherals;
 pub mod s100;
 pub mod s100_backplane;
+pub mod s100_cpu;
 pub mod s100_memory;
 pub mod trace8080;
 pub(crate) mod embedded_assets;
