@@ -33,15 +33,20 @@ fn intel_8080a_dip40_pinout_keeps_reference_numbering() {
 }
 
 #[test]
-fn pin_visualizer_distinguishes_level_assertion_power_and_clock_lines() {
+fn pin_visualizer_distinguishes_level_assertion_power_and_exact_clock_lines() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
     assert!(source.contains("ControlPin::WrN => (snapshot.pins.wr_n, true"));
     assert!(source.contains("LOW ASSERTED"));
     assert!(source.contains("outer amber ring = signal ASSERTED"));
     assert!(source.contains("label: \"INT\", kind: PinKind::Control(ControlPin::Interrupt)"));
-    assert!(source.contains("label: \"PHI1\", kind: PinKind::Clock"));
-    assert!(source.contains("label: \"PHI2\", kind: PinKind::Clock"));
-    assert!(source.contains("CLOCK PRESENT - phase not modeled"));
+    assert!(source.contains("label: \"PHI1\", kind: PinKind::Clock(ClockPin::Phi1"));
+    assert!(source.contains("label: \"PHI2\", kind: PinKind::Clock(ClockPin::Phi2"));
+    assert!(source.contains("ClockPin::Phi1 => snapshot.pins.phi1"));
+    assert!(source.contains("ClockPin::Phi2 => snapshot.pins.phi2"));
+    assert!(source.contains("HIGH / PHASE ACTIVE"));
+    assert!(source.contains("LOW / PHASE INACTIVE"));
+    assert!(source.contains("UNKNOWN / NO EDGE SAMPLE"));
+    assert!(!source.contains("phase not modeled"));
     assert!(source.contains("POWER ON"));
     assert!(source.contains("POWER OFF"));
 }
