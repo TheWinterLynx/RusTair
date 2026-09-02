@@ -44,6 +44,16 @@ pub(super) struct S100Signals {
     /// DI value here when DI is temporarily undriven so write/status activity
     /// cannot masquerade as front-panel input data.
     pub panel_data: u8,
+    /// Original Altair CPU-board PHI1/PHI2 outputs on S-100 pins 25/24. `None`
+    /// means this backend has no exact instantaneous phase sample; Fast must not
+    /// invent one from instruction timing.
+    pub phi1: Option<bool>,
+    pub phi2: Option<bool>,
+    /// Processor command/control outputs buffered by the MITS CPU board:
+    /// PSYNC pin 76, active-low PWR pin 77 and PDBIN pin 78.
+    pub psync: bool,
+    pub pwr_n: bool,
+    pub pdbin: bool,
     pub memr: bool,
     pub inp: bool,
     pub m1: bool,
@@ -84,6 +94,11 @@ impl Default for S100Signals {
             data_out: None,
             cpu_data: None,
             panel_data: 0,
+            phi1: None,
+            phi2: None,
+            psync: false,
+            pwr_n: true,
+            pdbin: false,
             memr: false,
             inp: false,
             m1: false,
@@ -449,6 +464,31 @@ impl S100BusState {
         self.signals.ext_clear = asserted;
     }
 
+    /// Drive the CPU-board clock and command/control outputs exactly at one
+    /// observed edge. These are real backplane nets, not UI reconstructions:
+    /// PHI2=pin24, PHI1=pin25, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
+    pub(super) fn drive_cpu_board_edge(
+        &mut self,
+        phi1: bool,
+        phi2: bool,
+        psync: bool,
+        pdbin: bool,
+        pwr_n: bool,
+    ) {
+        self.signals.phi1 = Some(phi1);
+        self.signals.phi2 = Some(phi2);
+        self.signals.psync = psync;
+        self.signals.pdbin = pdbin;
+        self.signals.pwr_n = pwr_n;
+    }
+
+    /// The MITS CPU board latches the processor status byte into its 8212 when
+    /// SYNC and PHI1 coincide. Cycle calls this only at that physical edge;
+    /// instruction-level Fast retains its explicitly reconstructed status path.
+    pub(super) fn latch_cpu_status(&mut self, word: u8) {
+        self.signals.apply_status_word(word);
+    }
+
     /// Drive exactly one CPU T-state into the S-100/front-panel model.
     ///
     /// `cpu_data` is the Intel 8080 package D0-D7 level. `data_in` and
@@ -456,10 +496,9 @@ impl S100BusState {
     /// the original CPU-board buffers. The front-panel DATA display follows DI
     /// only (880-105), so DO/status traffic never updates `panel_data`.
     ///
-    /// `status_word` is the status latch value associated with the current
-    /// machine cycle. `None` means that no new external status byte exists
-    /// (for example an internal DAD cycle), so the previously latched S-100
-    /// status lines remain untouched.
+    /// `status_word` is used by the instruction-level Fast reconstruction. In
+    /// exact Cycle execution the 8212 status latch is driven separately from the
+    /// real SYNC+PHI1 edge and this argument is normally `None`.
     pub(super) fn drive_cpu_t_state(
         &mut self,
         address: Option<u16>,
@@ -520,6 +559,9 @@ impl S100BusState {
         self.signals.panel_data = 0xff;
         self.signals.inte = false;
         self.signals.prot = false;
+        self.signals.psync = false;
+        self.signals.pdbin = false;
+        self.signals.pwr_n = true;
         self.signals.clear_status();
         // PRESET/RESET belongs to the processor input path and does not clear
         // the original Display/Control RUN/STOP R-S latch. PRDY therefore still
@@ -555,6 +597,9 @@ impl S100BusState {
         self.signals.prot = protected;
         self.signals.inte = inte;
         self.signals.run = run;
+        self.signals.psync = false;
+        self.signals.pdbin = !run;
+        self.signals.pwr_n = true;
         self.signals.clear_status();
         self.signals.apply_status_word(STATUS_INSTRUCTION_FETCH);
         self.signals.front_panel_ready = run;
@@ -588,6 +633,9 @@ impl S100BusState {
         self.signals.prot = protected;
         self.signals.inte = inte;
         self.signals.run = run;
+        self.signals.psync = false;
+        self.signals.pdbin = !run;
+        self.signals.pwr_n = true;
         self.signals.clear_status();
         if run {
             self.set_ready(true);
@@ -620,6 +668,9 @@ impl S100BusState {
         self.signals.data_out = Some(data);
         self.signals.prot = protected;
         self.signals.inte = inte;
+        self.signals.psync = false;
+        self.signals.pdbin = false;
+        self.signals.pwr_n = true;
         self.signals.clear_status();
         // A write/output cycle drives /WO low, so the physical W/O lamp is dark.
         self.signals.wo = false;
@@ -725,6 +776,40 @@ mod tests {
         assert_eq!(integrator.raw_duty.wo, 1.0);
         assert!(integrator.snapshot.wo > 0.0);
         assert!(integrator.snapshot.wo < 1.0);
+    }
+
+    #[test]
+    fn cpu_board_edge_lines_are_first_class_backplane_state() {
+        let mut bus = S100BusState::default();
+        bus.drive_cpu_board_edge(true, false, true, false, true);
+        let phi1 = bus.signals();
+        assert_eq!(phi1.phi1, Some(true));
+        assert_eq!(phi1.phi2, Some(false));
+        assert!(phi1.psync);
+        assert!(!phi1.pdbin);
+        assert!(phi1.pwr_n);
+
+        bus.drive_cpu_board_edge(false, true, false, true, true);
+        let phi2 = bus.signals();
+        assert_eq!(phi2.phi1, Some(false));
+        assert_eq!(phi2.phi2, Some(true));
+        assert!(!phi2.psync);
+        assert!(phi2.pdbin);
+    }
+
+    #[test]
+    fn status_latch_changes_only_when_cpu_board_clocks_it() {
+        let mut bus = S100BusState::default();
+        bus.drive_cpu_t_state(
+            Some(0x1234), Some(0xa2), None, Some(0xa2), None, false, false,
+            true, false, false,
+        );
+        assert!(!bus.signals().m1);
+        assert!(!bus.signals().memr);
+        bus.latch_cpu_status(0xa2);
+        assert!(bus.signals().m1);
+        assert!(bus.signals().memr);
+        assert!(bus.signals().wo);
     }
 
     #[test]
@@ -841,6 +926,7 @@ mod tests {
         assert_eq!(s.panel_data, 0xff);
         assert!(s.reset);
         assert!(!s.wait);
+        assert!(!s.psync && !s.pdbin && s.pwr_n);
     }
 
     #[test]
@@ -874,6 +960,7 @@ mod tests {
         assert_eq!(s.panel_data, 0xa5);
         assert!(s.memr && s.m1 && s.wo && s.wait);
         assert!(!s.ready);
+        assert!(!s.psync && s.pdbin && s.pwr_n);
     }
 
     #[test]
