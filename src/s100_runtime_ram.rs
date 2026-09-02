@@ -1,7 +1,7 @@
 //! Runtime S-100 RAM cards shared by the electrical backplane and host tools.
 //!
 //! The guest never reaches these bytes through a host-side memory API: it sees
-//! only DI/DO/MWRT/PRDY on the S-100 bus.  The cloned handle exists for debugger
+//! only DI/DO/MWRT/PRDY on the S-100 bus. The cloned handle exists for debugger
 //! and inspection tools so they can inspect the *same physical card storage*
 //! without fabricating CPU cycles or maintaining a shadow flat-memory array.
 
@@ -20,6 +20,8 @@ use crate::s100_memory::{
     S100RamBoardModel, S100RamCardConfig, S100RamTimingModel, MITS_88_16MCD,
     MITS_88_16MCS, MITS_88_4MCD, MITS_88_4MCS, MITS_88_S4K,
 };
+
+const LEGACY_COMPATIBILITY_PROTECTION_UNIT: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeRamConfig {
@@ -60,10 +62,22 @@ impl RuntimeRamConfig {
     pub const fn supports_front_panel_protect(self) -> bool {
         match self {
             Self::Historical(config) => config.model.supports_front_panel_protect(),
-            // The compatibility card preserves the old RusTair writable/protect
-            // semantics without claiming that this is historical MITS hardware.
+            // This non-historical migration card deliberately preserves RusTair's
+            // legacy 1 KiB protection blocks. Real MITS cards remain card-scoped.
             Self::Compatibility(_) => true,
         }
+    }
+
+    pub const fn protection_unit_bytes(self) -> usize {
+        match self {
+            Self::Historical(_) => self.populated_bytes(),
+            Self::Compatibility(_) => LEGACY_COMPATIBILITY_PROTECTION_UNIT,
+        }
+    }
+
+    pub const fn protection_unit_count(self) -> usize {
+        let unit = self.protection_unit_bytes();
+        self.populated_bytes().div_ceil(unit)
     }
 
     pub const fn historical_model(self) -> Option<S100RamBoardModel> {
@@ -78,7 +92,7 @@ impl RuntimeRamConfig {
 struct RuntimeRamState {
     config: RuntimeRamConfig,
     bytes: Vec<u8>,
-    protected: bool,
+    protected: Vec<bool>,
     selected_offset: Option<usize>,
     memory_read: bool,
     wait_clocks_remaining: u8,
@@ -98,7 +112,7 @@ impl RuntimeRamState {
         Self {
             config,
             bytes,
-            protected: false,
+            protected: vec![false; config.protection_unit_count()],
             selected_offset: None,
             memory_read: false,
             wait_clocks_remaining: 0,
@@ -110,18 +124,55 @@ impl RuntimeRamState {
         }
     }
 
-    fn read_byte(&self, address: u16) -> Option<u8> {
-        if !self.config.contains(address) {
-            return None;
+    fn offset_for(&self, address: u16) -> Option<usize> {
+        self.config
+            .contains(address)
+            .then_some(address.wrapping_sub(self.config.base_address()) as usize)
+    }
+
+    fn protection_index_for_offset(&self, offset: usize) -> usize {
+        offset / self.config.protection_unit_bytes()
+    }
+
+    fn is_offset_protected(&self, offset: usize) -> bool {
+        self.protected
+            .get(self.protection_index_for_offset(offset))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn is_protected(&self, address: u16) -> bool {
+        self.offset_for(address)
+            .is_some_and(|offset| self.is_offset_protected(offset))
+    }
+
+    fn set_protected(&mut self, address: u16, protected: bool) -> bool {
+        if !self.config.supports_front_panel_protect() {
+            return false;
         }
-        Some(self.bytes[address.wrapping_sub(self.config.base_address()) as usize])
+        let Some(offset) = self.offset_for(address) else {
+            return false;
+        };
+        let index = self.protection_index_for_offset(offset);
+        let Some(latch) = self.protected.get_mut(index) else {
+            return false;
+        };
+        *latch = protected;
+        true
+    }
+
+    fn read_byte(&self, address: u16) -> Option<u8> {
+        let offset = self.offset_for(address)?;
+        Some(self.bytes[offset])
     }
 
     fn write_byte(&mut self, address: u16, value: u8, respect_protection: bool) -> bool {
-        if !self.config.contains(address) || (respect_protection && self.protected) {
+        let Some(offset) = self.offset_for(address) else {
+            return false;
+        };
+        if respect_protection && self.is_offset_protected(offset) {
             return false;
         }
-        let offset = address.wrapping_sub(self.config.base_address()) as usize;
         self.bytes[offset] = value;
         true
     }
@@ -162,21 +213,16 @@ impl RuntimeRamHandle {
             .write_byte(address, value, respect_protection)
     }
 
-    pub fn is_protected(&self) -> bool {
-        self.state.borrow().protected
+    pub fn is_protected(&self, address: u16) -> bool {
+        self.state.borrow().is_protected(address)
     }
 
-    pub fn set_protected(&self, protected: bool) -> bool {
-        let mut state = self.state.borrow_mut();
-        if !state.config.supports_front_panel_protect() {
-            return false;
-        }
-        state.protected = protected;
-        true
+    pub fn set_protected(&self, address: u16, protected: bool) -> bool {
+        self.state.borrow_mut().set_protected(address, protected)
     }
 
     pub fn clear_protection(&self) {
-        self.state.borrow_mut().protected = false;
+        self.state.borrow_mut().protected.fill(false);
     }
 
     pub fn initialize(&self, init: RamInit) {
@@ -185,15 +231,13 @@ impl RuntimeRamHandle {
         if init == RamInit::Random {
             rand::rng().fill_bytes(&mut state.bytes);
         }
-        state.protected = false;
+        state.protected.fill(false);
         state.reset_timing();
     }
 
     pub fn load(&self, address: u16, data: &[u8]) -> usize {
         let mut state = self.state.borrow_mut();
-        let Some(first) = state.config.contains(address).then_some(
-            address.wrapping_sub(state.config.base_address()) as usize,
-        ) else {
+        let Some(first) = state.offset_for(address) else {
             return 0;
         };
         let len = data.len().min(state.bytes.len().saturating_sub(first));
@@ -264,12 +308,7 @@ impl S100ElectricalCard for RuntimeRamCard {
         let sync_rising = sync && !state.previous_sync;
         let clock_rising = clock && !state.previous_clock;
 
-        state.selected_offset = sample.address().and_then(|address| {
-            state
-                .config
-                .contains(address)
-                .then_some(address.wrapping_sub(state.config.base_address()) as usize)
-        });
+        state.selected_offset = sample.address().and_then(|address| state.offset_for(address));
         let memory_read = state.selected_offset.is_some()
             && sample.signal_level(S100Signal::MemoryRead) == Some(true);
 
@@ -282,11 +321,13 @@ impl S100ElectricalCard for RuntimeRamCard {
         }
 
         if state.selected_offset.is_some() && state.config.supports_front_panel_protect() {
-            if protect && !state.previous_protect {
-                state.protected = true;
-            }
-            if unprotect && !state.previous_unprotect {
-                state.protected = false;
+            if let Some(address) = sample.address() {
+                if protect && !state.previous_protect {
+                    let _ = state.set_protected(address, true);
+                }
+                if unprotect && !state.previous_unprotect {
+                    let _ = state.set_protected(address, false);
+                }
             }
         }
 
@@ -321,8 +362,10 @@ impl S100ElectricalCard for RuntimeRamCard {
         if state.wait_clocks_remaining != 0 {
             drive.pull_low(S100Signal::Ready, true);
         }
-        if state.protected && state.selected_offset.is_some() && state.config.supports_front_panel_protect() {
-            drive.drive_tristate(S100Signal::ProtectStatus, Some(true));
+        if let Some(offset) = state.selected_offset {
+            if state.config.supports_front_panel_protect() && state.is_offset_protected(offset) {
+                drive.drive_tristate(S100Signal::ProtectStatus, Some(true));
+            }
         }
         drive
     }
@@ -394,16 +437,31 @@ mod tests {
     }
 
     #[test]
-    fn protection_lives_on_the_shared_physical_card() {
+    fn historical_protection_lives_on_the_shared_physical_card() {
         let (card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits1KStatic88Mcs, 0),
             RamInit::Zeroed,
         )
         .unwrap();
         drop(card);
-        assert!(handle.set_protected(true));
+        assert!(handle.set_protected(0x0010, true));
+        assert!(handle.is_protected(0x03ff));
         assert!(!handle.write_byte(0x0010, 0x55, true));
         assert!(handle.write_byte(0x0010, 0x55, false));
         assert_eq!(handle.read_byte(0x0010), Some(0x55));
+    }
+
+    #[test]
+    fn compatibility_protection_preserves_legacy_one_kilobyte_blocks() {
+        let (_card, handle) = RuntimeRamCard::compatibility(
+            FastRamCompatibilityConfig::no_wait(0, 8 * 1024),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+        assert!(handle.set_protected(0x0410, true));
+        assert!(!handle.is_protected(0x03ff));
+        assert!(handle.is_protected(0x0400));
+        assert!(handle.is_protected(0x07ff));
+        assert!(!handle.is_protected(0x0800));
     }
 }
