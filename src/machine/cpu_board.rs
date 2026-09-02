@@ -1,5 +1,5 @@
 use crate::cpu8080::{Bus, Cpu8080};
-use crate::cpu8080_cycle::{TState, TickTrace};
+use crate::cpu8080_cycle::{ClockEdge, Cpu8080Pins, TState, TickTrace};
 
 /// Machine-cycle classes emitted by the instruction-level 8080 core.
 ///
@@ -72,6 +72,8 @@ pub(crate) struct S100CpuSample {
     pub cpu_data: Option<u8>,
     pub data_in: Option<u8>,
     pub data_out: Option<u8>,
+    /// Fast/reconstructed status-latch update. Exact Cycle latches ordinary
+    /// status through the physical SYNC+PHI1 edge instead.
     pub status_word: Option<u8>,
     pub inte: bool,
     pub ready: bool,
@@ -138,8 +140,8 @@ impl Fast8080S100Adapter {
     ) {
         let status = cycle.status_word();
         // At the beginning of every machine cycle the 8080 places its status
-        // byte on D0-D7. The CPU-board output buffers also present that level on
-        // DO while the local 8212 latches the dedicated S-100 status outputs.
+        // byte on D0-D7. Fast cannot expose the later physical SYNC+PHI1 latch
+        // edge, so it deliberately applies the equivalent status immediately.
         emit(S100CpuSample {
             address: Some(address),
             cpu_data: Some(status),
@@ -302,7 +304,7 @@ impl super::AltairBus {
 
     /// Change only the external HOLD request seen by the cycle-accurate CPU.
     /// HLDA is an 8080 output and must remain whatever the last exact CPU sample
-    /// drove until a later `Cpu8080Cycle::tick()` changes it. The generic chassis
+    /// drove until a later `Cpu8080Cycle` edge changes it. The generic chassis
     /// helper also drops HLDA on HOLD release for the instruction-level backend;
     /// Cycle must not use that approximation.
     pub(crate) fn cycle_set_hold_request(&mut self, hold: bool) {
@@ -310,6 +312,33 @@ impl super::AltairBus {
         self.s100.set_hold(hold);
         self.s100.set_hlda(cpu_hlda);
     }
+
+    /// Project one exact Intel 8080 clock edge through the original MITS CPU
+    /// board onto the canonical S-100 backplane command/clock nets.
+    ///
+    /// The board's 8212 status latch is physically clocked when processor SYNC
+    /// is still high at a PHI1 rising edge. This deliberately separates the
+    /// T1 status byte on CPU D/DO from the later dedicated S-100 status outputs.
+    pub(crate) fn drive_cycle_cpu_board_edge(&mut self, edge: ClockEdge, pins: Cpu8080Pins) {
+        self.s100.drive_cpu_board_edge(
+            pins.phi1,
+            pins.phi2,
+            pins.sync,
+            pins.dbin,
+            pins.wr_n,
+        );
+        if edge == ClockEdge::Phi1Rising && pins.sync {
+            if let Some(word) = pins.data_out {
+                self.s100.latch_cpu_status(word);
+            }
+        }
+    }
+
+    pub(crate) fn raw_s100_phi1(&self) -> Option<bool> { self.s100.signals().phi1 }
+    pub(crate) fn raw_s100_phi2(&self) -> Option<bool> { self.s100.signals().phi2 }
+    pub(crate) fn raw_s100_psync(&self) -> bool { self.s100.signals().psync }
+    pub(crate) fn raw_s100_pdbin(&self) -> bool { self.s100.signals().pdbin }
+    pub(crate) fn raw_s100_pwr_n(&self) -> bool { self.s100.signals().pwr_n }
 }
 
 impl super::AltairMachine {
@@ -388,7 +417,7 @@ impl super::AltairMachine {
     }
 }
 
-/// Adapter for the T-state Intel 8080 core.
+/// Adapter for the edge/T-state Intel 8080 core.
 ///
 /// Timing and CPU output-control signals come directly from `TickTrace`. Read
 /// data originates on RAM/I/O boards and therefore appears on S-100 DI before
@@ -403,13 +432,12 @@ impl Cycle8080S100Adapter {
         front_panel_direct: bool,
         ready: bool,
     ) -> S100CpuSample {
-        let status_word = if trace.pins.hlda {
-            None
-        } else if trace.pins.sync {
-            trace.pins.data_out
-        } else if trace.t_state == TState::Thalt {
-            // HALT dwell has no repeated SYNC, but after a HOLD grant the S-100
-            // status latch must again represent the still-halted processor.
+        // Exact normal status is NOT latched here. The processor presents the
+        // byte on D/DO while SYNC is active in T1; the MITS board's 8212 captures
+        // it only at the following PHI1 edge. HALT dwell is the one compatibility
+        // restoration path retained after bus grant/release because no new SYNC
+        // occurs while the processor remains halted.
+        let status_word = if !trace.pins.hlda && trace.t_state == TState::Thalt {
             trace.machine_cycle.status_word()
         } else {
             None
@@ -491,12 +519,13 @@ mod tests {
     }
 
     #[test]
-    fn cycle_adapter_maps_real_t1_status_to_cpu_d_and_do() {
+    fn cycle_adapter_keeps_t1_status_on_cpu_d_do_until_real_phi1_latch() {
         let trace = TickTrace {
             machine_cycle: MachineCycle::MemoryRead,
             machine_cycle_index: 2,
             t_state: TState::T1,
             pins: Cpu8080Pins {
+                phi2: true,
                 address: Some(0x2000),
                 data_out: Some(0x82),
                 sync: true,
@@ -516,9 +545,56 @@ mod tests {
         assert_eq!(sample.cpu_data, Some(0x82));
         assert_eq!(sample.data_in, None);
         assert_eq!(sample.data_out, Some(0x82));
-        assert_eq!(sample.status_word, Some(0x82));
+        assert_eq!(sample.status_word, None, "exact status latch belongs to SYNC+PHI1, not T1 projection");
         assert!(sample.inte);
         assert!(sample.ready);
+    }
+
+    #[test]
+    fn mits_8212_status_latches_only_on_sync_plus_phi1_edge() {
+        let mut bus = super::super::AltairBus::default();
+        let t1_phi2 = Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            data_out: Some(0xa2),
+            sync: true,
+            ..Cpu8080Pins::default()
+        };
+        bus.drive_cycle_cpu_board_edge(ClockEdge::Phi2Rising, t1_phi2);
+        assert!(!bus.s100.signals().m1);
+        assert!(bus.raw_s100_psync());
+        assert_eq!(bus.raw_s100_phi2(), Some(true));
+
+        let t2_phi1 = Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            data_out: Some(0xa2),
+            sync: true,
+            ..Cpu8080Pins::default()
+        };
+        bus.drive_cycle_cpu_board_edge(ClockEdge::Phi1Rising, t2_phi1);
+        let latched = bus.s100.signals();
+        assert!(latched.memr && latched.m1 && latched.wo);
+        assert_eq!(bus.raw_s100_phi1(), Some(true));
+    }
+
+    #[test]
+    fn cycle_cpu_board_exports_historical_command_nets_directly_from_package_pins() {
+        let mut bus = super::super::AltairBus::default();
+        let pins = Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            sync: false,
+            dbin: true,
+            wr_n: true,
+            ..Cpu8080Pins::default()
+        };
+        bus.drive_cycle_cpu_board_edge(ClockEdge::Phi2Rising, pins);
+        assert_eq!(bus.raw_s100_phi1(), Some(false));
+        assert_eq!(bus.raw_s100_phi2(), Some(true));
+        assert!(!bus.raw_s100_psync());
+        assert!(bus.raw_s100_pdbin());
+        assert!(bus.raw_s100_pwr_n());
     }
 
     #[test]
