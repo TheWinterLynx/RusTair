@@ -8,6 +8,8 @@ Final local validation: **2026-09-02**, focused hardware checkpoints plus comple
 
 No GitHub Actions were required for this closeout.
 
+> Scope clarification (2026-09-02): item 3 below certifies the **long-term installed CPU-board clock rate/scheduler authority**. It was never a certification that every Intel 8080 package pin transitions on its exact PHI1/PHI2 edge. That separate physical CPU claim is now tracked explicitly in `docs/CPU_8080_HARDWARE_FIDELITY.md` and must reach PASS before RusTair calls Cycle "1:1 pin accurate" at the digital package boundary.
+
 ## Rules used for PASS
 
 1. Prefer original MITS/Intel/Motorola documentation over emulator precedent.
@@ -41,6 +43,8 @@ Optical brightness/aura remain presentation concerns, not electrical state.
 The authentic scheduler retains elapsed-time debt and fractional T-states instead of clipping host stalls. It uses the installed CPU-board clock as authority, repays Fast whole-instruction overshoot, discards stopped time, fences rate epochs correctly and avoids catch-up bursts from blocked execution.
 
 Focused clock-authority and full-suite validation were green before serial closeout and remained protected by the final suite.
+
+This PASS concerns **clock-rate accounting over time**. Exact Intel 8080 PHI1/PHI2 package-edge behavior is intentionally outside this item and is governed by the dedicated CPU physical-fidelity closeout.
 
 ## 4. MITS 88-2SIO / MC6850 — PASS
 
@@ -110,4 +114,4 @@ Long ignored CPU diagnostics were intentionally not repeated for the final seria
 
 ## Result
 
-The base hardware closeout represented by this document has no remaining blocker. Future work should be opened as a new scoped hardware/peripheral item rather than leaving completed entries in an indefinite `IN PROGRESS` state.
+The base hardware closeout represented by this document has no remaining blocker **within its stated scope**. It must not be cited as proof of PHI-edge/package-pin accuracy. Future work should be opened as a new scoped hardware/peripheral item rather than leaving completed entries in an indefinite `IN PROGRESS` state.
