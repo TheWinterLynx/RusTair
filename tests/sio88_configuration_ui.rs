@@ -38,8 +38,9 @@ fn sio_interrupt_ui_keeps_runtime_enables_separate_from_physical_routing() {
 
 #[test]
 fn sio_hardware_is_persisted_as_one_atomic_card_configuration() {
-    assert!(PERSISTENCE_SOURCE.contains("const CONFIG_VERSION: u32 = 4;"));
+    assert!(PERSISTENCE_SOURCE.contains("const CONFIG_VERSION: u32 = 5;"));
     assert!(PERSISTENCE_SOURCE.contains("machine.sio_hardware"));
+    assert!(PERSISTENCE_SOURCE.contains("machine.s100_hardware"));
     assert!(PERSISTENCE_SOURCE.contains("SioHardwareConfig::from_persistence_key"));
     assert!(PERSISTENCE_SOURCE.contains("self.machine.configure_sio_hardware(self.config.machine.sio_hardware);"));
     assert!(SIO_CONFIG_SOURCE.contains("pub interrupt_wiring: SioInterruptWiring"));
