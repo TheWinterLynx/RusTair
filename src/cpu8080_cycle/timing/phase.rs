@@ -1,4 +1,4 @@
-use super::{MachineCycle, TState};
+use super::{ClockEdge, MachineCycle, TState};
 use super::super::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
 
 impl Cpu8080Cycle {
@@ -21,32 +21,36 @@ impl Cpu8080Cycle {
         self.clock_phi1_rising();
         observe(self.pins);
 
-        self.pins.phi1 = false;
+        self.set_clock_edge(ClockEdge::Phi1Falling);
         observe(self.pins);
 
-        self.pins.phi2 = true;
+        self.set_clock_edge(ClockEdge::Phi2Rising);
         let mut trace = self.tick(inputs);
         // RESET is asynchronous in the semantic core and rebuilds the pin
         // structure. The physical clock generator does not stop while RESET is
         // held, so restore the clock input level after that reset action.
-        self.pins.phi1 = false;
-        self.pins.phi2 = true;
+        self.set_clock_edge(ClockEdge::Phi2Rising);
         trace.pins.phi1 = false;
         trace.pins.phi2 = true;
         observe(self.pins);
 
-        self.pins.phi2 = false;
+        self.set_clock_edge(ClockEdge::Phi2Falling);
         observe(self.pins);
 
         trace
+    }
+
+    fn set_clock_edge(&mut self, edge: ClockEdge) {
+        let (phi1, phi2) = edge.clock_levels_after();
+        self.pins.phi1 = phi1;
+        self.pins.phi2 = phi2;
     }
 
     /// Apply the outputs whose documented transition is tied to PHI1. Do not
     /// touch address, data, SYNC or DBIN here: those remain at their preceding
     /// levels until the PHI2 rising edge updates them.
     fn clock_phi1_rising(&mut self) {
-        self.pins.phi1 = true;
-        self.pins.phi2 = false;
+        self.set_clock_edge(ClockEdge::Phi1Rising);
         self.pins.inte = self.inte;
 
         if self.t_state == TState::Thold || self.holding {
