@@ -25,12 +25,18 @@ enum ControlPin {
 }
 
 #[derive(Clone, Copy)]
+enum ClockPin {
+    Phi1,
+    Phi2,
+}
+
+#[derive(Clone, Copy)]
 enum PinKind {
     Address(u8),
     Data(u8),
     Control(ControlPin),
     Power(&'static str),
-    Clock(&'static str),
+    Clock(ClockPin, &'static str),
     Ground,
 }
 
@@ -57,7 +63,7 @@ const LEFT_PINS: [PinDef; 20] = [
     PinDef { number: 12, label: "RESET", kind: PinKind::Control(ControlPin::Reset) },
     PinDef { number: 13, label: "HOLD", kind: PinKind::Control(ControlPin::Hold) },
     PinDef { number: 14, label: "INT", kind: PinKind::Control(ControlPin::Interrupt) },
-    PinDef { number: 15, label: "PHI2", kind: PinKind::Clock("Clock phase PHI2 is physically present when powered, but phase edges are below the emulator's T-state abstraction.") },
+    PinDef { number: 15, label: "PHI2", kind: PinKind::Clock(ClockPin::Phi2, "Intel 8080 PHI2 clock input. Exact Cycle samples expose the modeled digital phase level; reconstructed/control-only states never fabricate an edge level.") },
     PinDef { number: 16, label: "INTE", kind: PinKind::Control(ControlPin::Inte) },
     PinDef { number: 17, label: "DBIN", kind: PinKind::Control(ControlPin::Dbin) },
     PinDef { number: 18, label: "/WR", kind: PinKind::Control(ControlPin::WrN) },
@@ -84,7 +90,7 @@ const RIGHT_PINS: [PinDef; 20] = [
     PinDef { number: 25, label: "A0", kind: PinKind::Address(0) },
     PinDef { number: 24, label: "WAIT", kind: PinKind::Control(ControlPin::Wait) },
     PinDef { number: 23, label: "READY", kind: PinKind::Control(ControlPin::Ready) },
-    PinDef { number: 22, label: "PHI1", kind: PinKind::Clock("Clock phase PHI1 is physically present when powered, but phase edges are below the emulator's T-state abstraction.") },
+    PinDef { number: 22, label: "PHI1", kind: PinKind::Clock(ClockPin::Phi1, "Intel 8080 PHI1 clock input. Exact Cycle samples expose the modeled digital phase level; reconstructed/control-only states never fabricate an edge level.") },
     PinDef { number: 21, label: "HLDA", kind: PinKind::Control(ControlPin::Hlda) },
 ];
 
@@ -196,19 +202,26 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
             static_pin: true,
             released: false,
         },
-        PinKind::Clock(note) => PinState {
-            level: Some(powered),
-            asserted: None,
-            state_text: if powered {
-                "CLOCK PRESENT - phase not modeled".into()
-            } else {
-                "CLOCK OFF".into()
-            },
-            note,
-            modeled: true,
-            static_pin: true,
-            released: false,
-        },
+        PinKind::Clock(clock, note) => {
+            let level = match clock {
+                ClockPin::Phi1 => snapshot.pins.phi1,
+                ClockPin::Phi2 => snapshot.pins.phi2,
+            };
+            PinState {
+                level,
+                asserted: None,
+                state_text: match level {
+                    Some(true) => "HIGH / PHASE ACTIVE".into(),
+                    Some(false) => "LOW / PHASE INACTIVE".into(),
+                    None if powered => "UNKNOWN / NO EDGE SAMPLE".into(),
+                    None => "UNPOWERED".into(),
+                },
+                note,
+                modeled: level.is_some(),
+                static_pin: false,
+                released: false,
+            }
+        }
         PinKind::Ground => PinState {
             level: Some(false),
             asserted: None,
