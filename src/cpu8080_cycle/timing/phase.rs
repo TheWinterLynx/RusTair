@@ -1,5 +1,5 @@
 use super::{ClockEdge, MachineCycle, TState};
-use super::super::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
+use super::super::{decode::Instruction, Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
 
 impl Cpu8080Cycle {
     /// Execute one complete T-state through the Intel 8080's two non-overlapping
@@ -28,10 +28,10 @@ impl Cpu8080Cycle {
         self.pins.phi1 = false;
         observe(ClockEdge::Phi1Falling, self.pins);
 
-        // WAIT and /WR are PHI1-owned flip-flop outputs. `tick()` still drives
-        // its historical T-state snapshot, so preserve the physical PHI1 result
-        // across the PHI2 transition instead of letting that compatibility
-        // projection overwrite the edge-authoritative values.
+        // WAIT, /WR and HLDA are PHI1-owned outputs. `tick()` still drives its
+        // historical complete-T-state snapshot, so preserve the physical PHI1
+        // results across PHI2 instead of allowing that compatibility projection
+        // to move an edge-authoritative signal later in the cycle.
         let wait_after_phi1 = self.pins.wait;
         let wr_n_after_phi1 = self.pins.wr_n;
         let hlda_after_phi1 = self.pins.hlda;
@@ -48,9 +48,10 @@ impl Cpu8080Cycle {
         if !trace.reset {
             self.pins.wait = wait_after_phi1;
             self.pins.wr_n = wr_n_after_phi1;
-            // HLDA rises from the PHI1-domain state. Bus high-impedance itself
-            // is applied by the PHI2/T-state path when THOLD is driven.
-            self.pins.hlda = hlda_after_phi1 || self.pins.hlda;
+            // HLDA is wholly PHI1-owned. This matters on HOLD release: once
+            // HOLD is sampled LOW at PHI1, HLDA must stay LOW through PHI2 while
+            // the semantic core restores the suspended machine-cycle bus drive.
+            self.pins.hlda = hlda_after_phi1;
             // INTE is a PHI2-referenced processor output. A DI/EI/interrupt
             // transition performed by the certified T-state logic becomes
             // externally visible at this edge.
@@ -76,10 +77,11 @@ impl Cpu8080Cycle {
         self.pins.phi2 = false;
 
         if self.t_state == TState::Thold || self.holding {
-            // HLDA is asserted from the PHI1-domain state. Do not release the
-            // address/data buses here: Intel specifies high impedance following
-            // the PHI2 edge, which the THOLD T-state path performs below.
-            self.pins.hlda = true;
+            // HLDA follows the sampled HOLD request in the PHI1 domain. While
+            // HOLD remains asserted the CPU continues acknowledging it. When
+            // HOLD is released, HLDA falls at this PHI1; the suspended address/
+            // data drive is restored by the following PHI2 transition.
+            self.pins.hlda = inputs.hold;
             self.pins.wait = false;
             self.pins.wr_n = true;
             return;
@@ -141,8 +143,11 @@ mod tests {
     #[test]
     fn write_strobe_falls_on_phi1_of_t3_before_phi2_updates_other_pins() {
         let mut cpu = Cpu8080Cycle::new();
+        // Construct a valid MVI M,d8 write cycle rather than an impossible
+        // MemoryWrite M2 attached to the default NOP instruction.
+        cpu.instruction = Instruction::MviMemory;
         cpu.machine_cycle = MachineCycle::MemoryWrite;
-        cpu.machine_cycle_index = 2;
+        cpu.machine_cycle_index = 3;
         cpu.t_state = TState::T3;
         cpu.cycle_address = 0x3456;
         cpu.cycle_data_out = Some(0xa5);
@@ -219,5 +224,30 @@ mod tests {
         assert_eq!(samples[2].1.address, None, "address bus floats after PHI2 in HOLD");
         assert_eq!(samples[2].1.data_out, None, "data bus floats after PHI2 in HOLD");
         assert!(samples[2].1.wr_n);
+    }
+
+    #[test]
+    fn hold_release_drops_hlda_on_phi1_and_restores_cpu_bus_at_phi2() {
+        let mut cpu = Cpu8080Cycle::new();
+        cpu.holding = true;
+        cpu.t_state = TState::Thold;
+        cpu.hold_resume_t_state = TState::T2;
+        cpu.machine_cycle = MachineCycle::InstructionFetch;
+        cpu.cycle_address = 0x2345;
+        cpu.pins.hlda = true;
+        cpu.pins.address = None;
+        cpu.pins.data_out = None;
+
+        let mut samples = Vec::new();
+        cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
+            samples.push((edge, pins));
+        });
+
+        assert!(!samples[0].1.hlda, "HOLD low must release HLDA at PHI1");
+        assert!(!samples[2].1.hlda);
+        assert_eq!(samples[2].1.address, Some(0x2345), "CPU regains address bus at PHI2");
+        assert!(samples[2].1.dbin, "resumed fetch T2 must restore DBIN");
+        assert!(!cpu.is_holding());
+        assert_eq!(cpu.t_state(), TState::T3);
     }
 }
