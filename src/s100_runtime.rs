@@ -16,6 +16,7 @@ use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle};
 
 pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
+const DIGITAL_SETTLE_DELTAS: usize = 3;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DisplayControlLines {
@@ -202,15 +203,17 @@ impl S100RuntimeFabric {
         self.cpu.latched_status_word()
     }
 
-    /// Observe each stable level once per delta, then resolve again. This allows
-    /// RAM/status propagation without replaying a clock edge.
+    /// Three zero-time digital deltas are sufficient for the longest current
+    /// combinational chain: CPU status latch -> card decode/drive -> CPU inputs.
+    /// Replaying more deltas cannot add physical information and is especially
+    /// expensive for the instruction-level Fast engine.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
         extra_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
         let mut display_drive = display.drive(self.backplane.sample());
-        for _ in 0..6 {
+        for _ in 0..DIGITAL_SETTLE_DELTAS {
             let mut chassis = Vec::with_capacity(extra_drives.len() + 1);
             chassis.push(display_drive);
             chassis.extend(extra_drives.iter().cloned());
@@ -218,11 +221,6 @@ impl S100RuntimeFabric {
             self.backplane.observe_cards();
             display_drive = display.drive(self.backplane.sample());
         }
-        let mut chassis = Vec::with_capacity(extra_drives.len() + 1);
-        chassis.push(display_drive);
-        chassis.extend(extra_drives.iter().cloned());
-        self.backplane.resolve_current_drives(&chassis)?;
-        self.backplane.observe_cards();
         Ok(self.backplane.sample())
     }
 
@@ -276,13 +274,7 @@ impl S100RuntimeFabric {
             hlda: false,
         });
         self.settle(Self::fast_display(), &[])?;
-        let value = self.sample().data_in_or(S100_OPEN_BUS_VALUE);
-        self.set_cpu_package_pins(Cpu8080Pins {
-            address: Some(address),
-            ..Cpu8080Pins::default()
-        });
-        self.settle(Self::fast_display(), &[])?;
-        Ok(value)
+        Ok(self.sample().data_in_or(S100_OPEN_BUS_VALUE))
     }
 
     /// CPU pWR/DO are driven by the physical CPU board; Display/Control derives
