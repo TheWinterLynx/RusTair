@@ -159,8 +159,12 @@ fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
     assert_eq!(backend.front_panel_state().unwrap().lamps.hlda, 1.0);
 
     backend.request_hold(false).unwrap();
+    // MITS samples PHOLD low at PHI2. Intel clears its internal HOLD latch on
+    // that edge, but HLDA remains asserted until the following PHI1. Give the
+    // exact CPU board both documented clocks before freezing optical state.
     backend.service_execution(1).unwrap();
     assert!(!backend.cpu().is_holding());
+    backend.service_execution(1).unwrap();
     backend.halt().unwrap();
     backend
         .commit_panel_activity(std::time::Duration::from_millis(16))
