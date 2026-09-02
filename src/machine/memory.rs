@@ -1,19 +1,13 @@
-use rand::RngCore;
+use crate::config::{
+    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioHardwareConfig,
+    TwoSioInterruptWiring, TwoSioStraps,
+};
+use crate::s100_runtime::{RuntimeMemoryInspection, S100RuntimeFabric, S100_OPEN_BUS_VALUE};
 
-use crate::config::{RamBoardProfile, RamInit, RamSize};
-
-/// Default installed RAM, preserving RusTair's behaviour before configurable RAM.
 pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
 pub const MEMORY_BOARD_SIZE: usize = 1024;
 pub const MEMORY_BOARD_COUNT: usize = MAX_MEM_SIZE / MEMORY_BOARD_SIZE;
-/// Value observed by the processor when no S-100 memory device drives DI.
-///
-/// Contemporary MITS documentation describes execution through non-existent
-/// memory as executing octal 377 (RST 7). Keep this as a bus-visible policy;
-/// `peek()` still returns `None` so host/debugger code can distinguish absent
-/// hardware from an installed byte whose stored value happens to be FFh.
-pub(crate) const S100_OPEN_BUS_VALUE: u8 = 0xff;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MemoryReadyPhase {
@@ -24,18 +18,18 @@ pub(crate) enum MemoryReadyPhase {
     Other,
 }
 
-/// Physical RAM backing store plus the front-panel write-protection latches.
+/// Transitional machine-memory facade.
 ///
-/// The backing store covers the full 8080 address space, while `installed_size`
-/// models how much RAM is actually fitted to the emulated Altair. Physical
-/// inspection of an uninstalled address returns `None`; guest-visible reads see
-/// the released S-100 data bus as `S100_OPEN_BUS_VALUE`. Writes are ignored.
+/// The bytes no longer live here. Fast guest accesses cross the live MITS CPU
+/// board and electrical S-100 backplane into RuntimeRamCard instances. Host-side
+/// debugger/loader operations use handles to those same cards. The remaining
+/// timing/profile fields exist only while old aggregate configuration and Cycle's
+/// pre-backplane READY path are being migrated.
 pub(super) struct Memory {
-    bytes: [u8; MAX_MEM_SIZE],
-    protected: [bool; MEMORY_BOARD_COUNT],
-    installed_size: usize,
+    fabric: S100RuntimeFabric,
+    ram_size: RamSize,
     init_mode: RamInit,
-    board_profiles: [RamBoardProfile; MEMORY_BOARD_COUNT],
+    board_profile: RamBoardProfile,
     read_wait_active: bool,
     read_wait_remaining: u8,
     basic32_probe_guard: bool,
@@ -44,12 +38,14 @@ pub(super) struct Memory {
 
 impl Default for Memory {
     fn default() -> Self {
+        let ram_size = RamSize::K8;
+        let init_mode = RamInit::Random;
+        let board_profile = RamBoardProfile::FastNoWait;
         Self {
-            bytes: [0; MAX_MEM_SIZE],
-            protected: [false; MEMORY_BOARD_COUNT],
-            installed_size: MEM_SIZE,
-            init_mode: RamInit::Random,
-            board_profiles: [RamBoardProfile::FastNoWait; MEMORY_BOARD_COUNT],
+            fabric: Self::legacy_fabric(ram_size, board_profile, init_mode),
+            ram_size,
+            init_mode,
+            board_profile,
             read_wait_active: false,
             read_wait_remaining: 0,
             basic32_probe_guard: false,
@@ -59,33 +55,76 @@ impl Default for Memory {
 }
 
 impl Memory {
+    fn legacy_hardware(size: RamSize, profile: RamBoardProfile) -> S100HardwareConfig {
+        S100HardwareConfig::from_legacy_globals(
+            size,
+            profile,
+            SerialBoard::Sio88,
+            SioHardwareConfig::default(),
+            TwoSioStraps::default(),
+            TwoSioInterruptWiring::default(),
+        )
+    }
+
+    fn legacy_fabric(
+        size: RamSize,
+        profile: RamBoardProfile,
+        init_mode: RamInit,
+    ) -> S100RuntimeFabric {
+        S100RuntimeFabric::new(Self::legacy_hardware(size, profile), init_mode)
+            .expect("legacy RAM compatibility assembly must be valid")
+    }
+
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
-        self.installed_size = size.bytes();
+        self.ram_size = size;
         self.init_mode = init_mode;
-        self.clear_protection();
+        self.fabric = Self::legacy_fabric(size, self.board_profile, init_mode);
+        self.clear_transient_guards();
         self.reset_timing();
-        self.initialize();
+    }
+
+    pub(super) fn configure_hardware(
+        &mut self,
+        hardware: S100HardwareConfig,
+        init_mode: RamInit,
+    ) -> Result<(), crate::s100_runtime::S100RuntimeBuildError> {
+        self.fabric = S100RuntimeFabric::new(hardware, init_mode)?;
+        self.init_mode = init_mode;
+        self.clear_transient_guards();
+        self.reset_timing();
+        Ok(())
+    }
+
+    pub(super) fn hardware(&self) -> S100HardwareConfig {
+        self.fabric.hardware()
+    }
+
+    pub(super) fn inspect(&self, address: u16) -> RuntimeMemoryInspection {
+        self.fabric.inspect_memory(address)
     }
 
     pub(super) fn configure_board_profile(&mut self, profile: RamBoardProfile) {
-        // Storage is per 1 KiB slot even though the current UI applies one
-        // profile to all installed slots. This deliberately leaves room for
-        // mixed-card Altair configurations without another memory rewrite.
-        self.board_profiles.fill(profile);
+        // Legacy aggregate compatibility only. Explicit slot-native cards carry
+        // their own timing in RuntimeRamConfig and ignore this global profile.
+        self.board_profile = profile;
         self.reset_timing();
     }
 
     pub(super) fn board_profile(&self, address: u16) -> Option<RamBoardProfile> {
-        if address as usize >= self.installed_size {
-            return None;
-        }
-        Self::board_index(address).map(|index| self.board_profiles[index])
+        (self.fabric.mapped_ram_card_count(address) != 0).then_some(self.board_profile)
     }
 
     pub(super) fn read_wait_states(&self, address: u16) -> u8 {
-        self.board_profile(address)
-            .map(RamBoardProfile::read_wait_states)
-            .unwrap_or(0)
+        let physical = self.fabric.fast_read_wait_states(address);
+        if physical != 0 {
+            physical
+        } else if self.fabric.hardware() == Self::legacy_hardware(self.ram_size, self.board_profile) {
+            self.board_profile(address)
+                .map(RamBoardProfile::read_wait_states)
+                .unwrap_or(0)
+        } else {
+            0
+        }
     }
 
     pub(super) fn reset_timing(&mut self) {
@@ -93,9 +132,8 @@ impl Memory {
         self.read_wait_remaining = 0;
     }
 
-    /// Return the memory-card PRDY contribution for the current 8080 T-state.
-    /// The MITS 1K board starts its slowdown pulse with PSYNC and produces two
-    /// actual TW cycles on reads. Writes and uninstalled addresses never wait.
+    /// Transitional Cycle READY helper retained until the exact backend samples
+    /// pRDY directly from the same live backplane. Fast no longer uses this path.
     pub(super) fn ready_for_t_state(
         &mut self,
         address: u16,
@@ -132,26 +170,26 @@ impl Memory {
     }
 
     pub(super) fn installed_size(&self) -> usize {
-        self.installed_size
+        self.fabric.installed_ram_bytes()
     }
 
     pub(super) fn initialize(&mut self) {
         self.clear_transient_guards();
-        self.bytes.fill(0);
-        if self.init_mode == RamInit::Random {
-            rand::rng().fill_bytes(&mut self.bytes[..self.installed_size]);
-        }
+        self.fabric.initialize_memory(self.init_mode);
+        self.reset_timing();
     }
 
     pub(super) fn randomize(&mut self) {
         self.clear_transient_guards();
-        self.bytes.fill(0);
-        rand::rng().fill_bytes(&mut self.bytes[..self.installed_size]);
+        self.fabric.initialize_memory(RamInit::Random);
+        self.reset_timing();
     }
 
     pub(super) fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
         self.clear_transient_guards();
-        if self.installed_size != MAX_MEM_SIZE {
+        if self.fabric.mapped_ram_card_count(u16::MAX) != 1
+            || self.fabric.installed_ram_bytes() != MAX_MEM_SIZE
+        {
             return false;
         }
         self.basic32_probe_guard = true;
@@ -164,36 +202,38 @@ impl Memory {
     }
 
     pub(super) fn load(&mut self, address: u16, data: &[u8]) {
-        let start = address as usize;
-        if start >= self.installed_size {
-            return;
-        }
-        let len = data.len().min(self.installed_size - start);
-        self.bytes[start..start + len].copy_from_slice(&data[..len]);
+        let _ = self.fabric.load_bytes(address, data);
     }
 
-    /// Inspect a physical RAM byte without triggering guest-visible read side
-    /// effects. `None` means no RAM is physically installed at that address.
+    /// Inspect one uniquely mapped physical RAM byte. None means either no RAM
+    /// or an ambiguous overlap; callers that need that distinction use inspect().
     pub(super) fn peek(&self, address: u16) -> Option<u8> {
-        let index = address as usize;
-        (index < self.installed_size).then_some(self.bytes[index])
+        self.fabric.peek_unique_memory(address)
     }
 
-    /// Preview exactly the byte a guest memory read would receive without
-    /// consuming any transient hardware/compatibility state. This differs from
-    /// `peek`: uninstalled RAM leaves S-100 DI undriven and therefore reads as
-    /// FFh, while the BASIC 3.2 FFFFh sentinel is represented exactly as the
-    /// next real guest read would see it.
-    pub(super) fn preview_read(&self, address: u16) -> u8 {
-        if address as usize >= self.installed_size {
-            return S100_OPEN_BUS_VALUE;
+    fn resolved_preview(&self, address: u16) -> u8 {
+        let inspection = self.fabric.inspect_memory(address);
+        match inspection.drivers.as_slice() {
+            [] => S100_OPEN_BUS_VALUE,
+            [driver] => driver.value,
+            drivers => {
+                let first = drivers[0].value;
+                if drivers.iter().all(|driver| driver.value == first) {
+                    first
+                } else {
+                    S100_OPEN_BUS_VALUE
+                }
+            }
         }
+    }
+
+    pub(super) fn preview_read(&self, address: u16) -> u8 {
         if address == u16::MAX && self.basic32_probe_guard {
             if let Some(written) = self.basic32_probe_write {
                 return written ^ 0xff;
             }
         }
-        self.bytes[address as usize]
+        self.resolved_preview(address)
     }
 
     pub(super) fn debugger_write(
@@ -202,76 +242,84 @@ impl Memory {
         value: u8,
         respect_protection: bool,
     ) -> bool {
-        let index = address as usize;
-        if index >= self.installed_size {
-            return false;
-        }
-        if respect_protection && self.is_protected(address) {
-            return false;
-        }
-        self.bytes[index] = value;
-        true
+        self.fabric
+            .write_unique_memory(address, value, respect_protection)
     }
 
     pub(super) fn clear_protection(&mut self) {
-        self.protected.fill(false);
+        self.fabric.clear_memory_protection();
     }
 
     pub(super) fn board_index(address: u16) -> Option<usize> {
-        let address = address as usize;
-        (address < MAX_MEM_SIZE).then_some(address / MEMORY_BOARD_SIZE)
+        Some(address as usize / MEMORY_BOARD_SIZE)
     }
 
     pub(super) fn is_protected(&self, address: u16) -> bool {
-        if address as usize >= self.installed_size {
-            return false;
-        }
-        Self::board_index(address)
-            .map(|index| self.protected[index])
-            .unwrap_or(false)
+        self.fabric.memory_is_protected(address)
     }
 
     pub(super) fn set_protected(&mut self, address: u16, protected: bool) {
-        if address as usize >= self.installed_size {
-            return;
-        }
-        if let Some(index) = Self::board_index(address) {
-            self.protected[index] = protected;
-        }
+        let _ = self
+            .fabric
+            .set_unique_memory_protection(address, protected);
     }
 
-    pub(super) fn read(&mut self, address: u16) -> u8 {
-        if address as usize >= self.installed_size {
-            return S100_OPEN_BUS_VALUE;
-        }
-
+    fn compatibility_read_override(&mut self, address: u16) -> Option<u8> {
         if address == u16::MAX && self.basic32_probe_guard {
             if let Some(written) = self.basic32_probe_write.take() {
                 self.basic32_probe_guard = false;
-                return written ^ 0xff;
+                return Some(written ^ 0xff);
             }
         }
-
-        self.bytes[address as usize]
+        None
     }
 
-    pub(super) fn write(&mut self, address: u16, value: u8) {
-        if address as usize >= self.installed_size || self.is_protected(address) {
-            return;
+    /// Fast guest memory read. The returned byte is resolved DI from the live
+    /// S-100 fabric after the physical CPU board has emitted a reconstructed
+    /// memory-read cycle.
+    pub(super) fn read(&mut self, address: u16) -> u8 {
+        if let Some(value) = self.compatibility_read_override(address) {
+            return value;
         }
+        self.fabric
+            .fast_memory_read(address, 0x82)
+            .unwrap_or(S100_OPEN_BUS_VALUE)
+    }
 
+    /// Fast guest memory write. Storage changes only when the installed RAM card
+    /// observes MWRT/DO on the resolved S-100 bus.
+    pub(super) fn write(&mut self, address: u16, value: u8) {
         if address == u16::MAX && self.basic32_probe_guard {
             self.basic32_probe_write = Some(value);
             return;
         }
+        let _ = self.fabric.fast_memory_write(address, value, 0x00);
+    }
 
-        self.bytes[address as usize] = value;
+    /// Cycle transitional raw read/write helpers. These access the same physical
+    /// card storage but deliberately do not synthesize a second Fast CPU cycle;
+    /// the next cut makes Cycle's existing pin edges drive this fabric directly.
+    pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
+        self.compatibility_read_override(address)
+            .unwrap_or_else(|| self.resolved_preview(address))
+    }
+
+    pub(super) fn cycle_write(&mut self, address: u16, value: u8) {
+        if address == u16::MAX && self.basic32_probe_guard {
+            self.basic32_probe_write = Some(value);
+            return;
+        }
+        let _ = self.fabric.write_unique_memory(address, value, true);
     }
 }
 
 impl super::AltairBus {
     pub fn peek_memory(&self, address: u16) -> Option<u8> {
         self.memory.peek(address)
+    }
+
+    pub(crate) fn inspect_memory_mapping(&self, address: u16) -> RuntimeMemoryInspection {
+        self.memory.inspect(address)
     }
 
     pub(crate) fn preview_guest_memory(&self, address: u16) -> u8 {
@@ -286,6 +334,18 @@ impl super::AltairBus {
     ) -> bool {
         self.memory
             .debugger_write(address, value, respect_protection)
+    }
+
+    pub(crate) fn configure_s100_hardware_memory(
+        &mut self,
+        hardware: S100HardwareConfig,
+        init: RamInit,
+    ) -> Result<(), crate::s100_runtime::S100RuntimeBuildError> {
+        self.memory.configure_hardware(hardware, init)
+    }
+
+    pub(crate) fn s100_hardware_memory(&self) -> S100HardwareConfig {
+        self.memory.hardware()
     }
 
     pub(crate) fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
@@ -317,14 +377,9 @@ impl super::AltairBus {
         let memory_ready = self.memory.ready_for_t_state(address, memory_read, phase);
         let signals = self.s100.signals();
 
-        // Exact 88-2SIO timing crosses a sub-T-state boundary. During InputRead
-        // T1 the processor status byte is already on CPU D / S-100 DO with
-        // PSYNC high, but the MITS 8212 does not assert the dedicated SINP line
-        // until SYNC+PHI1 at the start of T2. The selected 88-2SIO then clocks
-        // its V flip-flop, pulls PRDY low, and the CPU samples that LOW at T2
-        // PHI2. Predict that upcoming PHI2 value here without changing the
-        // physical S-100 PRDY level early; `drive_cycle_cpu_board_edge()` owns
-        // the actual PHI1 transition.
+        // Serial cards are the only remaining READY source outside the live RAM
+        // fabric during this cut. Keep their exact 88-2SIO PHI1-owned transition
+        // intact until the serial card itself moves into S100RuntimeFabric.
         let inp_about_to_latch = !memory_read
             && phase == MemoryReadyPhase::T2
             && signals.psync
@@ -341,10 +396,6 @@ impl super::AltairBus {
             .ready_for_input_t_state(address as u8, input_read, phase);
         let ready = memory_ready && io_ready;
 
-        // For the 88-2SIO's sole input wait, PRDY itself changes on PHI1: SINP
-        // clocks it LOW at T2 PHI1 and PWAIT clears it HIGH at TW PHI1. Do not
-        // move that electrical transition to this host-side pre-T-state query.
-        // Other READY contributors keep the existing direct path.
         let phi1_owned_2sio_transition = io_wait_selected
             && matches!(phase, MemoryReadyPhase::T2 | MemoryReadyPhase::Tw);
         if !phi1_owned_2sio_transition {
@@ -353,26 +404,21 @@ impl super::AltairBus {
         ready
     }
 
-    /// Host freezes physical STOP at the first TW instead of burning millions of
-    /// identical wait clocks. A real memory-board one-shot would expire during
-    /// the operator pause, so settle that transient PRDY source before resume.
     pub(crate) fn cycle_settle_memory_ready_after_panel_freeze(&mut self) {
         self.memory.reset_timing();
         self.s100.set_memory_ready_input(true);
     }
 
     pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 {
-        self.memory.read(address)
+        self.memory.cycle_read(address)
     }
 
     pub(crate) fn cycle_peek_memory(&self, address: u16) -> u8 {
-        self.memory
-            .peek(address)
-            .unwrap_or(S100_OPEN_BUS_VALUE)
+        self.memory.preview_read(address)
     }
 
     pub(crate) fn cycle_write_memory(&mut self, address: u16, value: u8) {
-        self.memory.write(address, value);
+        self.memory.cycle_write(address, value);
     }
 
     pub(crate) fn cycle_input_port(&mut self, port: u8) -> u8 {
@@ -389,8 +435,6 @@ impl super::AltairBus {
         }
     }
 
-    /// Canonical raw S-100 status latch. Debugger/teaching code must read this
-    /// rather than reverse-engineering electrical state from optical LED duty.
     pub(crate) fn raw_s100_status_word(&self) -> u8 {
         let s = self.s100.signals();
         (u8::from(s.memr) << 7)
@@ -516,7 +560,16 @@ mod tests {
     }
 
     #[test]
-    fn cycle_raw_memory_path_does_not_synthesize_panel_activity() {
+    fn fast_guest_read_and_write_are_backplane_transactions() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K1, RamInit::Zeroed);
+        memory.write(0x0010, 0x5a);
+        assert_eq!(memory.peek(0x0010), Some(0x5a));
+        assert_eq!(memory.read(0x0010), 0x5a);
+    }
+
+    #[test]
+    fn cycle_raw_memory_path_does_not_synthesize_fast_cpu_activity() {
         let mut bus = super::super::AltairBus::default();
         bus.load(0x0010, &[0x5a]);
         let before = bus.s100.signals();
