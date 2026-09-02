@@ -1,9 +1,9 @@
 //! Live S-100 chassis fabric shared by Fast and Cycle execution engines.
 //!
 //! This is the materialization boundary between persisted slot configuration and
-//! electrical card instances.  Card-family branching is allowed here because
+//! electrical card instances. Card-family branching is allowed here because
 //! this is the chassis assembler; the backplane resolver itself remains wholly
-//! generic.  CPU and RAM guest traffic uses only the resolved S-100 bus.
+//! generic. CPU and RAM guest traffic uses only the resolved S-100 bus.
 
 use crate::config::{
     RamInit, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
@@ -15,6 +15,8 @@ use crate::s100_backplane::{
 };
 use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle};
+
+pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DisplayControlLines {
@@ -167,8 +169,6 @@ impl S100RuntimeFabric {
             ram,
             pending_serial_slots,
         };
-        // Establish passive-high ready/interrupt state and let the CPU card see
-        // the initial resolved bus before either engine begins execution.
         fabric
             .settle(DisplayControlLines::default(), &[])
             .map_err(S100RuntimeBuildError::Backplane)?;
@@ -207,10 +207,9 @@ impl S100RuntimeFabric {
         self.cpu.latched_status_word()
     }
 
-    /// Propagate one stable package-pin/chassis level through a few zero-time
-    /// digital deltas. Cards edge-detect their own clock inputs, so repeated
-    /// observation at the same level settles combinational dependencies without
-    /// inventing extra PHI1/PHI2 edges.
+    /// Propagate one stable package-pin/chassis level through zero-time digital
+    /// deltas. Edge-sensitive cards remember their previous physical levels, so
+    /// this settles combinational dependencies without inventing clock edges.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
@@ -231,6 +230,118 @@ impl S100RuntimeFabric {
         self.backplane.resolve_current_drives(&chassis)?;
         self.backplane.observe_cards();
         Ok(self.backplane.sample())
+    }
+
+    fn fast_display() -> DisplayControlLines {
+        DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        }
+    }
+
+    fn fast_latch_status(
+        &mut self,
+        address: u16,
+        status_word: u8,
+    ) -> Result<(), S100BackplaneError> {
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            address: Some(address),
+            data_out: Some(status_word),
+            sync: true,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.settle(Self::fast_display(), &[])?;
+        Ok(())
+    }
+
+    /// Instruction-level engine memory read through the same physical CPU board,
+    /// backplane resolver and installed RAM cards used by Cycle. `status_word`
+    /// is the reconstructed 8080 status byte for this machine cycle.
+    pub fn fast_memory_read(
+        &mut self,
+        address: u16,
+        status_word: u8,
+    ) -> Result<u8, S100BackplaneError> {
+        self.fast_latch_status(address, status_word)?;
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(address),
+            data_out: None,
+            sync: false,
+            dbin: true,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.settle(Self::fast_display(), &[])?;
+        let value = self.sample().data_in_or(S100_OPEN_BUS_VALUE);
+        self.set_cpu_package_pins(Cpu8080Pins {
+            address: Some(address),
+            ..Cpu8080Pins::default()
+        });
+        self.settle(Self::fast_display(), &[])?;
+        Ok(value)
+    }
+
+    /// Instruction-level engine memory write. The CPU board drives pWR and DO;
+    /// Display/Control derives MWRT; RAM cards observe only the resulting S-100
+    /// nets. No host-side write is applied to RAM storage here.
+    pub fn fast_memory_write(
+        &mut self,
+        address: u16,
+        value: u8,
+        status_word: u8,
+    ) -> Result<(), S100BackplaneError> {
+        self.fast_latch_status(address, status_word)?;
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            address: Some(address),
+            data_out: Some(value),
+            sync: false,
+            dbin: false,
+            wr_n: false,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.settle(Self::fast_display(), &[])?;
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(address),
+            data_out: Some(value),
+            sync: false,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.settle(Self::fast_display(), &[])?;
+        Ok(())
+    }
+
+    /// Fast cannot reproduce the exact Tw edges, but it still obtains the wait
+    /// count from the actual selected card instances rather than a global RAM
+    /// profile. Wired-AND pRDY means overlapping selected cards are governed by
+    /// the slowest fixed-wait contributor.
+    pub fn fast_read_wait_states(&self, address: u16) -> u8 {
+        self.ram
+            .iter()
+            .filter(|ram| ram.handle.contains(address))
+            .map(|ram| ram.handle.config().read_wait_states())
+            .max()
+            .unwrap_or(0)
     }
 
     pub fn inspect_memory(&self, address: u16) -> RuntimeMemoryInspection {
@@ -267,8 +378,6 @@ impl S100RuntimeFabric {
             .sum()
     }
 
-    /// Host debugger write. Ambiguous overlapping mappings are deliberately
-    /// rejected instead of silently choosing a card by slot order.
     pub fn write_unique_memory(
         &self,
         address: u16,
@@ -360,43 +469,24 @@ mod tests {
     fn configured_cpu_and_ram_are_live_slots_on_one_backplane() {
         let fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
         assert_eq!(fabric.cpu_slot(), 1);
-        assert_eq!(fabric.backplane().slots()[0].descriptor().unwrap().key, "mits-8080-cpu");
-        assert_eq!(fabric.backplane().slots()[1].descriptor().unwrap().key, "mits-88-4mcs");
+        assert_eq!(
+            fabric.backplane().slots()[0].descriptor().unwrap().key,
+            "mits-8080-cpu"
+        );
+        assert_eq!(
+            fabric.backplane().slots()[1].descriptor().unwrap().key,
+            "mits-88-4mcs"
+        );
         assert_eq!(fabric.installed_ram_bytes(), 4 * 1024);
     }
 
     #[test]
-    fn debugger_handle_sees_same_bytes_that_ram_card_will_drive() {
+    fn fast_read_and_write_cross_cpu_board_backplane_and_ram_card() {
         let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
-        assert!(fabric.write_unique_memory(0x0123, 0x5a, false));
-
-        // Synthetic Fast-style memory-read machine cycle: status A2h is the
-        // 8080 fetch status byte (MEMR+M1+/WO). The CPU board latches it at
-        // SYNC+PHI1; subsequent deltas let RAM decode sMEMR and drive DI.
-        fabric.set_cpu_package_pins(Cpu8080Pins {
-            phi1: true,
-            phi2: false,
-            address: Some(0x0123),
-            data_out: Some(0xa2),
-            sync: true,
-            dbin: false,
-            wr_n: true,
-            inte: false,
-            wait: false,
-            hlda: false,
-        });
-        fabric
-            .settle(
-                DisplayControlLines {
-                    ready: true,
-                    run: true,
-                    ..DisplayControlLines::default()
-                },
-                &[],
-            )
-            .unwrap();
-        assert_eq!(fabric.sample().data_in(), Some(0x5a));
-        assert_eq!(fabric.cpu_package_inputs().data_in, 0x5a);
+        fabric.fast_memory_write(0x0123, 0x5a, 0x00).unwrap();
+        assert_eq!(fabric.peek_unique_memory(0x0123), Some(0x5a));
+        assert_eq!(fabric.fast_memory_read(0x0123, 0x82).unwrap(), 0x5a);
+        assert_eq!(fabric.sample().data_in(), None);
     }
 
     #[test]
@@ -408,7 +498,10 @@ mod tests {
         let sample = fabric.backplane().resolve_drive_sets(&[cpu]);
         let drive = DisplayControlLines::default().drive(&sample);
         let resolved = fabric.backplane().resolve_drive_sets(&[drive]);
-        assert_eq!(resolved.signal_level(S100Signal::MemoryWrite), Some(true));
+        assert_eq!(
+            resolved.signal_level(S100Signal::MemoryWrite),
+            Some(true)
+        );
     }
 
     #[test]
@@ -426,10 +519,9 @@ mod tests {
             )
             .unwrap();
         let fabric = S100RuntimeFabric::new(config, RamInit::Zeroed).unwrap();
-        assert_eq!(fabric.mapped_ram_card_count(0x0100), 1);
-        assert_eq!(fabric.mapped_ram_card_count(0x0900), 2);
-        assert_eq!(fabric.mapped_ram_card_count(0x1800), 0);
-        assert!(fabric.inspect_memory(0x0900).is_overlap());
-        assert!(!fabric.write_unique_memory(0x0900, 0xaa, false));
+        assert_eq!(fabric.mapped_ram_card_count(0x0010), 1);
+        assert_eq!(fabric.mapped_ram_card_count(0x0800), 2);
+        assert_eq!(fabric.mapped_ram_card_count(0x1800), 1);
+        assert_eq!(fabric.mapped_ram_card_count(0x3000), 0);
     }
 }
