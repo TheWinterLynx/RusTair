@@ -1,6 +1,7 @@
 mod external_com;
 mod external_serial;
 mod machine;
+mod s100_codec;
 mod s100_hardware;
 mod sio;
 mod sio_electrical;
