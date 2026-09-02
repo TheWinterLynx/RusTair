@@ -44,11 +44,13 @@ pub(super) struct S100Signals {
     /// DI value here when DI is temporarily undriven so write/status activity
     /// cannot masquerade as front-panel input data.
     pub panel_data: u8,
-    /// Original Altair CPU-board PHI1/PHI2 outputs on S-100 pins 25/24. `None`
-    /// means this backend has no exact instantaneous phase sample; Fast must not
-    /// invent one from instruction timing.
+    /// Original Altair CPU-board clock outputs on the S-100 backplane.
+    /// PHI2 is pin 24, PHI1 pin 25, and CLOC is the separately buffered 2.000 MHz
+    /// oscillator on pin 49. `None` means there is no exact instantaneous Cycle
+    /// sample; instruction-level Fast must not invent sub-instruction clock state.
     pub phi1: Option<bool>,
     pub phi2: Option<bool>,
+    pub cloc: Option<bool>,
     /// Processor command/control outputs buffered by the MITS CPU board:
     /// PSYNC pin 76, active-low PWR pin 77 and PDBIN pin 78.
     pub psync: bool,
@@ -96,6 +98,7 @@ impl Default for S100Signals {
             panel_data: 0,
             phi1: None,
             phi2: None,
+            cloc: None,
             psync: false,
             pwr_n: true,
             pdbin: false,
@@ -466,7 +469,7 @@ impl S100BusState {
 
     /// Drive the CPU-board clock and command/control outputs exactly at one
     /// observed edge. These are real backplane nets, not UI reconstructions:
-    /// PHI2=pin24, PHI1=pin25, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
+    /// PHI2=pin24, PHI1=pin25, CLOC=pin49, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
     pub(super) fn drive_cpu_board_edge(
         &mut self,
         phi1: bool,
@@ -477,6 +480,16 @@ impl S100BusState {
     ) {
         self.signals.phi1 = Some(phi1);
         self.signals.phi2 = Some(phi2);
+        // MITS derives the processor phases and the buffered 2 MHz CLOC from the
+        // same crystal oscillator. At our digital claim boundary PHI1 rising is
+        // the high transition of CLOC and PHI2 rising its low transition. During
+        // the non-overlap dead-times CLOC retains its previous level; analog
+        // pulse width, one-shot tolerance and propagation delay remain non-claims.
+        if phi1 {
+            self.signals.cloc = Some(true);
+        } else if phi2 {
+            self.signals.cloc = Some(false);
+        }
         self.signals.psync = psync;
         self.signals.pdbin = pdbin;
         self.signals.pwr_n = pwr_n;
@@ -785,16 +798,29 @@ mod tests {
         let phi1 = bus.signals();
         assert_eq!(phi1.phi1, Some(true));
         assert_eq!(phi1.phi2, Some(false));
+        assert_eq!(phi1.cloc, Some(true));
         assert!(phi1.psync);
         assert!(!phi1.pdbin);
         assert!(phi1.pwr_n);
+
+        // CLOC is a separate oscillator net: it retains its level through the
+        // non-overlap dead time instead of becoming unknown when PHI1/PHI2 are 0.
+        bus.drive_cpu_board_edge(false, false, false, false, true);
+        let dead_after_phi1 = bus.signals();
+        assert_eq!(dead_after_phi1.phi1, Some(false));
+        assert_eq!(dead_after_phi1.phi2, Some(false));
+        assert_eq!(dead_after_phi1.cloc, Some(true));
 
         bus.drive_cpu_board_edge(false, true, false, true, true);
         let phi2 = bus.signals();
         assert_eq!(phi2.phi1, Some(false));
         assert_eq!(phi2.phi2, Some(true));
+        assert_eq!(phi2.cloc, Some(false));
         assert!(!phi2.psync);
         assert!(phi2.pdbin);
+
+        bus.drive_cpu_board_edge(false, false, false, true, true);
+        assert_eq!(bus.signals().cloc, Some(false));
     }
 
     #[test]
