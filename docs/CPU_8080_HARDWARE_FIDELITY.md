@@ -1,6 +1,6 @@
 # Intel 8080 / MITS 8800 CPU-board hardware fidelity
 
-Status: **READY FOR FINAL LOCAL CERTIFICATION — implementation complete at the documented digital edge/cycle boundary; PASS awaits the post-closeout release gate.**
+Status: **PASS — final local release certification green on 2026-09-02 at the documented digital edge/cycle boundary.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
@@ -77,13 +77,13 @@ PHI2 rising
 PHI2 falling
 ```
 
-`tick_with_pin_edges_split()` keeps PHI1-side and PHI2-side package inputs separable for an external CPU-board synchronizer while the ordinary edge API remains available to callers with a stable sample.
+The test-only split-input helper keeps PHI1-side and PHI2-side package inputs separable for focused regressions. Production Cycle uses the live-PHI2 input path so external S-100 hardware may react after PHI1 and still be sampled correctly by the processor at PHI2.
 
 The semantic T-state transition occurs at PHI2; PHI1-owned WAIT, /WR and HLDA are preserved across that transition rather than being overwritten by a synthetic all-at-once T-state projection.
 
 ### READY / WAIT
 
-The Cycle core now distinguishes **READY being LOW** from **the processor actually being in TW**:
+The Cycle core distinguishes **READY being LOW** from **the processor actually being in TW**:
 
 ```text
 T2 PHI1: WAIT LOW
@@ -132,6 +132,8 @@ Intel 8080 D0-D7 <-> CPU-board buffers <-> S-100 DI / DO
 
 Status traffic leaving the processor uses the CPU/DO domain and cannot masquerade as S-100 DI/front-panel DATA. The 8212 status latch is updated by the CPU-board edge path rather than reconstructed from panel lamps.
 
+The 88-2SIO PRDY regression also exercises the CPU-board boundary across a genuine sub-T-state dependency: SINP is latched at T2 PHI1, the card may pull PRDY LOW before T2 PHI2, and PWAIT at TW PHI1 releases it before the following PHI2 sample. This validates that external hardware can affect READY on the documented edge without moving the physical S-100 transition earlier.
+
 ## 4. Interrupt boundary
 
 Interrupt acknowledge remains a bus transaction. No serial/device card is allowed to call an internal CPU `interrupt(RSTn)` shortcut.
@@ -166,7 +168,8 @@ Focused regressions now cover, among other existing CPU tests:
 - /WR assertion on PHI1 of a real memory-write cycle;
 - READY sampled at T2/TW PHI2;
 - WAIT assertion only on actual TW PHI1 and release on the following PHI1;
-- split PHI1/PHI2 input samples without retroactive edge changes;
+- PHI1/PHI2 input changes without retroactive edge changes;
+- live external input settlement between PHI1 and PHI2;
 - HOLD dwell, HLDA and high-impedance bus state;
 - HOLD release: PHI2 internal clear, next-PHI1 HLDA release, following-PHI2 bus recovery;
 - backend HOLD/STOP interaction using the same physical sequence;
@@ -174,12 +177,19 @@ Focused regressions now cover, among other existing CPU tests:
 - MITS 8212 status-latch timing;
 - CPU D vs S-100 DI vs S-100 DO vs front-panel DATA separation;
 - PINT vs SINTA separation and external INTA opcode path;
+- exact 88-2SIO `SINP -> PRDY LOW -> TW/PWAIT -> PRDY HIGH` interaction;
 - RESET and RUN/STOP/READY interactions;
 - Fast/Cycle architectural differential and classic 8080 diagnostics.
 
-## 6. Existing architectural certification
+## 6. Final local certification
 
-Before the final edge-closeout changes, local release certification on 2026-09-02 was green and reported the established exact diagnostic totals:
+The completed CPU-board branch was locally release-certified green on 2026-09-02 after the final edge-closeout and 88-2SIO/PRDY correction. The reported green gate covered:
+
+1. `cargo test --release`
+2. `cargo test --release --test cpu8080_cycle_differential`
+3. `cargo test --release --test cpu8080_cycle_classic_diagnostics -- --include-ignored --nocapture`
+
+The classic-diagnostic regressions enforce the established exact reference totals:
 
 | Diagnostic | Instructions | T-states |
 |---|---:|---:|
@@ -188,15 +198,12 @@ Before the final edge-closeout changes, local release certification on 2026-09-0
 | CPUTEST.COM | 33,971,311 | 255,653,383 |
 | 8080EXM.COM | 2,919,050,698 | 23,803,381,171 |
 
-The edge changes are intentionally below the architectural T-state count. The final gate nevertheless reruns the complete certification so this document does not infer that invariance.
+Because the full gate was reported green, those exact-reference assertions also passed; this PASS is not inferred from earlier runs.
 
-## 7. Final PASS gate
+## 7. PASS conclusion
 
-Mark this document **PASS** only after the branch containing the completed edge/CPU-board changes is green for all of the following:
+**PASS.** The Intel 8080 plus original MITS 8800 CPU-board digital hardware block is closed at the documented edge/cycle fidelity boundary above.
 
-1. `cargo test --release`
-2. `cargo test --release --test cpu8080_cycle_differential`
-3. `cargo test --release --test cpu8080_cycle_classic_diagnostics -- --include-ignored --nocapture`
-4. exact classic totals remain those listed above.
+A future primary-source discrepancy or reproducible regression may reopen a specific claim. Otherwise the CPU board should not be revisited as generic fidelity debt.
 
-When that post-closeout gate is green, the Intel 8080 + original MITS 8800 CPU-board digital hardware block is closed. The next hardware-fidelity block may then be the MITS 88-VI.
+The separate architectural idea of representing the whole machine as an explicit S-100 backplane with uniform plug-in card interfaces is intentionally **PARKED/backlog** after the initial scaffold on `agent/s100-card-backplane-architecture`; it is not a blocker to this CPU-board fidelity PASS.
