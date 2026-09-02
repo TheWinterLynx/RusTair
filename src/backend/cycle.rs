@@ -1293,8 +1293,14 @@ mod tests {
         backend.request_hold(false).unwrap();
         assert!(!backend.machine().bus.cpu_control_lines().hold);
         assert!(backend.machine().bus.raw_s100_hlda());
+
+        // PHOLD is sampled LOW at this PHI2. The internal HOLD latch clears,
+        // but Intel specifies that HLDA remains HIGH until the following PHI1.
         backend.service_execution(1).unwrap();
         assert!(!backend.cpu().is_holding());
+        assert!(backend.machine().bus.raw_s100_hlda());
+
+        backend.service_execution(1).unwrap();
         assert!(!backend.machine().bus.raw_s100_hlda());
     }
 
@@ -1318,7 +1324,10 @@ mod tests {
 
         backend.request_hold(false).unwrap();
         assert!(backend.machine().bus.raw_s100_hlda());
-        backend.service_execution(1).unwrap();
+        // Allow the documented PHI2 HOLD-latch clear, following PHI1 HLDA drop,
+        // resumed PSYNC capture and the real T2 -> TW STOP handshake. The loop
+        // stops itself once pending STOP has been captured and parked.
+        backend.service_execution(8).unwrap();
 
         assert!(!backend.cpu().is_holding());
         assert!(!backend.machine().running);
