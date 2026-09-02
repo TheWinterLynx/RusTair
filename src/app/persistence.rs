@@ -2,9 +2,9 @@ use super::super::*;
 use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
     ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
-    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, SioHardwareConfig,
-    TcpListenScope, TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
-    TwoSioSignalInterface,
+    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, S100HardwareConfig,
+    SioHardwareConfig, TcpListenScope, TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap,
+    TwoSioInterruptTarget, TwoSioSignalInterface,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
@@ -13,7 +13,7 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const CONFIG_VERSION: u32 = 4;
+const CONFIG_VERSION: u32 = 5;
 const DEFAULT_LED_BRIGHTNESS: f32 = 1.0;
 const DEFAULT_LED_AURA: f32 = 1.0;
 const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -111,6 +111,7 @@ pub(super) fn led_visual_controls_state() -> (bool, f32, f32) {
 
 pub(super) fn set_led_visual_controls_state(open: bool, brightness: f32, aura: f32) {
     let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.led_visual_controls_state = state.led_visual_controls_state;
     state.led_controls_open = open;
     state.led_brightness = brightness.clamp(0.25, 3.0);
     state.led_aura = aura.clamp(0.0, 3.0);
@@ -126,6 +127,7 @@ impl SavedSettings {
 
     fn from_text(text: &str) -> Self {
         let mut saved = Self::default();
+        let mut saw_s100_hardware = false;
         for raw_line in text.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -150,6 +152,12 @@ impl SavedSettings {
                 "machine.two_sio_port1_interface" => if let Some(v) = TwoSioSignalInterface::from_persistence_key(value) { saved.config.machine.two_sio_straps.port1_interface = v; },
                 "machine.two_sio_port0_irq" => if let Some(v) = TwoSioInterruptTarget::from_persistence_key(value) { saved.config.machine.two_sio_interrupt_wiring.port0 = v; },
                 "machine.two_sio_port1_irq" => if let Some(v) = TwoSioInterruptTarget::from_persistence_key(value) { saved.config.machine.two_sio_interrupt_wiring.port1 = v; },
+                "machine.s100_hardware" => {
+                    if let Some(v) = S100HardwareConfig::from_persistence_key(value) {
+                        saved.config.machine.s100_hardware = v;
+                        saw_s100_hardware = true;
+                    }
+                }
                 "peripherals.asr33_speed" => if let Some(v) = parse_asr_speed(value) { saved.config.peripherals.asr33_speed = v; },
                 "peripherals.terminal_speed" => if let Some(v) = parse_terminal_speed(value) { saved.config.peripherals.terminal_speed = v; },
                 "compatibility.basic32_64k_probe_workaround" => if let Ok(v) = value.parse() { saved.config.compatibility.basic32_64k_probe_workaround = v; },
@@ -190,6 +198,16 @@ impl SavedSettings {
                 _ => {}
             }
         }
+        if !saw_s100_hardware {
+            saved.config.machine.s100_hardware = S100HardwareConfig::from_legacy_globals(
+                saved.config.machine.ram_size,
+                saved.config.machine.ram_board_profile,
+                saved.config.machine.serial_board,
+                saved.config.machine.sio_hardware,
+                saved.config.machine.two_sio_straps,
+                saved.config.machine.two_sio_interrupt_wiring,
+            );
+        }
         saved
     }
 
@@ -210,6 +228,7 @@ impl SavedSettings {
         let _ = writeln!(out, "machine.two_sio_port1_interface={}", self.config.machine.two_sio_straps.port1_interface.persistence_key());
         let _ = writeln!(out, "machine.two_sio_port0_irq={}", self.config.machine.two_sio_interrupt_wiring.port0.persistence_key());
         let _ = writeln!(out, "machine.two_sio_port1_irq={}", self.config.machine.two_sio_interrupt_wiring.port1.persistence_key());
+        let _ = writeln!(out, "machine.s100_hardware={}", self.config.machine.s100_hardware.persistence_key());
         let _ = writeln!(out, "peripherals.asr33_speed={}", asr_speed_key(self.config.peripherals.asr33_speed));
         let _ = writeln!(out, "peripherals.terminal_speed={}", terminal_speed_key(self.config.peripherals.terminal_speed));
         let _ = writeln!(out, "compatibility.basic32_64k_probe_workaround={}", self.config.compatibility.basic32_64k_probe_workaround);
@@ -581,6 +600,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_config_without_slot_inventory_is_migrated_from_old_globals() {
+        let decoded = SavedSettings::from_text(
+            "machine.ram_size=48k\nmachine.ram_board_profile=mits-1k-static-1975\nmachine.serial_board=88-2sio\n",
+        );
+        assert_eq!(decoded.config.machine.s100_hardware.installed_ram_bytes(), 48 * 1024);
+        assert_eq!(decoded.config.machine.s100_hardware.cpu_slots().collect::<Vec<_>>(), vec![1]);
+        assert!(matches!(
+            decoded.config.machine.s100_hardware.slot(3),
+            Some(crate::config::S100InstalledCardConfig::Mits88TwoSio { .. })
+        ));
+    }
+
+    #[test]
     fn old_or_invalid_sio_hardware_keeps_safe_default_as_one_atomic_card() {
         let old = SavedSettings::from_text("machine.serial_board=88-sio\n");
         assert_eq!(old.config.machine.sio_hardware, SioHardwareConfig::default());
@@ -656,6 +688,7 @@ mod tests {
         saved.save_to_path(&path).unwrap();
 
         let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("version=5"));
         assert!(text.contains("machine.ram_size=48k"));
         assert!(text.contains("machine.ram_board_profile=fast-no-wait"));
         assert!(text.contains("machine.sio_hardware=rev1,c-tty,00,110,8,none,2"));
@@ -666,6 +699,7 @@ mod tests {
         assert!(text.contains("machine.two_sio_port1_interface=rs232"));
         assert!(text.contains("machine.two_sio_port0_irq=pint"));
         assert!(text.contains("machine.two_sio_port1_irq=pint"));
+        assert!(text.contains("machine.s100_hardware=8800|4|"));
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
         assert!(text.contains("asr33.tape_visual_order=8to1"));
