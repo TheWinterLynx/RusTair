@@ -1,6 +1,6 @@
 # RusTair — Living TODO
 
-> Source of truth for remaining project work. Initial audit: 2026-08-26, `main` at `2402bd2` before this file. Reconciled against current `main` and the completed base-hardware fidelity closeout on 2026-09-02.
+> Source of truth for remaining project work. Initial audit: 2026-08-26, `main` at `2402bd2` before this file. Reconciled against the completed base-hardware closeout and the final Intel 8080 / MITS CPU-board PASS on 2026-09-02.
 >
 > **Rule:** when an item is completed, keep it in place and change it to `- [x] ~~completed item~~` (optionally adding the commit). Do not delete completed items; the file is also the project progress log.
 >
@@ -10,11 +10,12 @@
 
 ## Recommended active order
 
-1. **Complete the current `main` CPU release-certification pass** (normal release suite, 256-opcode Fast↔Cycle differential, then the ignored long classic diagnostics).
-2. **MITS 88-VI vector-interrupt controller** as the next genuine digital S-100 hardware-fidelity extension.
-3. **Explicit memory-board modelling** beyond the current logical RAM-size/protection abstraction.
-4. **Runtime/UI scheduling and native-window smoothness.**
-5. **Backend error handling, configuration schema hardening, documentation/licensing and release hygiene.**
+1. **MITS 88-VI vector-interrupt controller** as the next genuine digital S-100 hardware-fidelity extension.
+2. **Explicit memory-board modelling** beyond the current logical RAM-size/protection abstraction.
+3. **Runtime/UI scheduling and native-window smoothness.**
+4. **Backend error handling, configuration schema hardening, documentation/licensing and release hygiene.**
+
+The whole-machine **explicit S-100 backplane + uniform plug-in card architecture** is retained separately as `PARKED` backlog below. An initial scaffold exists on `agent/s100-card-backplane-architecture`; do not resume it without explicit instruction.
 
 ## Current hardware-fidelity baseline
 
@@ -25,6 +26,8 @@
 - authentic long-term installed CPU-board clock;
 - MITS 88-2SIO / MC6850;
 - MITS 88-SIO / COM2502.
+
+`docs/CPU_8080_HARDWARE_FIDELITY.md` separately certifies the **Intel 8080 + original MITS 8800 CPU board as PASS** at the documented digital edge/cycle boundary after the final local release gate on 2026-09-02.
 
 Do not reopen those as generic TODO items unless a new regression or primary-source discrepancy is found. Analog voltage/current magnitude, cable noise/impedance and full ASR-33 electromechanics remain explicit non-claims rather than hidden digital blockers.
 
@@ -165,6 +168,7 @@ Do not reopen those as generic TODO items unless a new regression or primary-sou
 - [x] ~~**[P1] Add a real S-100 interrupt-request path and interrupt-producing device model** before claiming interrupt-capable peripheral fidelity.~~ Canonical PINT plus 88-SIO/88-2SIO level-sensitive IRQ sources are implemented for both Rust backends.
 - [ ] **[P1] Implement the MITS 88-VI vector-interrupt controller as real S-100 hardware.** Current 88-SIO/88-2SIO wiring can drive raw `VI0..VI7`, but no installed 88-VI board yet arbitrates/prioritizes those requests and supplies the documented vector/restart opcode during INTA. Model its physical configuration, priority/acknowledge behavior and Fast/Cycle boundary from primary sources; do not synthesize vectors inside the serial cards.
 - [ ] **[P2] Replace the fixed logical 1 KiB protection-board assumption with explicit memory-board modelling** if/when board-level memory fidelity is pursued: installed card identity, address straps/ranges, protection and timing should belong to cards rather than a global logical RAM block.
+- [ ] **[PARKED] Refactor the whole machine into an explicit S-100 chassis/backplane with uniform plug-in card contracts.** The intended invariant is “Altair = chassis + S-100 bus + cards”: every historical card exposes the same `S100Card`-style physical connector contract, declares the S-100 contacts it observes/drives, and communicates only through resolved backplane signals rather than card-specific knowledge in CPU/RAM/`AltairBus`. Model tri-state/open-collector resolution and explicit installed slots/card inventory. Initial scaffold is preserved on `agent/s100-card-backplane-architecture`; do not resume without explicit instruction.
 - [x] ~~**[P2] Revisit unmapped/open-bus memory behavior** instead of always returning deterministic `00h`; make any historical/open-bus policy explicit and testable.~~ Completed: host/debugger physical peeks distinguish absent hardware, while guest unresponded memory/I/O reads observe S-100 `FFh`; writes do not create storage and unselected cards add no wait states. See `tests/open_bus_fidelity.rs` and the base-hardware closeout.
 
 ---
@@ -223,7 +227,7 @@ Do not reopen those as generic TODO items unless a new regression or primary-sou
 
 ## P0/P1/P2 — Tests and validation hardening
 
-- [ ] **[P0] Complete the current `main` CPU release-certification pass.** Required checkpoint: full `cargo test --release`, the 256-opcode Fast↔Cycle differential, then `cpu8080_cycle_classic_diagnostics` with ignored tests enabled. `CPUTEST.COM` must match 33,971,311 instructions / 255,653,383 T-states and `8080EXM.COM` 2,919,050,698 / 23,803,381,171 exactly. Mark complete only after the local run is reported green.
+- [x] ~~**[P0] Complete the current CPU release-certification pass.** Required checkpoint: full `cargo test --release`, the 256-opcode Fast↔Cycle differential, then `cpu8080_cycle_classic_diagnostics` with ignored tests enabled. `CPUTEST.COM` must match 33,971,311 instructions / 255,653,383 T-states and `8080EXM.COM` 2,919,050,698 / 23,803,381,171 exactly.~~ Completed locally on 2026-09-02 after the final CPU-board edge/timing closeout; the entire gate was reported green, including the exact classic-diagnostic reference assertions. See `docs/CPU_8080_HARDWARE_FIDELITY.md`.
 - [ ] **[P1] Add common `BackendHost` parity tests for Fast and Cycle** instead of testing some front-panel behavior only through concrete `AltairMachine` paths.
 - [ ] **[P1] Add end-to-end ASR paper-reader tests** for mount/read/pause/resume/rewind/eject, LINE/OFF/LOCAL, disconnected port and 1×/5×/10×/Unlimited pacing.
 - [ ] **[P1] Add end-to-end punch tests** for blank tape, pause/resume, queued bytes, finish/save retry and exact 8-bit output.
