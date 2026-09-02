@@ -4,57 +4,58 @@ use super::super::{decode::Instruction, Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins
 impl Cpu8080Cycle {
     /// Execute one complete T-state through the Intel 8080's two non-overlapping
     /// clock phases while exposing package-pin truth after each physical edge.
-    ///
-    /// `tick()` remains the architectural/T-state transition authority so the
-    /// already-certified instruction behavior is not duplicated. This wrapper
-    /// supplies the sub-T-state ordering that the old abstraction could not
-    /// express: PHI1-owned outputs are updated first, PHI1 falls, PHI2 rises and
-    /// performs the certified T-state transition, then PHI2 falls.
-    ///
-    /// The observer is called exactly four times in `ClockEdge::ALL` order. The
-    /// `TickTrace` pin sample is the PHI2-rising observation for the completed
-    /// T-state; the core's live `pins()` state after return is the following
-    /// dead-time state with both clock inputs LOW.
+    /// Callers without an external synchronizer may present one stable input
+    /// sample for both phases.
     pub(crate) fn tick_with_pin_edges(
         &mut self,
         inputs: Cpu8080Inputs,
+        observe: impl FnMut(ClockEdge, Cpu8080Pins),
+    ) -> TickTrace {
+        self.tick_with_pin_edges_split(inputs, inputs, observe)
+    }
+
+    /// Edge path used by a real CPU-board adapter. `phi1_inputs` are the package
+    /// inputs already stable when PHI1 rises; `phi2_inputs` are the values made
+    /// valid for the processor at the PHI2 sampling edge. Keeping them separate
+    /// is required for the Altair CPU board, which synchronizes S-100 PRDY and
+    /// PHOLD at PHI2 instead of wiring those backplane lines straight to the die.
+    ///
+    /// The observer is called exactly four times in `ClockEdge::ALL` order. The
+    /// returned `TickTrace` is the PHI2-rising observation for the completed
+    /// T-state; live `pins()` after return are in dead time with both clocks LOW.
+    pub(crate) fn tick_with_pin_edges_split(
+        &mut self,
+        phi1_inputs: Cpu8080Inputs,
+        phi2_inputs: Cpu8080Inputs,
         mut observe: impl FnMut(ClockEdge, Cpu8080Pins),
     ) -> TickTrace {
         let t_state = self.t_state;
 
-        self.clock_phi1_rising(inputs);
+        self.clock_phi1_rising(phi1_inputs);
         observe(ClockEdge::Phi1Rising, self.pins);
 
         self.pins.phi1 = false;
         observe(ClockEdge::Phi1Falling, self.pins);
 
         // WAIT, /WR and HLDA are PHI1-owned outputs. `tick()` still drives its
-        // historical complete-T-state snapshot, so preserve the physical PHI1
-        // results across PHI2 instead of allowing that compatibility projection
-        // to move an edge-authoritative signal later in the cycle.
+        // complete-T-state compatibility snapshot, so preserve the physical
+        // PHI1 results across PHI2 instead of moving those outputs later.
         let wait_after_phi1 = self.pins.wait;
         let wr_n_after_phi1 = self.pins.wr_n;
         let hlda_after_phi1 = self.pins.hlda;
 
         self.pins.phi2 = true;
-        let mut trace = self.tick(inputs);
+        let mut trace = self.tick(phi2_inputs);
 
-        // RESET is asynchronous in the semantic core and rebuilds Cpu8080Pins.
-        // The physical CPU-board oscillator itself does not stop on RESET, so
-        // restore the clock level for the PHI2 sample after that reset action.
+        // RESET rebuilds Cpu8080Pins in the semantic core. The board oscillator
+        // does not stop on RESET, so restore the active phase for this sample.
         self.pins.phi1 = false;
         self.pins.phi2 = true;
 
         if !trace.reset {
             self.pins.wait = wait_after_phi1;
             self.pins.wr_n = wr_n_after_phi1;
-            // HLDA is wholly PHI1-owned. This matters on HOLD release: once
-            // HOLD is sampled LOW at PHI1, HLDA must stay LOW through PHI2 while
-            // the semantic core restores the suspended machine-cycle bus drive.
             self.pins.hlda = hlda_after_phi1;
-            // INTE is a PHI2-referenced processor output. A DI/EI/interrupt
-            // transition performed by the certified T-state logic becomes
-            // externally visible at this edge.
             self.pins.inte = self.inte;
         }
 
@@ -77,10 +78,9 @@ impl Cpu8080Cycle {
         self.pins.phi2 = false;
 
         if self.t_state == TState::Thold || self.holding {
-            // HLDA follows the sampled HOLD request in the PHI1 domain. While
-            // HOLD remains asserted the CPU continues acknowledging it. When
-            // HOLD is released, HLDA falls at this PHI1; the suspended address/
-            // data drive is restored by the following PHI2 transition.
+            // The package HOLD value presented here has already passed any
+            // external CPU-board synchronization. HLDA therefore follows that
+            // stable input in the PHI1 domain; bus drive changes at PHI2.
             self.pins.hlda = inputs.hold;
             self.pins.wait = false;
             self.pins.wr_n = true;
@@ -89,15 +89,12 @@ impl Cpu8080Cycle {
 
         self.pins.hlda = false;
 
-        // Intel's TW flip-flop is evaluated on PHI1. READY low during T2 starts
-        // WAIT; while in TW, WAIT remains asserted only while READY stays low.
-        // This is intentionally more precise than the legacy complete-T-state
-        // projection, where WAIT could only be represented once TW existed.
-        self.pins.wait = self.cycle_uses_ready()
-            && match self.t_state {
-                TState::T2 | TState::Tw => !inputs.ready,
-                _ => false,
-            };
+        // Intel specifies WAIT assertion on entry to TW, referenced to PHI1.
+        // READY is sampled during T2/TW; it does not make WAIT rise during PHI1
+        // of T2 itself. Once the semantic PHI2 transition has entered TW, the
+        // following PHI1 exposes WAIT. It falls on the PHI1 after READY lets the
+        // processor leave TW.
+        self.pins.wait = self.cycle_uses_ready() && self.t_state == TState::Tw && !inputs.ready;
 
         let output_cycle = matches!(
             self.machine_cycle,
@@ -130,7 +127,6 @@ mod tests {
         assert_eq!((samples[2].1.phi1, samples[2].1.phi2), (false, true));
         assert_eq!((samples[3].1.phi1, samples[3].1.phi2), (false, false));
 
-        // T1 address/status/SYNC are PHI2-derived, not fabricated at PHI1.
         assert!(!samples[0].1.sync);
         assert!(samples[2].1.sync);
         assert_eq!(samples[2].1.data_out, Some(0xa2));
@@ -143,8 +139,6 @@ mod tests {
     #[test]
     fn write_strobe_falls_on_phi1_of_t3_before_phi2_updates_other_pins() {
         let mut cpu = Cpu8080Cycle::new();
-        // Construct a valid MVI M,d8 write cycle rather than an impossible
-        // MemoryWrite M2 attached to the default NOP instruction.
         cpu.instruction = Instruction::MviMemory;
         cpu.machine_cycle = MachineCycle::MemoryWrite;
         cpu.machine_cycle_index = 3;
@@ -169,9 +163,8 @@ mod tests {
     }
 
     #[test]
-    fn ready_low_asserts_wait_on_phi1_of_t2_and_tw_holds_or_releases_it() {
+    fn ready_low_enters_tw_at_t2_phi2_then_wait_rises_on_tw_phi1() {
         let mut cpu = Cpu8080Cycle::new();
-        // T1 -> T2.
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |_, _| {});
         assert_eq!(cpu.t_state(), TState::T2);
 
@@ -180,8 +173,8 @@ mod tests {
             Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() },
             |edge, pins| t2.push((edge, pins)),
         );
-        assert!(t2[0].1.wait, "READY low must set the WAIT flip-flop on PHI1 of T2");
-        assert!(t2[2].1.wait, "WAIT remains asserted through the T2 PHI2 edge");
+        assert!(!t2[0].1.wait, "WAIT must not rise until the processor actually enters TW");
+        assert!(!t2[2].1.wait);
         assert_eq!(cpu.t_state(), TState::Tw);
 
         let mut tw_low = Vec::new();
@@ -189,7 +182,7 @@ mod tests {
             Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() },
             |edge, pins| tw_low.push((edge, pins)),
         );
-        assert!(tw_low[0].1.wait);
+        assert!(tw_low[0].1.wait, "WAIT rises on PHI1 of the actual TW state");
         assert!(tw_low[2].1.wait);
         assert!(tw_low[2].1.dbin, "read DBIN must remain asserted through TW");
         assert_eq!(cpu.t_state(), TState::Tw);
@@ -198,9 +191,24 @@ mod tests {
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
             tw_release.push((edge, pins));
         });
-        assert!(!tw_release[0].1.wait, "READY high releases WAIT on PHI1 of TW");
+        assert!(!tw_release[0].1.wait, "stable package READY high releases WAIT on PHI1 of TW");
         assert!(!tw_release[2].1.wait);
         assert_eq!(cpu.t_state(), TState::T3);
+    }
+
+    #[test]
+    fn split_inputs_can_change_at_phi2_without_retroactively_changing_phi1() {
+        let mut cpu = Cpu8080Cycle::new();
+        cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |_, _| {});
+        assert_eq!(cpu.t_state(), TState::T2);
+
+        let old = Cpu8080Inputs { ready: true, ..Cpu8080Inputs::default() };
+        let sampled = Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() };
+        let mut samples = Vec::new();
+        cpu.tick_with_pin_edges_split(old, sampled, |edge, pins| samples.push((edge, pins)));
+
+        assert!(!samples[0].1.wait);
+        assert_eq!(cpu.t_state(), TState::Tw, "READY sampled low at PHI2 must select TW");
     }
 
     #[test]
@@ -243,7 +251,7 @@ mod tests {
             samples.push((edge, pins));
         });
 
-        assert!(!samples[0].1.hlda, "HOLD low must release HLDA at PHI1");
+        assert!(!samples[0].1.hlda, "package HOLD low must release HLDA at PHI1");
         assert!(!samples[2].1.hlda);
         assert_eq!(samples[2].1.address, Some(0x2345), "CPU regains address bus at PHI2");
         assert!(samples[2].1.dbin, "resumed fetch T2 must restore DBIN");
