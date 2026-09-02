@@ -1,9 +1,8 @@
 //! Live S-100 chassis fabric shared by Fast and Cycle execution engines.
 //!
-//! This is the materialization boundary between persisted slot configuration and
-//! electrical card instances. Card-family branching is allowed here because
-//! this is the chassis assembler; the backplane resolver itself remains wholly
-//! generic. CPU and RAM guest traffic uses only the resolved S-100 bus.
+//! Persisted slot configuration is materialized here into electrical card
+//! instances. Card-family branching belongs to this chassis assembler; the
+//! backplane resolver itself remains card-agnostic.
 
 use crate::config::{
     RamInit, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
@@ -20,7 +19,6 @@ pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DisplayControlLines {
-    /// Display/Control contribution to pRDY. False means the panel pulls pRDY low.
     pub ready: bool,
     pub run: bool,
     pub hold: bool,
@@ -31,9 +29,6 @@ pub struct DisplayControlLines {
 }
 
 impl DisplayControlLines {
-    /// Drive the system-bus lines produced by the original Display/Control board.
-    /// MWRT is generated here because the Altair front panel combines asserted
-    /// pWR* with !sOUT; it is not an Intel 8080 package output.
     pub fn drive(self, sample: &S100BusSample) -> S100CardDrive {
         let mut drive = S100CardDrive::new();
         drive.pull_low(S100Signal::Ready, !self.ready);
@@ -43,7 +38,6 @@ impl DisplayControlLines {
         drive.drive_signal(S100Signal::ExternalClear, self.external_clear);
         drive.drive_signal(S100Signal::Protect, self.protect);
         drive.drive_signal(S100Signal::Unprotect, self.unprotect);
-
         let pwr_asserted = sample.signal_level(S100Signal::Write) == Some(false);
         let sout = sample.signal_level(S100Signal::Out) == Some(true);
         drive.drive_signal(S100Signal::MemoryWrite, pwr_asserted && !sout);
@@ -74,22 +68,13 @@ pub struct RuntimeMemoryInspection {
 }
 
 impl RuntimeMemoryInspection {
-    pub fn is_unmapped(&self) -> bool {
-        self.drivers.is_empty()
-    }
-
-    pub fn is_overlap(&self) -> bool {
-        self.drivers.len() > 1
-    }
-
+    pub fn is_unmapped(&self) -> bool { self.drivers.is_empty() }
+    pub fn is_overlap(&self) -> bool { self.drivers.len() > 1 }
     pub fn unique_value(&self) -> Option<u8> {
         (self.drivers.len() == 1).then_some(self.drivers[0].value)
     }
-
     pub fn electrically_contended(&self) -> bool {
-        let Some(first) = self.drivers.first().map(|driver| driver.value) else {
-            return false;
-        };
+        let Some(first) = self.drivers.first().map(|driver| driver.value) else { return false; };
         self.drivers.iter().any(|driver| driver.value != first)
     }
 }
@@ -106,20 +91,12 @@ pub struct S100RuntimeFabric {
     cpu_slot: usize,
     cpu: Mits8080CpuBoardHandle,
     ram: Vec<RuntimeRamSlot>,
-    /// Serial cards are deliberately visible as unfinished runtime migration.
-    /// Their existing UART implementation remains active outside this fabric
-    /// until 88-2SIO and then 88-SIO become electrical S-100 cards.
     pending_serial_slots: Vec<usize>,
 }
 
 impl S100RuntimeFabric {
-    pub fn new(
-        hardware: S100HardwareConfig,
-        init: RamInit,
-    ) -> Result<Self, S100RuntimeBuildError> {
-        let hardware = hardware
-            .validate()
-            .map_err(S100RuntimeBuildError::InvalidHardware)?;
+    pub fn new(hardware: S100HardwareConfig, init: RamInit) -> Result<Self, S100RuntimeBuildError> {
+        let hardware = hardware.validate().map_err(S100RuntimeBuildError::InvalidHardware)?;
         let mut backplane = S100Backplane::new(hardware.fitted_connectors());
         let mut cpu_slot = None;
         let mut cpu_handle = None;
@@ -130,86 +107,46 @@ impl S100RuntimeFabric {
             match config {
                 S100InstalledCardConfig::Mits8080Cpu => {
                     let (card, handle) = Mits8080CpuBoard::new();
-                    backplane
-                        .insert(slot, Box::new(card))
-                        .map_err(S100RuntimeBuildError::Backplane)?;
+                    backplane.insert(slot, Box::new(card)).map_err(S100RuntimeBuildError::Backplane)?;
                     cpu_slot = Some(slot);
                     cpu_handle = Some(handle);
                 }
                 S100InstalledCardConfig::Ram(config) => {
                     let (card, handle) = RuntimeRamCard::historical(config, init)
                         .map_err(S100RuntimeBuildError::InvalidHistoricalRam)?;
-                    backplane
-                        .insert(slot, Box::new(card))
-                        .map_err(S100RuntimeBuildError::Backplane)?;
+                    backplane.insert(slot, Box::new(card)).map_err(S100RuntimeBuildError::Backplane)?;
                     ram.push(RuntimeRamSlot { slot, handle });
                 }
                 S100InstalledCardConfig::FastRamCompatibility(config) => {
                     let (card, handle) = RuntimeRamCard::compatibility(config, init)
                         .map_err(S100RuntimeBuildError::InvalidCompatibilityRam)?;
-                    backplane
-                        .insert(slot, Box::new(card))
-                        .map_err(S100RuntimeBuildError::Backplane)?;
+                    backplane.insert(slot, Box::new(card)).map_err(S100RuntimeBuildError::Backplane)?;
                     ram.push(RuntimeRamSlot { slot, handle });
                 }
                 S100InstalledCardConfig::Mits88Sio(_)
-                | S100InstalledCardConfig::Mits88TwoSio { .. } => {
-                    pending_serial_slots.push(slot);
-                }
+                | S100InstalledCardConfig::Mits88TwoSio { .. } => pending_serial_slots.push(slot),
             }
         }
 
         let cpu_slot = cpu_slot.ok_or(S100RuntimeBuildError::MissingCpu)?;
         let cpu = cpu_handle.ok_or(S100RuntimeBuildError::MissingCpu)?;
-        let mut fabric = Self {
-            hardware,
-            backplane,
-            cpu_slot,
-            cpu,
-            ram,
-            pending_serial_slots,
-        };
-        fabric
-            .settle(DisplayControlLines::default(), &[])
+        let mut fabric = Self { hardware, backplane, cpu_slot, cpu, ram, pending_serial_slots };
+        fabric.settle(DisplayControlLines::default(), &[])
             .map_err(S100RuntimeBuildError::Backplane)?;
         Ok(fabric)
     }
 
-    pub fn hardware(&self) -> S100HardwareConfig {
-        self.hardware
-    }
+    pub fn hardware(&self) -> S100HardwareConfig { self.hardware }
+    pub fn backplane(&self) -> &S100Backplane { &self.backplane }
+    pub fn sample(&self) -> &S100BusSample { self.backplane.sample() }
+    pub fn cpu_slot(&self) -> usize { self.cpu_slot }
+    pub fn pending_serial_slots(&self) -> &[usize] { &self.pending_serial_slots }
+    pub fn set_cpu_package_pins(&self, pins: Cpu8080Pins) { self.cpu.set_package_pins(pins); }
+    pub fn cpu_package_inputs(&self) -> Cpu8080Inputs { self.cpu.package_inputs() }
+    pub fn cpu_latched_status_word(&self) -> u8 { self.cpu.latched_status_word() }
 
-    pub fn backplane(&self) -> &S100Backplane {
-        &self.backplane
-    }
-
-    pub fn sample(&self) -> &S100BusSample {
-        self.backplane.sample()
-    }
-
-    pub fn cpu_slot(&self) -> usize {
-        self.cpu_slot
-    }
-
-    pub fn pending_serial_slots(&self) -> &[usize] {
-        &self.pending_serial_slots
-    }
-
-    pub fn set_cpu_package_pins(&self, pins: Cpu8080Pins) {
-        self.cpu.set_package_pins(pins);
-    }
-
-    pub fn cpu_package_inputs(&self) -> Cpu8080Inputs {
-        self.cpu.package_inputs()
-    }
-
-    pub fn cpu_latched_status_word(&self) -> u8 {
-        self.cpu.latched_status_word()
-    }
-
-    /// Propagate one stable package-pin/chassis level through zero-time digital
-    /// deltas. Edge-sensitive cards remember their previous physical levels, so
-    /// this settles combinational dependencies without inventing clock edges.
+    /// Observe each stable level once per delta, then resolve again. This allows
+    /// RAM/status propagation without replaying a clock edge.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
@@ -233,18 +170,10 @@ impl S100RuntimeFabric {
     }
 
     fn fast_display() -> DisplayControlLines {
-        DisplayControlLines {
-            ready: true,
-            run: true,
-            ..DisplayControlLines::default()
-        }
+        DisplayControlLines { ready: true, run: true, ..DisplayControlLines::default() }
     }
 
-    fn fast_latch_status(
-        &mut self,
-        address: u16,
-        status_word: u8,
-    ) -> Result<(), S100BackplaneError> {
+    fn fast_latch_status(&mut self, address: u16, status_word: u8) -> Result<(), S100BackplaneError> {
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -261,14 +190,9 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    /// Instruction-level engine memory read through the same physical CPU board,
-    /// backplane resolver and installed RAM cards used by Cycle. `status_word`
-    /// is the reconstructed 8080 status byte for this machine cycle.
-    pub fn fast_memory_read(
-        &mut self,
-        address: u16,
-        status_word: u8,
-    ) -> Result<u8, S100BackplaneError> {
+    /// Fast reconstructs a memory-read cycle, but the selected RAM and DI value
+    /// are resolved by the same physical CPU card/backplane used by Cycle.
+    pub fn fast_memory_read(&mut self, address: u16, status_word: u8) -> Result<u8, S100BackplaneError> {
         self.fast_latch_status(address, status_word)?;
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
@@ -284,17 +208,13 @@ impl S100RuntimeFabric {
         });
         self.settle(Self::fast_display(), &[])?;
         let value = self.sample().data_in_or(S100_OPEN_BUS_VALUE);
-        self.set_cpu_package_pins(Cpu8080Pins {
-            address: Some(address),
-            ..Cpu8080Pins::default()
-        });
+        self.set_cpu_package_pins(Cpu8080Pins { address: Some(address), ..Cpu8080Pins::default() });
         self.settle(Self::fast_display(), &[])?;
         Ok(value)
     }
 
-    /// Instruction-level engine memory write. The CPU board drives pWR and DO;
-    /// Display/Control derives MWRT; RAM cards observe only the resulting S-100
-    /// nets. No host-side write is applied to RAM storage here.
+    /// CPU pWR/DO are driven by the physical CPU board; Display/Control derives
+    /// MWRT, and only then may a selected RAM card change its storage.
     pub fn fast_memory_write(
         &mut self,
         address: u16,
@@ -331,13 +251,8 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    /// Fast cannot reproduce the exact Tw edges, but it still obtains the wait
-    /// count from the actual selected card instances rather than a global RAM
-    /// profile. Wired-AND pRDY means overlapping selected cards are governed by
-    /// the slowest fixed-wait contributor.
     pub fn fast_read_wait_states(&self, address: u16) -> u8 {
-        self.ram
-            .iter()
+        self.ram.iter()
             .filter(|ram| ram.handle.contains(address))
             .map(|ram| ram.handle.config().read_wait_states())
             .max()
@@ -345,19 +260,16 @@ impl S100RuntimeFabric {
     }
 
     pub fn inspect_memory(&self, address: u16) -> RuntimeMemoryInspection {
-        let drivers = self
-            .ram
-            .iter()
-            .filter_map(|ram| {
+        RuntimeMemoryInspection {
+            drivers: self.ram.iter().filter_map(|ram| {
                 ram.handle.read_byte(address).map(|value| RuntimeRamDriver {
                     slot: ram.slot,
                     value,
                     protected: ram.handle.is_protected(),
                     config: ram.handle.config(),
                 })
-            })
-            .collect();
-        RuntimeMemoryInspection { drivers }
+            }).collect(),
+        }
     }
 
     pub fn peek_unique_memory(&self, address: u16) -> Option<u8> {
@@ -365,75 +277,46 @@ impl S100RuntimeFabric {
     }
 
     pub fn mapped_ram_card_count(&self, address: u16) -> usize {
-        self.ram
-            .iter()
-            .filter(|ram| ram.handle.contains(address))
-            .count()
+        self.ram.iter().filter(|ram| ram.handle.contains(address)).count()
     }
 
     pub fn installed_ram_bytes(&self) -> usize {
-        self.ram
-            .iter()
-            .map(|ram| ram.handle.config().populated_bytes())
-            .sum()
+        self.ram.iter().map(|ram| ram.handle.config().populated_bytes()).sum()
     }
 
-    pub fn write_unique_memory(
-        &self,
-        address: u16,
-        value: u8,
-        respect_protection: bool,
-    ) -> bool {
+    pub fn write_unique_memory(&self, address: u16, value: u8, respect_protection: bool) -> bool {
         let mut mapped = self.ram.iter().filter(|ram| ram.handle.contains(address));
-        let Some(target) = mapped.next() else {
-            return false;
-        };
-        if mapped.next().is_some() {
-            return false;
-        }
-        target
-            .handle
-            .write_byte(address, value, respect_protection)
+        let Some(target) = mapped.next() else { return false; };
+        if mapped.next().is_some() { return false; }
+        target.handle.write_byte(address, value, respect_protection)
     }
 
     pub fn memory_is_protected(&self, address: u16) -> bool {
         let mut mapped = self.ram.iter().filter(|ram| ram.handle.contains(address));
-        let Some(target) = mapped.next() else {
-            return false;
-        };
+        let Some(target) = mapped.next() else { return false; };
         mapped.next().is_none() && target.handle.is_protected()
     }
 
     pub fn set_unique_memory_protection(&self, address: u16, protected: bool) -> bool {
         let mut mapped = self.ram.iter().filter(|ram| ram.handle.contains(address));
-        let Some(target) = mapped.next() else {
-            return false;
-        };
-        if mapped.next().is_some() {
-            return false;
-        }
+        let Some(target) = mapped.next() else { return false; };
+        if mapped.next().is_some() { return false; }
         target.handle.set_protected(protected)
     }
 
     pub fn clear_memory_protection(&self) {
-        for ram in &self.ram {
-            ram.handle.clear_protection();
-        }
+        for ram in &self.ram { ram.handle.clear_protection(); }
     }
 
     pub fn initialize_memory(&self, init: RamInit) {
-        for ram in &self.ram {
-            ram.handle.initialize(init);
-        }
+        for ram in &self.ram { ram.handle.initialize(init); }
     }
 
     pub fn load_bytes(&self, address: u16, bytes: &[u8]) -> usize {
         let mut written = 0usize;
         for (offset, value) in bytes.iter().copied().enumerate() {
             let candidate = address.wrapping_add(offset as u16);
-            if self.write_unique_memory(candidate, value, false) {
-                written += 1;
-            }
+            if self.write_unique_memory(candidate, value, false) { written += 1; }
         }
         written
     }
@@ -448,20 +331,10 @@ mod tests {
 
     fn simple_hardware() -> S100HardwareConfig {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        config
-            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
-            .unwrap();
-        config
-            .set_slot(
-                2,
-                Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(
-                        S100RamBoardModel::Mits4KStatic88_4Mcs,
-                        0,
-                    ),
-                )),
-            )
-            .unwrap();
+        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        config.set_slot(2, Some(S100InstalledCardConfig::Ram(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
+        ))).unwrap();
         config
     }
 
@@ -469,14 +342,8 @@ mod tests {
     fn configured_cpu_and_ram_are_live_slots_on_one_backplane() {
         let fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
         assert_eq!(fabric.cpu_slot(), 1);
-        assert_eq!(
-            fabric.backplane().slots()[0].descriptor().unwrap().key,
-            "mits-8080-cpu"
-        );
-        assert_eq!(
-            fabric.backplane().slots()[1].descriptor().unwrap().key,
-            "mits-88-4mcs"
-        );
+        assert_eq!(fabric.backplane().slots()[0].descriptor().unwrap().key, "mits-8080-cpu");
+        assert_eq!(fabric.backplane().slots()[1].descriptor().unwrap().key, "mits-88-4mcs");
         assert_eq!(fabric.installed_ram_bytes(), 4 * 1024);
     }
 
@@ -486,7 +353,7 @@ mod tests {
         fabric.fast_memory_write(0x0123, 0x5a, 0x00).unwrap();
         assert_eq!(fabric.peek_unique_memory(0x0123), Some(0x5a));
         assert_eq!(fabric.fast_memory_read(0x0123, 0x82).unwrap(), 0x5a);
-        assert_eq!(fabric.sample().data_in(), None);
+        assert_eq!(fabric.cpu_latched_status_word(), 0x82);
     }
 
     #[test]
@@ -498,26 +365,15 @@ mod tests {
         let sample = fabric.backplane().resolve_drive_sets(&[cpu]);
         let drive = DisplayControlLines::default().drive(&sample);
         let resolved = fabric.backplane().resolve_drive_sets(&[drive]);
-        assert_eq!(
-            resolved.signal_level(S100Signal::MemoryWrite),
-            Some(true)
-        );
+        assert_eq!(resolved.signal_level(S100Signal::MemoryWrite), Some(true));
     }
 
     #[test]
     fn gaps_and_overlaps_are_not_collapsed_to_aggregate_capacity() {
         let mut config = simple_hardware();
-        config
-            .set_slot(
-                3,
-                Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(
-                        S100RamBoardModel::Mits1KStatic88Mcs,
-                        0x0800,
-                    ),
-                )),
-            )
-            .unwrap();
+        config.set_slot(3, Some(S100InstalledCardConfig::Ram(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits1KStatic88Mcs, 0x0800),
+        ))).unwrap();
         let fabric = S100RuntimeFabric::new(config, RamInit::Zeroed).unwrap();
         assert_eq!(fabric.mapped_ram_card_count(0x0010), 1);
         assert_eq!(fabric.mapped_ram_card_count(0x0800), 2);
