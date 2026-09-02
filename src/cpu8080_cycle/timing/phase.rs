@@ -1,5 +1,5 @@
-use super::{ClockEdge, MachineCycle, TState};
 use super::super::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
+use super::{ClockEdge, MachineCycle, TState};
 
 impl Cpu8080Cycle {
     /// Execute one complete T-state through the Intel 8080's two non-overlapping
@@ -106,8 +106,13 @@ impl Cpu8080Cycle {
 
         // HOLD/HALT dwell can legitimately exit at this PHI2 and report the
         // resumed state rather than the dwell state captured before PHI1.
+        // RESET is the other intentional exception: it is asynchronous to the
+        // current machine cycle and rebases the semantic core to fetch T1 at the
+        // PHI2 where RESET is consumed.
         debug_assert!(
-            trace.t_state == t_state || matches!(t_state, TState::Thold | TState::Thalt)
+            trace.reset
+                || trace.t_state == t_state
+                || matches!(t_state, TState::Thold | TState::Thalt)
         );
         trace
     }
@@ -149,8 +154,8 @@ impl Cpu8080Cycle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::decode::Instruction;
+    use super::*;
 
     #[test]
     fn one_t_state_exposes_four_non_overlapping_clock_edges() {
@@ -178,6 +183,29 @@ mod tests {
     }
 
     #[test]
+    fn reset_from_mid_cycle_rebases_to_fetch_t1_at_phi2() {
+        let mut cpu = Cpu8080Cycle::new();
+        cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |_, _| {});
+        assert_eq!(cpu.t_state(), TState::T2);
+
+        let mut samples = Vec::new();
+        let trace = cpu.tick_with_pin_edges(
+            Cpu8080Inputs {
+                reset: true,
+                ..Cpu8080Inputs::default()
+            },
+            |edge, pins| samples.push((edge, pins)),
+        );
+
+        assert_eq!(samples.len(), 4);
+        assert!(trace.reset);
+        assert_eq!(trace.t_state, TState::T1);
+        assert_eq!(cpu.t_state(), TState::T1);
+        assert_eq!((trace.pins.phi1, trace.pins.phi2), (false, true));
+        assert_eq!((cpu.pins().phi1, cpu.pins().phi2), (false, false));
+    }
+
+    #[test]
     fn write_strobe_falls_on_phi1_of_t3_before_phi2_updates_other_pins() {
         let mut cpu = Cpu8080Cycle::new();
         cpu.instruction = Instruction::MviMemory;
@@ -197,7 +225,10 @@ mod tests {
 
         assert!(samples[0].1.phi1);
         assert!(!samples[0].1.phi2);
-        assert!(!samples[0].1.wr_n, "/WR must assert on PHI1 before the T3 PHI2 edge");
+        assert!(
+            !samples[0].1.wr_n,
+            "/WR must assert on PHI1 before the T3 PHI2 edge"
+        );
         assert_eq!(samples[0].1.address, Some(0x3456));
         assert_eq!(samples[0].1.data_out, Some(0xa5));
         assert!(!trace.pins.wr_n);
@@ -211,36 +242,60 @@ mod tests {
 
         let mut t2 = Vec::new();
         cpu.tick_with_pin_edges(
-            Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() },
+            Cpu8080Inputs {
+                ready: false,
+                ..Cpu8080Inputs::default()
+            },
             |edge, pins| t2.push((edge, pins)),
         );
-        assert!(!t2[0].1.wait, "WAIT must not rise until the processor actually enters TW");
+        assert!(
+            !t2[0].1.wait,
+            "WAIT must not rise until the processor actually enters TW"
+        );
         assert!(!t2[2].1.wait);
         assert_eq!(cpu.t_state(), TState::Tw);
 
         let mut tw_low = Vec::new();
         cpu.tick_with_pin_edges(
-            Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() },
+            Cpu8080Inputs {
+                ready: false,
+                ..Cpu8080Inputs::default()
+            },
             |edge, pins| tw_low.push((edge, pins)),
         );
-        assert!(tw_low[0].1.wait, "WAIT rises on PHI1 of the actual TW state");
+        assert!(
+            tw_low[0].1.wait,
+            "WAIT rises on PHI1 of the actual TW state"
+        );
         assert!(tw_low[2].1.wait);
-        assert!(tw_low[2].1.dbin, "read DBIN must remain asserted through TW");
+        assert!(
+            tw_low[2].1.dbin,
+            "read DBIN must remain asserted through TW"
+        );
         assert_eq!(cpu.t_state(), TState::Tw);
 
         let mut tw_release = Vec::new();
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
             tw_release.push((edge, pins));
         });
-        assert!(tw_release[0].1.wait, "WAIT stays HIGH until READY is sampled at PHI2");
-        assert!(tw_release[2].1.wait, "WAIT stays HIGH through the PHI2 that exits TW");
+        assert!(
+            tw_release[0].1.wait,
+            "WAIT stays HIGH until READY is sampled at PHI2"
+        );
+        assert!(
+            tw_release[2].1.wait,
+            "WAIT stays HIGH through the PHI2 that exits TW"
+        );
         assert_eq!(cpu.t_state(), TState::T3);
 
         let mut t3 = Vec::new();
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
             t3.push((edge, pins));
         });
-        assert!(!t3[0].1.wait, "WAIT falls on the leading PHI1 after TW exit");
+        assert!(
+            !t3[0].1.wait,
+            "WAIT falls on the leading PHI1 after TW exit"
+        );
     }
 
     #[test]
@@ -249,13 +304,23 @@ mod tests {
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |_, _| {});
         assert_eq!(cpu.t_state(), TState::T2);
 
-        let old = Cpu8080Inputs { ready: true, ..Cpu8080Inputs::default() };
-        let sampled = Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() };
+        let old = Cpu8080Inputs {
+            ready: true,
+            ..Cpu8080Inputs::default()
+        };
+        let sampled = Cpu8080Inputs {
+            ready: false,
+            ..Cpu8080Inputs::default()
+        };
         let mut samples = Vec::new();
         cpu.tick_with_pin_edges_split(old, sampled, |edge, pins| samples.push((edge, pins)));
 
         assert!(!samples[0].1.wait);
-        assert_eq!(cpu.t_state(), TState::Tw, "READY sampled low at PHI2 must select TW");
+        assert_eq!(
+            cpu.t_state(),
+            TState::Tw,
+            "READY sampled low at PHI2 must select TW"
+        );
     }
 
     #[test]
@@ -268,14 +333,21 @@ mod tests {
         cpu.tick_with_live_phi2_inputs(Cpu8080Inputs::default(), |_edge, _pins| {
             callback_count += 1;
             if callback_count == 2 {
-                Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() }
+                Cpu8080Inputs {
+                    ready: false,
+                    ..Cpu8080Inputs::default()
+                }
             } else {
                 Cpu8080Inputs::default()
             }
         });
 
         assert_eq!(callback_count, 4);
-        assert_eq!(cpu.t_state(), TState::Tw, "external PRDY settled after PHI1 must be sampled at PHI2");
+        assert_eq!(
+            cpu.t_state(),
+            TState::Tw,
+            "external PRDY settled after PHI1 must be sampled at PHI2"
+        );
     }
 
     #[test]
@@ -288,16 +360,29 @@ mod tests {
 
         let mut samples = Vec::new();
         cpu.tick_with_pin_edges(
-            Cpu8080Inputs { hold: true, ..Cpu8080Inputs::default() },
+            Cpu8080Inputs {
+                hold: true,
+                ..Cpu8080Inputs::default()
+            },
             |edge, pins| samples.push((edge, pins)),
         );
 
         assert!(samples[0].1.hlda);
-        assert_eq!(samples[0].1.address, Some(0x1234), "bus must not float before PHI2");
+        assert_eq!(
+            samples[0].1.address,
+            Some(0x1234),
+            "bus must not float before PHI2"
+        );
         assert_eq!(samples[0].1.data_out, Some(0x56));
         assert!(samples[2].1.hlda);
-        assert_eq!(samples[2].1.address, None, "address bus floats after PHI2 in HOLD");
-        assert_eq!(samples[2].1.data_out, None, "data bus floats after PHI2 in HOLD");
+        assert_eq!(
+            samples[2].1.address, None,
+            "address bus floats after PHI2 in HOLD"
+        );
+        assert_eq!(
+            samples[2].1.data_out, None,
+            "data bus floats after PHI2 in HOLD"
+        );
         assert!(samples[2].1.wr_n);
     }
 
@@ -318,9 +403,18 @@ mod tests {
             release.push((edge, pins));
         });
 
-        assert!(release[0].1.hlda, "raw PHOLD release cannot lower HLDA before its PHI2 sample");
-        assert!(release[2].1.hlda, "HLDA stays HIGH through the PHI2 that clears HOLD");
-        assert_eq!(release[2].1.address, None, "bus remains released while HLDA is HIGH");
+        assert!(
+            release[0].1.hlda,
+            "raw PHOLD release cannot lower HLDA before its PHI2 sample"
+        );
+        assert!(
+            release[2].1.hlda,
+            "HLDA stays HIGH through the PHI2 that clears HOLD"
+        );
+        assert_eq!(
+            release[2].1.address, None,
+            "bus remains released while HLDA is HIGH"
+        );
         assert_eq!(release[2].1.data_out, None);
         assert!(!cpu.is_holding());
         assert_eq!(cpu.t_state(), TState::T3);
@@ -329,9 +423,19 @@ mod tests {
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
             resumed.push((edge, pins));
         });
-        assert!(!resumed[0].1.hlda, "HLDA falls on the leading PHI1 after release PHI2");
-        assert_eq!(resumed[0].1.address, None, "CPU does not regain the bus before the following PHI2");
+        assert!(
+            !resumed[0].1.hlda,
+            "HLDA falls on the leading PHI1 after release PHI2"
+        );
+        assert_eq!(
+            resumed[0].1.address, None,
+            "CPU does not regain the bus before the following PHI2"
+        );
         assert!(!resumed[2].1.hlda);
-        assert_eq!(resumed[2].1.address, Some(0x2345), "CPU regains address bus at the following PHI2");
+        assert_eq!(
+            resumed[2].1.address,
+            Some(0x2345),
+            "CPU regains address bus at the following PHI2"
+        );
     }
 }
