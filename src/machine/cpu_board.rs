@@ -334,10 +334,15 @@ impl super::AltairBus {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn raw_s100_phi1(&self) -> Option<bool> { self.s100.signals().phi1 }
+    #[cfg(test)]
     pub(crate) fn raw_s100_phi2(&self) -> Option<bool> { self.s100.signals().phi2 }
+    #[cfg(test)]
     pub(crate) fn raw_s100_psync(&self) -> bool { self.s100.signals().psync }
+    #[cfg(test)]
     pub(crate) fn raw_s100_pdbin(&self) -> bool { self.s100.signals().pdbin }
+    #[cfg(test)]
     pub(crate) fn raw_s100_pwr_n(&self) -> bool { self.s100.signals().pwr_n }
 }
 
