@@ -1,5 +1,5 @@
 use crate::cpu8080::{Bus, Cpu8080};
-use crate::cpu8080_cycle::{ClockEdge, Cpu8080Pins, TState, TickTrace};
+use crate::cpu8080_cycle::{Cpu8080Pins, TState, TickTrace};
 
 /// Machine-cycle classes emitted by the instruction-level 8080 core.
 ///
@@ -319,7 +319,7 @@ impl super::AltairBus {
     /// The board's 8212 status latch is physically clocked when processor SYNC
     /// is still high at a PHI1 rising edge. This deliberately separates the
     /// T1 status byte on CPU D/DO from the later dedicated S-100 status outputs.
-    pub(crate) fn drive_cycle_cpu_board_edge(&mut self, edge: ClockEdge, pins: Cpu8080Pins) {
+    pub(crate) fn drive_cycle_cpu_board_edge<E>(&mut self, _edge: E, pins: Cpu8080Pins) {
         self.s100.drive_cpu_board_edge(
             pins.phi1,
             pins.phi2,
@@ -327,7 +327,7 @@ impl super::AltairBus {
             pins.dbin,
             pins.wr_n,
         );
-        if edge == ClockEdge::Phi1Rising && pins.sync {
+        if pins.phi1 && pins.sync {
             if let Some(word) = pins.data_out {
                 self.s100.latch_cpu_status(word);
             }
@@ -560,7 +560,7 @@ mod tests {
             sync: true,
             ..Cpu8080Pins::default()
         };
-        bus.drive_cycle_cpu_board_edge(ClockEdge::Phi2Rising, t1_phi2);
+        bus.drive_cycle_cpu_board_edge((), t1_phi2);
         assert!(!bus.s100.signals().m1);
         assert!(bus.raw_s100_psync());
         assert_eq!(bus.raw_s100_phi2(), Some(true));
@@ -572,7 +572,7 @@ mod tests {
             sync: true,
             ..Cpu8080Pins::default()
         };
-        bus.drive_cycle_cpu_board_edge(ClockEdge::Phi1Rising, t2_phi1);
+        bus.drive_cycle_cpu_board_edge((), t2_phi1);
         let latched = bus.s100.signals();
         assert!(latched.memr && latched.m1 && latched.wo);
         assert_eq!(bus.raw_s100_phi1(), Some(true));
@@ -589,7 +589,7 @@ mod tests {
             wr_n: true,
             ..Cpu8080Pins::default()
         };
-        bus.drive_cycle_cpu_board_edge(ClockEdge::Phi2Rising, pins);
+        bus.drive_cycle_cpu_board_edge((), pins);
         assert_eq!(bus.raw_s100_phi1(), Some(false));
         assert_eq!(bus.raw_s100_phi2(), Some(true));
         assert!(!bus.raw_s100_psync());
