@@ -37,7 +37,12 @@ fn package_keeps_control_bus_and_cpu_bus_semantics_separate() {
     assert!(diagram.contains("snapshot.accuracy == BusTeachingAccuracy::ControlState"));
     assert!(diagram.contains("snapshot.machine_cycle == BusMachineCycle::ResetReleasedStopped"));
     assert!(diagram.contains("S-100/front-panel observations"));
-    assert!(diagram.contains("CLOCK PRESENT - phase not modeled"));
+    assert!(diagram.contains("snapshot.pins.phi1"));
+    assert!(diagram.contains("snapshot.pins.phi2"));
+    assert!(diagram.contains("HIGH / PHASE ACTIVE"));
+    assert!(diagram.contains("LOW / PHASE INACTIVE"));
+    assert!(diagram.contains("UNKNOWN / NO EDGE SAMPLE"));
+    assert!(!diagram.contains("CLOCK PRESENT - phase not modeled"));
 }
 
 #[test]
