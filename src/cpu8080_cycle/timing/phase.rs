@@ -9,33 +9,52 @@ impl Cpu8080Cycle {
     pub(crate) fn tick_with_pin_edges(
         &mut self,
         inputs: Cpu8080Inputs,
-        observe: impl FnMut(ClockEdge, Cpu8080Pins),
+        mut observe: impl FnMut(ClockEdge, Cpu8080Pins),
     ) -> TickTrace {
-        self.tick_with_pin_edges_split(inputs, inputs, observe)
+        self.tick_with_live_phi2_inputs(inputs, |edge, pins| {
+            observe(edge, pins);
+            inputs
+        })
     }
 
-    /// Edge path used by a real CPU-board adapter. `phi1_inputs` are the package
-    /// inputs already stable when PHI1 rises; `phi2_inputs` are the values made
-    /// valid for the processor at the PHI2 sampling edge. Keeping them separate
-    /// is required for the Altair CPU board, which synchronizes S-100 PRDY and
-    /// PHOLD at PHI2 instead of wiring those backplane lines straight to the die.
-    ///
-    /// The observer is called exactly four times in `ClockEdge::ALL` order. The
-    /// returned `TickTrace` is the PHI2-rising observation for the completed
-    /// T-state; live `pins()` after return are in dead time with both clocks LOW.
+    /// Edge path used by callers that already know both package-input samples.
+    /// `phi1_inputs` are stable when PHI1 rises; `phi2_inputs` are the values
+    /// presented at the PHI2 sampling edge.
     pub(crate) fn tick_with_pin_edges_split(
         &mut self,
         phi1_inputs: Cpu8080Inputs,
         phi2_inputs: Cpu8080Inputs,
         mut observe: impl FnMut(ClockEdge, Cpu8080Pins),
     ) -> TickTrace {
+        self.tick_with_live_phi2_inputs(phi1_inputs, |edge, pins| {
+            observe(edge, pins);
+            phi2_inputs
+        })
+    }
+
+    /// Production CPU-board path. The callback observes every real clock edge
+    /// and returns the external package-input levels that exist after that edge.
+    /// The value returned after PHI1 falls is the one sampled at the upcoming
+    /// PHI2 edge. This matters on the Altair because SYNC+PHI1 clocks the MITS
+    /// 8212 status latch; a selected card may then change PRDY before the same
+    /// T-state's PHI2 READY sample (the 88-2SIO input wait is the canonical case).
+    ///
+    /// The callback is still invoked exactly four times in `ClockEdge::ALL`
+    /// order. The returned `TickTrace` is the PHI2-rising observation for the
+    /// completed T-state; live `pins()` after return are in dead time with both
+    /// clocks LOW.
+    pub(crate) fn tick_with_live_phi2_inputs(
+        &mut self,
+        phi1_inputs: Cpu8080Inputs,
+        mut observe_and_sample: impl FnMut(ClockEdge, Cpu8080Pins) -> Cpu8080Inputs,
+    ) -> TickTrace {
         let t_state = self.t_state;
 
         self.clock_phi1_rising(phi1_inputs);
-        observe(ClockEdge::Phi1Rising, self.pins);
+        let _ = observe_and_sample(ClockEdge::Phi1Rising, self.pins);
 
         self.pins.phi1 = false;
-        observe(ClockEdge::Phi1Falling, self.pins);
+        let phi2_inputs = observe_and_sample(ClockEdge::Phi1Falling, self.pins);
 
         // WAIT, /WR and HLDA are PHI1-owned outputs. `tick()` still drives its
         // complete-T-state compatibility snapshot, so preserve the physical
@@ -78,10 +97,10 @@ impl Cpu8080Cycle {
         trace.pins = self.pins;
         trace.pins.phi1 = false;
         trace.pins.phi2 = true;
-        observe(ClockEdge::Phi2Rising, trace.pins);
+        let _ = observe_and_sample(ClockEdge::Phi2Rising, trace.pins);
 
         self.pins.phi2 = false;
-        observe(ClockEdge::Phi2Falling, self.pins);
+        let _ = observe_and_sample(ClockEdge::Phi2Falling, self.pins);
 
         // HOLD/HALT dwell can legitimately exit at this PHI2 and report the
         // resumed state rather than the dwell state captured before PHI1.
@@ -235,6 +254,26 @@ mod tests {
 
         assert!(!samples[0].1.wait);
         assert_eq!(cpu.t_state(), TState::Tw, "READY sampled low at PHI2 must select TW");
+    }
+
+    #[test]
+    fn live_phi2_inputs_are_sampled_after_phi1_observation() {
+        let mut cpu = Cpu8080Cycle::new();
+        cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |_, _| {});
+        assert_eq!(cpu.t_state(), TState::T2);
+
+        let mut callback_count = 0usize;
+        cpu.tick_with_live_phi2_inputs(Cpu8080Inputs::default(), |_edge, _pins| {
+            callback_count += 1;
+            if callback_count == 2 {
+                Cpu8080Inputs { ready: false, ..Cpu8080Inputs::default() }
+            } else {
+                Cpu8080Inputs::default()
+            }
+        });
+
+        assert_eq!(callback_count, 4);
+        assert_eq!(cpu.t_state(), TState::Tw, "external PRDY settled after PHI1 must be sampled at PHI2");
     }
 
     #[test]
