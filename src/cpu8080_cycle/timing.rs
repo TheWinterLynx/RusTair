@@ -1,3 +1,5 @@
+mod phase;
+
 /// Intel 8080 machine-cycle classes.
 ///
 /// The externally visible status words match the processor status byte driven
