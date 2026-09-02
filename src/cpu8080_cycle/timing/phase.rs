@@ -121,7 +121,8 @@ mod tests {
         });
 
         assert_eq!(samples.len(), 4);
-        assert_eq!(samples.map(|(edge, _)| edge), ClockEdge::ALL);
+        let edges: Vec<_> = samples.iter().map(|(edge, _)| *edge).collect();
+        assert_eq!(edges.as_slice(), &ClockEdge::ALL);
         assert_eq!((samples[0].1.phi1, samples[0].1.phi2), (true, false));
         assert_eq!((samples[1].1.phi1, samples[1].1.phi2), (false, false));
         assert_eq!((samples[2].1.phi1, samples[2].1.phi2), (false, true));
