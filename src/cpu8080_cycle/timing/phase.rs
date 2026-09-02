@@ -1,4 +1,5 @@
-use super::super::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, MachineCycle, TState, TickTrace};
+use super::{MachineCycle, TState};
+use super::super::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
 
 impl Cpu8080Cycle {
     /// Execute one complete T-state through the Intel 8080's two non-overlapping
