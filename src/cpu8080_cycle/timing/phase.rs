@@ -45,6 +45,10 @@ impl Cpu8080Cycle {
         let hlda_after_phi1 = self.pins.hlda;
 
         self.pins.phi2 = true;
+        // READY/HOLD are semantically consumed here, at the processor sampling
+        // edge. On the Altair board S-100 PRDY/PHOLD are first synchronized to
+        // this same leading PHI2 edge, so a raw request cannot retroactively
+        // change a PHI1-owned package output earlier in the T-state.
         let mut trace = self.tick(phi2_inputs);
 
         // RESET rebuilds Cpu8080Pins in the semantic core. The board oscillator
@@ -56,6 +60,18 @@ impl Cpu8080Cycle {
             self.pins.wait = wait_after_phi1;
             self.pins.wr_n = wr_n_after_phi1;
             self.pins.hlda = hlda_after_phi1;
+            // HOLD release is a two-edge sequence: PHOLD is sampled LOW at this
+            // PHI2, but Intel specifies that HLDA returns LOW on the following
+            // leading PHI1. While HLDA is still HIGH the package buses remain
+            // released even if the semantic core has restored its suspended
+            // machine-cycle state internally.
+            if hlda_after_phi1 {
+                self.pins.address = None;
+                self.pins.data_out = None;
+                self.pins.sync = false;
+                self.pins.dbin = false;
+                self.pins.wr_n = true;
+            }
             self.pins.inte = self.inte;
         }
 
@@ -67,21 +83,25 @@ impl Cpu8080Cycle {
         self.pins.phi2 = false;
         observe(ClockEdge::Phi2Falling, self.pins);
 
-        debug_assert_eq!(trace.t_state, t_state);
+        // HOLD/HALT dwell can legitimately exit at this PHI2 and report the
+        // resumed state rather than the dwell state captured before PHI1.
+        debug_assert!(
+            trace.t_state == t_state || matches!(t_state, TState::Thold | TState::Thalt)
+        );
         trace
     }
 
     /// Apply outputs whose documented transition is referenced to PHI1.
     /// Address, data, SYNC and DBIN are deliberately left untouched until PHI2.
-    fn clock_phi1_rising(&mut self, inputs: Cpu8080Inputs) {
+    fn clock_phi1_rising(&mut self, _inputs: Cpu8080Inputs) {
         self.pins.phi1 = true;
         self.pins.phi2 = false;
 
         if self.t_state == TState::Thold || self.holding {
-            // The package HOLD value presented here has already passed any
-            // external CPU-board synchronization. HLDA therefore follows that
-            // stable input in the PHI1 domain; bus drive changes at PHI2.
-            self.pins.hlda = inputs.hold;
+            // The internal HOLD latch is cleared only by the following PHI2.
+            // Therefore an asynchronous/raw PHOLD release cannot lower HLDA on
+            // this PHI1; HLDA stays HIGH until the next PHI1 after that clear.
+            self.pins.hlda = true;
             self.pins.wait = false;
             self.pins.wr_n = true;
             return;
@@ -90,11 +110,10 @@ impl Cpu8080Cycle {
         self.pins.hlda = false;
 
         // Intel specifies WAIT assertion on entry to TW, referenced to PHI1.
-        // READY is sampled during T2/TW; it does not make WAIT rise during PHI1
-        // of T2 itself. Once the semantic PHI2 transition has entered TW, the
-        // following PHI1 exposes WAIT. It falls on the PHI1 after READY lets the
-        // processor leave TW.
-        self.pins.wait = self.cycle_uses_ready() && self.t_state == TState::Tw && !inputs.ready;
+        // READY is sampled at PHI2 of T2/TW. Once that PHI2 has selected TW, the
+        // following PHI1 raises WAIT. If READY releases TW at a later PHI2, WAIT
+        // remains HIGH through that edge and falls on the following PHI1.
+        self.pins.wait = self.cycle_uses_ready() && self.t_state == TState::Tw;
 
         let output_cycle = matches!(
             self.machine_cycle,
@@ -163,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn ready_low_enters_tw_at_t2_phi2_then_wait_rises_on_tw_phi1() {
+    fn ready_low_enters_tw_at_t2_phi2_then_wait_tracks_tw_until_next_phi1() {
         let mut cpu = Cpu8080Cycle::new();
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |_, _| {});
         assert_eq!(cpu.t_state(), TState::T2);
@@ -191,9 +210,15 @@ mod tests {
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
             tw_release.push((edge, pins));
         });
-        assert!(!tw_release[0].1.wait, "stable package READY high releases WAIT on PHI1 of TW");
-        assert!(!tw_release[2].1.wait);
+        assert!(tw_release[0].1.wait, "WAIT stays HIGH until READY is sampled at PHI2");
+        assert!(tw_release[2].1.wait, "WAIT stays HIGH through the PHI2 that exits TW");
         assert_eq!(cpu.t_state(), TState::T3);
+
+        let mut t3 = Vec::new();
+        cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
+            t3.push((edge, pins));
+        });
+        assert!(!t3[0].1.wait, "WAIT falls on the leading PHI1 after TW exit");
     }
 
     #[test]
@@ -235,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn hold_release_drops_hlda_on_phi1_and_restores_cpu_bus_at_phi2() {
+    fn hold_release_clears_latch_at_phi2_then_drops_hlda_at_next_phi1() {
         let mut cpu = Cpu8080Cycle::new();
         cpu.holding = true;
         cpu.t_state = TState::Thold;
@@ -246,16 +271,25 @@ mod tests {
         cpu.pins.address = None;
         cpu.pins.data_out = None;
 
-        let mut samples = Vec::new();
+        let mut release = Vec::new();
         cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
-            samples.push((edge, pins));
+            release.push((edge, pins));
         });
 
-        assert!(!samples[0].1.hlda, "package HOLD low must release HLDA at PHI1");
-        assert!(!samples[2].1.hlda);
-        assert_eq!(samples[2].1.address, Some(0x2345), "CPU regains address bus at PHI2");
-        assert!(samples[2].1.dbin, "resumed fetch T2 must restore DBIN");
+        assert!(release[0].1.hlda, "raw PHOLD release cannot lower HLDA before its PHI2 sample");
+        assert!(release[2].1.hlda, "HLDA stays HIGH through the PHI2 that clears HOLD");
+        assert_eq!(release[2].1.address, None, "bus remains released while HLDA is HIGH");
+        assert_eq!(release[2].1.data_out, None);
         assert!(!cpu.is_holding());
         assert_eq!(cpu.t_state(), TState::T3);
+
+        let mut resumed = Vec::new();
+        cpu.tick_with_pin_edges(Cpu8080Inputs::default(), |edge, pins| {
+            resumed.push((edge, pins));
+        });
+        assert!(!resumed[0].1.hlda, "HLDA falls on the leading PHI1 after release PHI2");
+        assert_eq!(resumed[0].1.address, None, "CPU does not regain the bus before the following PHI2");
+        assert!(!resumed[2].1.hlda);
+        assert_eq!(resumed[2].1.address, Some(0x2345), "CPU regains address bus at the following PHI2");
     }
 }
