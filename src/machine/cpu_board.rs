@@ -319,6 +319,10 @@ impl super::AltairBus {
     /// The board's 8212 status latch is physically clocked when processor SYNC
     /// is still high at a PHI1 rising edge. This deliberately separates the
     /// T1 status byte on CPU D/DO from the later dedicated S-100 status outputs.
+    /// The original 88-2SIO also makes its one input wait edge-owned: SINP clocks
+    /// its V flip-flop at this T2 PHI1 and pulls PRDY low; the processor's PWAIT
+    /// output clears V at TW PHI1 and releases PRDY again. Keep those electrical
+    /// transitions here rather than moving them to a host-side T-state boundary.
     pub(crate) fn drive_cycle_cpu_board_edge<E>(&mut self, _edge: E, pins: Cpu8080Pins) {
         self.s100.drive_cpu_board_edge(
             pins.phi1,
@@ -330,6 +334,18 @@ impl super::AltairBus {
         if pins.phi1 && pins.sync {
             if let Some(word) = pins.data_out {
                 self.s100.latch_cpu_status(word);
+            }
+            let signals = self.s100.signals();
+            let port = signals.address as u8;
+            if signals.inp && self.io.input_wait_states(port) != 0 {
+                self.s100.set_memory_ready_input(false);
+            }
+        }
+        if pins.phi1 && pins.wait {
+            let signals = self.s100.signals();
+            let port = signals.address as u8;
+            if signals.inp && self.io.input_wait_states(port) != 0 {
+                self.s100.set_memory_ready_input(true);
             }
         }
     }
