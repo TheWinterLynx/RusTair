@@ -38,11 +38,42 @@ impl MachineCycle {
     }
 }
 
-/// One complete 8080 T-state.
-///
-/// RusTair's cycle core starts at T-state granularity. Pin transitions within a
-/// T-state are derived from the Phi1/Phi2 edge-level reference and can be made
-/// explicit later without changing the public machine-cycle model.
+/// One of the four authoritative digital clock edges inside an Intel 8080
+/// T-state. The real part requires two non-overlapping clock phases. RusTair
+/// models the digital ordering/ownership of those edges; analog pulse width,
+/// slew and propagation-delay spread remain explicit non-claims.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClockEdge {
+    Phi1Rising,
+    Phi1Falling,
+    Phi2Rising,
+    Phi2Falling,
+}
+
+impl ClockEdge {
+    pub const ALL: [Self; 4] = [
+        Self::Phi1Rising,
+        Self::Phi1Falling,
+        Self::Phi2Rising,
+        Self::Phi2Falling,
+    ];
+
+    /// Clock-pin levels immediately after this edge. There is deliberately no
+    /// overlap: both phases are low between PHI1 falling and PHI2 rising and
+    /// again between PHI2 falling and the next PHI1 rising.
+    pub const fn clock_levels_after(self) -> (bool, bool) {
+        match self {
+            Self::Phi1Rising => (true, false),
+            Self::Phi1Falling => (false, false),
+            Self::Phi2Rising => (false, true),
+            Self::Phi2Falling => (false, false),
+        }
+    }
+}
+
+/// One complete 8080 T-state. Each state is now decomposable into the four
+/// authoritative `ClockEdge` events above; the compatibility `tick()` API may
+/// still expose a complete T-state to callers that do not need edge stepping.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TState {
     T1,
@@ -77,5 +108,13 @@ mod tests {
             Some(0x2B)
         );
         assert_eq!(MachineCycle::Internal.status_word(), None);
+    }
+
+    #[test]
+    fn clock_edges_are_non_overlapping_and_repeat_in_historical_order() {
+        assert_eq!(
+            ClockEdge::ALL.map(ClockEdge::clock_levels_after),
+            [(true, false), (false, false), (false, true), (false, false)]
+        );
     }
 }
