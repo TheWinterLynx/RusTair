@@ -179,8 +179,12 @@ impl CycleHostBackend {
             BusMachineCycle::PowerOff | BusMachineCycle::PowerOnUndefined => BusCpuPins::default(),
             BusMachineCycle::ResetReleasedStopped => BusCpuPins {
                 sync: Some(false), dbin: Some(true), wr_n: Some(true), inte: status.inte, wait: status.wait, hlda: status.hlda,
+                ..BusCpuPins::default()
             },
-            _ => BusCpuPins { sync: None, dbin: None, wr_n: None, inte: status.inte, wait: status.wait, hlda: status.hlda },
+            _ => BusCpuPins {
+                sync: None, dbin: None, wr_n: None, inte: status.inte, wait: status.wait, hlda: status.hlda,
+                ..BusCpuPins::default()
+            },
         };
         let (raw_cpu_data, s100_di, s100_do, panel_data) = if powered {
             (machine.bus.raw_cpu_data(), machine.bus.raw_s100_data_in(), machine.bus.raw_s100_data_out(), Some(machine.bus.raw_panel_data()))
