@@ -1,6 +1,6 @@
 # RusTair — Living TODO
 
-> Source of truth for remaining project work. Initial audit: 2026-08-26, `main` at `2402bd2` before this file.
+> Source of truth for remaining project work. Initial audit: 2026-08-26, `main` at `2402bd2` before this file. Reconciled against current `main` and the completed base-hardware fidelity closeout on 2026-09-02.
 >
 > **Rule:** when an item is completed, keep it in place and change it to `- [x] ~~completed item~~` (optionally adding the commit). Do not delete completed items; the file is also the project progress log.
 >
@@ -10,10 +10,23 @@
 
 ## Recommended active order
 
-1. **Didactic RAM viewer + debugger.**
-2. **Runtime/UI scheduling and native-window smoothness.**
-3. **Serial-card/UART fidelity and interrupt path.**
-4. **Architecture, persistence, cleanup, documentation and test hardening.**
+1. **Complete the current `main` CPU release-certification pass** (normal release suite, 256-opcode Fast↔Cycle differential, then the ignored long classic diagnostics).
+2. **MITS 88-VI vector-interrupt controller** as the next genuine digital S-100 hardware-fidelity extension.
+3. **Explicit memory-board modelling** beyond the current logical RAM-size/protection abstraction.
+4. **Runtime/UI scheduling and native-window smoothness.**
+5. **Backend error handling, configuration schema hardening, documentation/licensing and release hygiene.**
+
+## Current hardware-fidelity baseline
+
+`docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md` is the authority for the supported base machine. As of 2026-09-02 it is **CLOSED — 5/5 PASS**:
+
+- S-100 open bus / uninstalled-memory behavior;
+- front-panel electrical lamp duty;
+- authentic long-term installed CPU-board clock;
+- MITS 88-2SIO / MC6850;
+- MITS 88-SIO / COM2502.
+
+Do not reopen those as generic TODO items unless a new regression or primary-source discrepancy is found. Analog voltage/current magnitude, cable noise/impedance and full ASR-33 electromechanics remain explicit non-claims rather than hidden digital blockers.
 
 ---
 
@@ -103,19 +116,19 @@
 - [ ] **[P1] Evaluate a real Windows move/resize freeze path** (`WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`) so DWM can move the last rendered surface smoothly while application animation is paused.
 - [ ] **[P1] Evaluate decoupling CPU execution from the egui event/render loop** using cooperative slices or a worker architecture without sacrificing deterministic machine state.
 - [ ] **[P1] Prevent `Unlimited` Cycle Accurate execution from monopolizing the UI thread.**
-- [ ] **[P1] Fix Authentic 2 MHz long-term timing debt.** The current runtime caps a delayed frame’s `dt`, which can permanently discard elapsed emulation time under host stalls.
+- [x] ~~**[P1] Fix Authentic 2 MHz long-term timing debt.** The old runtime capped a delayed frame’s `dt`, permanently discarding elapsed emulation time under host stalls.~~ Completed: `ExecutionClock` retains elapsed/fractional debt, bounds only each service chunk, repays Fast overshoot and discards genuinely stopped/blocked time; base clock fidelity is PASS.
 - [ ] **[P1] Audit all `request_repaint` / `request_repaint_after` paths** and remove wakeups when no visible/mechanical state can change.
 - [ ] **[P2] Add lightweight runtime performance counters/FPS/frame-time diagnostics** behind a developer/debug option.
 - [ ] **[P2] Add repeatable performance benchmarks for Fast vs Cycle Accurate** and for heavy UI windows (RAM viewer, I/O Inspector, ASR-33).
 
 ---
 
-## P1 — Front-panel timing / LED fidelity
+## Completed electrical front-panel timing / P2 optical polish
 
-- [ ] **[P1] Replace fixed `PANEL_FRAME` visual integration time with real elapsed render time** where appropriate; current visual persistence should represent wall-clock perception, not an assumed 16 ms frame.
-- [ ] **[P1] Review the front-panel activity sample cap/window** so accelerated execution does not always bias LEDs toward the first sampled T-states of a host frame.
-- [ ] **[P1] Add deterministic raw-duty diagnostics** for STATUS / ADDRESS / DATA lamps before optical presentation mapping.
-- [ ] **[P1] Compare raw lamp duty between Fast and Cycle cores on fixed programs** to distinguish CPU/bus differences from presentation differences.
+- [x] ~~**[P1] Replace fixed `PANEL_FRAME` visual integration time with real elapsed render time** where appropriate; visual persistence must represent wall-clock perception rather than an assumed 16 ms frame.~~ Completed: presentation receives the real `frame_dt`; `PANEL_FRAME` now only requests repaint cadence for throttled execution and is not the lamp-integration interval.
+- [x] ~~**[P1] Review the front-panel activity sample cap/window** so accelerated execution does not bias LEDs toward the first sampled T-states of a host frame.~~ Raw duty now accounts the complete electrical sample window without the former truncation and is order-invariant.
+- [x] ~~**[P1] Add deterministic raw-duty diagnostics** for STATUS / ADDRESS / DATA lamps before optical presentation mapping.~~ Covered by `tests/panel_lamp_duty.rs` plus panel-bus regressions.
+- [x] ~~**[P1] Compare raw lamp duty between Fast and Cycle cores on fixed programs** to distinguish CPU/bus differences from presentation differences.~~ `tests/panel_lamp_duty.rs` directly checks equal raw Fast/Cycle duty where both engines possess equivalent information.
 - [ ] **[P2] Allow Brightness/Aura controls to influence extremely weak visible activity predictably**; today activity below the hard visibility threshold cannot be recovered by Brightness.
 - [ ] **[P2] Add named/calibrated LED visual presets only after measurement**, keeping the current live controls available.
 - [ ] **[P2] Keep video/camera matching explicitly separate from electrical fidelity** because exposure/rolling shutter/LED optics affect reference footage.
@@ -125,8 +138,8 @@
 ## P1 — CPU / machine / backend architecture
 
 - [x] ~~**[P1] Remove the duplicate Fast `Cpu8080` state that remains as a mirror inside the Cycle Accurate machine integration**, making the chassis truly CPU-core agnostic.~~ Completed and locally validated: Cycle now physically owns `AltairChassis + Cpu8080Cycle`; Fast alone owns `AltairMachine + Cpu8080`, with regression guards against reintroducing the dormant Fast CPU, alias or `Deref` wrapper.
-- [ ] **[P1] Propagate Cycle Accurate core faults to the application as explicit errors/diagnostics** instead of allowing execution to appear silently stopped.
-- [ ] **[P1] Rework Cycle memory reconfiguration so it does not rebuild the backend and accidentally discard unrelated chassis state.**
+- [ ] **[P1] Surface Cycle Accurate core faults through `BackendHost` and the application as explicit errors/diagnostics instead of a panic or apparently silent stop.** The Cycle backend already latches `Cpu8080CycleFault`, stops RUN and returns `BackendError`; the remaining issue is that `BackendHost::call()` still converts backend errors into `panic!` rather than app-visible status.
+- [x] ~~**[P1] Rework Cycle memory reconfiguration so it does not rebuild the backend and accidentally discard unrelated chassis state.**~~ Completed: Cycle mutates the existing chassis bus in place and `tests/cycle_memory_reconfigure.rs` proves serial-board and switch-register state survive unpowered RAM reconfiguration.
 - [ ] **[P1] Harden `BackendHost` error handling** so backend errors are surfaced rather than converted into application `panic!` paths.
 - [ ] **[P1] Gate UI operations using backend capabilities at the common interface**, even while only the two Rust 8080 engines are active.
 - [ ] **[P1] Remove/restrict public concrete-backend escape hatches** such as direct `machine()/machine_mut()/into_machine()` access where they undermine the abstraction.
@@ -147,22 +160,25 @@
 - [ ] **[P2] Add Z80 CPU state, disassembly/debugger/teaching support only with the real core**, keeping 8080 and Z80 architecture-specific views explicit where their registers/instructions differ.
 - [ ] **[P2] Validate the Z80 board electrically and functionally**: reset, memory/I/O cycles, interrupts, wait/bus arbitration behaviour, front-panel observations, 8080-compatible software and Z80-specific instruction suites.
 
-### S-100 / memory fidelity
+### S-100 / memory / interrupt fidelity extensions
 
 - [x] ~~**[P1] Add a real S-100 interrupt-request path and interrupt-producing device model** before claiming interrupt-capable peripheral fidelity.~~ Canonical PINT plus 88-SIO/88-2SIO level-sensitive IRQ sources are implemented for both Rust backends.
-- [ ] **[P2] Replace the fixed logical 1 KiB protection-board assumption with explicit memory-board modelling** if/when board-level memory fidelity is pursued.
-- [ ] **[P2] Revisit unmapped/open-bus memory behavior** instead of always returning deterministic `00h`; make any historical/open-bus policy explicit and testable.
+- [ ] **[P1] Implement the MITS 88-VI vector-interrupt controller as real S-100 hardware.** Current 88-SIO/88-2SIO wiring can drive raw `VI0..VI7`, but no installed 88-VI board yet arbitrates/prioritizes those requests and supplies the documented vector/restart opcode during INTA. Model its physical configuration, priority/acknowledge behavior and Fast/Cycle boundary from primary sources; do not synthesize vectors inside the serial cards.
+- [ ] **[P2] Replace the fixed logical 1 KiB protection-board assumption with explicit memory-board modelling** if/when board-level memory fidelity is pursued: installed card identity, address straps/ranges, protection and timing should belong to cards rather than a global logical RAM block.
+- [x] ~~**[P2] Revisit unmapped/open-bus memory behavior** instead of always returning deterministic `00h`; make any historical/open-bus policy explicit and testable.~~ Completed: host/debugger physical peeks distinguish absent hardware, while guest unresponded memory/I/O reads observe S-100 `FFh`; writes do not create storage and unselected cards add no wait states. See `tests/open_bus_fidelity.rs` and the base-hardware closeout.
 
 ---
 
-## P1 — Serial hardware fidelity
+## Completed base serial hardware fidelity / P2 host-endpoint polish
 
-- [ ] **[P1] Move UART transmit/receive timing ownership into the emulated serial board** rather than allowing ASR/Terminal/TCP/COM endpoint pacing to define when hardware TX completes.
-- [ ] **[P1] Model RX overrun/error conditions** instead of treating endpoint queues as infinitely forgiving hardware.
-- [ ] **[P1] Expand the 88-2SIO / MC6850 model** beyond the BASIC-required subset: control word/framing, parity, stop bits, error flags, overrun and IRQ behavior.
-- [ ] **[P1] Audit 88-SIO revision-specific behavior/status semantics** against hardware documentation and make deliberate compatibility choices explicit.
-- [x] ~~**[P1] Connect serial IRQ generation to the future S-100 interrupt path.~~ 88-SIO/88-2SIO IRQ conditions now drive canonical S-100 PINT and direct RST 7 acknowledge.
-- [ ] **[P2] Add explicit parity/framing configuration where historically meaningful**, separating physical ASR-33 limitations from modern external COM/TCP endpoints.
+> MITS 88-SIO and 88-2SIO are base-hardware PASS. Remaining unchecked items here concern host TCP/COM lifecycle rather than missing UART/card digital fidelity.
+
+- [x] ~~**[P1] Move UART transmit/receive timing ownership into the emulated serial board** rather than allowing ASR/Terminal/TCP/COM endpoint pacing to define when hardware TX completes.~~ Completed for 88-SIO COM2502 and both 88-2SIO MC6850 channels; board clocks continue while the CPU is parked where the physical card would continue running.
+- [x] ~~**[P1] Model RX overrun/error conditions** instead of treating endpoint queues as infinitely forgiving hardware.~~ Finite RX shift/register state, framing/parity/overrun behavior and delayed MC6850 OVRN semantics are covered by the hardware models/regressions.
+- [x] ~~**[P1] Expand the 88-2SIO / MC6850 model** beyond the BASIC-required subset: control word/framing, parity, stop bits, error flags, overrun and IRQ behavior.~~ Completed and documented in `docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`.
+- [x] ~~**[P1] Audit 88-SIO revision-specific behavior/status semantics** against hardware documentation and make deliberate compatibility choices explicit.~~ Completed: Rev0 external RIN/ROT device-ready flip-flops and Rev1 internal-ready behavior are distinct from COM2502 RDA/TBMT; see `docs/88_SIO_HARDWARE_FIDELITY.md`.
+- [x] ~~**[P1] Connect serial IRQ generation to the future S-100 interrupt path.**~~ 88-SIO/88-2SIO IRQ conditions now drive canonical S-100 PINT or explicitly wired raw VI lines; the separate 88-VI controller remains the next extension above.
+- [x] ~~**[P2] Add explicit parity/framing configuration where historically meaningful**, separating physical ASR-33 limitations from modern external COM/TCP endpoints.~~ 88-SIO exposes its physical UART format wiring (data bits/parity/stop bits); 88-2SIO format remains correctly guest-controlled through the MC6850 control register rather than being replaced by endpoint settings.
 - [ ] **[P2] Fix External TCP bind retry behavior** so a temporary bind failure is retried without requiring config change/restart.
 - [ ] **[P2] Avoid synchronous COM worker `join()` on the UI thread** during close/reconfigure.
 - [ ] **[P2] Review whether persisted “External TCP enabled” / COM state should automatically reactivate external services on startup** versus remembering settings but requiring an explicit reconnect/start action.
@@ -205,14 +221,16 @@
 
 ---
 
-## P1/P2 — Tests and validation hardening
+## P0/P1/P2 — Tests and validation hardening
 
+- [ ] **[P0] Complete the current `main` CPU release-certification pass.** Required checkpoint: full `cargo test --release`, the 256-opcode Fast↔Cycle differential, then `cpu8080_cycle_classic_diagnostics` with ignored tests enabled. `CPUTEST.COM` must match 33,971,311 instructions / 255,653,383 T-states and `8080EXM.COM` 2,919,050,698 / 23,803,381,171 exactly. Mark complete only after the local run is reported green.
 - [ ] **[P1] Add common `BackendHost` parity tests for Fast and Cycle** instead of testing some front-panel behavior only through concrete `AltairMachine` paths.
 - [ ] **[P1] Add end-to-end ASR paper-reader tests** for mount/read/pause/resume/rewind/eject, LINE/OFF/LOCAL, disconnected port and 1×/5×/10×/Unlimited pacing.
 - [ ] **[P1] Add end-to-end punch tests** for blank tape, pause/resume, queued bytes, finish/save retry and exact 8-bit output.
-- [ ] **[P1] Add deterministic serial-card conformance tests** for status/data/control/overrun once the fuller UART models are implemented.
+- [x] ~~**[P1] Add deterministic serial-card conformance tests** for status/data/control/overrun once the fuller UART models are implemented.~~ Covered by MC6850/88-SIO unit tests and focused 88-SIO/88-2SIO timing, BREAK, modem, interrupt, endpoint, strap/interface and debugger-wait regressions.
 - [ ] **[P1] Add front-panel integration tests through both backends** for known I/O polling loops and stable duty-cycle expectations.
 - [x] ~~**[P1] Add tests for debugger decoder/control-flow/loop detection before enabling educational conclusions in the UI.**~~ Covered by decoder coverage/timing, loop, history, debugger execution, Bus Teacher and architecture regressions.
+- [ ] **[P1] Add a dedicated regression that deliberately injects/forces a Cycle core fault and verifies it remains latched until RESET/power recovery and is surfaced through the final non-panicking application error path.**
 - [ ] **[P2] Add performance regression benchmarks** for Cycle core, long diagnostics and high-rate UI traces.
 - [ ] **[P2] Document the intentionally ignored long-running tests and the exact `--release --ignored` commands/results expected before major releases.**
 
@@ -236,7 +254,7 @@
 - [ ] **[P1] Complete `THIRD_PARTY.md` / provenance review** for diagnostic binaries, fonts, images and audio before a public release.
 - [ ] **[P1] Review `.github/workflows/*` automatic triggers** against the project rule that GitHub Actions must never be run without explicit permission; prefer manual-only behavior if appropriate.
 - [ ] **[P2] Add a concise architecture document** covering UI → `BackendHost/MachineBackend` → chassis/core, serial routing, timing ownership and presentation-vs-electrical front-panel layers.
-- [ ] **[P2] Add a historical-fidelity notes document** identifying deliberate approximations, compatibility hacks and optional non-historical conveniences.
+- [ ] **[P2] Add a historical-fidelity notes document** identifying deliberate approximations, compatibility hacks and optional non-historical conveniences. The existing per-board fidelity docs and closeout ledger provide most source material, but a single user-facing overview is still useful.
 
 ---
 
@@ -278,3 +296,4 @@ These items pre-date this TODO but are retained as the baseline from which the a
 - [x] ~~ASR-33 header/transport controls made responsive instead of depending on a fixed width breakpoint.~~
 - [x] ~~Bundled Microsoft 4K BASIC Quick Load path integrated.~~
 - [x] ~~Runtime assets embedded into release executables.~~
+- [x] ~~Base hardware fidelity closeout completed: S-100 open bus, electrical panel duty, authentic CPU-board clock, MITS 88-SIO and MITS 88-2SIO all PASS with focused regressions and a complete normal local test suite.~~ See `docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md`.
