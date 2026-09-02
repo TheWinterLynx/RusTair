@@ -1,5 +1,5 @@
 use super::{ClockEdge, MachineCycle, TState};
-use super::super::{decode::Instruction, Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
+use super::super::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
 
 impl Cpu8080Cycle {
     /// Execute one complete T-state through the Intel 8080's two non-overlapping
@@ -129,6 +129,7 @@ impl Cpu8080Cycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::super::decode::Instruction;
 
     #[test]
     fn one_t_state_exposes_four_non_overlapping_clock_edges() {
