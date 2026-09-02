@@ -17,9 +17,11 @@ impl Cpu8080Cycle {
         })
     }
 
-    /// Edge path used by callers that already know both package-input samples.
+    /// Test helper for callers that already know both package-input samples.
     /// `phi1_inputs` are stable when PHI1 rises; `phi2_inputs` are the values
-    /// presented at the PHI2 sampling edge.
+    /// presented at the PHI2 sampling edge. Production uses the live callback
+    /// below so board logic may change READY/HOLD between PHI1 and PHI2.
+    #[cfg(test)]
     pub(crate) fn tick_with_pin_edges_split(
         &mut self,
         phi1_inputs: Cpu8080Inputs,
