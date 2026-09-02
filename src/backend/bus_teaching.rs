@@ -129,6 +129,11 @@ impl From<TState> for BusTState {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BusCpuPins {
+    /// Exact Intel 8080 PHI1 package input. Fast/reconstructed snapshots leave
+    /// this unknown rather than inventing a phase from elapsed instruction time.
+    pub phi1: Option<bool>,
+    /// Exact Intel 8080 PHI2 package input.
+    pub phi2: Option<bool>,
     pub sync: Option<bool>,
     pub dbin: Option<bool>,
     pub wr_n: Option<bool>,
