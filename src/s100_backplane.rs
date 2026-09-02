@@ -20,7 +20,9 @@ pub enum S100PinDrive {
 }
 
 impl Default for S100PinDrive {
-    fn default() -> Self { Self::HighZ }
+    fn default() -> Self {
+        Self::HighZ
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -40,12 +42,16 @@ pub struct S100CardDrive {
 
 impl Default for S100CardDrive {
     fn default() -> Self {
-        Self { pins: [S100PinDrive::HighZ; PIN_COUNT_WITH_ZERO] }
+        Self {
+            pins: [S100PinDrive::HighZ; PIN_COUNT_WITH_ZERO],
+        }
     }
 }
 
 impl S100CardDrive {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn pin(&self, pin: u8) -> Option<S100PinDrive> {
         self.pins.get(pin as usize).copied()
@@ -96,7 +102,9 @@ pub struct S100BusSample {
 
 impl Default for S100BusSample {
     fn default() -> Self {
-        Self { pins: [S100ResolvedPin::default(); PIN_COUNT_WITH_ZERO] }
+        Self {
+            pins: [S100ResolvedPin::default(); PIN_COUNT_WITH_ZERO],
+        }
     }
 }
 
@@ -125,7 +133,9 @@ impl S100BusSample {
         let mut value = 0u16;
         for bit in 0..count {
             let high = self.signal_level(signal(bit))?;
-            if high { value |= 1u16 << bit; }
+            if high {
+                value |= 1u16 << bit;
+            }
         }
         Some(value)
     }
@@ -135,11 +145,13 @@ impl S100BusSample {
     }
 
     pub fn data_out(&self) -> Option<u8> {
-        self.resolved_bits(S100Signal::DataOut, 8).map(|value| value as u8)
+        self.resolved_bits(S100Signal::DataOut, 8)
+            .map(|value| value as u8)
     }
 
     pub fn data_in(&self) -> Option<u8> {
-        self.resolved_bits(S100Signal::DataIn, 8).map(|value| value as u8)
+        self.resolved_bits(S100Signal::DataIn, 8)
+            .map(|value| value as u8)
     }
 
     pub fn data_in_or(&self, open_bus: u8) -> u8 {
@@ -170,10 +182,18 @@ pub struct S100Slot {
 }
 
 impl S100Slot {
-    fn new(number: usize) -> Self { Self { number, card: None } }
+    fn new(number: usize) -> Self {
+        Self { number, card: None }
+    }
 
-    pub fn number(&self) -> usize { self.number }
-    pub fn is_empty(&self) -> bool { self.card.is_none() }
+    pub fn number(&self) -> usize {
+        self.number
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.card.is_none()
+    }
+
     pub fn descriptor(&self) -> Option<&'static S100CardDescriptor> {
         self.card.as_ref().map(|card| card.s100_descriptor())
     }
@@ -181,11 +201,20 @@ impl S100Slot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum S100BackplaneError {
-    InvalidSlot { slot: usize, slot_count: usize },
-    SlotOccupied { slot: usize },
+    InvalidSlot {
+        slot: usize,
+        slot_count: usize,
+    },
+    SlotOccupied {
+        slot: usize,
+    },
     /// The card attempted to drive a contact it did not declare as an output,
     /// or used an electrical drive incompatible with that declared role.
-    IllegalCardDrive { slot: usize, pin: u8, drive: S100PinDrive },
+    IllegalCardDrive {
+        slot: usize,
+        pin: u8,
+        drive: S100PinDrive,
+    },
 }
 
 pub struct S100Backplane {
@@ -197,7 +226,9 @@ pub struct S100Backplane {
 impl S100Backplane {
     pub fn new(slot_count: usize) -> Self {
         let mut backplane = Self {
-            slots: (0..slot_count).map(|index| S100Slot::new(index + 1)).collect(),
+            slots: (0..slot_count)
+                .map(|index| S100Slot::new(index + 1))
+                .collect(),
             passive_bias: [None; PIN_COUNT_WITH_ZERO],
             sample: S100BusSample::default(),
         };
@@ -217,9 +248,17 @@ impl S100Backplane {
         backplane
     }
 
-    pub fn slot_count(&self) -> usize { self.slots.len() }
-    pub fn slots(&self) -> &[S100Slot] { &self.slots }
-    pub fn sample(&self) -> &S100BusSample { &self.sample }
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub fn slots(&self) -> &[S100Slot] {
+        &self.slots
+    }
+
+    pub fn sample(&self) -> &S100BusSample {
+        &self.sample
+    }
 
     pub fn set_passive_bias(&mut self, signal: S100Signal, level: Option<bool>) {
         let pin = signal.pin().expect("valid S-100 signal");
@@ -256,8 +295,8 @@ impl S100Backplane {
     }
 
     /// Resolve arbitrary drive sets against this backplane's passive biases.
-    /// CPU-board integration can use this same path; it contains no device type
-    /// switches and therefore cannot special-case RAM or serial cards.
+    /// This contains no card-type switches and is also used for non-slot chassis
+    /// wiring such as the Display/Control board connector.
     pub fn resolve_drive_sets(&self, drives: &[S100CardDrive]) -> S100BusSample {
         let mut sample = S100BusSample::default();
         for pin in 1..=S100_CONTACT_COUNT {
@@ -295,23 +334,45 @@ impl S100Backplane {
         sample
     }
 
-    /// One digital propagation step: all cards see the same previous resolved
-    /// sample, update internal state, then their independent drives are resolved
-    /// simultaneously. Slot iteration order therefore cannot change bus truth.
-    pub fn step(&mut self) -> Result<&S100BusSample, S100BackplaneError> {
+    /// Let every slotted card observe the currently resolved electrical sample
+    /// exactly once. Separating observation from resolution is important for
+    /// edge-triggered cards: a chassis may need a second combinational resolve
+    /// after RAM/serial outputs change without replaying the same clock edge.
+    pub fn observe_cards(&mut self) {
         let observed = self.sample.clone();
-        let mut drives = Vec::new();
-
         for slot in &mut self.slots {
-            let Some(card) = slot.card.as_mut() else { continue; };
-            card.observe_s100(&observed);
+            if let Some(card) = slot.card.as_mut() {
+                card.observe_s100(&observed);
+            }
+        }
+    }
+
+    /// Resolve the current drives of every slotted card plus optional chassis
+    /// wiring that is not itself an S-100 slot (for example Display/Control).
+    /// Slotted card drives are still checked against their connector contracts.
+    pub fn resolve_current_drives(
+        &mut self,
+        chassis_drives: &[S100CardDrive],
+    ) -> Result<&S100BusSample, S100BackplaneError> {
+        let mut drives = Vec::with_capacity(self.slots.len() + chassis_drives.len());
+        for slot in &self.slots {
+            let Some(card) = slot.card.as_ref() else {
+                continue;
+            };
             let drive = card.drive_s100();
             validate_card_drive(slot.number, card.s100_descriptor(), &drive)?;
             drives.push(drive);
         }
-
+        drives.extend(chassis_drives.iter().cloned());
         self.sample = self.resolve_drive_sets(&drives);
         Ok(&self.sample)
+    }
+
+    /// One digital propagation step retained for simple callers/tests: every
+    /// card observes the previous sample once, then all drives are resolved.
+    pub fn step(&mut self) -> Result<&S100BusSample, S100BackplaneError> {
+        self.observe_cards();
+        self.resolve_current_drives(&[])
     }
 }
 
@@ -322,7 +383,9 @@ fn validate_card_drive(
 ) -> Result<(), S100BackplaneError> {
     for pin in 1..=S100_CONTACT_COUNT as u8 {
         let actual = drive.pins[pin as usize];
-        if actual == S100PinDrive::HighZ { continue; }
+        if actual == S100PinDrive::HighZ {
+            continue;
+        }
 
         let role = descriptor
             .contacts
@@ -331,12 +394,19 @@ fn validate_card_drive(
             .map(|contact| contact.role);
 
         let legal = match (role, actual) {
-            (Some(S100ContactRole::Output | S100ContactRole::TriStateOutput), S100PinDrive::Driven(_)) => true,
+            (
+                Some(S100ContactRole::Output | S100ContactRole::TriStateOutput),
+                S100PinDrive::Driven(_),
+            ) => true,
             (Some(S100ContactRole::OpenCollectorOutput), S100PinDrive::OpenCollectorLow) => true,
             _ => false,
         };
         if !legal {
-            return Err(S100BackplaneError::IllegalCardDrive { slot, pin, drive: actual });
+            return Err(S100BackplaneError::IllegalCardDrive {
+                slot,
+                pin,
+                drive: actual,
+            });
         }
     }
     Ok(())
@@ -347,15 +417,18 @@ mod tests {
     use super::*;
     use crate::s100::{S100CardClass, S100CardContact};
 
-    const READY_OC: &[S100CardContact] = &[
-        S100CardContact::new(S100Signal::Ready, S100ContactRole::OpenCollectorOutput),
-    ];
-    const DI0_TRI: &[S100CardContact] = &[
-        S100CardContact::new(S100Signal::DataIn(0), S100ContactRole::TriStateOutput),
-    ];
-    const A0_INPUT: &[S100CardContact] = &[
-        S100CardContact::new(S100Signal::Address(0), S100ContactRole::Input),
-    ];
+    const READY_OC: &[S100CardContact] = &[S100CardContact::new(
+        S100Signal::Ready,
+        S100ContactRole::OpenCollectorOutput,
+    )];
+    const DI0_TRI: &[S100CardContact] = &[S100CardContact::new(
+        S100Signal::DataIn(0),
+        S100ContactRole::TriStateOutput,
+    )];
+    const A0_INPUT: &[S100CardContact] = &[S100CardContact::new(
+        S100Signal::Address(0),
+        S100ContactRole::Input,
+    )];
 
     static READY_CARD: S100CardDescriptor = S100CardDescriptor {
         key: "test-ready",
@@ -385,17 +458,24 @@ mod tests {
     }
 
     impl S100Card for FixedCard {
-        fn s100_descriptor(&self) -> &'static S100CardDescriptor { self.descriptor }
+        fn s100_descriptor(&self) -> &'static S100CardDescriptor {
+            self.descriptor
+        }
     }
 
     impl S100ElectricalCard for FixedCard {
-        fn drive_s100(&self) -> S100CardDrive { self.drive.clone() }
+        fn drive_s100(&self) -> S100CardDrive {
+            self.drive.clone()
+        }
     }
 
     fn ready_card(pull_low: bool) -> FixedCard {
         let mut drive = S100CardDrive::new();
         drive.pull_low(S100Signal::Ready, pull_low);
-        FixedCard { descriptor: &READY_CARD, drive }
+        FixedCard {
+            descriptor: &READY_CARD,
+            drive,
+        }
     }
 
     #[test]
@@ -404,11 +484,17 @@ mod tests {
         backplane.insert(1, Box::new(ready_card(true))).unwrap();
         backplane.insert(2, Box::new(ready_card(false))).unwrap();
         backplane.step().unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(false)
+        );
 
         backplane.remove(1).unwrap();
         backplane.step().unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(true));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(true)
+        );
     }
 
     #[test]
@@ -438,8 +524,14 @@ mod tests {
         let mut drive = S100CardDrive::new();
         drive.pull_low(S100Signal::VectorInterrupt(3), true);
         let sample = backplane.resolve_drive_sets(&[drive]);
-        assert_eq!(sample.signal_level(S100Signal::VectorInterrupt(3)), Some(false));
-        assert_eq!(sample.signal_level(S100Signal::VectorInterrupt(4)), Some(true));
+        assert_eq!(
+            sample.signal_level(S100Signal::VectorInterrupt(3)),
+            Some(false)
+        );
+        assert_eq!(
+            sample.signal_level(S100Signal::VectorInterrupt(4)),
+            Some(true)
+        );
         backplane.set_passive_bias(S100Signal::VectorInterrupt(4), None);
         let sample = backplane.resolve_drive_sets(&[]);
         assert_eq!(sample.signal_level(S100Signal::VectorInterrupt(4)), None);
@@ -464,12 +556,19 @@ mod tests {
     fn card_cannot_drive_a_contact_declared_only_as_input() {
         let mut drive = S100CardDrive::new();
         drive.drive_signal(S100Signal::Address(0), true);
-        let card = FixedCard { descriptor: &INPUT_ONLY_CARD, drive };
+        let card = FixedCard {
+            descriptor: &INPUT_ONLY_CARD,
+            drive,
+        };
         let mut backplane = S100Backplane::new(1);
         backplane.insert(1, Box::new(card)).unwrap();
         assert!(matches!(
             backplane.step(),
-            Err(S100BackplaneError::IllegalCardDrive { slot: 1, pin: 79, .. })
+            Err(S100BackplaneError::IllegalCardDrive {
+                slot: 1,
+                pin: 79,
+                ..
+            })
         ));
     }
 
@@ -477,10 +576,27 @@ mod tests {
     fn descriptor_role_is_checked_for_tri_state_card_output() {
         let mut drive = S100CardDrive::new();
         drive.drive_signal(S100Signal::DataIn(0), true);
-        let card = FixedCard { descriptor: &DI_CARD, drive };
+        let card = FixedCard {
+            descriptor: &DI_CARD,
+            drive,
+        };
         let mut backplane = S100Backplane::new(1);
         backplane.insert(1, Box::new(card)).unwrap();
         backplane.step().unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::DataIn(0)), Some(true));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::DataIn(0)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn observation_can_be_followed_by_combinational_reresolve_without_replaying_edge() {
+        let mut backplane = S100Backplane::new(1);
+        backplane.insert(1, Box::new(ready_card(true))).unwrap();
+        backplane.resolve_current_drives(&[]).unwrap();
+        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+        backplane.observe_cards();
+        backplane.resolve_current_drives(&[]).unwrap();
+        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
     }
 }
