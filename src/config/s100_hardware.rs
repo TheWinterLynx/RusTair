@@ -155,9 +155,11 @@ impl S100InstalledCardConfig {
 
     pub fn validate(self) -> Result<Self, S100HardwareConfigError> {
         match self {
-            Self::Ram(config) => config
-                .validate()
-                .map_err(S100HardwareConfigError::InvalidRamCard)?,
+            Self::Ram(config) => {
+                config
+                    .validate()
+                    .map_err(S100HardwareConfigError::InvalidRamCard)?;
+            }
             Self::FastRamCompatibility(config) => {
                 config.validate()?;
             }
@@ -371,6 +373,20 @@ mod tests {
             S100InstalledCardKind::Mits16KStatic88_16Mcs.ram_model(),
             Some(S100RamBoardModel::Mits16KStatic88_16Mcs)
         );
+    }
+
+    #[test]
+    fn installed_card_validation_preserves_the_outer_card_variant() {
+        let ram = S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+            S100RamBoardModel::Mits4KStatic88_4Mcs,
+            0x1000,
+        ));
+        assert_eq!(ram.validate().unwrap(), ram);
+
+        let compatibility = S100InstalledCardConfig::FastRamCompatibility(
+            FastRamCompatibilityConfig::no_wait(0x2000, 0x1000),
+        );
+        assert_eq!(compatibility.validate().unwrap(), compatibility);
     }
 
     #[test]
