@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use super::s100_hardware::S100HardwareConfig;
 use super::sio::SioHardwareConfig;
 use super::two_sio::{TwoSioInterruptWiring, TwoSioStraps};
 
@@ -408,6 +409,12 @@ pub struct MachineConfig {
     /// the Port 0 request pad DI and Port 1 request pad EI; each may be left
     /// disconnected, wired to PINT, or wired to VI0..VI7 for an 88-VI system.
     pub two_sio_interrupt_wiring: TwoSioInterruptWiring,
+    /// Slot-native physical S-100 assembly. During the staged migration the
+    /// legacy aggregate RAM/serial fields above remain runtime-compatible, while
+    /// this inventory is already the authoritative persisted/user-editable
+    /// representation that Fast and Cycle will share when the live backplane is
+    /// connected.
+    pub s100_hardware: S100HardwareConfig,
 }
 
 impl MachineConfig {
@@ -504,6 +511,13 @@ mod tests {
         assert_eq!(board, CpuBoard::Mits8080);
         assert_eq!(board.cpu_model(), CpuModel::Intel8080);
         assert_eq!(board.clock_hz(), 2_000_000);
+    }
+
+    #[test]
+    fn default_machine_exposes_one_valid_slot_native_s100_assembly() {
+        let config = AppConfig::default();
+        assert_eq!(config.machine.s100_hardware.cpu_slots().collect::<Vec<_>>(), vec![1]);
+        assert!(config.machine.s100_hardware.validate().is_ok());
     }
 
     #[test]
