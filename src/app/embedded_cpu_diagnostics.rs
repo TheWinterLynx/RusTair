@@ -339,13 +339,25 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     };
     machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let hlda_after_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
+    let hlda_after_first_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
         machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
     } else {
         machine.front_panel_state().lamps.hlda > 0.5
     };
+    let hlda_after_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
+        // MITS synchronizes PHOLD at PHI2. Intel clears its HOLD latch there,
+        // but HLDA remains asserted until the following PHI1, so one additional
+        // Cycle T-state is required before the package/backplane output drops.
+        machine.run_cycles(1);
+        machine.commit_panel_activity(Duration::from_secs(1));
+        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
+    } else {
+        hlda_after_first_release_clock
+    };
     let hold_release_transition_ok = match engine {
-        EmulationEngine::RustCycleAccurate8080 => hlda_before_release_clock && !hlda_after_release_clock,
+        EmulationEngine::RustCycleAccurate8080 => {
+            hlda_before_release_clock && hlda_after_first_release_clock && !hlda_after_release_clock
+        }
         _ => !hlda_after_release_clock,
     };
     machine.set_running(false);
@@ -358,7 +370,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
             && cpu_frozen
             && hold_release_transition_ok,
         detail: format!(
-            "engine={} · WAIT@STOP={} · WAIT before RUN clock={} · WAIT after RUN clock={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA before release clock={} · HLDA after release clock={}",
+            "engine={} · WAIT@STOP={} · WAIT before RUN clock={} · WAIT after RUN clock={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA before release clock={} · HLDA after first release clock={} · HLDA after following clock={}",
             engine.label(),
             wait_when_stopped,
             wait_before_run_clock,
@@ -367,6 +379,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
             pc_at_hlda,
             cpu_frozen,
             hlda_before_release_clock,
+            hlda_after_first_release_clock,
             hlda_after_release_clock
         ),
     });
