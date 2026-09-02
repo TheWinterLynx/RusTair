@@ -16,6 +16,7 @@ mod io_inspector;
 mod loop_inspector;
 mod memory_activity;
 mod memory_viewer;
+mod s100_hardware;
 #[path = "../persistence.rs"]
 pub(super) mod persistence;
 pub(super) mod terminal;
@@ -49,6 +50,10 @@ pub(in crate::app) fn persist_configuration_if_changed(app: &mut RusTairApp) {
 
 pub(in crate::app) fn open_led_visual_controls(app: &mut RusTairApp) {
     app.open_led_visual_controls();
+}
+
+pub(in crate::app) fn draw_s100_hardware_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
+    s100_hardware::draw_s100_hardware_menu(app, ui);
 }
 
 fn instruction_trace_requested(ctx: &egui::Context) -> bool {
