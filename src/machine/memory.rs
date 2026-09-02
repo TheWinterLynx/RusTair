@@ -315,22 +315,41 @@ impl super::AltairBus {
         phase: MemoryReadyPhase,
     ) -> bool {
         let memory_ready = self.memory.ready_for_t_state(address, memory_read, phase);
+        let signals = self.s100.signals();
 
-        // PRDY is a wired-AND S-100 input, not a property of RAM alone. The
-        // Cycle backend already asks this arbitration point before every exact
-        // T-state. Once an IN T1 has latched SINP in the canonical status latch,
-        // the selected 88-2SIO contributes its documented 500 ns low pulse at
-        // the following T2 READY sample. PWAIT then releases the card for the
-        // first TW. T1 deliberately ignores the previously latched INP status so
-        // a following OUT/internal cycle cannot inherit a stale I/O wait.
+        // Exact 88-2SIO timing crosses a sub-T-state boundary. During InputRead
+        // T1 the processor status byte is already on CPU D / S-100 DO with
+        // PSYNC high, but the MITS 8212 does not assert the dedicated SINP line
+        // until SYNC+PHI1 at the start of T2. The selected 88-2SIO then clocks
+        // its V flip-flop, pulls PRDY low, and the CPU samples that LOW at T2
+        // PHI2. Predict that upcoming PHI2 value here without changing the
+        // physical S-100 PRDY level early; `drive_cycle_cpu_board_edge()` owns
+        // the actual PHI1 transition.
+        let inp_about_to_latch = !memory_read
+            && phase == MemoryReadyPhase::T2
+            && signals.psync
+            && signals.data_out.map_or(false, |word| word & 0x40 != 0);
         let input_read = !memory_read
-            && phase != MemoryReadyPhase::T1
-            && self.s100.signals().inp;
+            && match phase {
+                MemoryReadyPhase::T1 => false,
+                MemoryReadyPhase::T2 => signals.inp || inp_about_to_latch,
+                _ => signals.inp,
+            };
+        let io_wait_selected = input_read && self.io.input_wait_states(address as u8) != 0;
         let io_ready = self
             .io
             .ready_for_input_t_state(address as u8, input_read, phase);
         let ready = memory_ready && io_ready;
-        self.s100.set_memory_ready_input(ready);
+
+        // For the 88-2SIO's sole input wait, PRDY itself changes on PHI1: SINP
+        // clocks it LOW at T2 PHI1 and PWAIT clears it HIGH at TW PHI1. Do not
+        // move that electrical transition to this host-side pre-T-state query.
+        // Other READY contributors keep the existing direct path.
+        let phi1_owned_2sio_transition = io_wait_selected
+            && matches!(phase, MemoryReadyPhase::T2 | MemoryReadyPhase::Tw);
+        if !phi1_owned_2sio_transition {
+            self.s100.set_memory_ready_input(ready);
+        }
         ready
     }
 
