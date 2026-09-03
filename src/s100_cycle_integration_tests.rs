@@ -1,5 +1,5 @@
 use crate::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
-use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Inputs};
+use crate::cpu8080_cycle::Cpu8080Cycle;
 use crate::s100_chassis::S100ChassisConfig;
 use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 use crate::s100_runtime::{DisplayControlLines, S100RuntimeFabric};
