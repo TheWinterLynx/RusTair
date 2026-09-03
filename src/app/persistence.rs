@@ -1,10 +1,10 @@
 use super::super::*;
 use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
-    ComDataBits, ComFlowControl, ComParity, ComStopBits, CpuModel, ExternalComConfig,
-    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, S100HardwareConfig,
-    SioHardwareConfig, TcpListenScope, TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap,
-    TwoSioInterruptTarget, TwoSioSignalInterface,
+    ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig,
+    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, RamBoardProfile,
+    RamSize, S100HardwareConfig, SioHardwareConfig, TcpListenScope, TerminalDuplex,
+    TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget, TwoSioSignalInterface,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
 use std::fmt::Write as _;
@@ -111,6 +111,7 @@ pub(super) fn led_visual_controls_state() -> (bool, f32, f32) {
 
 pub(super) fn set_led_visual_controls_state(open: bool, brightness: f32, aura: f32) {
     let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    state.led_visual_controls_state = state.led_controls_open;
     state.led_controls_open = open;
     state.led_brightness = brightness.clamp(0.25, 3.0);
     state.led_aura = aura.clamp(0.0, 3.0);
@@ -126,7 +127,12 @@ impl SavedSettings {
 
     fn from_text(text: &str) -> Self {
         let mut saved = Self::default();
+        // Pre-v5 aggregate CPU/RAM values live only for the duration of parsing.
+        // Once converted to a slot inventory they are discarded permanently.
+        let mut legacy_ram_size = RamSize::default();
+        let mut legacy_ram_board_profile = RamBoardProfile::default();
         let mut saw_s100_hardware = false;
+
         for raw_line in text.lines() {
             let line = raw_line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -136,12 +142,12 @@ impl SavedSettings {
             let key = key.trim();
             let value = value.trim();
             match key {
-                "machine.cpu_model" => {
-                    if value == "intel8080" { saved.config.machine.cpu_model = CpuModel::Intel8080; }
-                }
-                "machine.ram_size" => if let Some(v) = parse_ram_size(value) { saved.config.machine.ram_size = v; },
+                // Intel 8080 was the only value written by the old format. CPU
+                // authority now comes exclusively from machine.s100_hardware.
+                "machine.cpu_model" => { let _ = value == "intel8080"; }
+                "machine.ram_size" => if let Some(v) = parse_ram_size(value) { legacy_ram_size = v; },
                 "machine.ram_init" => if let Some(v) = parse_ram_init(value) { saved.config.machine.ram_init = v; },
-                "machine.ram_board_profile" => if let Some(v) = parse_ram_board_profile(value) { saved.config.machine.ram_board_profile = v; },
+                "machine.ram_board_profile" => if let Some(v) = parse_ram_board_profile(value) { legacy_ram_board_profile = v; },
                 "machine.serial_board" => if let Some(v) = parse_serial_board(value) { saved.config.machine.serial_board = v; },
                 "machine.sio_hardware" => if let Some(v) = SioHardwareConfig::from_persistence_key(value) { saved.config.machine.sio_hardware = v; },
                 "machine.two_sio_base" => if let Some(v) = parse_two_sio_address(value) { saved.config.machine.two_sio_straps.address = v; },
@@ -197,10 +203,11 @@ impl SavedSettings {
                 _ => {}
             }
         }
+
         if !saw_s100_hardware {
             saved.config.machine.s100_hardware = S100HardwareConfig::from_legacy_globals(
-                saved.config.machine.ram_size,
-                saved.config.machine.ram_board_profile,
+                legacy_ram_size,
+                legacy_ram_board_profile,
                 saved.config.machine.serial_board,
                 saved.config.machine.sio_hardware,
                 saved.config.machine.two_sio_straps,
@@ -214,10 +221,10 @@ impl SavedSettings {
         let mut out = String::new();
         let _ = writeln!(out, "# RusTair persistent configuration");
         let _ = writeln!(out, "version={CONFIG_VERSION}");
-        let _ = writeln!(out, "machine.cpu_model=intel8080");
-        let _ = writeln!(out, "machine.ram_size={}", ram_size_key(self.config.machine.ram_size));
+        // CPU identity and RAM topology are serialized exactly once through the
+        // physical S-100 inventory. Old aggregate keys are read-only migration
+        // inputs and are never propagated into a newly saved file.
         let _ = writeln!(out, "machine.ram_init={}", ram_init_key(self.config.machine.ram_init));
-        let _ = writeln!(out, "machine.ram_board_profile={}", ram_board_profile_key(self.config.machine.ram_board_profile));
         let _ = writeln!(out, "machine.serial_board={}", serial_board_key(self.config.machine.serial_board));
         let _ = writeln!(out, "machine.sio_hardware={}", self.config.machine.sio_hardware.persistence_key());
         let _ = writeln!(out, "machine.two_sio_base={:02X}", self.config.machine.two_sio_straps.address.base());
@@ -344,16 +351,13 @@ impl RusTairApp {
             let _ = self.machine.replace_engine(engine);
         }
 
-        // The atomic slot inventory is the runtime hardware authority. Legacy
-        // ram_size/ram_board_profile keys are parsed only so old configuration
-        // files can be migrated into S100HardwareConfig when the v5 key is absent.
         self.machine.configure_s100_hardware(
             self.config.machine.s100_hardware,
             self.config.machine.ram_init,
         );
 
         // Serial remains on its staged compatibility runtime until 88-SIO and
-        // 88-2SIO are themselves live S100BusCard implementations.
+        // 88-2SIO become live per-slot S100BusCard implementations.
         self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
         self.machine.configure_serial_board(self.config.machine.serial_board);
         self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
@@ -522,11 +526,9 @@ fn decode_hex_string(value: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn ram_size_key(v: RamSize) -> &'static str { match v { RamSize::Bytes256 => "256b", RamSize::K1 => "1k", RamSize::K4 => "4k", RamSize::K8 => "8k", RamSize::K16 => "16k", RamSize::K32 => "32k", RamSize::K48 => "48k", RamSize::K64 => "64k" } }
 fn parse_ram_size(v: &str) -> Option<RamSize> { Some(match v { "256b" => RamSize::Bytes256, "1k" => RamSize::K1, "4k" => RamSize::K4, "8k" => RamSize::K8, "16k" => RamSize::K16, "32k" => RamSize::K32, "48k" => RamSize::K48, "64k" => RamSize::K64, _ => return None }) }
 fn ram_init_key(v: RamInit) -> &'static str { match v { RamInit::Random => "random", RamInit::Zeroed => "zeroed" } }
 fn parse_ram_init(v: &str) -> Option<RamInit> { Some(match v { "random" => RamInit::Random, "zeroed" => RamInit::Zeroed, _ => return None }) }
-fn ram_board_profile_key(v: RamBoardProfile) -> &'static str { match v { RamBoardProfile::FastNoWait => "fast-no-wait", RamBoardProfile::Mits1KStatic1975 => "mits-1k-static-1975" } }
 fn parse_ram_board_profile(v: &str) -> Option<RamBoardProfile> { Some(match v { "fast-no-wait" => RamBoardProfile::FastNoWait, "mits-1k-static-1975" => RamBoardProfile::Mits1KStatic1975, _ => return None }) }
 fn serial_board_key(v: SerialBoard) -> &'static str { match v { SerialBoard::Sio88 => "88-sio", SerialBoard::TwoSio88 => "88-2sio" } }
 fn parse_serial_board(v: &str) -> Option<SerialBoard> { Some(match v { "88-sio" => SerialBoard::Sio88, "88-2sio" => SerialBoard::TwoSio88, _ => return None }) }
@@ -574,8 +576,7 @@ mod tests {
     fn persistent_text_round_trip_preserves_all_tunable_groups() {
         let mut saved = SavedSettings::default();
         saved.engine = EmulationEngine::RustCycleAccurate8080;
-        saved.config.machine.ram_size = RamSize::K48;
-        saved.config.machine.ram_board_profile = RamBoardProfile::Mits1KStatic1975;
+        saved.config.machine.s100_hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         saved.config.machine.sio_hardware = SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1").unwrap();
         saved.config.machine.serial_board = SerialBoard::TwoSio88;
         saved.config.machine.two_sio_straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
@@ -610,7 +611,7 @@ mod tests {
     #[test]
     fn legacy_config_without_slot_inventory_is_migrated_from_old_globals() {
         let decoded = SavedSettings::from_text(
-            "machine.ram_size=48k\nmachine.ram_board_profile=mits-1k-static-1975\nmachine.serial_board=88-2sio\n",
+            "machine.cpu_model=intel8080\nmachine.ram_size=48k\nmachine.ram_board_profile=mits-1k-static-1975\nmachine.serial_board=88-2sio\n",
         );
         assert_eq!(decoded.config.machine.s100_hardware.installed_ram_bytes(), 48 * 1024);
         assert_eq!(decoded.config.machine.s100_hardware.cpu_slots().collect::<Vec<_>>(), vec![1]);
@@ -618,6 +619,11 @@ mod tests {
             decoded.config.machine.s100_hardware.slot(3),
             Some(crate::config::S100InstalledCardConfig::Mits88TwoSio { .. })
         ));
+        let rewritten = decoded.to_text();
+        assert!(!rewritten.contains("machine.cpu_model="));
+        assert!(!rewritten.contains("machine.ram_size="));
+        assert!(!rewritten.contains("machine.ram_board_profile="));
+        assert!(rewritten.contains("machine.s100_hardware="));
     }
 
     #[test]
@@ -692,13 +698,14 @@ mod tests {
 
         let mut saved = SavedSettings::default();
         saved.save_to_path(&path).unwrap();
-        saved.config.machine.ram_size = RamSize::K48;
+        saved.config.machine.s100_hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         saved.save_to_path(&path).unwrap();
 
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("version=5"));
-        assert!(text.contains("machine.ram_size=48k"));
-        assert!(text.contains("machine.ram_board_profile=fast-no-wait"));
+        assert!(!text.contains("machine.cpu_model="));
+        assert!(!text.contains("machine.ram_size="));
+        assert!(!text.contains("machine.ram_board_profile="));
         assert!(text.contains("machine.sio_hardware=rev1,c-tty,00,110,8,none,2"));
         assert!(text.contains("machine.two_sio_base=10"));
         assert!(text.contains("machine.two_sio_port0_baud=110"));
@@ -707,7 +714,7 @@ mod tests {
         assert!(text.contains("machine.two_sio_port1_interface=rs232"));
         assert!(text.contains("machine.two_sio_port0_irq=pint"));
         assert!(text.contains("machine.two_sio_port1_irq=pint"));
-        assert!(text.contains("machine.s100_hardware=8800|4|"));
+        assert!(text.contains("machine.s100_hardware=8800b|18|"));
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
         assert!(text.contains("asr33.tape_visual_order=8to1"));
