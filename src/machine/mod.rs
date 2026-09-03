@@ -6,15 +6,18 @@ mod memory;
 mod panel_bus;
 mod serial;
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Duration;
 
 use rand::RngCore;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioInterruptTarget, SioInterruptWiring,
-    SioRevision,
+    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig, SioInterruptTarget,
+    SioInterruptWiring, SioRevision, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080::{Bus, Cpu8080};
+use crate::s100_io_card::S100IoRegisterDevice;
 use cpu_board::{Fast8080S100Adapter, S100Cycle};
 use front_panel::FrontPanelController;
 use io_devices::IoDevices;
@@ -36,6 +39,126 @@ pub struct CpuDiagnosticResult {
     pub t_states: u64,
     pub expected_instructions: Option<u64>,
     pub expected_t_states: Option<u64>,
+}
+
+/// Shared ownership boundary for one physical serial card instance.
+///
+/// `IoDevices` still contains the already-audited COM2502/MC6850 models, but a
+/// runtime S-100 slot and its host-side endpoint handle now point at the same
+/// instance instead of constructing a second UART. The legacy machine singleton
+/// remains temporarily separate until endpoint/debugger routing is switched to
+/// these per-slot handles in the next migration step.
+#[derive(Clone)]
+pub(crate) struct RuntimeSerialCardHandle {
+    state: Rc<RefCell<IoDevices>>,
+    board: SerialBoard,
+    base: u8,
+}
+
+/// Register-facing half of `RuntimeSerialCardHandle`. `S100IoCardAdapter` owns
+/// this value inside the physical backplane while endpoint/debugger code may keep
+/// a clone of the handle above. Both mutate the same finite UART state.
+pub(crate) struct RuntimeSerialCardDevice {
+    handle: RuntimeSerialCardHandle,
+}
+
+impl RuntimeSerialCardHandle {
+    pub(crate) fn new_sio(
+        config: SioHardwareConfig,
+    ) -> (RuntimeSerialCardDevice, RuntimeSerialCardHandle) {
+        let mut state = IoDevices::default();
+        state.configure_serial_board(SerialBoard::Sio88);
+        state.configure_sio_hardware(config);
+        let handle = Self {
+            state: Rc::new(RefCell::new(state)),
+            board: SerialBoard::Sio88,
+            base: config.address.status(),
+        };
+        (
+            RuntimeSerialCardDevice {
+                handle: handle.clone(),
+            },
+            handle,
+        )
+    }
+
+    pub(crate) fn new_two_sio(
+        straps: TwoSioStraps,
+        interrupt_wiring: TwoSioInterruptWiring,
+    ) -> (RuntimeSerialCardDevice, RuntimeSerialCardHandle) {
+        let mut state = IoDevices::default();
+        state.configure_serial_board(SerialBoard::TwoSio88);
+        state.configure_two_sio_straps(straps);
+        state.configure_two_sio_interrupt_wiring(interrupt_wiring);
+        let handle = Self {
+            state: Rc::new(RefCell::new(state)),
+            board: SerialBoard::TwoSio88,
+            base: straps.address.base(),
+        };
+        (
+            RuntimeSerialCardDevice {
+                handle: handle.clone(),
+            },
+            handle,
+        )
+    }
+
+    pub(crate) const fn board(&self) -> SerialBoard {
+        self.board
+    }
+
+    pub(crate) const fn base(&self) -> u8 {
+        self.base
+    }
+
+    pub(crate) fn receive(&self, port_index: usize, byte: u8) -> bool {
+        let mut state = self.state.borrow_mut();
+        match (self.board, port_index) {
+            (_, 0) => {
+                state.serial_receive(byte);
+                true
+            }
+            (SerialBoard::TwoSio88, 1) => {
+                state.port1_receive(byte);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn advance_t_states(&self, t_states: u64) {
+        self.state.borrow_mut().advance_t_states(t_states);
+    }
+
+    pub(crate) fn rx_empty(&self, port_index: usize) -> bool {
+        let state = self.state.borrow();
+        match (self.board, port_index) {
+            (_, 0) => state.serial_rx_empty(),
+            (SerialBoard::TwoSio88, 1) => state.port1_rx_empty(),
+            _ => true,
+        }
+    }
+
+    pub(crate) fn tx_front(&self, port_index: usize) -> Option<u8> {
+        let state = self.state.borrow();
+        match (self.board, port_index) {
+            (_, 0) => state.serial_tx_front(),
+            (SerialBoard::TwoSio88, 1) => state.port1_tx_front(),
+            _ => None,
+        }
+    }
+}
+
+impl S100IoRegisterDevice for RuntimeSerialCardDevice {
+    fn read_register(&mut self, offset: u8) -> u8 {
+        let port = self.handle.base.wrapping_add(offset);
+        self.handle.state.borrow_mut().input(port)
+    }
+
+    fn write_register(&mut self, offset: u8, value: u8) {
+        let port = self.handle.base.wrapping_add(offset);
+        self.handle.state.borrow_mut().output(port, value);
+    }
 }
 
 #[derive(Clone, Debug)]
