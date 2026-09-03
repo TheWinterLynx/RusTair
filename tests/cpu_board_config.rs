@@ -3,7 +3,10 @@ use rustair::config::{AppConfig, CpuBoard, CpuModel};
 #[test]
 fn default_machine_exposes_the_physical_mits_8080_board() {
     let machine = AppConfig::default().machine;
-    let board = machine.cpu_board();
+    let board = machine
+        .s100_hardware
+        .active_cpu_board()
+        .expect("default S-100 assembly has one CPU board");
 
     assert_eq!(board, CpuBoard::Mits8080);
     assert_eq!(board.cpu_model(), CpuModel::Intel8080);
