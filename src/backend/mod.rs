@@ -9,10 +9,11 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioConnectorOutputs, SioElectricalLevel,
-    SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioConnectorOutputs,
+    SioElectricalLevel, SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
+use crate::s100_runtime::RuntimeMemoryInspection;
 
 use cycle_host::CycleHostBackend;
 pub use bus_teaching::{
@@ -226,6 +227,25 @@ pub trait MachineBackend {
     }
     fn configure_memory_board_profile(&mut self, _profile: RamBoardProfile) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "configure memory board profile", engine: self.engine() })
+    }
+    /// Mount one validated physical S-100 chassis assembly. Implementations must
+    /// build their execution-time CPU/RAM topology from this inventory rather
+    /// than translating it back into aggregate contiguous-memory settings.
+    fn configure_s100_hardware(
+        &mut self,
+        _hardware: S100HardwareConfig,
+        _init: RamInit,
+    ) -> BackendResult<()> {
+        Err(BackendError::Unsupported { operation: "configure S-100 hardware", engine: self.engine() })
+    }
+    fn s100_hardware(&mut self) -> BackendResult<S100HardwareConfig> {
+        Err(BackendError::Unsupported { operation: "query S-100 hardware", engine: self.engine() })
+    }
+    /// Host-side instrumentation only. This reports the physical RAM cards that
+    /// currently decode an address; guest execution never reaches memory through
+    /// this API.
+    fn inspect_memory_mapping(&mut self, _address: u16) -> BackendResult<RuntimeMemoryInspection> {
+        Err(BackendError::Unsupported { operation: "inspect S-100 memory mapping", engine: self.engine() })
     }
     fn power(&mut self, on: bool) -> BackendResult<()>;
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()>;
@@ -503,6 +523,13 @@ impl BackendHost {
     pub fn running(&mut self) -> bool { self.front_panel_state().running }
     pub fn configure_memory(&mut self, size: RamSize, init: RamInit) { Self::call(self.backend.configure_memory(size, init)); }
     pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) { Self::call(self.backend.configure_memory_board_profile(profile)); }
+    pub fn configure_s100_hardware(&mut self, hardware: S100HardwareConfig, init: RamInit) {
+        Self::call(self.backend.configure_s100_hardware(hardware, init));
+    }
+    pub fn s100_hardware(&mut self) -> S100HardwareConfig { Self::call(self.backend.s100_hardware()) }
+    pub fn inspect_memory_mapping(&mut self, address: u16) -> RuntimeMemoryInspection {
+        Self::call(self.backend.inspect_memory_mapping(address))
+    }
     pub fn configure_serial_board(&mut self, board: SerialBoard) { Self::call(self.backend.configure_serial_board(board)); }
     pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
     pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) { Self::call(self.backend.configure_sio_hardware(config)); }
