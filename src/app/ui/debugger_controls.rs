@@ -1,5 +1,6 @@
 use super::super::{egui, RusTairApp};
 use super::execution_position::current_instruction_address;
+use super::s100_memory_inspection::{mapping_detail, mapping_summary};
 use crate::backend::{DebugStopReason, MemoryWatchAccess};
 use crate::callstack8080::{infer_call_stack_8080, CallKind8080};
 use crate::decoder8080::{decode_8080, ControlFlow};
@@ -98,7 +99,7 @@ impl RusTairApp {
 
     fn debugger_step_over(&mut self) -> String {
         let Some((pc, _, decoded)) = self.current_debug_instruction() else {
-            return "Cannot decode the current instruction from installed RAM.".into();
+            return "Cannot decode the current instruction from uniquely mapped RAM.".into();
         };
         let start_sp = self.machine.intel8080_state().sp;
         let return_address = pc.wrapping_add(u16::from(decoded.length));
@@ -119,7 +120,7 @@ impl RusTairApp {
     fn debugger_step_out(&mut self) -> String {
         let sp = self.machine.intel8080_state().sp;
         let Some(target) = self.candidate_return_address() else {
-            return format!("Cannot read a two-byte return candidate from stack at SP=${sp:04X}.");
+            return format!("Cannot read a two-byte return candidate from uniquely mapped RAM at SP=${sp:04X}.");
         };
         let caller_sp = sp.wrapping_add(2);
         self.machine.debugger_run_to_with_sp(target, caller_sp);
@@ -184,7 +185,7 @@ impl RusTairApp {
             super::collapsible_section(ui, "Current instruction / status", true, |ui| {
                 let width = ui.available_width();
                 ui.allocate_ui_with_layout(
-                    egui::vec2(width, 44.0),
+                    egui::vec2(width, 64.0),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         if let Some((pc, bytes, decoded)) = self.current_debug_instruction() {
@@ -195,8 +196,14 @@ impl RusTairApp {
                                 ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new(decoded.flow_label()).small()));
                             });
                         } else {
-                            ui.add_sized([width, 20.0], egui::Label::new("Current execution address is outside installed RAM."));
+                            ui.add_sized([width, 20.0], egui::Label::new("Current execution address is not uniquely mapped to one RAM byte."));
                         }
+                        let inspection = self.machine.inspect_memory_mapping(execution_address);
+                        ui.add_sized(
+                            [width, DEBUG_STATUS_LINE_HEIGHT],
+                            egui::Label::new(egui::RichText::new(format!("S-100: {}", mapping_summary(&inspection))).small()),
+                        )
+                        .on_hover_text(mapping_detail(execution_address, &inspection));
                         ui.add_sized(
                             [width, DEBUG_STATUS_LINE_HEIGHT],
                             egui::Label::new(egui::RichText::new(if execution_address != cpu.pc {
@@ -257,7 +264,7 @@ impl RusTairApp {
 
                 let candidate_text = self.candidate_return_address()
                     .map(|candidate| format!("Stack top candidate return: [SP=${:04X}] -> ${candidate:04X}. This is a conservative candidate, not a guaranteed call frame.", cpu.sp))
-                    .unwrap_or_else(|| format!("Stack top candidate return: [SP=${:04X}] -> -- (outside installed RAM).", cpu.sp));
+                    .unwrap_or_else(|| format!("Stack top candidate return: [SP=${:04X}] -> -- (not two uniquely mapped RAM bytes).", cpu.sp));
                 ui.add_sized([width, DEBUG_STATUS_LINE_HEIGHT], egui::Label::new(egui::RichText::new(candidate_text).small()));
             });
 
@@ -350,7 +357,12 @@ impl RusTairApp {
                     if ui.button("Add / update").clicked() {
                         if let Some(address) = Self::parse_debug_address(&state.watchpoint_input) {
                             self.machine.debugger_set_watchpoint(address, Some(state.watchpoint_access));
-                            state.message = Some(format!("{} watchpoint armed at ${address:04X}.", state.watchpoint_access.label()));
+                            let inspection = self.machine.inspect_memory_mapping(address);
+                            state.message = Some(format!(
+                                "{} watchpoint armed at ${address:04X} · {}.",
+                                state.watchpoint_access.label(),
+                                mapping_summary(&inspection),
+                            ));
                         } else { state.message = Some("Invalid watchpoint address.".into()); }
                     }
                     if ui.small_button("Use HL").clicked() { state.watchpoint_input = format!("{:04X}", cpu.hl()); }
@@ -371,6 +383,7 @@ impl RusTairApp {
                         } else {
                             egui::ScrollArea::vertical().id_salt("debugger-watchpoint-list").auto_shrink([false, false]).show(ui, |ui| {
                                 for (address, access) in watchpoints {
+                                    let inspection = self.machine.inspect_memory_mapping(address);
                                     ui.horizontal(|ui| {
                                         ui.add_sized([72.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
                                         ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(access.label()).strong()));
@@ -380,6 +393,11 @@ impl RusTairApp {
                                             if address == cpu.sp { "SP" } else { "  " },
                                         );
                                         ui.add_sized([72.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
+                                        ui.add_sized(
+                                            [250.0, 20.0],
+                                            egui::Label::new(egui::RichText::new(mapping_summary(&inspection)).small()),
+                                        )
+                                        .on_hover_text(mapping_detail(address, &inspection));
                                         if ui.add_sized([66.0, 20.0], egui::Button::new("Remove")).clicked() {
                                             self.machine.debugger_set_watchpoint(address, None);
                                         }
@@ -389,7 +407,7 @@ impl RusTairApp {
                         }
                     },
                 );
-                ui.small("Watchpoints cover guest data-memory and stack accesses, not opcode/operand fetches. WRITE watchpoints observe the attempted bus transfer even if protection or missing RAM prevents a cell change. They stop after the causing instruction.");
+                ui.small("Watchpoints observe guest bus transfers at the requested address even when it is unmapped, overlapped, protected, or electrically contended. They do not create a RAM cell and do not change the S-100 mapping. Opcode/operand fetches are excluded; a causing instruction stops after its data/stack transfer.");
             });
 
             ui.separator();
@@ -458,9 +476,17 @@ impl RusTairApp {
             ui.separator();
             super::collapsible_section(ui, "Raw stack top", true, |ui| {
                 if let Some(candidate) = self.candidate_return_address() {
-                    ui.small(format!("Current raw stack top: [SP=${:04X}] -> ${candidate:04X}. This value is shown independently from inferred frames.", cpu.sp));
+                    ui.small(format!("Current raw stack top: [SP=${:04X}] -> ${candidate:04X}. This value is shown independently from inferred frames."));
                 } else {
-                    ui.small("Current raw stack top cannot be read from installed RAM.");
+                    let lo = self.machine.inspect_memory_mapping(cpu.sp);
+                    let hi = self.machine.inspect_memory_mapping(cpu.sp.wrapping_add(1));
+                    ui.small(format!(
+                        "Current raw stack top is not two uniquely mapped bytes. SP ${:04X}: {} · SP+1 ${:04X}: {}",
+                        cpu.sp,
+                        mapping_summary(&lo),
+                        cpu.sp.wrapping_add(1),
+                        mapping_summary(&hi),
+                    ));
                 }
             });
         });
