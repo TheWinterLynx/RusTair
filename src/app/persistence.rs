@@ -111,7 +111,6 @@ pub(super) fn led_visual_controls_state() -> (bool, f32, f32) {
 
 pub(super) fn set_led_visual_controls_state(open: bool, brightness: f32, aura: f32) {
     let mut state = runtime().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    state.led_visual_controls_state = state.led_controls_open;
     state.led_controls_open = open;
     state.led_brightness = brightness.clamp(0.25, 3.0);
     state.led_aura = aura.clamp(0.0, 3.0);
