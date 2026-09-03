@@ -8,6 +8,7 @@ use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
 use crate::machine::{AltairChassis, Cycle8080S100Adapter, MemoryReadyPhase};
+use crate::s100::S100Signal;
 
 use super::{
     BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
@@ -23,19 +24,18 @@ pub(super) enum CycleExecutionEvent {
 
 /// Host-driven machine backend around the validated Intel 8080 core.
 ///
-/// RAM/I/O side effects are performed through a raw machine path that does not
-/// synthesize legacy aggregate bus cycles. Every production Cycle T-state now
-/// passes through `Cpu8080Cycle::tick_with_pin_edges()`: PHI1/PHI2 ordering is
-/// therefore part of execution, not a viewer-only reconstruction. Every edge is
-/// projected through the MITS CPU-board adapter onto the canonical S-100 clock
-/// and command nets before the PHI2 T-state sample reaches RAM/I/O/front-panel
-/// state.
+/// Every production T-state is decomposed into the real PHI1/PHI2 edges. CPU
+/// package pins are driven through the live MITS CPU board and resolved S-100
+/// fabric; RAM DI/PRDY may therefore change after PHI1 and are sampled by the
+/// processor at PHI2 of that same T-state. Serial I/O remains an explicit
+/// transitional overlay until 88-SIO/88-2SIO become live S-100 cards.
 pub struct CycleAccurateMachineBackend {
     machine: AltairChassis,
     cpu: Cpu8080Cycle,
     instruction_address: u16,
-    /// Historical teaching sample only. It is a derived observation of the
-    /// canonical CPU/S-100 state, never an authority used to drive the machine.
+    /// Exact teaching snapshot derived from the live S-100 fabric for CPU/RAM.
+    /// Legacy projection is retained only for front-panel direct jam and serial
+    /// cards that have not yet migrated to `S100BusCard` runtime instances.
     last_teaching_snapshot: Option<BusTeachingSnapshot>,
     /// STOP may be asserted while HLDA suppresses PSYNC. Once the first resumed
     /// T1 captures the physical STOP latch, finish the real T2 -> TW handshake
@@ -142,44 +142,50 @@ impl CycleAccurateMachineBackend {
         )
     }
 
-    fn data_in_for_current_t_state(&mut self, front_panel_data: Option<u8>) -> u8 {
+    /// Return only data sources that are not yet represented by a live S-100
+    /// card, plus the front panel's direct CPU-D injection. Ordinary RAM reads
+    /// deliberately return `None`: their DI byte must come from the resolved
+    /// backplane and CPU-board input buffers.
+    fn legacy_data_override_for_current_t_state(
+        &mut self,
+        front_panel_data: Option<u8>,
+    ) -> Option<u8> {
         if self.cpu.t_state() != TState::T3 {
-            return 0;
+            return None;
         }
         if self.cycle_accepts_front_panel_data() {
             if let Some(value) = front_panel_data {
-                return value;
+                return Some(value);
             }
         }
 
         let address = self.cpu.pins().address.unwrap_or(0);
         match self.cpu.machine_cycle() {
-            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
-                self.machine.bus.cycle_read_memory(address)
-            }
-            MachineCycle::InputRead => self.machine.bus.cycle_input_port(address as u8),
+            MachineCycle::InputRead => Some(self.machine.bus.cycle_input_port(address as u8)),
             MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
-                self.machine.bus.direct_interrupt_opcode()
+                Some(self.machine.bus.direct_interrupt_opcode())
             }
-            _ => 0,
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+                if address == u16::MAX =>
+            {
+                // The optional BASIC 3.2 compatibility probe is the only
+                // host-side memory override. Consume it here only when it
+                // differs from the byte already present on the live CPU input.
+                let live = self.machine.bus.cycle_live_s100_inputs().data_in;
+                let candidate = self.machine.bus.cycle_read_memory(address);
+                (candidate != live).then_some(candidate)
+            }
+            _ => None,
         }
     }
 
     fn apply_trace_side_effects(&mut self, trace: &TickTrace, record_instruction: bool) {
-        if trace.t_state == TState::T3 {
-            let address = trace.pins.address.unwrap_or(0);
-            match trace.machine_cycle {
-                MachineCycle::MemoryWrite | MachineCycle::StackWrite => {
-                    if let Some(value) = trace.pins.data_out {
-                        self.machine.bus.cycle_write_memory(address, value);
-                    }
-                }
-                MachineCycle::OutputWrite => {
-                    if let Some(value) = trace.pins.data_out {
-                        self.machine.bus.cycle_output_port(address as u8, value);
-                    }
-                }
-                _ => {}
+        if trace.t_state == TState::T3 && trace.machine_cycle == MachineCycle::OutputWrite {
+            if let (Some(address), Some(value)) = (trace.pins.address, trace.pins.data_out) {
+                // Serial is still the one guest-I/O family outside the live
+                // fabric. RAM writes are intentionally absent here: pWR/DO ->
+                // Display/Control MWRT -> RuntimeRamCard is now authoritative.
+                self.machine.bus.cycle_output_port(address as u8, value);
             }
         }
 
@@ -213,17 +219,15 @@ impl CycleAccurateMachineBackend {
             if let Some(value) = front_panel_data {
                 return Some(value);
             }
+            return if trace.t_state == TState::T3 {
+                Some(sampled_data_in)
+            } else {
+                self.machine.bus.cycle_live_s100_sample().data_in()
+            };
         }
 
         let address = trace.pins.address?;
         match trace.machine_cycle {
-            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
-                if trace.t_state == TState::T3 {
-                    Some(sampled_data_in)
-                } else {
-                    Some(self.machine.bus.cycle_peek_memory(address))
-                }
-            }
             MachineCycle::InputRead => {
                 if trace.t_state == TState::T3 {
                     Some(sampled_data_in)
@@ -238,6 +242,9 @@ impl CycleAccurateMachineBackend {
         }
     }
 
+    /// Legacy projection retained for front-panel optical integration and serial
+    /// cards not yet materialized on the electrical backplane. It is never fed
+    /// back into RAM execution.
     fn drive_s100_t_state(
         &mut self,
         trace: &TickTrace,
@@ -261,18 +268,69 @@ impl CycleAccurateMachineBackend {
         visible_data
     }
 
-    fn capture_teaching_snapshot(&mut self, trace: &TickTrace, _visible_data: Option<u8>, ready: bool) {
-        let status_word = Some(self.machine.bus.raw_s100_status_word());
-        let mut status = BusStatusLines::from_status_word(status_word);
-        status.inte = Some(self.machine.bus.raw_s100_inte());
-        status.prot = Some(self.machine.bus.raw_s100_prot());
-        status.wait = Some(self.machine.bus.raw_s100_wait());
-        status.hlda = Some(self.machine.bus.raw_s100_hlda());
-        let cpu_data = self.machine.bus.raw_cpu_data();
-        let s100_di = self.machine.bus.raw_s100_data_in();
-        let s100_do = self.machine.bus.raw_s100_data_out();
-        let panel_data = Some(self.machine.bus.raw_panel_data());
+    fn capture_teaching_snapshot(
+        &mut self,
+        trace: &TickTrace,
+        _visible_data: Option<u8>,
+        sampled_inputs: Cpu8080Inputs,
+        front_panel_data: Option<u8>,
+    ) {
+        let live_memory = front_panel_data.is_none()
+            && matches!(
+                trace.machine_cycle,
+                MachineCycle::InstructionFetch
+                    | MachineCycle::MemoryRead
+                    | MachineCycle::MemoryWrite
+                    | MachineCycle::StackRead
+                    | MachineCycle::StackWrite
+            );
         let lines = self.machine.bus.cpu_control_lines();
+
+        let (status_word, status, cpu_data, s100_di, s100_do) = if live_memory {
+            let sample = self.machine.bus.cycle_live_s100_sample();
+            let status_word = Some(self.machine.bus.cycle_live_s100_status_word());
+            let mut status = BusStatusLines::from_status_word(status_word);
+            status.inte = Some(
+                sample
+                    .signal_level(S100Signal::InterruptEnable)
+                    .unwrap_or(false),
+            );
+            status.prot = Some(
+                sample
+                    .signal_level(S100Signal::ProtectStatus)
+                    .unwrap_or(false),
+            );
+            status.wait = Some(sample.signal_level(S100Signal::Wait).unwrap_or(false));
+            status.hlda = Some(
+                sample
+                    .signal_level(S100Signal::HoldAcknowledge)
+                    .unwrap_or(false),
+            );
+            let cpu_data = trace.pins.data_out.or_else(|| {
+                matches!(
+                    trace.machine_cycle,
+                    MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+                )
+                .then_some(sampled_inputs.data_in)
+            });
+            (status_word, status, cpu_data, sample.data_in(), sample.data_out())
+        } else {
+            let status_word = Some(self.machine.bus.raw_s100_status_word());
+            let mut status = BusStatusLines::from_status_word(status_word);
+            status.inte = Some(self.machine.bus.raw_s100_inte());
+            status.prot = Some(self.machine.bus.raw_s100_prot());
+            status.wait = Some(self.machine.bus.raw_s100_wait());
+            status.hlda = Some(self.machine.bus.raw_s100_hlda());
+            (
+                status_word,
+                status,
+                self.machine.bus.raw_cpu_data(),
+                self.machine.bus.raw_s100_data_in(),
+                self.machine.bus.raw_s100_data_out(),
+            )
+        };
+
+        let panel_data = Some(self.machine.bus.raw_panel_data());
         self.last_teaching_snapshot = Some(BusTeachingSnapshot {
             accuracy: BusTeachingAccuracy::Exact,
             engine: EmulationEngine::RustCycleAccurate8080,
@@ -299,7 +357,7 @@ impl CycleAccurateMachineBackend {
                 hlda: Some(trace.pins.hlda),
             },
             status,
-            ready: Some(ready),
+            ready: Some(sampled_inputs.ready),
             interrupt: Some(lines.interrupt),
             hold: Some(lines.hold),
             reset: Some(lines.reset),
@@ -348,21 +406,48 @@ impl CycleAccurateMachineBackend {
 
         self.machine.bus.refresh_interrupt_request_line();
         let memory_ready = self.memory_ready_for_current_t_state();
-        let effective_ready = ready && memory_ready;
-        let data_in = self.data_in_for_current_t_state(front_panel_data);
+        let legacy_ready = ready && memory_ready;
+        let legacy_data_override = self.legacy_data_override_for_current_t_state(front_panel_data);
         let lines = self.machine.bus.cpu_control_lines();
-        let inputs = Cpu8080Inputs {
-            data_in,
-            ready: effective_ready,
-            interrupt: lines.interrupt,
-            hold: lines.hold,
-            reset: lines.reset,
-        };
+        let mut initial_inputs = self.machine.bus.cycle_live_s100_inputs();
+        initial_inputs.ready &= legacy_ready && lines.ready;
+        initial_inputs.interrupt = lines.interrupt;
+        initial_inputs.hold = lines.hold;
+        initial_inputs.reset = lines.reset;
+        if let Some(value) = legacy_data_override {
+            initial_inputs.data_in = value;
+        }
+
+        let mut sampled_inputs = initial_inputs;
+        let mut edge_index = 0usize;
         let trace = {
             let cpu = &mut self.cpu;
             let bus = &mut self.machine.bus;
-            cpu.tick_with_pin_edges(inputs, |edge, pins| {
+            cpu.tick_with_live_phi2_inputs(initial_inputs, |edge, pins| {
+                edge_index += 1;
+
+                // Transitional panel/serial projection. This remains required
+                // until those cards themselves implement the live S-100 bus
+                // interface, but it is no longer the RAM execution authority.
                 bus.drive_cycle_cpu_board_edge(edge, pins);
+
+                let mut live = bus
+                    .cycle_drive_live_s100_edge(pins)
+                    .expect("validated S-100 hardware must resolve every Cycle edge");
+                let legacy_lines = bus.cpu_control_lines();
+                live.ready &= ready && legacy_lines.ready;
+                live.interrupt = legacy_lines.interrupt;
+                live.hold = legacy_lines.hold;
+                live.reset = legacy_lines.reset;
+                if let Some(value) = legacy_data_override {
+                    live.data_in = value;
+                }
+                // `tick_with_live_phi2_inputs` samples the value returned after
+                // PHI1 falling at the upcoming PHI2 edge.
+                if edge_index == 2 {
+                    sampled_inputs = live;
+                }
+                live
             })
         };
         if let Some(fault) = trace.fault {
@@ -371,11 +456,16 @@ impl CycleAccurateMachineBackend {
         self.apply_trace_side_effects(&trace, record_instruction);
         let visible_data = self.drive_s100_t_state(
             &trace,
-            data_in,
+            sampled_inputs.data_in,
             front_panel_data,
-            effective_ready,
+            sampled_inputs.ready,
         );
-        self.capture_teaching_snapshot(&trace, visible_data, effective_ready);
+        self.capture_teaching_snapshot(
+            &trace,
+            visible_data,
+            sampled_inputs,
+            front_panel_data,
+        );
 
         self.machine.bus.refresh_interrupt_request_line();
 
@@ -671,6 +761,9 @@ impl CycleAccurateMachineBackend {
             let bus = &mut self.machine.bus;
             let _ = cpu.tick_with_pin_edges(inputs, |edge, pins| {
                 bus.drive_cycle_cpu_board_edge(edge, pins);
+                let _ = bus
+                    .cycle_drive_live_s100_edge(pins)
+                    .expect("validated S-100 hardware must resolve RESET edges");
             });
         }
         self.stop_wait_park_pending = false;
@@ -1465,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_teacher_reads_the_same_raw_s100_latch_as_the_panel_bus() {
+    fn exact_teacher_reads_live_s100_ram_sample() {
         let mut backend = CycleAccurateMachineBackend::default();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
@@ -1475,15 +1568,10 @@ mod tests {
         let _ = backend.tick_once(true);
 
         let teaching = backend.teaching_snapshot().expect("exact teaching sample");
-        assert_eq!(teaching.status_word, Some(backend.machine().bus.raw_s100_status_word()));
-        assert_eq!(teaching.status.inte, Some(backend.machine().bus.raw_s100_inte()));
-        assert_eq!(teaching.status.prot, Some(backend.machine().bus.raw_s100_prot()));
-        assert_eq!(teaching.status.wait, Some(backend.machine().bus.raw_s100_wait()));
-        assert_eq!(teaching.status.hlda, Some(backend.machine().bus.raw_s100_hlda()));
-        assert_eq!(teaching.cpu_data, backend.machine().bus.raw_cpu_data());
-        assert_eq!(teaching.s100_di, backend.machine().bus.raw_s100_data_in());
-        assert_eq!(teaching.s100_do, backend.machine().bus.raw_s100_data_out());
-        assert_eq!(teaching.panel_data, Some(backend.machine().bus.raw_panel_data()));
+        let live = backend.machine().bus.cycle_live_s100_sample();
+        assert_eq!(teaching.status_word, Some(backend.machine().bus.cycle_live_s100_status_word()));
+        assert_eq!(teaching.s100_di, live.data_in());
+        assert_eq!(teaching.s100_do, live.data_out());
         assert_eq!(teaching.interrupt, Some(backend.machine().bus.cpu_control_lines().interrupt));
     }
 }
