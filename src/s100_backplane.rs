@@ -9,6 +9,19 @@ use crate::s100::{S100Card, S100CardDescriptor, S100ContactRole, S100Signal};
 pub const S100_CONTACT_COUNT: usize = 100;
 const PIN_COUNT_WITH_ZERO: usize = S100_CONTACT_COUNT + 1;
 const PIN_MASK_WORDS: usize = 2;
+pub type S100SlotMask = u32;
+
+/// One bit per physical connector. The Altair chassis models currently top out
+/// at 18 fitted connectors, so a u32 leaves headroom without allocating on the
+/// hot path. This is an execution index for already-decoded hardware, not a
+/// software-visible card number or CPU shortcut.
+pub const fn s100_slot_mask(slot: usize) -> S100SlotMask {
+    if slot == 0 || slot > S100SlotMask::BITS as usize {
+        0
+    } else {
+        1u32 << (slot - 1)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100PinDrive {
@@ -408,8 +421,6 @@ impl S100Backplane {
             } else if resolved.high_drivers != 0 {
                 Some(true)
             } else {
-                // An active pin always contributes one driver, so this can only
-                // be reached if the representation above is changed incorrectly.
                 unreachable!("active S-100 pin has no electrical driver")
             };
         });
@@ -434,11 +445,21 @@ impl S100Backplane {
     }
 
     /// Let every slotted card observe the currently resolved electrical sample
-    /// exactly once. Fields are borrowed independently so there is no need to
-    /// clone the complete 100-contact sample on every propagation delta.
+    /// exactly once.
     pub fn observe_cards(&mut self) {
+        self.observe_selected_cards(S100SlotMask::MAX);
+    }
+
+    /// Observe only cards whose already-compiled decode mask says they can be
+    /// affected by this transaction. Real slots still see the wires in parallel;
+    /// this mask merely avoids serially executing impossible responders in the
+    /// software model.
+    pub fn observe_selected_cards(&mut self, selected: S100SlotMask) {
         let observed = &self.sample;
         for slot in &mut self.slots {
+            if selected & s100_slot_mask(slot.number) == 0 {
+                continue;
+            }
             if let Some(card) = slot.card.as_mut() {
                 card.observe_s100(observed);
             }
@@ -447,14 +468,27 @@ impl S100Backplane {
 
     /// Resolve the current drives of every slotted card plus optional chassis
     /// wiring that is not itself an S-100 slot (for example Display/Control).
-    /// Connector legality is validated through per-slot precomputed role masks;
-    /// the hot path never rescans a card descriptor.
     pub fn resolve_current_drives(
         &mut self,
         chassis_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
+        self.resolve_selected_drives(S100SlotMask::MAX, chassis_drives)
+    }
+
+    /// Resolve only predecoded participating slots. The resolver itself remains
+    /// card-family agnostic: it receives only a connector mask and still applies
+    /// the same pin-role validation, tri-state, open-collector and contention
+    /// rules to every selected electrical drive.
+    pub fn resolve_selected_drives(
+        &mut self,
+        selected: S100SlotMask,
+        chassis_drives: &[S100CardDrive],
+    ) -> Result<&S100BusSample, S100BackplaneError> {
         self.drive_scratch.clear();
         for slot in &self.slots {
+            if selected & s100_slot_mask(slot.number) == 0 {
+                continue;
+            }
             let Some(card) = slot.card.as_ref() else {
                 continue;
             };
@@ -688,6 +722,23 @@ mod tests {
         assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
         backplane.observe_cards();
         backplane.resolve_current_drives(&[]).unwrap();
+        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+    }
+
+    #[test]
+    fn predecoded_slot_mask_skips_impossible_responders_without_changing_resolution() {
+        let mut backplane = S100Backplane::new(2);
+        backplane.insert(1, Box::new(ready_card(true))).unwrap();
+        backplane.insert(2, Box::new(ready_card(false))).unwrap();
+
+        backplane
+            .resolve_selected_drives(s100_slot_mask(2), &[])
+            .unwrap();
+        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(true));
+
+        backplane
+            .resolve_selected_drives(s100_slot_mask(1) | s100_slot_mask(2), &[])
+            .unwrap();
         assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
     }
 }
