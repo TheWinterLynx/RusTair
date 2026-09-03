@@ -5,6 +5,24 @@ impl eframe::App for RusTairApp {
         let now = Instant::now();
         super::ui::ensure_persistent_configuration_loaded(self);
 
+        // `machine.s100_hardware` is the physical authority. Persistence still
+        // parses the legacy aggregate RAM fields so v4 files can migrate, but no
+        // guest execution is allowed before the selected backend has the exact
+        // persisted slot topology mounted. The comparison is cheap and makes
+        // the invariant self-healing after engine recreation as well.
+        if !self.machine.powered()
+            && self.machine.s100_hardware() != self.config.machine.s100_hardware
+        {
+            self.machine.configure_s100_hardware(
+                self.config.machine.s100_hardware,
+                self.config.machine.ram_init,
+            );
+            self.status = format!(
+                "S-100 chassis mounted from configuration — {} KiB RAM across installed cards",
+                self.config.machine.s100_hardware.installed_ram_bytes() / 1024
+            );
+        }
+
         // Embedded-suite completion must consume its meter result before the
         // generic external-.COM result dialog gets a chance to take it.
         self.poll_embedded_cpu_diagnostics(ctx);
@@ -191,43 +209,25 @@ impl eframe::App for RusTairApp {
                     }
 
                     ui.menu_button("Memory", |ui| {
-                        ui.label(format!("Installed RAM: {}", self.config.machine.ram_size.label()));
-                        ui.separator();
-                        for ram_size in RamSize::ALL {
-                            let selected = self.config.machine.ram_size == ram_size;
-                            if ui.selectable_label(selected, ram_size.label()).clicked() {
-                                self.apply_memory_configuration(ram_size, self.config.machine.ram_init);
-                                ui.close();
-                            }
-                        }
-                        ui.separator();
-                        ui.menu_button("RAM board timing", |ui| {
-                            let current = self.config.machine.ram_board_profile;
-                            ui.label(format!("Installed timing profile: {}", current.label()));
-                            ui.separator();
-                            for profile in RamBoardProfile::ALL {
-                                if ui.selectable_label(current == profile, profile.label()).clicked() {
-                                    self.apply_memory_board_profile(profile);
-                                    ui.close();
-                                }
-                            }
-                            ui.separator();
-                            ui.small("The original MITS 1K static board uses its Processor Slow Down circuit to pull PRDY low for two wait states on each addressed memory read.");
-                            ui.small("Cycle Accurate clocks both TW states explicitly; Fast 8080 adds the same wait T-states to guest elapsed time but cannot expose sub-instruction TW pin samples.");
-                            if self.machine.powered() {
-                                ui.small("Power OFF is required to swap the installed RAM-card timing profile.");
-                            }
-                        });
+                        let hardware = self.config.machine.s100_hardware;
+                        ui.label(format!(
+                            "Installed S-100 RAM: {} KiB across physical cards",
+                            hardware.installed_ram_bytes() / 1024
+                        ));
+                        ui.small("Board type, base address, population and timing now come only from Configuration → S-100 Chassis / Cards. Aggregate RAM-size/timing controls have been retired so they cannot fabricate a different runtime topology.");
                         ui.separator();
                         ui.menu_button("Power-on contents", |ui| {
                             for ram_init in RamInit::ALL {
                                 let selected = self.config.machine.ram_init == ram_init;
                                 if ui.selectable_label(selected, ram_init.label()).clicked() {
-                                    self.apply_memory_configuration(self.config.machine.ram_size, ram_init);
+                                    self.apply_ram_initialization(ram_init);
                                     ui.close();
                                 }
                             }
                         });
+                        if self.machine.powered() {
+                            ui.small("POWER OFF required before changing the RAM power-on initialization policy.");
+                        }
                     });
 
                     ui.menu_button("Serial board", |ui| {
@@ -236,6 +236,7 @@ impl eframe::App for RusTairApp {
                         let straps = self.config.machine.two_sio_straps;
                         let irq_wiring = self.config.machine.two_sio_interrupt_wiring;
                         ui.label(format!("Installed board: {}", current.label()));
+                        ui.small("Transitional serial runtime selector: this disappears when 88-SIO/88-2SIO are live per-slot S-100 cards, allowing multiple serial boards exactly as in real hardware.");
                         match current {
                             SerialBoard::Sio88 => {
                                 ui.small(format!(
