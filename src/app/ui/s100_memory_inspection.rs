@@ -87,14 +87,6 @@ pub(super) fn mapping_detail(address: u16, inspection: &RuntimeMemoryInspection)
     text
 }
 
-#[cfg(test)]
-pub(super) fn single_driver(inspection: &RuntimeMemoryInspection) -> Option<&RuntimeRamDriver> {
-    match inspection.drivers.as_slice() {
-        [driver] => Some(driver),
-        _ => None,
-    }
-}
-
 pub(super) fn card_window(card: S100InstalledCardConfig) -> Option<(u16, u16, &'static str)> {
     match card {
         S100InstalledCardConfig::Ram(config) => {
@@ -146,5 +138,33 @@ mod tests {
         assert!(!overlap.electrically_contended());
         assert_eq!(mapping_cell_text(&overlap), "00");
         assert_eq!(visible_ram_value(&overlap), Some(0));
+    }
+
+    #[test]
+    fn presentation_never_invents_one_byte_for_electrical_contention() {
+        let config = RuntimeRamConfig::Compatibility(FastRamCompatibilityConfig::no_wait(
+            0x2000,
+            0x1000,
+        ));
+        let inspection = RuntimeMemoryInspection {
+            drivers: vec![
+                RuntimeRamDriver {
+                    slot: 2,
+                    value: 0x00,
+                    protected: false,
+                    config,
+                },
+                RuntimeRamDriver {
+                    slot: 3,
+                    value: 0xff,
+                    protected: false,
+                    config,
+                },
+            ],
+        };
+        assert!(inspection.electrically_contended());
+        assert_eq!(mapping_cell_text(&inspection), "!!");
+        assert_eq!(visible_ram_value(&inspection), None);
+        assert!(mapping_summary(&inspection).contains("CONTENTION"));
     }
 }
