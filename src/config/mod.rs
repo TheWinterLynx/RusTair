@@ -1,4 +1,3 @@
-mod cpu_board_authority;
 mod external_com;
 mod external_serial;
 mod machine;
