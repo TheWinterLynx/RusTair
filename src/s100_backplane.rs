@@ -21,6 +21,9 @@ type DriverCountPlanes = [PinMask; DRIVER_COUNT_BITS];
 const ADDRESS_PINS: [u8; 16] = [79, 80, 81, 31, 30, 29, 82, 83, 84, 34, 37, 87, 33, 85, 86, 32];
 const DATA_OUT_PINS: [u8; 8] = [36, 35, 88, 89, 38, 39, 40, 90];
 const DATA_IN_PINS: [u8; 8] = [95, 94, 41, 42, 91, 92, 93, 43];
+const ADDRESS_PIN_MASK: PinMask = [0x27e0000000, 0x00ff8000];
+const DATA_OUT_PIN_MASK: PinMask = [0x1d800000000, 0x07000000];
+const DATA_IN_PIN_MASK: PinMask = [0xe0000000000, 0xf8000000];
 
 #[inline]
 fn mask_contains(mask: &PinMask, pin: usize) -> bool {
@@ -55,6 +58,24 @@ fn add_driver_mask(planes: &mut DriverCountPlanes, word: usize, mask: u64) {
         carry = next_carry;
     }
     debug_assert_eq!(carry, 0, "S-100 driver count overflow");
+}
+
+/// Subtract one driver from every pin selected by `mask`. The bit-sliced binary
+/// counter makes this the exact inverse of `add_driver_mask`, 64 contacts at a
+/// time. Production therefore updates driver counts when a drive changes instead
+/// of rebuilding all counts from every installed card on every digital delta.
+#[inline]
+fn sub_driver_mask(planes: &mut DriverCountPlanes, word: usize, mask: u64) {
+    let mut borrow = mask;
+    for plane in planes.iter_mut() {
+        if borrow == 0 {
+            break;
+        }
+        let next_borrow = (!plane[word]) & borrow;
+        plane[word] ^= borrow;
+        borrow = next_borrow;
+    }
+    debug_assert_eq!(borrow, 0, "S-100 driver count underflow");
 }
 
 #[inline]
@@ -318,6 +339,28 @@ impl S100BusSample {
         }
     }
 
+    #[inline]
+    fn replace_drive(&mut self, old: &S100CardDrive, new: &S100CardDrive) {
+        for word in 0..PIN_MASK_WORDS {
+            let removed_low = old.low[word] & !new.low[word];
+            let added_low = new.low[word] & !old.low[word];
+            let removed_high = old.high[word] & !new.high[word];
+            let added_high = new.high[word] & !old.high[word];
+            if removed_low != 0 {
+                sub_driver_mask(&mut self.low_driver_counts, word, removed_low);
+            }
+            if added_low != 0 {
+                add_driver_mask(&mut self.low_driver_counts, word, added_low);
+            }
+            if removed_high != 0 {
+                sub_driver_mask(&mut self.high_driver_counts, word, removed_high);
+            }
+            if added_high != 0 {
+                add_driver_mask(&mut self.high_driver_counts, word, added_high);
+            }
+        }
+    }
+
     fn finalize_driver_levels(&mut self, passive_defined: PinMask, passive_high: PinMask) {
         for word in 0..PIN_MASK_WORDS {
             let low = any_driver_mask(&self.low_driver_counts, word);
@@ -343,6 +386,22 @@ impl S100BusSample {
             .map(|value| value as u8);
     }
 
+    fn refresh_cached_buses_for_change(&mut self, change: S100BusChange) {
+        if masks_intersect(&change.pins, &ADDRESS_PIN_MASK) {
+            self.cached_address = self.resolved_pin_bits_uncached(&ADDRESS_PINS);
+        }
+        if masks_intersect(&change.pins, &DATA_OUT_PIN_MASK) {
+            self.cached_data_out = self
+                .resolved_pin_bits_uncached(&DATA_OUT_PINS)
+                .map(|value| value as u8);
+        }
+        if masks_intersect(&change.pins, &DATA_IN_PIN_MASK) {
+            self.cached_data_in = self
+                .resolved_pin_bits_uncached(&DATA_IN_PINS)
+                .map(|value| value as u8);
+        }
+    }
+
     fn electrical_change_from(
         &self,
         old_defined: PinMask,
@@ -356,6 +415,30 @@ impl S100BusSample {
                 | (self.contention[word] ^ old_contention[word]);
         }
         S100BusChange { pins }
+    }
+
+    fn finalize_incremental(
+        &mut self,
+        passive_defined: PinMask,
+        passive_high: PinMask,
+        old_defined: PinMask,
+        old_high: PinMask,
+        old_contention: PinMask,
+    ) -> S100BusChange {
+        for word in 0..PIN_MASK_WORDS {
+            let low = any_driver_mask(&self.low_driver_counts, word);
+            let high = any_driver_mask(&self.high_driver_counts, word);
+            let driven = low | high;
+            let contention = low & high;
+            self.contention[word] = contention;
+            self.defined[word] =
+                (passive_defined[word] & !driven) | (driven & !contention);
+            self.high[word] =
+                (passive_high[word] & !driven) | (high & !low);
+        }
+        let change = self.electrical_change_from(old_defined, old_high, old_contention);
+        self.refresh_cached_buses_for_change(change);
+        change
     }
 
     pub fn pin(&self, pin: u8) -> Option<S100ResolvedPin> {
@@ -461,6 +544,11 @@ pub struct S100Slot {
     open_collector_outputs: PinMask,
     input_sensitivity: PinMask,
     cached_drive: S100CardDrive,
+    /// Drive currently folded into the incremental resolver. It deliberately
+    /// remains separate from `cached_drive`: a card may change state after
+    /// observing a delta and the next resolver delta then applies exactly that
+    /// old->new connector transition.
+    resolved_drive: S100CardDrive,
 }
 
 impl S100Slot {
@@ -472,6 +560,7 @@ impl S100Slot {
             open_collector_outputs: [0; PIN_MASK_WORDS],
             input_sensitivity: [0; PIN_MASK_WORDS],
             cached_drive: S100CardDrive::new(),
+            resolved_drive: S100CardDrive::new(),
         }
     }
 
@@ -507,6 +596,7 @@ impl S100Slot {
         self.open_collector_outputs = [0; PIN_MASK_WORDS];
         self.input_sensitivity = [0; PIN_MASK_WORDS];
         self.cached_drive = S100CardDrive::new();
+        self.resolved_drive = S100CardDrive::new();
     }
 
     fn observes_change(&self, change: S100BusChange) -> bool {
@@ -547,9 +637,16 @@ pub enum S100BackplaneError {
 pub struct S100Backplane {
     slots: Vec<S100Slot>,
     /// Pre-biased no-driver sample. Each resolve starts from these passive levels
-    /// and then folds every active card drive into bit-sliced driver counters.
+    /// and then folds active card drives into bit-sliced driver counters.
     passive_sample: S100BusSample,
     sample: S100BusSample,
+    /// Transaction mask whose contributions are currently folded into `sample`.
+    incremental_selected: S100SlotMask,
+    /// Non-slot Display/Control contribution currently folded into `sample`.
+    incremental_chassis_drive: S100CardDrive,
+    /// General/diagnostic resolvers can invalidate the persistent accumulator;
+    /// the next production delta rebuilds it once and then resumes O(changes).
+    incremental_valid: bool,
 }
 
 impl S100Backplane {
@@ -560,6 +657,9 @@ impl S100Backplane {
                 .collect(),
             passive_sample: S100BusSample::default(),
             sample: S100BusSample::default(),
+            incremental_selected: 0,
+            incremental_chassis_drive: S100CardDrive::new(),
+            incremental_valid: false,
         };
 
         // Shared open-collector nets are released HIGH in the normal MITS bus.
@@ -603,6 +703,7 @@ impl S100Backplane {
             },
         );
         self.passive_sample.refresh_cached_buses();
+        self.incremental_valid = false;
     }
 
     pub fn insert(
@@ -625,7 +726,9 @@ impl S100Backplane {
             return Err(error);
         }
         target.cached_drive = drive;
+        target.resolved_drive = S100CardDrive::new();
         target.card = Some(card);
+        self.incremental_valid = false;
         Ok(())
     }
 
@@ -640,6 +743,7 @@ impl S100Backplane {
             .ok_or(S100BackplaneError::InvalidSlot { slot, slot_count })?;
         let card = target.card.take();
         target.clear_drive_contract();
+        self.incremental_valid = false;
         Ok(card)
     }
 
@@ -752,14 +856,96 @@ impl S100Backplane {
         Ok(drive_changed)
     }
 
-    /// Resolve cached card outputs. This is the event-driven hot path: cards that
-    /// were not woken by a changed input do not execute merely because another
-    /// zero-time propagation delta occurred.
+    fn rebuild_incremental(
+        &mut self,
+        selected: S100SlotMask,
+        chassis_drive: S100CardDrive,
+    ) -> S100BusChange {
+        let old_defined = self.sample.defined;
+        let old_high = self.sample.high;
+        let old_contention = self.sample.contention;
+        let (passive_defined, passive_high) =
+            Self::begin_resolution(&mut self.sample, &self.passive_sample);
+        for slot in &mut self.slots {
+            let active = selected & s100_slot_mask(slot.number) != 0 && slot.card.is_some();
+            let drive = if active {
+                slot.cached_drive
+            } else {
+                S100CardDrive::new()
+            };
+            self.sample.add_drive(&drive);
+            slot.resolved_drive = drive;
+        }
+        self.sample.add_drive(&chassis_drive);
+        self.sample
+            .finalize_driver_levels(passive_defined, passive_high);
+        self.incremental_selected = selected;
+        self.incremental_chassis_drive = chassis_drive;
+        self.incremental_valid = true;
+        self.sample
+            .electrical_change_from(old_defined, old_high, old_contention)
+    }
+
+    fn resolve_incremental(
+        &mut self,
+        selected: S100SlotMask,
+        chassis_drive: S100CardDrive,
+    ) -> S100BusChange {
+        if !self.incremental_valid {
+            return self.rebuild_incremental(selected, chassis_drive);
+        }
+
+        let old_defined = self.sample.defined;
+        let old_high = self.sample.high;
+        let old_contention = self.sample.contention;
+
+        for slot in &mut self.slots {
+            let active = selected & s100_slot_mask(slot.number) != 0 && slot.card.is_some();
+            let target = if active {
+                slot.cached_drive
+            } else {
+                S100CardDrive::new()
+            };
+            if target != slot.resolved_drive {
+                self.sample.replace_drive(&slot.resolved_drive, &target);
+                slot.resolved_drive = target;
+            }
+        }
+
+        if chassis_drive != self.incremental_chassis_drive {
+            self.sample
+                .replace_drive(&self.incremental_chassis_drive, &chassis_drive);
+            self.incremental_chassis_drive = chassis_drive;
+        }
+        self.incremental_selected = selected;
+
+        self.sample.finalize_incremental(
+            self.passive_sample.defined,
+            self.passive_sample.high,
+            old_defined,
+            old_high,
+            old_contention,
+        )
+    }
+
+    /// Resolve cached card outputs. The production hot path keeps exact driver
+    /// counts persistently and applies only connector drive deltas. With the
+    /// normal single Display/Control contribution this is O(changed drives), not
+    /// O(all selected cards × all driven pins). Multi-drive diagnostic callers
+    /// retain the general rebuild path.
     pub fn resolve_cached_selected_drives(
         &mut self,
         selected: S100SlotMask,
         chassis_drives: &[S100CardDrive],
     ) -> S100BusChange {
+        if chassis_drives.len() <= 1 {
+            return self.resolve_incremental(
+                selected,
+                chassis_drives.first().copied().unwrap_or_default(),
+            );
+        }
+
+        self.incremental_valid = false;
         let old_defined = self.sample.defined;
         let old_high = self.sample.high;
         let old_contention = self.sample.contention;
@@ -1120,6 +1306,24 @@ mod tests {
             .observe_changed_cards(stable, 0, S100SlotMask::MAX)
             .unwrap();
         assert_eq!(*observations.borrow(), 1);
+    }
+
+    #[test]
+    fn incremental_resolver_removes_departing_slot_driver_counts_exactly() {
+        let mut backplane = S100Backplane::new(2);
+        backplane.insert(1, Box::new(ready_card(true))).unwrap();
+        backplane.insert(2, Box::new(ready_card(true))).unwrap();
+        backplane
+            .resolve_selected_drives(s100_slot_mask(1) | s100_slot_mask(2), &[])
+            .unwrap();
+        assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 2);
+        backplane
+            .resolve_selected_drives(s100_slot_mask(1), &[])
+            .unwrap();
+        assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 1);
+        backplane.resolve_selected_drives(0, &[]).unwrap();
+        assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 0);
+        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(true));
     }
 
     #[test]
