@@ -1,21 +1,22 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioConnectorOutputs, SioElectricalLevel,
-    SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioConnectorOutputs,
+    SioElectricalLevel, SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::{AltairMachine, CpuDiagnosticResult};
+use crate::s100_runtime::RuntimeMemoryInspection;
 use crate::trace8080::{
     collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
     InstructionTraceBuffer, InstructionTraceMetadata,
 };
 
 use super::{
-    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, CpuState,
-    DebugStopReason, EmulationEngine, FrontPanelState, InstructionTraceSnapshot, Intel8080State,
-    IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess, SerialModemLines,
-    SioLogicalLines,
+    BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort,
+    CpuState, DebugStopReason, EmulationEngine, FrontPanelState, InstructionTraceSnapshot,
+    Intel8080State, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
+    SerialModemLines, SioLogicalLines,
 };
 
 const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
@@ -206,6 +207,31 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) -> BackendResult<()> {
         self.machine.configure_memory_board_profile(profile); self.reset_debugger_epoch(); Ok(())
+    }
+    fn configure_s100_hardware(&mut self, hardware: S100HardwareConfig, init: RamInit) -> BackendResult<()> {
+        if self.machine.powered {
+            return Err(BackendError::Operation {
+                operation: "configure S-100 hardware",
+                detail: "POWER OFF is required to move physical S-100 cards".into(),
+            });
+        }
+        self.machine
+            .bus
+            .configure_s100_hardware_memory(hardware, init)
+            .map_err(|error| BackendError::Operation {
+                operation: "configure S-100 hardware",
+                detail: format!("{error:?}"),
+            })?;
+        self.idle_chassis_clock_units = 0;
+        self.last_panel_commit_cpu_t_states = None;
+        self.reset_debugger_epoch();
+        Ok(())
+    }
+    fn s100_hardware(&mut self) -> BackendResult<S100HardwareConfig> {
+        Ok(self.machine.bus.s100_hardware_memory())
+    }
+    fn inspect_memory_mapping(&mut self, address: u16) -> BackendResult<RuntimeMemoryInspection> {
+        Ok(self.machine.bus.inspect_memory_mapping(address))
     }
     fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
