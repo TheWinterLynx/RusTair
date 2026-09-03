@@ -267,13 +267,13 @@ impl Memory {
         self.fabric.installed_ram_bytes()
     }
 
-    pub(super) fn initialize(&self) {
+    pub(super) fn initialize(&mut self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(self.init_mode);
         self.reset_timing();
     }
 
-    pub(super) fn randomize(&self) {
+    pub(super) fn randomize(&mut self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(RamInit::Random);
         self.reset_timing();
