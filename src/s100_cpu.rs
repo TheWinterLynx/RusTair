@@ -113,11 +113,14 @@ struct Mits8080CpuBoardState {
     command_disabled: bool,
     address_disabled: bool,
     data_out_disabled: bool,
+    /// Connector outputs are physical state, not a temporary rendering. Keep
+    /// them latched and mutate only nets affected by a package/input transition.
+    cached_drive: S100CardDrive,
 }
 
 impl Default for Mits8080CpuBoardState {
     fn default() -> Self {
-        Self {
+        let mut state = Self {
             pins: Cpu8080Pins::default(),
             inputs: Cpu8080Inputs::default(),
             status_word: 0,
@@ -126,13 +129,160 @@ impl Default for Mits8080CpuBoardState {
             command_disabled: false,
             address_disabled: false,
             data_out_disabled: false,
+            cached_drive: S100CardDrive::new(),
+        };
+        state.rebuild_drive();
+        state
+    }
+}
+
+impl Mits8080CpuBoardState {
+    #[inline]
+    fn status_bit(word: u8, mask: u8) -> bool {
+        word & mask != 0
+    }
+
+    fn drive_address(&mut self) {
+        for bit in 0..16 {
+            let level = if self.address_disabled {
+                None
+            } else {
+                self.pins
+                    .address
+                    .map(|address| address & (1u16 << bit) != 0)
+            };
+            self.cached_drive
+                .drive_tristate(S100Signal::Address(bit), level);
+        }
+    }
+
+    fn drive_data_out(&mut self) {
+        for bit in 0..8 {
+            let level = if self.data_out_disabled {
+                None
+            } else {
+                self.pins
+                    .data_out
+                    .map(|value| value & (1u8 << bit) != 0)
+            };
+            self.cached_drive
+                .drive_tristate(S100Signal::DataOut(bit), level);
+        }
+    }
+
+    fn drive_command_group(&mut self) {
+        for (signal, level) in [
+            (S100Signal::HoldAcknowledge, self.pins.hlda),
+            (S100Signal::Sync, self.pins.sync),
+            (S100Signal::Write, self.pins.wr_n),
+            (S100Signal::DataBusIn, self.pins.dbin),
+        ] {
+            self.cached_drive.drive_tristate(
+                signal,
+                (!self.command_disabled).then_some(level),
+            );
+        }
+    }
+
+    fn drive_status_group(&mut self) {
+        let status = self.status_word;
+        for (signal, mask) in [
+            (S100Signal::MemoryRead, 0x80),
+            (S100Signal::Inp, 0x40),
+            (S100Signal::M1, 0x20),
+            (S100Signal::Out, 0x10),
+            (S100Signal::HaltAcknowledge, 0x08),
+            (S100Signal::Stack, 0x04),
+            (S100Signal::WriteStatus, 0x02),
+            (S100Signal::InterruptAcknowledge, 0x01),
+        ] {
+            self.cached_drive.drive_tristate(
+                signal,
+                (!self.status_disabled).then_some(Self::status_bit(status, mask)),
+            );
+        }
+    }
+
+    fn rebuild_drive(&mut self) {
+        self.cached_drive = S100CardDrive::new();
+        self.cached_drive
+            .drive_signal(S100Signal::Phi1, self.pins.phi1);
+        self.cached_drive
+            .drive_signal(S100Signal::Phi2, self.pins.phi2);
+        self.cached_drive
+            .drive_signal(S100Signal::Clock, self.cloc);
+        self.cached_drive
+            .drive_signal(S100Signal::Wait, self.pins.wait);
+        self.cached_drive
+            .drive_signal(S100Signal::InterruptEnable, self.pins.inte);
+        self.drive_command_group();
+        self.drive_address();
+        self.drive_data_out();
+        self.drive_status_group();
+    }
+
+    fn set_package_pins(&mut self, pins: Cpu8080Pins) {
+        let old_pins = self.pins;
+        let old_status = self.status_word;
+        let old_cloc = self.cloc;
+        self.pins = pins;
+
+        // The buffered 2 MHz CLOC follows the board oscillator. At our digital
+        // boundary PHI1 rising is its high transition and PHI2 rising its low
+        // transition; dead time retains the preceding oscillator level.
+        if pins.phi1 {
+            self.cloc = true;
+        } else if pins.phi2 {
+            self.cloc = false;
+        }
+
+        // The 8212 belongs to the CPU board, not the backplane. It clocks from
+        // the package-side SYNC+PHI1 event, so latch it here before this edge is
+        // propagated onto S-100 rather than forcing a second whole-bus delta.
+        if pins.phi1 && pins.sync {
+            if let Some(word) = pins.data_out {
+                self.status_word = word;
+            }
+        }
+
+        if pins.phi1 != old_pins.phi1 {
+            self.cached_drive.drive_signal(S100Signal::Phi1, pins.phi1);
+        }
+        if pins.phi2 != old_pins.phi2 {
+            self.cached_drive.drive_signal(S100Signal::Phi2, pins.phi2);
+        }
+        if self.cloc != old_cloc {
+            self.cached_drive.drive_signal(S100Signal::Clock, self.cloc);
+        }
+        if pins.wait != old_pins.wait {
+            self.cached_drive.drive_signal(S100Signal::Wait, pins.wait);
+        }
+        if pins.inte != old_pins.inte {
+            self.cached_drive
+                .drive_signal(S100Signal::InterruptEnable, pins.inte);
+        }
+        if pins.hlda != old_pins.hlda
+            || pins.sync != old_pins.sync
+            || pins.wr_n != old_pins.wr_n
+            || pins.dbin != old_pins.dbin
+        {
+            self.drive_command_group();
+        }
+        if pins.address != old_pins.address {
+            self.drive_address();
+        }
+        if pins.data_out != old_pins.data_out {
+            self.drive_data_out();
+        }
+        if self.status_word != old_status {
+            self.drive_status_group();
         }
     }
 }
 
 /// Host-side handle to the Intel-package side of the physical CPU card.
 ///
-/// This handle is deliberately not a bus API.  Execution engines may update the
+/// This handle is deliberately not a bus API. Execution engines may update the
 /// 8080 package pins and sample the package inputs; other S-100 cards never see
 /// this handle and can communicate with the CPU only through the backplane.
 #[derive(Clone)]
@@ -142,17 +292,7 @@ pub struct Mits8080CpuBoardHandle {
 
 impl Mits8080CpuBoardHandle {
     pub fn set_package_pins(&self, pins: Cpu8080Pins) {
-        let mut state = self.state.borrow_mut();
-        state.pins = pins;
-        // The buffered 2 MHz CLOC follows the board oscillator.  At the digital
-        // boundary used by the existing exact core, PHI1 rising is its high
-        // transition and PHI2 rising its low transition; dead time retains the
-        // previous CLOC level.
-        if pins.phi1 {
-            state.cloc = true;
-        } else if pins.phi2 {
-            state.cloc = false;
-        }
+        self.state.borrow_mut().set_package_pins(pins);
     }
 
     pub fn package_pins(&self) -> Cpu8080Pins {
@@ -182,10 +322,6 @@ impl Mits8080CpuBoard {
             Mits8080CpuBoardHandle { state },
         )
     }
-
-    fn status_bit(word: u8, mask: u8) -> bool {
-        word & mask != 0
-    }
 }
 
 impl Default for Mits8080CpuBoard {
@@ -205,14 +341,14 @@ impl S100ElectricalCard for Mits8080CpuBoard {
         let mut state = self.state.borrow_mut();
 
         // pRDY and XRDY are both active-high readiness inputs to the processor
-        // board.  The backplane supplies their normal released-high bias.
+        // board. The backplane supplies their normal released-high bias.
         let prdy = sample.signal_level(S100Signal::Ready).unwrap_or(true);
         let xrdy = sample
             .signal_level(S100Signal::ExternalReady)
             .unwrap_or(true);
         state.inputs.ready = prdy && xrdy;
 
-        // Original PINT is active-low at the connector.  HOLD and RESET are
+        // Original PINT is active-low at the connector. HOLD and RESET are
         // consumed as asserted-high processor inputs at this board boundary.
         state.inputs.interrupt =
             sample.signal_level(S100Signal::InterruptRequest) == Some(false);
@@ -220,76 +356,33 @@ impl S100ElectricalCard for Mits8080CpuBoard {
         state.inputs.reset = sample.signal_level(S100Signal::Reset) == Some(true);
         state.inputs.data_in = sample.data_in().unwrap_or(0xff);
 
-        // The four bus-disable controls are active-low.  Floating means inactive
-        // on an ordinary single-master Altair, which is also the useful default
-        // before a front panel or DMA master is attached to the live backplane.
-        state.status_disabled =
+        // Only these four backplane inputs can change what the CPU card drives.
+        // Normal DI/READY/PINT/HOLD/RESET observations therefore do not rebuild
+        // an identical 100-contact drive after every resolver delta.
+        let status_disabled =
             sample.signal_level(S100Signal::StatusDisable) == Some(false);
-        state.command_disabled =
+        let command_disabled =
             sample.signal_level(S100Signal::CommandControlDisable) == Some(false);
-        state.address_disabled =
+        let address_disabled =
             sample.signal_level(S100Signal::AddressDisable) == Some(false);
-        state.data_out_disabled =
+        let data_out_disabled =
             sample.signal_level(S100Signal::DataOutDisable) == Some(false);
-
-        // The MITS board's 8212 latches the 8080 status byte at SYNC + PHI1.
-        if state.pins.phi1 && state.pins.sync {
-            if let Some(word) = state.pins.data_out {
-                state.status_word = word;
-            }
+        let drive_controls_changed = status_disabled != state.status_disabled
+            || command_disabled != state.command_disabled
+            || address_disabled != state.address_disabled
+            || data_out_disabled != state.data_out_disabled;
+        state.status_disabled = status_disabled;
+        state.command_disabled = command_disabled;
+        state.address_disabled = address_disabled;
+        state.data_out_disabled = data_out_disabled;
+        if drive_controls_changed {
+            state.rebuild_drive();
         }
     }
 
+    #[inline]
     fn drive_s100(&self) -> S100CardDrive {
-        let state = self.state.borrow();
-        let pins = state.pins;
-        let mut drive = S100CardDrive::new();
-
-        drive.drive_signal(S100Signal::Phi1, pins.phi1);
-        drive.drive_signal(S100Signal::Phi2, pins.phi2);
-        drive.drive_signal(S100Signal::Clock, state.cloc);
-        drive.drive_signal(S100Signal::Wait, pins.wait);
-        drive.drive_signal(S100Signal::InterruptEnable, pins.inte);
-
-        if !state.command_disabled {
-            drive.drive_signal(S100Signal::HoldAcknowledge, pins.hlda);
-            drive.drive_signal(S100Signal::Sync, pins.sync);
-            // S-100 pWR is the active-low 8080 /WR level itself.
-            drive.drive_signal(S100Signal::Write, pins.wr_n);
-            drive.drive_signal(S100Signal::DataBusIn, pins.dbin);
-        }
-
-        if !state.address_disabled {
-            if let Some(address) = pins.address {
-                drive.drive_address(address);
-            }
-        }
-
-        if !state.data_out_disabled {
-            if let Some(value) = pins.data_out {
-                drive.drive_data_out(value);
-            }
-        }
-
-        if !state.status_disabled {
-            let status = state.status_word;
-            drive.drive_signal(S100Signal::MemoryRead, Self::status_bit(status, 0x80));
-            drive.drive_signal(S100Signal::Inp, Self::status_bit(status, 0x40));
-            drive.drive_signal(S100Signal::M1, Self::status_bit(status, 0x20));
-            drive.drive_signal(S100Signal::Out, Self::status_bit(status, 0x10));
-            drive.drive_signal(
-                S100Signal::HaltAcknowledge,
-                Self::status_bit(status, 0x08),
-            );
-            drive.drive_signal(S100Signal::Stack, Self::status_bit(status, 0x04));
-            drive.drive_signal(S100Signal::WriteStatus, Self::status_bit(status, 0x02));
-            drive.drive_signal(
-                S100Signal::InterruptAcknowledge,
-                Self::status_bit(status, 0x01),
-            );
-        }
-
-        drive
+        self.state.borrow().cached_drive
     }
 }
 
@@ -344,7 +437,7 @@ mod tests {
 
     impl S100ElectricalCard for SourceCard {
         fn drive_s100(&self) -> S100CardDrive {
-            self.drive.clone()
+            self.drive
         }
     }
 
