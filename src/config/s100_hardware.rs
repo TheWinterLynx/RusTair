@@ -1,4 +1,4 @@
-use super::machine::{RamBoardProfile, RamSize, SerialBoard};
+use super::machine::{CpuBoard, RamBoardProfile, RamSize, SerialBoard};
 use super::sio::SioHardwareConfig;
 use super::two_sio::{TwoSioInterruptWiring, TwoSioStraps};
 use crate::s100_chassis::{AltairChassisModel, S100ChassisConfig, S100ChassisConfigError};
@@ -21,8 +21,8 @@ pub enum S100InstalledCardKind {
     Mits16KDynamic88_16Mcd,
     Mits88Sio,
     Mits88TwoSio,
-    /// Transitional/non-historical RAM used to preserve old RusTair configs and
-    /// the explicit fast-memory compatibility mode while the runtime migrates.
+    /// Non-historical RAM used only for explicit compatibility assemblies and
+    /// migration of old aggregate RusTair configurations.
     FastRamCompatibility,
 }
 
@@ -103,8 +103,8 @@ impl FastRamCompatibilityConfig {
 /// Persistable physical configuration of one fitted S-100 connector.
 ///
 /// Serial-card strap state belongs to the card instance, not to the machine as a
-/// global singleton. This is what eventually allows two independently strapped
-/// 88-SIO/88-2SIO boards to coexist without adding branches to the backplane.
+/// global singleton. This permits independently strapped 88-SIO/88-2SIO boards
+/// to coexist without adding card-family branches to the electrical backplane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100InstalledCardConfig {
     Mits8080Cpu,
@@ -246,6 +246,22 @@ impl S100HardwareConfig {
         })
     }
 
+    /// The one CPU board physically installed in the fitted S-100 connectors.
+    /// A temporarily invalid POWER-OFF edit may return `None`; validated runtime
+    /// configurations contain exactly one CPU card.
+    pub fn active_cpu_board_slot(self) -> Option<(usize, CpuBoard)> {
+        let mut boards = self.installed_cards().filter_map(|(slot, card)| match card {
+            S100InstalledCardConfig::Mits8080Cpu => Some((slot, CpuBoard::Mits8080)),
+            _ => None,
+        });
+        let board = boards.next()?;
+        boards.next().is_none().then_some(board)
+    }
+
+    pub fn active_cpu_board(self) -> Option<CpuBoard> {
+        self.active_cpu_board_slot().map(|(_, board)| board)
+    }
+
     pub fn installed_ram_bytes(self) -> usize {
         self.installed_cards()
             .map(|(_, card)| match card {
@@ -281,11 +297,11 @@ impl S100HardwareConfig {
         Ok(self)
     }
 
-    /// Transitional migration from the old aggregate machine settings. This is
-    /// intentionally a compatibility assembly rather than fabricated historical
-    /// cards: a legacy `8K + Mits1K timing` setting never stated which eight
-    /// physical boards/slots were actually installed.
-    pub fn from_legacy_globals(
+    /// Migration-only conversion from pre-v5 aggregate settings. It deliberately
+    /// creates a compatibility assembly instead of inventing historical boards:
+    /// an old `8K + Mits1K timing` value never described which eight boards or
+    /// slots physically existed.
+    pub(crate) fn from_legacy_globals(
         ram_size: RamSize,
         ram_profile: RamBoardProfile,
         serial_board: SerialBoard,
@@ -401,6 +417,23 @@ mod tests {
         ));
         assert!(matches!(config.slot(3), Some(S100InstalledCardConfig::Mits88Sio(_))));
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn active_cpu_board_identity_and_slot_come_only_from_installed_s100_card() {
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        hardware
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::FastRamCompatibility(
+                    FastRamCompatibilityConfig::no_wait(0, 0x1000),
+                )),
+            )
+            .unwrap();
+        hardware.set_slot(5, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        let hardware = hardware.validate().unwrap();
+        assert_eq!(hardware.active_cpu_board_slot(), Some((5, CpuBoard::Mits8080)));
+        assert_eq!(hardware.active_cpu_board(), Some(CpuBoard::Mits8080));
     }
 
     #[test]
