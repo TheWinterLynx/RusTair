@@ -2,7 +2,11 @@ use crate::config::{
     RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioHardwareConfig,
     TwoSioInterruptWiring, TwoSioStraps,
 };
-use crate::s100_runtime::{RuntimeMemoryInspection, S100RuntimeFabric};
+use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
+use crate::s100_backplane::{S100BackplaneError, S100BusSample};
+use crate::s100_runtime::{
+    DisplayControlLines, RuntimeMemoryInspection, S100RuntimeFabric,
+};
 pub(crate) use crate::s100_runtime::S100_OPEN_BUS_VALUE;
 
 pub const MEM_SIZE: usize = 8 * 1024;
@@ -101,6 +105,28 @@ impl Memory {
 
     pub(super) fn inspect(&self, address: u16) -> RuntimeMemoryInspection {
         self.fabric.inspect_memory(address)
+    }
+
+    pub(super) fn cycle_drive_cpu_edge(
+        &mut self,
+        pins: Cpu8080Pins,
+        display: DisplayControlLines,
+    ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        self.fabric.set_cpu_package_pins(pins);
+        self.fabric.settle(display, &[])?;
+        Ok(self.fabric.cpu_package_inputs())
+    }
+
+    pub(super) fn cycle_live_inputs(&self) -> Cpu8080Inputs {
+        self.fabric.cpu_package_inputs()
+    }
+
+    pub(super) fn cycle_live_sample(&self) -> &S100BusSample {
+        self.fabric.sample()
+    }
+
+    pub(super) fn cycle_latched_status_word(&self) -> u8 {
+        self.fabric.cpu_latched_status_word()
     }
 
     pub(super) fn configure_board_profile(&mut self, profile: RamBoardProfile) {
@@ -283,8 +309,9 @@ impl Memory {
         let _ = self.fabric.fast_memory_write(address, value, 0x00);
     }
 
-    /// Cycle still performs side effects at its validated T3 boundary in this
-    /// cut, but reads/writes the exact same card storage rather than a shadow RAM.
+    /// Transitional T3 read helper. The exact Cycle engine now also drives the
+    /// live fabric on every CPU-board edge; this preview remains only until the
+    /// PHI2 input sampler is switched to `cycle_live_inputs()`.
     pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
@@ -332,6 +359,39 @@ impl super::AltairBus {
 
     pub(crate) fn s100_hardware_memory(&self) -> S100HardwareConfig {
         self.memory.hardware()
+    }
+
+    pub(crate) fn cycle_live_s100_inputs(&self) -> Cpu8080Inputs {
+        self.memory.cycle_live_inputs()
+    }
+
+    pub(crate) fn cycle_live_s100_sample(&self) -> &S100BusSample {
+        self.memory.cycle_live_sample()
+    }
+
+    pub(crate) fn cycle_live_s100_status_word(&self) -> u8 {
+        self.memory.cycle_latched_status_word()
+    }
+
+    fn cycle_display_control_lines(&self) -> DisplayControlLines {
+        let signals = self.s100.signals();
+        DisplayControlLines {
+            ready: signals.front_panel_ready,
+            run: signals.run,
+            hold: signals.hold,
+            reset: signals.reset,
+            external_clear: signals.ext_clear,
+            protect: false,
+            unprotect: false,
+        }
+    }
+
+    pub(crate) fn cycle_drive_live_s100_edge(
+        &mut self,
+        pins: Cpu8080Pins,
+    ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        let display = self.cycle_display_control_lines();
+        self.memory.cycle_drive_cpu_edge(pins, display)
     }
 
     pub(crate) fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
@@ -535,6 +595,48 @@ mod tests {
         memory.write(0x0010, 0x5a);
         assert_eq!(memory.peek(0x0010), Some(0x5a));
         assert_eq!(memory.read(0x0010), 0x5a);
+    }
+
+    #[test]
+    fn cycle_edge_path_and_debugger_share_the_same_physical_ram_bytes() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K1, RamInit::Zeroed);
+        assert!(memory.debugger_write(0x0010, 0x5a, false));
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        };
+
+        memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi1: true,
+                    address: Some(0x0010),
+                    data_out: Some(0x82),
+                    sync: true,
+                    wr_n: true,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
+        let inputs = memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi2: true,
+                    address: Some(0x0010),
+                    dbin: true,
+                    wr_n: true,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
+
+        assert_eq!(inputs.data_in, 0x5a);
+        assert_eq!(memory.peek(0x0010), Some(0x5a));
+        assert_eq!(memory.cycle_live_sample().data_in(), Some(0x5a));
     }
 }
 
