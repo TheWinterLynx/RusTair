@@ -3,7 +3,7 @@ use rustair::config::{FastRamCompatibilityConfig, RamInit, S100HardwareConfig, S
 use rustair::s100_chassis::S100ChassisConfig;
 
 fn cpu_in_slot_four() -> S100HardwareConfig {
-    let chassis = S100ChassisConfig::altair_8800b(6).unwrap();
+    let chassis = S100ChassisConfig::altair_8800b(6);
     let mut hardware = S100HardwareConfig::empty(chassis).unwrap();
     hardware
         .set_slot(
