@@ -343,8 +343,17 @@ impl RusTairApp {
         if self.machine.engine() != engine {
             let _ = self.machine.replace_engine(engine);
         }
-        self.machine.configure_memory(self.config.machine.ram_size, self.config.machine.ram_init);
-        self.machine.configure_memory_board_profile(self.config.machine.ram_board_profile);
+
+        // The atomic slot inventory is the runtime hardware authority. Legacy
+        // ram_size/ram_board_profile keys are parsed only so old configuration
+        // files can be migrated into S100HardwareConfig when the v5 key is absent.
+        self.machine.configure_s100_hardware(
+            self.config.machine.s100_hardware,
+            self.config.machine.ram_init,
+        );
+
+        // Serial remains on its staged compatibility runtime until 88-SIO and
+        // 88-2SIO are themselves live S100BusCard implementations.
         self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
         self.machine.configure_serial_board(self.config.machine.serial_board);
         self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
@@ -379,9 +388,9 @@ impl RusTairApp {
         self.audio.set_muted(saved.muted);
         self.last_tick = Instant::now();
         self.status = format!(
-            "Ready — {} — {} RAM — {} — saved configuration loaded",
+            "Ready — {} — {} KiB S-100 RAM — {} — saved configuration loaded",
             self.machine.engine().label(),
-            self.config.machine.ram_size.label(),
+            self.config.machine.s100_hardware.installed_ram_bytes() / 1024,
             self.config.machine.serial_board.label(),
         );
     }
