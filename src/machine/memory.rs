@@ -329,16 +329,6 @@ impl Memory {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
     }
-
-    /// Transitional direct helper. Production Cycle guest writes no longer call
-    /// this; the live CPU board drives pWR/DO and Display/Control generates MWRT.
-    pub(super) fn cycle_write(&mut self, address: u16, value: u8) {
-        if address == u16::MAX && self.basic32_probe_guard {
-            self.basic32_probe_write = Some(value);
-            return;
-        }
-        let _ = self.fabric.write_unique_memory(address, value, true);
-    }
 }
 
 impl super::AltairBus {
@@ -467,14 +457,6 @@ impl super::AltairBus {
 
     pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 {
         self.memory.cycle_read(address)
-    }
-
-    pub(crate) fn cycle_peek_memory(&self, address: u16) -> u8 {
-        self.memory.preview_read(address)
-    }
-
-    pub(crate) fn cycle_write_memory(&mut self, address: u16, value: u8) {
-        self.memory.cycle_write(address, value);
     }
 
     pub(crate) fn cycle_input_port(&mut self, port: u8) -> u8 {
