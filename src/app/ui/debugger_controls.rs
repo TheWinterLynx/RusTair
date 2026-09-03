@@ -476,7 +476,7 @@ impl RusTairApp {
             ui.separator();
             super::collapsible_section(ui, "Raw stack top", true, |ui| {
                 if let Some(candidate) = self.candidate_return_address() {
-                    ui.small(format!("Current raw stack top: [SP=${:04X}] -> ${candidate:04X}. This value is shown independently from inferred frames."));
+                    ui.small(format!("Current raw stack top: [SP=${:04X}] -> ${candidate:04X}. This value is shown independently from inferred frames.", cpu.sp));
                 } else {
                     let lo = self.machine.inspect_memory_mapping(cpu.sp);
                     let hi = self.machine.inspect_memory_mapping(cpu.sp.wrapping_add(1));
