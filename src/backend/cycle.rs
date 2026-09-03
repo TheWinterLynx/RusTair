@@ -168,9 +168,6 @@ impl CycleAccurateMachineBackend {
             MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
                 if address == u16::MAX =>
             {
-                // The optional BASIC 3.2 compatibility probe is the only
-                // host-side memory override. Consume it here only when it
-                // differs from the byte already present on the live CPU input.
                 let live = self.machine.bus.cycle_live_s100_inputs().data_in;
                 let candidate = self.machine.bus.cycle_read_memory(address);
                 (candidate != live).then_some(candidate)
@@ -182,9 +179,6 @@ impl CycleAccurateMachineBackend {
     fn apply_trace_side_effects(&mut self, trace: &TickTrace, record_instruction: bool) {
         if trace.t_state == TState::T3 && trace.machine_cycle == MachineCycle::OutputWrite {
             if let (Some(address), Some(value)) = (trace.pins.address, trace.pins.data_out) {
-                // Serial is still the one guest-I/O family outside the live
-                // fabric. RAM writes are intentionally absent here: pWR/DO ->
-                // Display/Control MWRT -> RuntimeRamCard is now authoritative.
                 self.machine.bus.cycle_output_port(address as u8, value);
             }
         }
@@ -242,9 +236,6 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    /// Legacy projection retained for front-panel optical integration and serial
-    /// cards not yet materialized on the electrical backplane. It is never fed
-    /// back into RAM execution.
     fn drive_s100_t_state(
         &mut self,
         trace: &TickTrace,
@@ -290,22 +281,10 @@ impl CycleAccurateMachineBackend {
             let sample = self.machine.bus.cycle_live_s100_sample();
             let status_word = Some(self.machine.bus.cycle_live_s100_status_word());
             let mut status = BusStatusLines::from_status_word(status_word);
-            status.inte = Some(
-                sample
-                    .signal_level(S100Signal::InterruptEnable)
-                    .unwrap_or(false),
-            );
-            status.prot = Some(
-                sample
-                    .signal_level(S100Signal::ProtectStatus)
-                    .unwrap_or(false),
-            );
+            status.inte = Some(sample.signal_level(S100Signal::InterruptEnable).unwrap_or(false));
+            status.prot = Some(sample.signal_level(S100Signal::ProtectStatus).unwrap_or(false));
             status.wait = Some(sample.signal_level(S100Signal::Wait).unwrap_or(false));
-            status.hlda = Some(
-                sample
-                    .signal_level(S100Signal::HoldAcknowledge)
-                    .unwrap_or(false),
-            );
+            status.hlda = Some(sample.signal_level(S100Signal::HoldAcknowledge).unwrap_or(false));
             let cpu_data = trace.pins.data_out.or_else(|| {
                 matches!(
                     trace.machine_cycle,
@@ -405,6 +384,12 @@ impl CycleAccurateMachineBackend {
         }
 
         self.machine.bus.refresh_interrupt_request_line();
+        // `ready` is the physical Display/Control contribution to PRDY for this
+        // exact T-state. RUN normally holds it high; SINGLE STEP pulses it high
+        // only for the released cycle, and the parking path deliberately passes
+        // false. RAM and I/O cards may still pull the effective READY low after
+        // this source has been driven.
+        self.machine.bus.cycle_set_ready_input(ready);
         let memory_ready = self.memory_ready_for_current_t_state();
         let legacy_ready = ready && memory_ready;
         let legacy_data_override = self.legacy_data_override_for_current_t_state(front_panel_data);
@@ -425,12 +410,7 @@ impl CycleAccurateMachineBackend {
             let bus = &mut self.machine.bus;
             cpu.tick_with_live_phi2_inputs(initial_inputs, |edge, pins| {
                 edge_index += 1;
-
-                // Transitional panel/serial projection. This remains required
-                // until those cards themselves implement the live S-100 bus
-                // interface, but it is no longer the RAM execution authority.
                 bus.drive_cycle_cpu_board_edge(edge, pins);
-
                 let mut live = bus
                     .cycle_drive_live_s100_edge(pins)
                     .expect("validated S-100 hardware must resolve every Cycle edge");
@@ -442,8 +422,6 @@ impl CycleAccurateMachineBackend {
                 if let Some(value) = legacy_data_override {
                     live.data_in = value;
                 }
-                // `tick_with_live_phi2_inputs` samples the value returned after
-                // PHI1 falling at the upcoming PHI2 edge.
                 if edge_index == 2 {
                     sampled_inputs = live;
                 }
@@ -1387,8 +1365,6 @@ mod tests {
         assert!(!backend.machine().bus.cpu_control_lines().hold);
         assert!(backend.machine().bus.raw_s100_hlda());
 
-        // PHOLD is sampled LOW at this PHI2. The internal HOLD latch clears,
-        // but Intel specifies that HLDA remains HIGH until the following PHI1.
         backend.service_execution(1).unwrap();
         assert!(!backend.cpu().is_holding());
         assert!(backend.machine().bus.raw_s100_hlda());
@@ -1417,9 +1393,6 @@ mod tests {
 
         backend.request_hold(false).unwrap();
         assert!(backend.machine().bus.raw_s100_hlda());
-        // Allow the documented PHI2 HOLD-latch clear, following PHI1 HLDA drop,
-        // resumed PSYNC capture and the real T2 -> TW STOP handshake. The loop
-        // stops itself once pending STOP has been captured and parked.
         backend.service_execution(8).unwrap();
 
         assert!(!backend.cpu().is_holding());
