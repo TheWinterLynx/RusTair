@@ -120,6 +120,11 @@ pub struct S100RuntimeFabric {
     cpu: Mits8080CpuBoardHandle,
     ram: Vec<RuntimeRamSlot>,
     serial: Vec<RuntimeSerialSlot>,
+    /// Serial UART state may currently advance through its host endpoint handle
+    /// between bus edges. Refresh these physical slots once when a new edge or
+    /// Fast transaction phase begins; subsequent zero-time deltas use the cached
+    /// connector drive until an S-100 input wakes the card.
+    externally_mutable_slots: S100SlotMask,
     /// Predecoded hardware response for every 16-bit address. A bit means that
     /// the card in that physical connector can decode the address. Real cards
     /// see the address bus in parallel; this table is the software equivalent of
@@ -209,6 +214,9 @@ impl S100RuntimeFabric {
 
         let cpu_slot = cpu_slot.ok_or(S100RuntimeBuildError::MissingCpu)?;
         let cpu = cpu_handle.ok_or(S100RuntimeBuildError::MissingCpu)?;
+        let externally_mutable_slots = serial
+            .iter()
+            .fold(0, |mask, installed| mask | s100_slot_mask(installed.slot));
 
         let mut memory_responders = vec![0; S100_ADDRESS_SPACE].into_boxed_slice();
         let mut ram_by_slot = [None; MAX_S100_SLOTS];
@@ -230,6 +238,7 @@ impl S100RuntimeFabric {
             cpu,
             ram,
             serial,
+            externally_mutable_slots,
             memory_responders,
             ram_by_slot,
             io_decode,
@@ -275,12 +284,16 @@ impl S100RuntimeFabric {
         self.cpu.latched_status_word()
     }
 
+    fn cpu_slot_mask(&self) -> S100SlotMask {
+        s100_slot_mask(self.cpu_slot)
+    }
+
     fn memory_responder_mask(&self, address: u16) -> S100SlotMask {
         self.memory_responders[address as usize]
     }
 
     fn fast_memory_slot_mask(&self, address: u16) -> S100SlotMask {
-        s100_slot_mask(self.cpu_slot) | self.memory_responder_mask(address)
+        self.cpu_slot_mask() | self.memory_responder_mask(address)
     }
 
     fn io_responder_mask(&self, port: u8) -> S100SlotMask {
@@ -288,7 +301,7 @@ impl S100RuntimeFabric {
     }
 
     fn fast_io_slot_mask(&self, port: u8) -> S100SlotMask {
-        s100_slot_mask(self.cpu_slot) | self.io_responder_mask(port)
+        self.cpu_slot_mask() | self.io_responder_mask(port)
     }
 
     #[inline]
@@ -309,43 +322,58 @@ impl S100RuntimeFabric {
         self.ram_for_slot(mask.trailing_zeros() as usize + 1)
     }
 
-    /// Propagate at most three zero-time digital deltas, but stop as soon as the
-    /// electrical bus is stable. The first delta after CPU/package/chassis input
-    /// changes is always observed: a card may have host-side state (for example
-    /// the CPU package pins) that must process that edge even if the resulting
-    /// connector levels happen to equal the previous sample. Once one resolved
-    /// sample has been observed, however, resolving the same sample again cannot
-    /// wake any new combinational state, so replaying another observe/resolve
-    /// round would only duplicate work.
+    /// Event-driven zero-time propagation. The connector still settles through
+    /// the same causal deltas as the physical cards, but Rust does not execute a
+    /// card merely because some unrelated S-100 net changed. Each slot's input
+    /// sensitivity comes directly from its historical connector descriptor and
+    /// its output drive remains cached until one of those inputs wakes it.
+    ///
+    /// The CPU slot is forced to observe the first delta because Intel package
+    /// pins are on the non-S-100 side of that board. Serial slots are refreshed
+    /// once at the start because their UART state can currently advance through
+    /// host endpoint handles between edges. Neither exception bypasses the bus:
+    /// their resulting connector drives still resolve electrically here.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
         extra_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
+        let selected = S100SlotMask::MAX;
+        let cpu_slot = self.cpu_slot_mask();
+        self.backplane
+            .refresh_cached_drives(cpu_slot | self.externally_mutable_slots)?;
+
         let mut display_drive = display.drive(self.backplane.sample());
-        let mut last_observed_sample: Option<S100BusSample> = None;
+        let mut forced_observe = cpu_slot;
 
         for _ in 0..DIGITAL_SETTLE_DELTAS {
-            if extra_drives.is_empty() {
-                self.backplane
-                    .resolve_current_drives(std::slice::from_ref(&display_drive))?;
+            let change = if extra_drives.is_empty() {
+                self.backplane.resolve_cached_selected_drives(
+                    selected,
+                    std::slice::from_ref(&display_drive),
+                )
             } else {
                 let mut chassis = Vec::with_capacity(extra_drives.len() + 1);
                 chassis.push(display_drive);
-                chassis.extend(extra_drives.iter().cloned());
-                self.backplane.resolve_current_drives(&chassis)?;
-            }
+                chassis.extend(extra_drives.iter().copied());
+                self.backplane
+                    .resolve_cached_selected_drives(selected, &chassis)
+            };
 
-            if last_observed_sample
-                .as_ref()
-                .is_some_and(|previous| previous == self.backplane.sample())
-            {
+            let changed_drives = self.backplane.observe_changed_cards(
+                change,
+                forced_observe,
+                selected,
+            )?;
+            forced_observe = 0;
+
+            let next_display_drive = display.drive(self.backplane.sample());
+            let display_changed = next_display_drive != display_drive;
+            display_drive = next_display_drive;
+
+            if changed_drives == 0 && !display_changed {
                 break;
             }
-
-            self.backplane.observe_cards();
-            last_observed_sample = Some(self.backplane.sample().clone());
-            display_drive = display.drive(self.backplane.sample());
         }
         Ok(self.backplane.sample())
     }
@@ -359,30 +387,50 @@ impl S100RuntimeFabric {
     }
 
     /// Resolve one causal propagation delta for a predecoded Fast transaction.
-    /// Only CPU + cards whose hardware decoder matches the address execute.
+    /// Fast still exercises the installed CPU/RAM/I/O cards and the same
+    /// electrical resolver. `package_changed` only tells the compiled fabric that
+    /// the CPU board's non-S-100 package side needs one forced observation.
     fn fast_delta(
         &mut self,
         selected: S100SlotMask,
         display: DisplayControlLines,
+        package_changed: bool,
     ) -> Result<(), S100BackplaneError> {
+        let cpu_slot = self.cpu_slot_mask();
+        let externally_dirty = if package_changed {
+            cpu_slot | (selected & self.externally_mutable_slots)
+        } else {
+            0
+        };
+        if externally_dirty != 0 {
+            self.backplane.refresh_cached_drives(externally_dirty)?;
+        }
+
         let display_drive = display.drive(self.backplane.sample());
-        self.backplane
-            .resolve_selected_drives(selected, &[display_drive])?;
-        self.backplane.observe_selected_cards(selected);
+        let change = self
+            .backplane
+            .resolve_cached_selected_drives(selected, &[display_drive]);
+        let forced = if package_changed { cpu_slot } else { 0 };
+        let _ = self
+            .backplane
+            .observe_changed_cards(change, forced, selected)?;
         Ok(())
     }
 
-    /// Update wire levels without letting a selected card process another state
-    /// transition. Used to release pWR after a Fast write; the next transaction
-    /// then starts from the electrically released CPU output.
+    /// Update wire levels without replaying a card state transition. The CPU
+    /// package has changed, so refresh that card's cached drive once, then resolve
+    /// the physical connector state with the selected responders still present.
     fn fast_resolve_only(
         &mut self,
         selected: S100SlotMask,
         display: DisplayControlLines,
     ) -> Result<(), S100BackplaneError> {
+        let refresh = self.cpu_slot_mask() | (selected & self.externally_mutable_slots);
+        self.backplane.refresh_cached_drives(refresh)?;
         let display_drive = display.drive(self.backplane.sample());
-        self.backplane
-            .resolve_selected_drives(selected, &[display_drive])?;
+        let _ = self
+            .backplane
+            .resolve_cached_selected_drives(selected, &[display_drive]);
         Ok(())
     }
 
@@ -413,8 +461,8 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
+        self.fast_delta(selected, display, false)?;
 
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
@@ -428,7 +476,7 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
         Ok(self.cpu_package_inputs().data_in)
     }
 
@@ -457,7 +505,7 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
 
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
@@ -471,8 +519,8 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
+        self.fast_delta(selected, display, false)?;
 
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
@@ -511,8 +559,8 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
+        self.fast_delta(selected, display, false)?;
 
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
@@ -526,8 +574,8 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
+        self.fast_delta(selected, display, false)?;
         Ok(self.cpu_package_inputs().data_in)
     }
 
@@ -552,7 +600,7 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
 
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
@@ -566,8 +614,8 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.fast_delta(selected, display)?;
-        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display, true)?;
+        self.fast_delta(selected, display, false)?;
 
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
