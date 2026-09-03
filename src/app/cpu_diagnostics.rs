@@ -72,6 +72,14 @@ fn format_diff(actual: u64, expected: u64) -> String {
     if diff > 0 { format!("+{diff}") } else { diff.to_string() }
 }
 
+fn configured_cpu_board(app: &RusTairApp) -> CpuBoard {
+    app.config
+        .machine
+        .s100_hardware
+        .active_cpu_board()
+        .expect("validated S-100 configuration contains exactly one CPU board")
+}
+
 fn append_abs(code: &mut Vec<u8>, opcode: u8, address: u16) {
     let [lo, hi] = address.to_le_bytes();
     code.extend_from_slice(&[opcode, lo, hi]);
@@ -195,7 +203,7 @@ impl RusTairApp {
             let speed_label = self.cpu_diagnostic_run_speed_label.take().unwrap_or_else(|| {
                 emulation_speed_label(
                     self.config.preferences.emulation_speed,
-                    self.config.machine.cpu_board(),
+                    configured_cpu_board(self),
                 )
             });
             ctx.data_mut(|data| {
@@ -212,7 +220,7 @@ impl RusTairApp {
         let speed_label = ctx.data(|data| data.get_temp::<String>(speed_id)).unwrap_or_else(|| {
             emulation_speed_label(
                 self.config.preferences.emulation_speed,
-                self.config.machine.cpu_board(),
+                configured_cpu_board(self),
             )
         });
         let mut dismissed = false;
@@ -266,19 +274,21 @@ impl RusTairApp {
             return;
         }
 
-        let installed = self.machine.installed_ram_bytes();
+        let hardware = self.config.machine.s100_hardware;
+        let installed = hardware.installed_ram_bytes();
+        let usable = hardware.unique_ram_prefix_bytes();
         let image_end = CPM_COM_LOAD_ADDRESS as usize + bytes.len();
         let minimum_bytes = image_end.saturating_add(CPM_STACK_GUARD_BYTES).saturating_add(CPM_BDOS_PAGE_BYTES);
-        let Some(bdos_base_usize) = installed.checked_sub(CPM_BDOS_PAGE_BYTES) else {
-            self.report_load_error(format!("CPU diagnostic {} cannot start because the current {} RAM configuration is too small for a CP/M page-zero and BDOS environment.", path.display(), self.config.machine.ram_size.label()));
+        let Some(bdos_base_usize) = usable.checked_sub(CPM_BDOS_PAGE_BYTES) else {
+            self.report_load_error(format!("CPU diagnostic {} cannot start because the S-100 chassis has no complete 256-byte BDOS page in its uniquely mapped low-memory region ({} contiguous bytes from 0000h, {} bytes installed in total).", path.display(), usable, installed));
             return;
         };
         let Some(tpa_limit) = bdos_base_usize.checked_sub(CPM_STACK_GUARD_BYTES) else {
-            self.report_load_error(format!("CPU diagnostic {} cannot start because the current {} RAM configuration leaves no stack area below BDOS.", path.display(), self.config.machine.ram_size.label()));
+            self.report_load_error(format!("CPU diagnostic {} cannot start because the uniquely mapped low-memory region leaves no stack area below BDOS ({} contiguous bytes from 0000h, {} bytes installed in total).", path.display(), usable, installed));
             return;
         };
         if image_end > tpa_limit {
-            self.report_load_error(format!("CPU diagnostic {} is {} bytes and loads at 0100h. Including the CP/M stack/BDOS reserve it needs at least {} KiB of installed RAM. The current machine has {} ({} bytes).", path.display(), bytes.len(), minimum_bytes.div_ceil(1024), self.config.machine.ram_size.label(), installed));
+            self.report_load_error(format!("CPU diagnostic {} is {} bytes and loads at 0100h. Including the CP/M stack/BDOS reserve it needs at least {} KiB of uniquely mapped low RAM. The current S-100 chassis provides {} contiguous bytes from 0000h ({} bytes installed across all RAM cards).", path.display(), bytes.len(), minimum_bytes.div_ceil(1024), usable, installed));
             return;
         }
 
@@ -297,7 +307,7 @@ impl RusTairApp {
         self.external_com.reset_line_timing();
         self.machine.clear_memory_protection();
         self.machine.clear_transient_memory_guards();
-        let clean_ram = vec![0u8; installed];
+        let clean_ram = vec![0u8; usable];
         self.machine.load_bytes(0x0000, &clean_ram);
         self.machine.load_bytes(0x0000, &environment.page_zero);
         self.machine.load_bytes(CPM_COM_LOAD_ADDRESS, bytes);
@@ -319,7 +329,7 @@ impl RusTairApp {
 
         let speed_label = emulation_speed_label(
             self.config.preferences.emulation_speed,
-            self.config.machine.cpu_board(),
+            configured_cpu_board(self),
         );
         self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());
         self.machine.set_running(true);
