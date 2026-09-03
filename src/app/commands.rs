@@ -54,14 +54,16 @@ impl RusTairApp {
                     return;
                 }
 
-                let installed = self.machine.installed_ram_bytes();
-                if bytes.len() > installed {
+                let hardware = self.config.machine.s100_hardware;
+                let usable = hardware.unique_ram_prefix_bytes();
+                let installed = hardware.installed_ram_bytes();
+                if bytes.len() > usable {
                     self.report_load_error(format!(
-                        "Binary {} is {} bytes and loads at 0000h, so it requires at least {} KiB of installed RAM. The current machine has {} ({} bytes).",
+                        "Binary {} is {} bytes and loads at 0000h, so 0000h through {:04X}h must each have exactly one S-100 RAM responder. The current chassis provides {} contiguous uniquely mapped bytes from 0000h ({} bytes installed across all RAM cards).",
                         path.display(),
                         bytes.len(),
-                        bytes.len().div_ceil(1024),
-                        self.config.machine.ram_size.label(),
+                        bytes.len() - 1,
+                        usable,
                         installed
                     ));
                     return;
@@ -84,11 +86,13 @@ impl RusTairApp {
             return;
         };
 
-        if bytes.len() > self.machine.installed_ram_bytes() {
+        let hardware = self.config.machine.s100_hardware;
+        let usable = hardware.unique_ram_prefix_bytes();
+        if usable < 4 * 1024 {
             self.report_load_error(format!(
-                "Microsoft 4K BASIC is {} bytes and requires at least 4 KiB RAM. The current machine has {}.",
-                bytes.len(),
-                self.config.machine.ram_size.label()
+                "Microsoft 4K BASIC requires a uniquely mapped S-100 RAM window from 0000h through 0FFFh. The current chassis is uniquely mapped only through {} byte(s) from 0000h ({} bytes installed across RAM cards).",
+                usable,
+                hardware.installed_ram_bytes()
             ));
             return;
         }
@@ -123,7 +127,7 @@ impl RusTairApp {
         self.machine.set_running(true);
         self.status = if full_memory_probe_guard {
             "Microsoft 4K BASIC loaded and running — optional 64 KiB probe workaround active".into()
-        } else if self.machine.installed_ram_bytes() == 64 * 1024 {
+        } else if hardware.unique_ram_prefix_bytes() == 64 * 1024 {
             "Microsoft 4K BASIC loaded and running — authentic 64 KiB probe bug enabled".into()
         } else if self.config.preferences.auto_open_basic_console {
             "Microsoft 4K BASIC loaded and running — console auto-open enabled".into()
