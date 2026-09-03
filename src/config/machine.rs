@@ -6,8 +6,9 @@ use super::two_sio::{TwoSioInterruptWiring, TwoSioStraps};
 
 /// Processor model carried by an installed S-100 CPU board.
 ///
-/// Do not add a processor here until RusTair has a real core for it. The
-/// physical board identity is exposed separately through `CpuBoard`.
+/// Do not add a processor here until RusTair has a real core for it. Runtime
+/// processor identity comes from the CPU card in `S100HardwareConfig`; this enum
+/// remains useful as the processor identity exposed by a concrete `CpuBoard`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuModel {
     Intel8080,
@@ -119,6 +120,10 @@ impl Default for EmulationSpeed {
     }
 }
 
+/// Aggregate RAM sizes from pre-v5 RusTair configuration files.
+///
+/// These are migration values only. Live RAM capacity/topology is represented by
+/// `S100HardwareConfig` card slots and no `MachineConfig` field stores a total.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RamSize {
     Bytes256,
@@ -199,10 +204,10 @@ impl Default for RamInit {
     }
 }
 
-/// Electrical/timing profile of the installed S-100 RAM cards.
+/// Aggregate RAM timing profiles from pre-v5 RusTair configuration files.
 ///
-/// Capacity and initial contents are deliberately separate from card timing: an
-/// Altair can have the same number of bytes implemented by very different boards.
+/// This survives only so an old configuration can be converted once into a
+/// compatibility RAM card. Live timing is a property of each installed card.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RamBoardProfile {
     /// Compatibility profile for later/fast memory: no PRDY stretching.
@@ -236,7 +241,11 @@ impl Default for RamBoardProfile {
     }
 }
 
-/// MITS serial interface installed in the emulated Altair.
+/// Transitional serial runtime selector.
+///
+/// Serial card identity already belongs to `S100HardwareConfig`; this enum is
+/// retained only until endpoints/debugger are switched from the old singleton
+/// `IoDevices` bridge to per-slot 88-SIO/88-2SIO card handles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SerialBoard {
     Sio88,
@@ -392,38 +401,20 @@ impl Default for TerminalSpeed {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct MachineConfig {
-    /// Persisted processor identity retained only for backwards-compatible
-    /// config.ini migration. Runtime/UI CPU identity comes from the installed
-    /// S-100 CPU card in `s100_hardware`.
-    pub cpu_model: CpuModel,
-    pub ram_size: RamSize,
     pub ram_init: RamInit,
-    pub ram_board_profile: RamBoardProfile,
+    /// Transitional serial globals retained only while the old singleton serial
+    /// runtime is being replaced by per-slot card state. They must agree with the
+    /// selected compatibility card until that bridge is removed.
     pub serial_board: SerialBoard,
-    /// Physical revision, interface, address, baud and word-format wiring of the
-    /// installed/dormant MITS 88-SIO card.
     pub sio_hardware: SioHardwareConfig,
-    /// Physical A2-A7 address block and per-ACIA baud-generator straps of the
-    /// installed/dormant MITS 88-2SIO card.
     pub two_sio_straps: TwoSioStraps,
-    /// Physical interrupt-request wiring from the two 88-2SIO ACIAs. MITS calls
-    /// the Port 0 request pad DI and Port 1 request pad EI; each may be left
-    /// disconnected, wired to PINT, or wired to VI0..VI7 for an 88-VI system.
     pub two_sio_interrupt_wiring: TwoSioInterruptWiring,
-    /// Slot-native physical S-100 assembly. During the staged migration the
-    /// legacy aggregate RAM/serial fields above remain runtime-compatible, while
-    /// this inventory is already the authoritative persisted/user-editable
-    /// representation that Fast and Cycle share for mounted hardware.
+    /// Sole CPU/RAM/chassis hardware authority and already the persisted physical
+    /// representation for serial cards as well.
     pub s100_hardware: S100HardwareConfig,
 }
 
 impl MachineConfig {
-    /// Compatibility accessor retained while old callers migrate. The physical
-    /// S-100 inventory is authoritative; `cpu_model` is never consulted here.
-    pub fn cpu_board(self) -> CpuBoard {
-        self.active_cpu_board()
-    }
-
     pub const fn serial_status_port(self) -> u8 {
         match self.serial_board {
             SerialBoard::Sio88 => self.sio_hardware.address.status(),
@@ -500,9 +491,11 @@ mod tests {
     #[test]
     fn classic_altair_maps_to_mits_8080_board_at_two_megahertz() {
         let config = AppConfig::default();
-        let board = config.machine.cpu_board();
-        assert_eq!(config.machine.cpu_model, CpuModel::Intel8080);
-        assert_eq!(board, config.machine.active_cpu_board());
+        let board = config
+            .machine
+            .s100_hardware
+            .active_cpu_board()
+            .expect("default hardware has one CPU board");
         assert_eq!(board, CpuBoard::Mits8080);
         assert_eq!(board.cpu_model(), CpuModel::Intel8080);
         assert_eq!(board.clock_hz(), 2_000_000);
@@ -607,9 +600,8 @@ mod memory_board_profile_tests {
     use super::*;
 
     #[test]
-    fn original_mits_1k_profile_has_two_read_wait_states() {
+    fn legacy_migration_profiles_retain_their_wait_semantics() {
         assert_eq!(RamBoardProfile::Mits1KStatic1975.read_wait_states(), 2);
         assert_eq!(RamBoardProfile::FastNoWait.read_wait_states(), 0);
-        assert_eq!(AppConfig::default().machine.ram_board_profile, RamBoardProfile::FastNoWait);
     }
 }
