@@ -234,7 +234,7 @@ fn baseline_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                S100RamBoardModel::Mits1KStatic88Mcs,
+                S100RamBoardModel::Mits4KStatic88_4Mcs,
                 0x0000,
             ))),
         )
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(hardware.active_cpu_board_slot(), Some((1, CpuBoard::Mits8080)));
         assert!(matches!(hardware.slot(2), Some(S100InstalledCardConfig::Ram(_))));
         assert!(matches!(hardware.slot(3), Some(S100InstalledCardConfig::Mits88Sio(_))));
-        assert_eq!(hardware.unique_ram_prefix_bytes(), 1024);
+        assert_eq!(hardware.unique_ram_prefix_bytes(), 4096);
     }
 
     #[test]
