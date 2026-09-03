@@ -319,10 +319,18 @@ impl S100RuntimeFabric {
     ) -> Result<&S100BusSample, S100BackplaneError> {
         let mut display_drive = display.drive(self.backplane.sample());
         for _ in 0..DIGITAL_SETTLE_DELTAS {
-            let mut chassis = Vec::with_capacity(extra_drives.len() + 1);
-            chassis.push(display_drive);
-            chassis.extend(extra_drives.iter().cloned());
-            self.backplane.resolve_current_drives(&chassis)?;
+            if extra_drives.is_empty() {
+                // Exact Cycle calls this path on every PHI edge. Keep the
+                // Display/Control contribution on the stack instead of doing a
+                // heap allocation/free for every digital delta.
+                self.backplane
+                    .resolve_current_drives(std::slice::from_ref(&display_drive))?;
+            } else {
+                let mut chassis = Vec::with_capacity(extra_drives.len() + 1);
+                chassis.push(display_drive);
+                chassis.extend(extra_drives.iter().cloned());
+                self.backplane.resolve_current_drives(&chassis)?;
+            }
             self.backplane.observe_cards();
             display_drive = display.drive(self.backplane.sample());
         }
