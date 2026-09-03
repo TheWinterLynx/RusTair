@@ -31,7 +31,7 @@ use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamBoardProfile, RamInit, RamSize,
-    SerialBoard, TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
+    S100HardwareConfig, SerialBoard, TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::peripherals::asr33::{
@@ -136,11 +136,11 @@ impl RusTairApp {
         let cpu_board = config.machine.cpu_board();
         let cpu = cpu_board.cpu_model();
         let status = format!(
-            "Ready — RusTair Fast 8080 — {} / {} @ {:.1} MHz — {} RAM — {} — ASR-33 connected",
+            "Ready — RusTair Fast 8080 — {} / {} @ {:.1} MHz — {} KiB S-100 RAM — {} — ASR-33 connected",
             cpu_board.label(),
             cpu.label(),
             cpu_board.clock_hz() as f32 / 1_000_000.0,
-            config.machine.ram_size.label(),
+            config.machine.s100_hardware.installed_ram_bytes() / 1024,
             config.machine.serial_board.label(),
         );
         let mut terminal = TerminalState::default();
@@ -208,12 +208,17 @@ impl RusTairApp {
 
         match self.machine.replace_engine(engine) {
             Ok(()) => {
-                self.machine.configure_memory(
-                    self.config.machine.ram_size,
+                // Fast and Cycle are execution engines for the same physical
+                // S-100 machine. Rebuild the new backend from the slot-native
+                // inventory first; never reconstruct aggregate contiguous RAM.
+                self.machine.configure_s100_hardware(
+                    self.config.machine.s100_hardware,
                     self.config.machine.ram_init,
                 );
-                self.machine
-                    .configure_memory_board_profile(self.config.machine.ram_board_profile);
+
+                // Serial cards are still in the staged legacy runtime bridge.
+                // Keep their existing global configuration until 88-SIO and
+                // 88-2SIO themselves become live S100BusCard implementations.
                 self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
                 self.machine.configure_serial_board(self.config.machine.serial_board);
                 self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
@@ -228,7 +233,10 @@ impl RusTairApp {
                 let now = Instant::now();
                 self.last_tick = now;
                 self.execution_clock.reset_at(now);
-                self.status = format!("Emulation engine selected: {} — machine remains POWER OFF", engine.label());
+                self.status = format!(
+                    "Emulation engine selected: {} — same S-100 chassis/cards remounted — machine remains POWER OFF",
+                    engine.label()
+                );
             }
             Err(error) => {
                 self.status = format!("Could not select {}: {error}", engine.label());
@@ -236,31 +244,47 @@ impl RusTairApp {
         }
     }
 
-    fn apply_memory_configuration(&mut self, ram_size: RamSize, ram_init: RamInit) {
-        if self.config.machine.ram_size == ram_size && self.config.machine.ram_init == ram_init { return; }
-        self.config.machine.ram_size = ram_size;
-        self.config.machine.ram_init = ram_init;
-        self.machine.configure_memory(ram_size, ram_init);
-        self.execution_clock.reset_at(Instant::now());
-        self.asr33.tx_started = None;
-        self.terminal.tx_started = None;
-        self.external_serial.reset_line_timing();
-        self.external_com.reset_line_timing();
-        self.status = format!("Memory configured: {} — {}; machine reset", ram_size.label(), ram_init.label());
-    }
-
-    fn apply_memory_board_profile(&mut self, profile: RamBoardProfile) {
-        if self.config.machine.ram_board_profile == profile { return; }
+    /// Apply a validated physical slot inventory to the active backend.
+    ///
+    /// This is the app-side authority used by the S-100 editor and persistence.
+    /// Debugger/UI inspection may read card handles directly, but guest execution
+    /// can only reach memory through the CPU board and live backplane built here.
+    fn apply_s100_hardware_configuration(&mut self, hardware: S100HardwareConfig, action: &str) {
         if self.machine.powered() {
-            self.status = "Power OFF the Altair before changing the installed RAM card timing".into();
+            self.status = "POWER OFF required to move or reconfigure S-100 cards".into();
             return;
         }
-        self.config.machine.ram_board_profile = profile;
-        self.machine.configure_memory_board_profile(profile);
+        self.machine
+            .configure_s100_hardware(hardware, self.config.machine.ram_init);
+        self.config.machine.s100_hardware = hardware;
         let now = Instant::now();
         self.last_tick = now;
         self.execution_clock.reset_at(now);
-        self.status = format!("Memory card timing: {}", profile.label());
+        self.status = format!(
+            "{action} — live S-100 chassis remounted ({} KiB RAM) — POWER remains OFF",
+            hardware.installed_ram_bytes() / 1024
+        );
+    }
+
+    /// Select how newly mounted/powered RAM is initialized without changing its
+    /// physical card topology. This setting is an emulator convenience, not an
+    /// aggregate RAM-size control.
+    fn apply_ram_initialization(&mut self, ram_init: RamInit) {
+        if self.config.machine.ram_init == ram_init { return; }
+        if self.machine.powered() {
+            self.status = "POWER OFF required before changing RAM power-on contents".into();
+            return;
+        }
+        self.config.machine.ram_init = ram_init;
+        self.machine
+            .configure_s100_hardware(self.config.machine.s100_hardware, ram_init);
+        let now = Instant::now();
+        self.last_tick = now;
+        self.execution_clock.reset_at(now);
+        self.status = format!(
+            "RAM power-on contents: {} — same S-100 card topology remounted",
+            ram_init.label()
+        );
     }
 
     fn apply_serial_board_configuration(&mut self, serial_board: SerialBoard) {
