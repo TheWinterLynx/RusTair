@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioConnectorOutputs, SioElectricalLevel,
-    SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioConnectorOutputs,
+    SioElectricalLevel, SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
 use crate::machine::CpuDiagnosticResult;
+use crate::s100_runtime::RuntimeMemoryInspection;
 use crate::trace8080::{
     collect_post_instruction_effects, collect_pre_instruction_effects, CpuSnapshot8080,
     InstructionEffect8080, InstructionTraceBuffer, InstructionTraceMetadata,
@@ -14,11 +15,11 @@ use crate::trace8080::{
 
 use super::cycle::CycleExecutionEvent;
 use super::{
-    BackendCapabilities, BackendExecutionModel, BackendResult, BackendSerialPort, BusChassisSnapshot,
-    BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, BusTState, CpuState,
-    CycleAccurateMachineBackend, DebugStopReason, EmulationEngine, FrontPanelState,
-    InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot, MachineBackend, MemoryWatchAccess,
-    SerialModemLines, SioLogicalLines,
+    BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort,
+    BusChassisSnapshot, BusCpuPins, BusMachineCycle, BusStatusLines, BusTeachingAccuracy,
+    BusTeachingSnapshot, BusTState, CpuState, CycleAccurateMachineBackend, DebugStopReason,
+    EmulationEngine, FrontPanelState, InstructionTraceSnapshot, IoPortActivity, IoTraceSnapshot,
+    MachineBackend, MemoryWatchAccess, SerialModemLines, SioLogicalLines,
 };
 
 const WALL_CLOCK_UNITS_PER_SECOND: u128 = 1_000_000_000;
@@ -271,6 +272,32 @@ impl MachineBackend for CycleHostBackend {
         self.inner.machine_mut().configure_memory_board_profile(profile);
         if powered { self.inner.assert_reset()?; self.inner.release_reset()?; self.teaching_reset_seen = true; }
         self.reset_idle_chassis_clock_tracking(); self.reset_debugger_epoch(); Ok(())
+    }
+    fn configure_s100_hardware(&mut self, hardware: S100HardwareConfig, init: RamInit) -> BackendResult<()> {
+        if self.inner.machine().powered {
+            return Err(BackendError::Operation {
+                operation: "configure S-100 hardware",
+                detail: "POWER OFF is required to move physical S-100 cards".into(),
+            });
+        }
+        self.inner
+            .machine_mut()
+            .bus
+            .configure_s100_hardware_memory(hardware, init)
+            .map_err(|error| BackendError::Operation {
+                operation: "configure S-100 hardware",
+                detail: format!("{error:?}"),
+            })?;
+        self.teaching_reset_seen = false;
+        self.reset_idle_chassis_clock_tracking();
+        self.reset_debugger_epoch();
+        Ok(())
+    }
+    fn s100_hardware(&mut self) -> BackendResult<S100HardwareConfig> {
+        Ok(self.inner.machine().bus.s100_hardware_memory())
+    }
+    fn inspect_memory_mapping(&mut self, address: u16) -> BackendResult<RuntimeMemoryInspection> {
+        Ok(self.inner.machine().bus.inspect_memory_mapping(address))
     }
     fn power(&mut self, on: bool) -> BackendResult<()> { self.power_with_historical_run_latch(on, false) }
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
