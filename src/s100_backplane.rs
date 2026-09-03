@@ -9,11 +9,13 @@ use crate::s100::{S100Card, S100CardDescriptor, S100ContactRole, S100Signal};
 pub const S100_CONTACT_COUNT: usize = 100;
 const PIN_COUNT_WITH_ZERO: usize = S100_CONTACT_COUNT + 1;
 const PIN_MASK_WORDS: usize = 2;
+const DRIVER_COUNT_BITS: usize = 8;
 pub type S100SlotMask = u32;
 
 type PinMask = [u64; PIN_MASK_WORDS];
+type DriverCountPlanes = [PinMask; DRIVER_COUNT_BITS];
 
-// The indexed S-100 nets are intentionally mapped once here for the two hottest
+// The indexed S-100 nets are intentionally mapped once here for the hottest
 // operations in the emulator. This is the same physical pin mapping returned by
 // `S100Signal::pin`; avoiding sixteen/eight enum matches for every CPU delta is
 // purely an implementation acceleration.
@@ -35,6 +37,38 @@ fn mask_set(mask: &mut PinMask, pin: usize, set: bool) {
     } else {
         mask[word] &= !bit;
     }
+}
+
+#[inline]
+fn add_driver_mask(planes: &mut DriverCountPlanes, word: usize, mask: u64) {
+    let mut carry = mask;
+    for plane in planes.iter_mut() {
+        if carry == 0 {
+            break;
+        }
+        let next_carry = plane[word] & carry;
+        plane[word] ^= carry;
+        carry = next_carry;
+    }
+    debug_assert_eq!(carry, 0, "S-100 driver count overflow");
+}
+
+#[inline]
+fn driver_count(planes: &DriverCountPlanes, pin: usize) -> u16 {
+    let word = pin / 64;
+    let bit = 1u64 << (pin % 64);
+    let mut count = 0u16;
+    for (index, plane) in planes.iter().enumerate() {
+        if plane[word] & bit != 0 {
+            count |= 1u16 << index;
+        }
+    }
+    count
+}
+
+#[inline]
+fn any_driver_mask(planes: &DriverCountPlanes, word: usize) -> u64 {
+    planes.iter().fold(0, |mask, plane| mask | plane[word])
 }
 
 /// One bit per physical connector. The Altair chassis models currently top out
@@ -77,10 +111,9 @@ pub struct S100ResolvedPin {
 
 /// Compact electrical drive set for one card.
 ///
-/// Earlier versions stored a 101-element enum array plus an active bitmap. The
-/// exact same four electrical states fit in three bitsets: strong LOW, strong
-/// HIGH and the open-collector subset of LOW. This matters because every exact
-/// 8080 PHI edge resolves these objects several times.
+/// The four connector states fit in three bitsets: strong LOW, strong HIGH and
+/// the open-collector subset of LOW. A complete S-100 connector therefore moves
+/// as six machine words rather than a 101-element enum array.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct S100CardDrive {
     low: PinMask,
@@ -149,20 +182,6 @@ impl S100CardDrive {
         self.active_word(word) & !self.open_collector_low[word]
     }
 
-    fn for_each_active_pin(&self, mut visit: impl FnMut(usize)) {
-        for word_index in 0..PIN_MASK_WORDS {
-            let mut bits = self.active_word(word_index);
-            while bits != 0 {
-                let offset = bits.trailing_zeros() as usize;
-                let pin = word_index * 64 + offset;
-                if (1..=S100_CONTACT_COUNT).contains(&pin) {
-                    visit(pin);
-                }
-                bits &= bits - 1;
-            }
-        }
-    }
-
     pub fn drive_signal(&mut self, signal: S100Signal, high: bool) {
         let pin = signal.pin().expect("valid S-100 signal");
         self.set_pin(pin, S100PinDrive::Driven(high));
@@ -207,19 +226,21 @@ impl S100CardDrive {
     }
 }
 
-/// Compact resolved backplane sample.
+/// Resolved backplane sample.
 ///
-/// Public callers still observe `S100ResolvedPin`; internally level/contention
-/// are bitsets and only the driver counts remain byte arrays. Eighteen physical
-/// slots plus chassis wiring fit safely in u8 while the public counters retain
-/// their original u16 type.
+/// LOW/HIGH/contention and even per-pin driver counts are represented as bit
+/// planes. Resolution therefore processes 64 physical contacts in parallel. The
+/// public per-pin API is unchanged and reconstructs exact driver counts lazily.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct S100BusSample {
     defined: PinMask,
     high: PinMask,
     contention: PinMask,
-    low_drivers: [u8; PIN_COUNT_WITH_ZERO],
-    high_drivers: [u8; PIN_COUNT_WITH_ZERO],
+    low_driver_counts: DriverCountPlanes,
+    high_driver_counts: DriverCountPlanes,
+    cached_address: Option<u16>,
+    cached_data_out: Option<u8>,
+    cached_data_in: Option<u8>,
 }
 
 impl Default for S100BusSample {
@@ -228,8 +249,11 @@ impl Default for S100BusSample {
             defined: [0; PIN_MASK_WORDS],
             high: [0; PIN_MASK_WORDS],
             contention: [0; PIN_MASK_WORDS],
-            low_drivers: [0; PIN_COUNT_WITH_ZERO],
-            high_drivers: [0; PIN_COUNT_WITH_ZERO],
+            low_driver_counts: [[0; PIN_MASK_WORDS]; DRIVER_COUNT_BITS],
+            high_driver_counts: [[0; PIN_MASK_WORDS]; DRIVER_COUNT_BITS],
+            cached_address: None,
+            cached_data_out: None,
+            cached_data_in: None,
         }
     }
 }
@@ -250,27 +274,49 @@ impl S100BusSample {
         }
     }
 
-    #[inline]
-    fn refresh_driven_level(&mut self, pin: usize) {
-        let low = self.low_drivers[pin] != 0;
-        let high = self.high_drivers[pin] != 0;
-        let contention = low && high;
-        let level = if contention {
-            None
-        } else if low {
-            Some(false)
-        } else if high {
-            Some(true)
-        } else {
-            None
-        };
-        self.set_level(pin, level, contention);
+    fn set_resolved_pin(&mut self, pin: usize, resolved: S100ResolvedPin) {
+        debug_assert_eq!(resolved.low_drivers, 0, "passive bias cannot own a driver");
+        debug_assert_eq!(resolved.high_drivers, 0, "passive bias cannot own a driver");
+        self.set_level(pin, resolved.level, resolved.contention);
     }
 
-    fn set_resolved_pin(&mut self, pin: usize, resolved: S100ResolvedPin) {
-        self.low_drivers[pin] = resolved.low_drivers.min(u8::MAX as u16) as u8;
-        self.high_drivers[pin] = resolved.high_drivers.min(u8::MAX as u16) as u8;
-        self.set_level(pin, resolved.level, resolved.contention);
+    #[inline]
+    fn clear_driver_counts(&mut self) {
+        self.low_driver_counts = [[0; PIN_MASK_WORDS]; DRIVER_COUNT_BITS];
+        self.high_driver_counts = [[0; PIN_MASK_WORDS]; DRIVER_COUNT_BITS];
+    }
+
+    #[inline]
+    fn add_drive(&mut self, drive: &S100CardDrive) {
+        for word in 0..PIN_MASK_WORDS {
+            add_driver_mask(&mut self.low_driver_counts, word, drive.low[word]);
+            add_driver_mask(&mut self.high_driver_counts, word, drive.high[word]);
+        }
+    }
+
+    fn finalize_driver_levels(&mut self, passive_defined: PinMask, passive_high: PinMask) {
+        for word in 0..PIN_MASK_WORDS {
+            let low = any_driver_mask(&self.low_driver_counts, word);
+            let high = any_driver_mask(&self.high_driver_counts, word);
+            let driven = low | high;
+            let contention = low & high;
+            self.contention[word] = contention;
+            self.defined[word] =
+                (passive_defined[word] & !driven) | (driven & !contention);
+            self.high[word] =
+                (passive_high[word] & !driven) | (high & !low);
+        }
+        self.refresh_cached_buses();
+    }
+
+    fn refresh_cached_buses(&mut self) {
+        self.cached_address = self.resolved_pin_bits_uncached(&ADDRESS_PINS);
+        self.cached_data_out = self
+            .resolved_pin_bits_uncached(&DATA_OUT_PINS)
+            .map(|value| value as u8);
+        self.cached_data_in = self
+            .resolved_pin_bits_uncached(&DATA_IN_PINS)
+            .map(|value| value as u8);
     }
 
     pub fn pin(&self, pin: u8) -> Option<S100ResolvedPin> {
@@ -287,8 +333,8 @@ impl S100BusSample {
         Some(S100ResolvedPin {
             level,
             contention,
-            low_drivers: u16::from(self.low_drivers[pin]),
-            high_drivers: u16::from(self.high_drivers[pin]),
+            low_drivers: driver_count(&self.low_driver_counts, pin),
+            high_drivers: driver_count(&self.high_driver_counts, pin),
         })
     }
 
@@ -324,7 +370,7 @@ impl S100BusSample {
         }
     }
 
-    fn resolved_pin_bits(&self, pins: &[u8]) -> Option<u16> {
+    fn resolved_pin_bits_uncached(&self, pins: &[u8]) -> Option<u16> {
         let mut value = 0u16;
         for (bit, pin) in pins.iter().copied().enumerate() {
             if self.pin_level(pin)? {
@@ -335,15 +381,15 @@ impl S100BusSample {
     }
 
     pub fn address(&self) -> Option<u16> {
-        self.resolved_pin_bits(&ADDRESS_PINS)
+        self.cached_address
     }
 
     pub fn data_out(&self) -> Option<u8> {
-        self.resolved_pin_bits(&DATA_OUT_PINS).map(|value| value as u8)
+        self.cached_data_out
     }
 
     pub fn data_in(&self) -> Option<u8> {
-        self.resolved_pin_bits(&DATA_IN_PINS).map(|value| value as u8)
+        self.cached_data_in
     }
 
     pub fn data_in_or(&self, open_bus: u8) -> u8 {
@@ -447,8 +493,8 @@ pub enum S100BackplaneError {
 
 pub struct S100Backplane {
     slots: Vec<S100Slot>,
-    /// Pre-biased no-driver sample. Each resolve starts by copying this fixed
-    /// electrical baseline and then touches only pins that somebody drives.
+    /// Pre-biased no-driver sample. Each resolve starts from these passive levels
+    /// and then folds every active card drive into bit-sliced driver counters.
     passive_sample: S100BusSample,
     sample: S100BusSample,
 }
@@ -475,6 +521,7 @@ impl S100Backplane {
         for level in 0..8 {
             backplane.set_passive_bias(S100Signal::VectorInterrupt(level), Some(true));
         }
+        backplane.passive_sample.refresh_cached_buses();
         backplane.sample.clone_from(&backplane.passive_sample);
         backplane
     }
@@ -502,6 +549,7 @@ impl S100Backplane {
                 high_drivers: 0,
             },
         );
+        self.passive_sample.refresh_cached_buses();
     }
 
     pub fn insert(
@@ -537,30 +585,10 @@ impl S100Backplane {
     }
 
     #[inline]
-    fn apply_drive(sample: &mut S100BusSample, drive: &S100CardDrive) {
-        for word_index in 0..PIN_MASK_WORDS {
-            let mut lows = drive.low[word_index];
-            while lows != 0 {
-                let offset = lows.trailing_zeros() as usize;
-                let pin = word_index * 64 + offset;
-                if (1..=S100_CONTACT_COUNT).contains(&pin) {
-                    sample.low_drivers[pin] = sample.low_drivers[pin].saturating_add(1);
-                    sample.refresh_driven_level(pin);
-                }
-                lows &= lows - 1;
-            }
-
-            let mut highs = drive.high[word_index];
-            while highs != 0 {
-                let offset = highs.trailing_zeros() as usize;
-                let pin = word_index * 64 + offset;
-                if (1..=S100_CONTACT_COUNT).contains(&pin) {
-                    sample.high_drivers[pin] = sample.high_drivers[pin].saturating_add(1);
-                    sample.refresh_driven_level(pin);
-                }
-                highs &= highs - 1;
-            }
-        }
+    fn begin_resolution(sample: &mut S100BusSample, passive: &S100BusSample) -> (PinMask, PinMask) {
+        sample.clone_from(passive);
+        sample.clear_driver_counts();
+        (passive.defined, passive.high)
     }
 
     fn resolve_against_passive(
@@ -568,9 +596,13 @@ impl S100Backplane {
         drives: &[S100CardDrive],
     ) -> S100BusSample {
         let mut sample = passive.clone();
+        let passive_defined = passive.defined;
+        let passive_high = passive.high;
+        sample.clear_driver_counts();
         for drive in drives {
-            Self::apply_drive(&mut sample, drive);
+            sample.add_drive(drive);
         }
+        sample.finalize_driver_levels(passive_defined, passive_high);
         sample
     }
 
@@ -621,7 +653,8 @@ impl S100Backplane {
         selected: S100SlotMask,
         chassis_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
-        self.sample.clone_from(&self.passive_sample);
+        let (passive_defined, passive_high) =
+            Self::begin_resolution(&mut self.sample, &self.passive_sample);
         for slot in &self.slots {
             if selected & s100_slot_mask(slot.number) == 0 {
                 continue;
@@ -631,11 +664,13 @@ impl S100Backplane {
             };
             let drive = card.drive_s100();
             validate_card_drive(slot, &drive)?;
-            Self::apply_drive(&mut self.sample, &drive);
+            self.sample.add_drive(&drive);
         }
         for drive in chassis_drives {
-            Self::apply_drive(&mut self.sample, drive);
+            self.sample.add_drive(drive);
         }
+        self.sample
+            .finalize_driver_levels(passive_defined, passive_high);
         Ok(&self.sample)
     }
 
@@ -771,6 +806,7 @@ mod tests {
             backplane.sample().signal_level(S100Signal::Ready),
             Some(false)
         );
+        assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 1);
 
         backplane.remove(1).unwrap();
         backplane.step().unwrap();
@@ -778,6 +814,7 @@ mod tests {
             backplane.sample().signal_level(S100Signal::Ready),
             Some(true)
         );
+        assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 0);
     }
 
     #[test]
@@ -787,6 +824,7 @@ mod tests {
         drive.drive_signal(S100Signal::DataIn(0), true);
         let sample = backplane.resolve_drive_sets(&[drive]);
         assert_eq!(sample.signal_level(S100Signal::DataIn(0)), Some(true));
+        assert_eq!(sample.signal(S100Signal::DataIn(0)).high_drivers, 1);
     }
 
     #[test]
@@ -802,6 +840,23 @@ mod tests {
         let pin = sample.signal(S100Signal::DataIn(0));
         assert_eq!(pin.low_drivers, 1);
         assert_eq!(pin.high_drivers, 1);
+    }
+
+    #[test]
+    fn bit_sliced_driver_counts_preserve_multiple_same_level_sources() {
+        let backplane = S100Backplane::new(0);
+        let mut a = S100CardDrive::new();
+        let mut b = S100CardDrive::new();
+        let mut c = S100CardDrive::new();
+        a.drive_signal(S100Signal::DataIn(0), true);
+        b.drive_signal(S100Signal::DataIn(0), true);
+        c.drive_signal(S100Signal::DataIn(0), true);
+        let sample = backplane.resolve_drive_sets(&[a, b, c]);
+        let pin = sample.signal(S100Signal::DataIn(0));
+        assert_eq!(pin.level, Some(true));
+        assert!(!pin.contention);
+        assert_eq!(pin.high_drivers, 3);
+        assert_eq!(pin.low_drivers, 0);
     }
 
     #[test]
