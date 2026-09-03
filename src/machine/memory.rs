@@ -112,7 +112,21 @@ impl Memory {
         pins: Cpu8080Pins,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
-        self.fabric.set_cpu_package_pins(pins);
+        // BASIC 3.2's optional full-memory compatibility guard is deliberately
+        // host-side and non-historical. Suppress only its probe write before the
+        // live compatibility RAM sees MWRT; ordinary Cycle writes, including
+        // every historical RAM card, continue through the physical bus path.
+        let mut physical_pins = pins;
+        if self.basic32_probe_guard
+            && physical_pins.address == Some(u16::MAX)
+            && !physical_pins.wr_n
+        {
+            if let Some(value) = physical_pins.data_out {
+                self.basic32_probe_write = Some(value);
+            }
+            physical_pins.wr_n = true;
+        }
+        self.fabric.set_cpu_package_pins(physical_pins);
         self.fabric.settle(display, &[])?;
         Ok(self.fabric.cpu_package_inputs())
     }
@@ -309,14 +323,15 @@ impl Memory {
         let _ = self.fabric.fast_memory_write(address, value, 0x00);
     }
 
-    /// Transitional T3 read helper. The exact Cycle engine now also drives the
-    /// live fabric on every CPU-board edge; this preview remains only until the
-    /// PHI2 input sampler is switched to `cycle_live_inputs()`.
+    /// Transitional T3 read helper retained for serial/front-panel migration
+    /// tests. Guest Cycle memory reads now sample the live CPU-board DI input.
     pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
     }
 
+    /// Transitional direct helper. Production Cycle guest writes no longer call
+    /// this; the live CPU board drives pWR/DO and Display/Control generates MWRT.
     pub(super) fn cycle_write(&mut self, address: u16, value: u8) {
         if address == u16::MAX && self.basic32_probe_guard {
             self.basic32_probe_write = Some(value);
@@ -637,6 +652,32 @@ mod tests {
         assert_eq!(inputs.data_in, 0x5a);
         assert_eq!(memory.peek(0x0010), Some(0x5a));
         assert_eq!(memory.cycle_live_sample().data_in(), Some(0x5a));
+    }
+
+    #[test]
+    fn basic32_probe_guard_suppresses_only_the_live_cycle_probe_write() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K64, RamInit::Zeroed);
+        assert!(memory.arm_basic32_full_memory_probe_guard());
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        };
+        memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi1: true,
+                    address: Some(u16::MAX),
+                    data_out: Some(0x37),
+                    wr_n: false,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
+        assert_eq!(memory.peek(u16::MAX), Some(0));
+        assert_eq!(memory.preview_read(u16::MAX), 0xc8);
     }
 }
 
