@@ -88,7 +88,7 @@ pub(in crate::app) fn draw_s100_hardware_menu(app: &mut RusTairApp, ui: &mut egu
         ui.small("POWER OFF required to move cards, change chassis connectors, or alter physical card straps.");
     }
     ui.separator();
-    ui.small("This slot inventory is already persisted as the physical machine configuration. The current execution runtime is still being migrated from the legacy aggregate RAM/serial fields to this live backplane inventory.");
+    ui.small("CPU and RAM entries are the live execution topology used by both Fast and Cycle. 88-SIO/88-2SIO entries are already persisted per slot but still use the transitional serial runtime until those boards are connected as live S-100 bus cards.");
 }
 
 fn change_chassis_model(
@@ -450,10 +450,7 @@ fn replace_slot(
 
 fn commit_hardware(app: &mut RusTairApp, candidate: S100HardwareConfig, action: &str) {
     match candidate.validate() {
-        Ok(valid) => {
-            app.config.machine.s100_hardware = valid;
-            app.status = format!("{action} — physical inventory saved; POWER remains OFF");
-        }
+        Ok(valid) => app.apply_s100_hardware_configuration(valid, action),
         Err(error) => {
             app.status = format!("S-100 inventory rejected: {error:?}");
         }
