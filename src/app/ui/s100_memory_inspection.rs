@@ -44,10 +44,33 @@ pub(super) fn mapping_summary(inspection: &RuntimeMemoryInspection) -> String {
     }
 }
 
+/// Byte visible on DI when host instrumentation examines the physical RAM
+/// responders without fabricating a CPU cycle.
+///
+/// Unmapped space intentionally returns `None` here even though a guest read
+/// sees the chassis open-bus bias (FFh): there is no RAM cell to edit. An
+/// overlap returns a byte only when every responding card currently drives the
+/// same value. Different values are real electrical contention and therefore do
+/// not have one truthful RAM byte for a debugger to present.
+pub(super) fn visible_ram_value(inspection: &RuntimeMemoryInspection) -> Option<u8> {
+    let first = inspection.drivers.first()?.value;
+    (!inspection.electrically_contended()).then_some(first)
+}
+
+pub(super) fn mapping_cell_text(inspection: &RuntimeMemoryInspection) -> String {
+    if inspection.is_unmapped() {
+        "--".into()
+    } else if inspection.electrically_contended() {
+        "!!".into()
+    } else {
+        format!("{:02X}", visible_ram_value(inspection).expect("non-contended RAM drivers"))
+    }
+}
+
 pub(super) fn mapping_detail(address: u16, inspection: &RuntimeMemoryInspection) -> String {
     let mut text = format!("S-100 mapping at {address:04X}h: {}", mapping_summary(inspection));
     if inspection.drivers.is_empty() {
-        text.push_str("\nNo RAM card decodes this address. A guest memory read sees the S-100 open-bus value.");
+        text.push_str("\nNo RAM card decodes this address. A guest memory read sees the S-100 open-bus value FFh.");
         return text;
     }
     for driver in &inspection.drivers {
@@ -56,7 +79,7 @@ pub(super) fn mapping_detail(address: u16, inspection: &RuntimeMemoryInspection)
     }
     if inspection.is_overlap() {
         if inspection.electrically_contended() {
-            text.push_str("\nDifferent cards are driving different DI bits/values: this is real electrical bus contention, not a debugger ambiguity.");
+            text.push_str("\nDifferent cards are driving different DI values: this is real electrical bus contention, not a debugger ambiguity.");
         } else {
             text.push_str("\nMultiple cards decode the address and currently drive the same byte. The mapping is still physically overlapped even though DI is not contended at this instant.");
         }
@@ -65,7 +88,7 @@ pub(super) fn mapping_detail(address: u16, inspection: &RuntimeMemoryInspection)
 }
 
 #[cfg(test)]
-fn single_driver(inspection: &RuntimeMemoryInspection) -> Option<&RuntimeRamDriver> {
+pub(super) fn single_driver(inspection: &RuntimeMemoryInspection) -> Option<&RuntimeRamDriver> {
     match inspection.drivers.as_slice() {
         [driver] => Some(driver),
         _ => None,
@@ -108,14 +131,20 @@ mod tests {
         ))).unwrap();
         let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
 
-        assert!(mapping_summary(&fabric.inspect_memory(0x2000)).contains("UNMAPPED"));
-        assert!(mapping_summary(&fabric.inspect_memory(0x0400)).contains("Slot 02"));
-        assert!(mapping_summary(&fabric.inspect_memory(0x0900)).contains("OVERLAP"));
-        assert!(!fabric.inspect_memory(0x0900).electrically_contended());
+        let unmapped = fabric.inspect_memory(0x2000);
+        assert!(mapping_summary(&unmapped).contains("UNMAPPED"));
+        assert_eq!(mapping_cell_text(&unmapped), "--");
+        assert_eq!(visible_ram_value(&unmapped), None);
 
-        assert!(fabric.write_unique_memory(0x0400, 0x12, false));
-        let inspection = fabric.inspect_memory(0x0400);
-        let driver = single_driver(&inspection).unwrap();
-        assert_eq!(driver.value, 0x12);
+        let unique = fabric.inspect_memory(0x0400);
+        assert!(mapping_summary(&unique).contains("Slot 02"));
+        assert_eq!(mapping_cell_text(&unique), "00");
+        assert_eq!(visible_ram_value(&unique), Some(0));
+
+        let overlap = fabric.inspect_memory(0x0900);
+        assert!(mapping_summary(&overlap).contains("OVERLAP"));
+        assert!(!overlap.electrically_contended());
+        assert_eq!(mapping_cell_text(&overlap), "00");
+        assert_eq!(visible_ram_value(&overlap), Some(0));
     }
 }
