@@ -3,6 +3,7 @@ use crate::config::{
     TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
+use crate::s100::{S100ContactRole, S100Signal};
 use crate::s100_backplane::{S100BackplaneError, S100BusSample};
 use crate::s100_runtime::{
     DisplayControlLines, RuntimeMemoryInspection, S100RuntimeFabric,
@@ -31,6 +32,14 @@ pub(super) struct Memory {
     init_mode: RamInit,
     board_profile: RamBoardProfile,
     legacy_aggregate: bool,
+    /// True when at least one installed card has PHI1 or PHI2 as a connector
+    /// input. If false, falling a phase cannot affect any external card state;
+    /// the exact CPU core still emits that historical edge, but the software
+    /// circuit need not execute a zero-information settle for it.
+    phase_fall_requires_settle: bool,
+    /// Last package-pin callback seen by the live fabric. This lets Cycle prove
+    /// that a callback changed only PHI1/PHI2 from HIGH to LOW before eliding it.
+    last_cycle_pins: Cpu8080Pins,
     read_wait_active: bool,
     read_wait_remaining: u8,
     basic32_probe_guard: bool,
@@ -48,6 +57,10 @@ impl Default for Memory {
             init_mode,
             board_profile,
             legacy_aggregate: true,
+            // Legacy tests still consume the old edge projection. Be conservative
+            // there; phase-elision is enabled only for explicit physical chassis.
+            phase_fall_requires_settle: true,
+            last_cycle_pins: Cpu8080Pins::default(),
             read_wait_active: false,
             read_wait_remaining: 0,
             basic32_probe_guard: false,
@@ -77,11 +90,45 @@ impl Memory {
             .expect("legacy RAM compatibility assembly must be valid")
     }
 
+    fn phase_fall_listener_present(fabric: &S100RuntimeFabric) -> bool {
+        fabric.backplane().slots().iter().any(|slot| {
+            slot.descriptor().is_some_and(|descriptor| {
+                descriptor.contacts.iter().any(|contact| {
+                    contact.role == S100ContactRole::Input
+                        && matches!(contact.signal, S100Signal::Phi1 | S100Signal::Phi2)
+                })
+            })
+        })
+    }
+
+    fn falling_phase_is_unobserved(&self, pins: Cpu8080Pins) -> bool {
+        if self.legacy_aggregate || self.phase_fall_requires_settle {
+            return false;
+        }
+        let previous = self.last_cycle_pins;
+        let same_non_phase = previous.address == pins.address
+            && previous.data_out == pins.data_out
+            && previous.sync == pins.sync
+            && previous.dbin == pins.dbin
+            && previous.wr_n == pins.wr_n
+            && previous.inte == pins.inte
+            && previous.wait == pins.wait
+            && previous.hlda == pins.hlda;
+        if !same_non_phase {
+            return false;
+        }
+        let phi1_falling = previous.phi1 && !pins.phi1 && !previous.phi2 && !pins.phi2;
+        let phi2_falling = previous.phi2 && !pins.phi2 && !previous.phi1 && !pins.phi1;
+        phi1_falling || phi2_falling
+    }
+
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
         self.ram_size = size;
         self.init_mode = init_mode;
         self.legacy_aggregate = true;
         self.fabric = Self::legacy_fabric(size, self.board_profile, init_mode);
+        self.phase_fall_requires_settle = true;
+        self.last_cycle_pins = Cpu8080Pins::default();
         self.clear_transient_guards();
         self.reset_timing();
     }
@@ -91,9 +138,12 @@ impl Memory {
         hardware: S100HardwareConfig,
         init_mode: RamInit,
     ) -> Result<(), crate::s100_runtime::S100RuntimeBuildError> {
-        self.fabric = S100RuntimeFabric::new(hardware, init_mode)?;
+        let fabric = S100RuntimeFabric::new(hardware, init_mode)?;
+        self.phase_fall_requires_settle = Self::phase_fall_listener_present(&fabric);
+        self.fabric = fabric;
         self.init_mode = init_mode;
         self.legacy_aggregate = false;
+        self.last_cycle_pins = Cpu8080Pins::default();
         self.clear_transient_guards();
         self.reset_timing();
         Ok(())
@@ -112,6 +162,18 @@ impl Memory {
         pins: Cpu8080Pins,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        // PHI1/PHI2 falling edges remain real events in Cpu8080Cycle. When the
+        // installed connector inventory proves that no card observes either
+        // phase, however, lowering the package phase cannot change READY, HOLD,
+        // DI, interrupts or any card state. Reuse the already-settled inputs and
+        // let the next rising edge update the physical sample. A card added later
+        // with PHI1/PHI2 INPUT contacts disables this optimization automatically.
+        if self.falling_phase_is_unobserved(pins) {
+            self.last_cycle_pins = pins;
+            return Ok(self.fabric.cpu_package_inputs());
+        }
+        self.last_cycle_pins = pins;
+
         // BASIC 3.2's optional full-memory compatibility guard is deliberately
         // host-side and non-historical. Suppress only its probe write before the
         // live compatibility RAM sees MWRT; ordinary Cycle writes, including
@@ -205,13 +267,13 @@ impl Memory {
         self.fabric.installed_ram_bytes()
     }
 
-    pub(super) fn initialize(&mut self) {
+    pub(super) fn initialize(&self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(self.init_mode);
         self.reset_timing();
     }
 
-    pub(super) fn randomize(&mut self) {
+    pub(super) fn randomize(&self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(RamInit::Random);
         self.reset_timing();
@@ -276,7 +338,7 @@ impl Memory {
             .write_unique_memory(address, value, respect_protection)
     }
 
-    pub(super) fn clear_protection(&mut self) {
+    pub(super) fn clear_protection(&self) {
         self.fabric.clear_memory_protection();
     }
 
@@ -425,6 +487,13 @@ impl super::AltairBus {
         memory_read: bool,
         phase: MemoryReadyPhase,
     ) -> bool {
+        // Explicit chassis hardware already owns PRDY through the installed RAM
+        // and I/O cards. Re-running aggregate wait-state logic here would create
+        // a second, software-only READY authority in parallel with the bus.
+        if !self.memory.legacy_aggregate {
+            return true;
+        }
+
         let memory_ready = self.memory.ready_for_t_state(address, memory_read, phase);
         let signals = self.s100.signals();
         let inp_about_to_latch = !memory_read
