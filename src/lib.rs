@@ -25,6 +25,9 @@ pub mod trace8080;
 pub(crate) mod embedded_assets;
 pub(crate) mod mc6850;
 
+#[cfg(test)]
+mod s100_cycle_integration_tests;
+
 // Keep the original public module path working while the implementation now
 // lives under peripherals/asr33.
 pub use peripherals::asr33 as teletype;
