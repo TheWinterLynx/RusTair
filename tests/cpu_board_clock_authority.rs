@@ -2,23 +2,26 @@ const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const EXECUTION_CLOCK: &str = include_str!("../src/app/execution_clock.rs");
 const CONFIG: &str = include_str!("../src/config/machine.rs");
+const S100_HARDWARE: &str = include_str!("../src/config/s100_hardware.rs");
 const CPU_DIAGNOSTICS: &str = include_str!("../src/app/cpu_diagnostics.rs");
 const EMBEDDED_DIAGNOSTICS: &str = include_str!("../src/app/embedded_cpu_diagnostics.rs");
 
 #[test]
-fn runtime_scheduling_uses_installed_cpu_board_clock() {
+fn runtime_scheduling_uses_installed_s100_cpu_board_clock() {
     assert!(
-        RUNTIME.contains("let board = self.config.machine.cpu_board();"),
-        "runtime must resolve the installed CPU board before scheduling execution"
+        RUNTIME.contains(".s100_hardware") && RUNTIME.contains(".active_cpu_board()"),
+        "runtime must resolve the physically installed S-100 CPU board before scheduling execution"
     );
     assert!(
         RUNTIME.contains(".budget(now, running, board.clock_hz(), speed)"),
-        "runtime must pass the installed CPU board clock into the lossless execution scheduler"
+        "runtime must pass the installed board clock into the lossless execution scheduler"
     );
     assert!(
         EXECUTION_CLOCK.contains("clock_hz: u32"),
         "execution scheduler must receive its clock rate from the installed physical board"
     );
+    assert!(!RUNTIME.contains(".machine.cpu_board()"));
+    assert!(!APP.contains(".machine.cpu_board()"));
     assert!(
         !RUNTIME.contains("CLOCK_HZ"),
         "runtime must not consume any fixed/reference CPU clock"
@@ -59,9 +62,12 @@ fn ui_reports_board_processor_and_board_clock_separately() {
 }
 
 #[test]
-fn config_keeps_cpu_board_as_the_physical_timing_authority() {
+fn s100_inventory_is_the_only_runtime_cpu_board_authority() {
     assert!(CONFIG.contains("pub enum CpuBoard"));
     assert!(CONFIG.contains("pub const fn cpu_model(self) -> CpuModel"));
     assert!(CONFIG.contains("pub const fn clock_hz(self) -> u32"));
-    assert!(CONFIG.contains("pub const fn cpu_board(self) -> CpuBoard"));
+    assert!(!CONFIG.contains("fn cpu_board("));
+    assert!(!CONFIG.contains("pub cpu_model:"));
+    assert!(S100_HARDWARE.contains("pub fn active_cpu_board(self) -> Option<CpuBoard>"));
+    assert!(S100_HARDWARE.contains("pub fn active_cpu_board_slot(self) -> Option<(usize, CpuBoard)>"));
 }
