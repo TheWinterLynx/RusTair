@@ -18,6 +18,7 @@ pub mod s100_backplane;
 pub mod s100_chassis;
 pub mod s100_cpu;
 pub mod s100_interface;
+pub mod s100_io;
 pub mod s100_memory;
 pub mod s100_runtime;
 pub mod s100_runtime_ram;
