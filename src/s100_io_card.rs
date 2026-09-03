@@ -256,8 +256,18 @@ impl<D> S100IoCardAdapter<D> {
         (offset < self.width).then_some(offset)
     }
 
+    fn low_address(sample: &S100BusSample) -> Option<u8> {
+        let mut port = 0u8;
+        for bit in 0..8 {
+            if sample.signal_level(S100Signal::Address(bit))? {
+                port |= 1 << bit;
+            }
+        }
+        Some(port)
+    }
+
     fn selected_port(&self, sample: &S100BusSample) -> Option<(u8, u8)> {
-        let port = sample.address()? as u8;
+        let port = Self::low_address(sample)?;
         self.offset_for_port(port).map(|offset| (port, offset))
     }
 }
@@ -375,6 +385,26 @@ mod tests {
         drive
     }
 
+    fn drive_io_low_address_only(
+        port: u8,
+        inp: bool,
+        out: bool,
+        dbin: bool,
+        wr_n: bool,
+        data: u8,
+    ) -> S100CardDrive {
+        let mut drive = S100CardDrive::new();
+        for bit in 0..8 {
+            drive.drive_signal(S100Signal::Address(bit), port & (1 << bit) != 0);
+        }
+        drive.drive_signal(S100Signal::Inp, inp);
+        drive.drive_signal(S100Signal::Out, out);
+        drive.drive_signal(S100Signal::DataBusIn, dbin);
+        drive.drive_signal(S100Signal::Write, wr_n);
+        drive.drive_data_out(data);
+        drive
+    }
+
     #[test]
     fn input_register_side_effect_occurs_once_even_across_multiple_bus_deltas() {
         let state = Rc::new(RefCell::new(FakeState::default()));
@@ -405,6 +435,36 @@ mod tests {
         backplane.resolve_selected_drives(selected, &[dbin]).unwrap();
         assert_eq!(state.borrow().reads, 1, "same DBIN strobe must not read twice");
         assert_eq!(backplane.sample().data_in(), Some(0x5a));
+    }
+
+    #[test]
+    fn io_decode_uses_only_a0_through_a7() {
+        let state = Rc::new(RefCell::new(FakeState::default()));
+        state.borrow_mut().read_values[0] = 0x3c;
+        let card = S100IoCardAdapter::new(
+            &MITS_88_SIO_IO_CARD,
+            0x44,
+            2,
+            FakeDevice(Rc::clone(&state)),
+        );
+        let mut backplane = S100Backplane::new(2);
+        backplane.insert(2, Box::new(card)).unwrap();
+        let selected = s100_slot_mask(2);
+        let dbin = drive_io_low_address_only(0x44, true, false, true, true, 0);
+
+        backplane.resolve_selected_drives(selected, &[dbin.clone()]).unwrap();
+        backplane.observe_selected_cards(selected);
+        backplane.resolve_selected_drives(selected, &[dbin]).unwrap();
+
+        assert_eq!(state.borrow().reads, 1);
+        assert_eq!(backplane.sample().data_in(), Some(0x3c));
+        for bit in 8..16 {
+            assert_eq!(
+                backplane.sample().signal_level(S100Signal::Address(bit)),
+                None,
+                "A{bit} may float without affecting an A0..A7 I/O decoder"
+            );
+        }
     }
 
     #[test]
