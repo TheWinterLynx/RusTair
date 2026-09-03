@@ -55,14 +55,17 @@ fn engine_recreation_reapplies_physical_sio_hardware() {
         .expect("app must own the engine-recreation boundary");
     let tail = &APP_SOURCE[start..];
     let end = tail
-        .find("fn apply_memory_configuration")
-        .expect("helper after engine-recreation boundary");
+        .find("fn apply_s100_hardware_configuration")
+        .expect("slot-native S-100 helper after engine-recreation boundary");
     let function = &tail[..end];
 
     assert!(function.contains("self.machine.replace_engine(engine)"));
+    assert!(function.contains("self.machine.configure_s100_hardware"));
+    assert!(function.contains("self.config.machine.s100_hardware"));
     assert!(function.contains("self.machine.configure_sio_hardware"));
     assert!(function.contains("self.config.machine.sio_hardware"));
     assert!(function.contains("self.machine.configure_serial_board"));
+    assert!(!function.contains("self.machine.configure_memory("));
 }
 
 #[test]
