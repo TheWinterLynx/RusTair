@@ -5,11 +5,10 @@ impl eframe::App for RusTairApp {
         let now = Instant::now();
         super::ui::ensure_persistent_configuration_loaded(self);
 
-        // `machine.s100_hardware` is the physical authority. Persistence still
-        // parses the legacy aggregate RAM fields so v4 files can migrate, but no
+        // `machine.s100_hardware` is the physical authority. Persistence parses
+        // old aggregate RAM keys only long enough to migrate pre-v5 files; no
         // guest execution is allowed before the selected backend has the exact
-        // persisted slot topology mounted. The comparison is cheap and makes
-        // the invariant self-healing after engine recreation as well.
+        // persisted slot topology mounted.
         if !self.machine.powered()
             && self.machine.s100_hardware() != self.config.machine.s100_hardware
         {
@@ -23,8 +22,6 @@ impl eframe::App for RusTairApp {
             );
         }
 
-        // Embedded-suite completion must consume its meter result before the
-        // generic external-.COM result dialog gets a chance to take it.
         self.poll_embedded_cpu_diagnostics(ctx);
         self.poll_cpu_diagnostic_dialog(ctx);
 
@@ -48,14 +45,8 @@ impl eframe::App for RusTairApp {
             self.external_com.port.set_trace_enabled(io_capture_active);
         }
 
-        // Instruction history is a shared backend resource consumed by several
-        // debugger windows. Only this one runtime point owns the enable flag;
-        // individual windows merely publish demand through their UI state.
         super::ui::sync_instruction_trace_capture(self, ctx);
 
-        // Presentation uses the real host interval. CPU timing has its own
-        // lossless fixed-point wall-clock accumulator below and therefore must
-        // never share a clamped GUI delta.
         let frame_dt = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
 
@@ -65,7 +56,12 @@ impl eframe::App for RusTairApp {
         }
 
         let running = self.machine.running();
-        let board = self.config.machine.cpu_board();
+        let board = self
+            .config
+            .machine
+            .s100_hardware
+            .active_cpu_board()
+            .expect("validated S-100 configuration has one CPU board");
         let speed = self.effective_emulation_speed();
         let budget = self
             .execution_clock
@@ -82,8 +78,6 @@ impl eframe::App for RusTairApp {
                     _ => u64::from(budget),
                 };
                 if executed == 0 {
-                    // RESET/HOLD/debugger blocking while the physical RUN latch
-                    // remains set is not CPU time to replay later as a burst.
                     self.execution_clock.discard_pending_debt();
                 } else {
                     self.execution_clock.record_executed(executed);
@@ -172,7 +166,12 @@ impl eframe::App for RusTairApp {
                             if capabilities.exact_bus_activity { "exact T-state samples" } else { "machine-cycle samples synthesized by the fast CPU-board adapter" }
                         ));
 
-                        let board = self.config.machine.cpu_board();
+                        let board = self
+                            .config
+                            .machine
+                            .s100_hardware
+                            .active_cpu_board()
+                            .expect("validated S-100 configuration has one CPU board");
                         let cpu = board.cpu_model();
                         ui.separator();
                         ui.label(format!("Installed CPU board: {}", board.label()));
@@ -616,9 +615,15 @@ impl eframe::App for RusTairApp {
                 let panel = self.machine.front_panel_state();
                 ui.label(format!("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}", cpu.pc, cpu.sp, cpu.a, cpu.flags));
                 ui.separator();
+                let board = self
+                    .config
+                    .machine
+                    .s100_hardware
+                    .active_cpu_board()
+                    .expect("validated S-100 configuration has one CPU board");
                 ui.label(emulation_speed_label(
                     self.effective_emulation_speed(),
-                    self.config.machine.cpu_board(),
+                    board,
                 ));
                 ui.separator();
                 let execution_state = if !panel.powered {
@@ -646,10 +651,6 @@ impl eframe::App for RusTairApp {
             });
         });
 
-        // Manual mouse operation on the main panel already plays the physical
-        // switch click inside front_panel.rs. Capture the register *after* that
-        // panel has been drawn so changes made by native helper viewports can be
-        // detected separately without double-playing manual clicks.
         let switches_before_helper_viewports = self.machine.switch_register();
 
         self.show_tty_viewport(ctx);
@@ -664,11 +665,6 @@ impl eframe::App for RusTairApp {
         self.show_standalone_front_panel_operator_viewport(ctx);
         self.draw_authentic_loader_window(ctx);
 
-        // Config switches in the BASIC bootstrap/operator windows changes the
-        // same real switch register as the main panel. Give that assisted move
-        // the same electromechanical click instead of silently teleporting the
-        // toggle sprites. One composite click represents one assisted switch-set
-        // operation even when several A15..A0 bits change together.
         let switches_after_helper_viewports = self.machine.switch_register();
         if switches_after_helper_viewports != switches_before_helper_viewports {
             self.audio.play_once("assets/click.mp3");
