@@ -17,6 +17,7 @@ mod loop_inspector;
 mod memory_activity;
 mod memory_viewer;
 mod s100_hardware;
+mod s100_memory_inspection;
 #[path = "../persistence.rs"]
 pub(super) mod persistence;
 pub(super) mod terminal;
