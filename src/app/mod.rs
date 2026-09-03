@@ -30,8 +30,8 @@ use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
-    AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamBoardProfile, RamInit, RamSize,
-    S100HardwareConfig, SerialBoard, TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
+    AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig, SerialBoard,
+    TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::peripherals::asr33::{
@@ -133,7 +133,11 @@ impl RusTairApp {
         Tex::install_teletype_font(&cc.egui_ctx);
         let now = Instant::now();
         let config = AppConfig::default();
-        let cpu_board = config.machine.cpu_board();
+        let cpu_board = config
+            .machine
+            .s100_hardware
+            .active_cpu_board()
+            .expect("default S-100 configuration has one CPU board");
         let cpu = cpu_board.cpu_model();
         let status = format!(
             "Ready — RusTair Fast 8080 — {} / {} @ {:.1} MHz — {} KiB S-100 RAM — {} — ASR-33 connected",
@@ -193,9 +197,15 @@ impl RusTairApp {
         let now = Instant::now();
         self.last_tick = now;
         self.execution_clock.reset_at(now);
+        let board = self
+            .config
+            .machine
+            .s100_hardware
+            .active_cpu_board()
+            .expect("validated S-100 configuration has one CPU board");
         self.status = format!(
             "CPU emulation speed: {}",
-            emulation_speed_label(speed, self.config.machine.cpu_board())
+            emulation_speed_label(speed, board)
         );
     }
 
@@ -363,9 +373,6 @@ impl RusTairApp {
             return;
         }
 
-        // A line-interface rewire can make an already attached direct physical
-        // endpoint impossible. Identify such cables before changing card state.
-        // Virtual terminal/TCP peers explicitly adapt to the selected family.
         let incompatible: Vec<(SerialConnection, SerialDevice)> = [
             (SerialConnection::Port0, straps.port0_interface),
             (SerialConnection::Port1, straps.port1_interface),
@@ -379,8 +386,6 @@ impl RusTairApp {
         })
         .collect();
 
-        // If the Model 33 cable is one of those being removed, return its old
-        // receive wire to MARK before rebuilding the card and changing routing.
         if incompatible
             .iter()
             .any(|(_, device)| *device == SerialDevice::InternalAsr33)
@@ -461,9 +466,6 @@ impl RusTairApp {
         }
     }
 
-    /// Generic cable label used by endpoint selectors. The selected board's
-    /// physical address/interface state is reflected wherever it is available;
-    /// never print the old fixed 88-SIO 00h/01h pair.
     fn serial_connection_label(
         board: SerialBoard,
         straps: TwoSioStraps,
@@ -488,7 +490,6 @@ impl RusTairApp {
         }
     }
 
-    /// Exact label when the caller owns the selected 88-SIO hardware config.
     fn serial_connection_label_with_sio(
         board: SerialBoard,
         sio: crate::config::SioHardwareConfig,
@@ -540,10 +541,6 @@ impl RusTairApp {
         }
         if self.serial_router.connection(device) == connection { return; }
 
-        // BREAK belongs to the physical cable that is currently attached to the
-        // ASR-33. If that cable moves, is unplugged, or another endpoint displaces
-        // the ASR from its port, restore the old UART RX line to MARK *before*
-        // changing the router so a detached port can never retain BREAK/SPACE.
         let old_asr_connection = self.asr_connection();
         let moving_asr = device == SerialDevice::InternalAsr33;
         let displacing_asr = connection.is_connected()
