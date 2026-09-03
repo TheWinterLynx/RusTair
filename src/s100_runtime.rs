@@ -6,17 +6,20 @@
 
 use crate::config::{
     RamInit, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
+    MAX_S100_SLOTS,
 };
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
 use crate::s100::S100Signal;
 use crate::s100_backplane::{
-    S100Backplane, S100BackplaneError, S100BusSample, S100CardDrive,
+    s100_slot_mask, S100Backplane, S100BackplaneError, S100BusSample, S100CardDrive,
+    S100SlotMask,
 };
 use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle};
 
 pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
 const DIGITAL_SETTLE_DELTAS: usize = 3;
+const S100_ADDRESS_SPACE: usize = 1 << 16;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DisplayControlLines {
@@ -105,6 +108,14 @@ pub struct S100RuntimeFabric {
     cpu_slot: usize,
     cpu: Mits8080CpuBoardHandle,
     ram: Vec<RuntimeRamSlot>,
+    /// Predecoded hardware response for every 16-bit address. A bit means that
+    /// the card in that physical connector can decode the address. Real cards
+    /// see the address bus in parallel; this table is the software equivalent of
+    /// their parallel TTL address decoders, not a CPU-visible dispatch table.
+    memory_responders: Box<[S100SlotMask]>,
+    /// Slot -> RAM vector index, used only after the responder mask has already
+    /// established which physical card(s) can participate.
+    ram_by_slot: [Option<usize>; MAX_S100_SLOTS],
     pending_serial_slots: Vec<usize>,
 }
 
@@ -157,12 +168,28 @@ impl S100RuntimeFabric {
 
         let cpu_slot = cpu_slot.ok_or(S100RuntimeBuildError::MissingCpu)?;
         let cpu = cpu_handle.ok_or(S100RuntimeBuildError::MissingCpu)?;
+
+        let mut memory_responders = vec![0; S100_ADDRESS_SPACE].into_boxed_slice();
+        let mut ram_by_slot = [None; MAX_S100_SLOTS];
+        for (ram_index, installed) in ram.iter().enumerate() {
+            let config = installed.handle.config();
+            let start = config.base_address() as usize;
+            let end = start + config.populated_bytes();
+            let responder = s100_slot_mask(installed.slot);
+            for mask in &mut memory_responders[start..end] {
+                *mask |= responder;
+            }
+            ram_by_slot[installed.slot - 1] = Some(ram_index);
+        }
+
         let mut fabric = Self {
             hardware,
             backplane,
             cpu_slot,
             cpu,
             ram,
+            memory_responders,
+            ram_by_slot,
             pending_serial_slots,
         };
         fabric
@@ -203,10 +230,30 @@ impl S100RuntimeFabric {
         self.cpu.latched_status_word()
     }
 
+    fn memory_responder_mask(&self, address: u16) -> S100SlotMask {
+        self.memory_responders[address as usize]
+    }
+
+    fn fast_memory_slot_mask(&self, address: u16) -> S100SlotMask {
+        s100_slot_mask(self.cpu_slot) | self.memory_responder_mask(address)
+    }
+
+    fn ram_for_slot(&self, slot: usize) -> Option<&RuntimeRamSlot> {
+        let index = *self.ram_by_slot.get(slot.checked_sub(1)?)?;
+        index.map(|index| &self.ram[index])
+    }
+
+    fn unique_ram_for_address(&self, address: u16) -> Option<&RuntimeRamSlot> {
+        let mask = self.memory_responder_mask(address);
+        if mask.count_ones() != 1 {
+            return None;
+        }
+        self.ram_for_slot(mask.trailing_zeros() as usize + 1)
+    }
+
     /// Three zero-time digital deltas are sufficient for the longest current
-    /// combinational chain: CPU status latch -> card decode/drive -> CPU inputs.
-    /// Replaying more deltas cannot add physical information and is especially
-    /// expensive for the instruction-level Fast engine.
+    /// generic combinational chain. Cycle will eventually use dirty-net wakeups;
+    /// this full-card settle remains the safe general path while serial migrates.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
@@ -232,11 +279,49 @@ impl S100RuntimeFabric {
         }
     }
 
-    fn fast_latch_status(
+    /// Resolve one causal propagation delta for a predecoded Fast transaction.
+    /// Only CPU + cards whose hardware decoder matches the address execute.
+    fn fast_delta(
+        &mut self,
+        selected: S100SlotMask,
+        display: DisplayControlLines,
+    ) -> Result<(), S100BackplaneError> {
+        let display_drive = display.drive(self.backplane.sample());
+        self.backplane
+            .resolve_selected_drives(selected, &[display_drive])?;
+        self.backplane.observe_selected_cards(selected);
+        Ok(())
+    }
+
+    /// Update wire levels without letting a selected RAM card process another
+    /// state transition. Used only to release pWR after a Fast write; the next
+    /// transaction then starts from the electrically released CPU output.
+    fn fast_resolve_only(
+        &mut self,
+        selected: S100SlotMask,
+        display: DisplayControlLines,
+    ) -> Result<(), S100BackplaneError> {
+        let display_drive = display.drive(self.backplane.sample());
+        self.backplane
+            .resolve_selected_drives(selected, &[display_drive])?;
+        Ok(())
+    }
+
+    /// Fast reconstructs one memory-read machine cycle. The CPU does not poll
+    /// cards: the chassis has already compiled the parallel address decoders into
+    /// `memory_responders`, and only electrically possible responders participate.
+    /// Three deltas model the causal chain:
+    ///   1. SYNC+PHI1 reaches the CPU board and latches status;
+    ///   2. latched sMEMR reaches the selected RAM decoder while SYNC is held;
+    ///   3. DBIN/PHI2 and the RAM's DI/PRDY outputs resolve back to the CPU board.
+    pub fn fast_memory_read(
         &mut self,
         address: u16,
         status_word: u8,
-    ) -> Result<(), S100BackplaneError> {
+    ) -> Result<u8, S100BackplaneError> {
+        let selected = self.fast_memory_slot_mask(address);
+        let display = Self::fast_display();
+
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -249,18 +334,9 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.settle(Self::fast_display(), &[])?;
-        Ok(())
-    }
+        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display)?;
 
-    /// Fast reconstructs a memory-read cycle, but the selected RAM and DI value
-    /// are resolved by the same physical CPU card/backplane used by Cycle.
-    pub fn fast_memory_read(
-        &mut self,
-        address: u16,
-        status_word: u8,
-    ) -> Result<u8, S100BackplaneError> {
-        self.fast_latch_status(address, status_word)?;
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
             phi2: true,
@@ -273,19 +349,37 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.settle(Self::fast_display(), &[])?;
-        Ok(self.sample().data_in_or(S100_OPEN_BUS_VALUE))
+        self.fast_delta(selected, display)?;
+        Ok(self.cpu_package_inputs().data_in)
     }
 
-    /// CPU pWR/DO are driven by the physical CPU board; Display/Control derives
-    /// MWRT, and only then may a selected RAM card change its storage.
+    /// Fast write follows the same physical ownership as Cycle: CPU drives pWR
+    /// and DO, Display/Control derives MWRT, and the predecoded RAM responder(s)
+    /// see that bus line. The final resolve releases pWR without replaying a RAM
+    /// write edge/state update.
     pub fn fast_memory_write(
         &mut self,
         address: u16,
         value: u8,
         status_word: u8,
     ) -> Result<(), S100BackplaneError> {
-        self.fast_latch_status(address, status_word)?;
+        let selected = self.fast_memory_slot_mask(address);
+        let display = Self::fast_display();
+
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            address: Some(address),
+            data_out: Some(status_word),
+            sync: true,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.fast_delta(selected, display)?;
+
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -298,7 +392,9 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.settle(Self::fast_display(), &[])?;
+        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display)?;
+
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
             phi2: true,
@@ -311,45 +407,53 @@ impl S100RuntimeFabric {
             wait: false,
             hlda: false,
         });
-        self.settle(Self::fast_display(), &[])?;
+        self.fast_resolve_only(selected, display)?;
         Ok(())
     }
 
     pub fn fast_read_wait_states(&self, address: u16) -> u8 {
-        self.ram
-            .iter()
-            .filter(|ram| ram.handle.contains(address))
-            .map(|ram| ram.handle.config().read_wait_states())
-            .max()
-            .unwrap_or(0)
+        let mut responders = self.memory_responder_mask(address);
+        let mut waits = 0u8;
+        while responders != 0 {
+            let slot = responders.trailing_zeros() as usize + 1;
+            responders &= responders - 1;
+            if let Some(ram) = self.ram_for_slot(slot) {
+                waits = waits.max(ram.handle.config().read_wait_states());
+            }
+        }
+        waits
     }
 
     pub fn inspect_memory(&self, address: u16) -> RuntimeMemoryInspection {
-        RuntimeMemoryInspection {
-            drivers: self
-                .ram
-                .iter()
-                .filter_map(|ram| {
-                    ram.handle.read_byte(address).map(|value| RuntimeRamDriver {
-                        slot: ram.slot,
-                        value,
-                        protected: ram.handle.is_protected(address),
-                        config: ram.handle.config(),
-                    })
-                })
-                .collect(),
+        let responder_mask = self.memory_responder_mask(address);
+        let mut responders = responder_mask;
+        let mut drivers = Vec::with_capacity(responder_mask.count_ones() as usize);
+        while responders != 0 {
+            let slot = responders.trailing_zeros() as usize + 1;
+            responders &= responders - 1;
+            let Some(ram) = self.ram_for_slot(slot) else {
+                continue;
+            };
+            let Some(value) = ram.handle.read_byte(address) else {
+                continue;
+            };
+            drivers.push(RuntimeRamDriver {
+                slot,
+                value,
+                protected: ram.handle.is_protected(address),
+                config: ram.handle.config(),
+            });
         }
+        RuntimeMemoryInspection { drivers }
     }
 
     pub fn peek_unique_memory(&self, address: u16) -> Option<u8> {
-        self.inspect_memory(address).unique_value()
+        self.unique_ram_for_address(address)
+            .and_then(|ram| ram.handle.read_byte(address))
     }
 
     pub fn mapped_ram_card_count(&self, address: u16) -> usize {
-        self.ram
-            .iter()
-            .filter(|ram| ram.handle.contains(address))
-            .count()
+        self.memory_responder_mask(address).count_ones() as usize
     }
 
     pub fn installed_ram_bytes(&self) -> usize {
@@ -365,35 +469,24 @@ impl S100RuntimeFabric {
         value: u8,
         respect_protection: bool,
     ) -> bool {
-        let mut mapped = self.ram.iter().filter(|ram| ram.handle.contains(address));
-        let Some(target) = mapped.next() else {
-            return false;
-        };
-        if mapped.next().is_some() {
-            return false;
-        }
-        target
-            .handle
-            .write_byte(address, value, respect_protection)
+        self.unique_ram_for_address(address)
+            .map(|ram| {
+                ram.handle
+                    .write_byte(address, value, respect_protection)
+            })
+            .unwrap_or(false)
     }
 
     pub fn memory_is_protected(&self, address: u16) -> bool {
-        let mut mapped = self.ram.iter().filter(|ram| ram.handle.contains(address));
-        let Some(target) = mapped.next() else {
-            return false;
-        };
-        mapped.next().is_none() && target.handle.is_protected(address)
+        self.unique_ram_for_address(address)
+            .map(|ram| ram.handle.is_protected(address))
+            .unwrap_or(false)
     }
 
     pub fn set_unique_memory_protection(&self, address: u16, protected: bool) -> bool {
-        let mut mapped = self.ram.iter().filter(|ram| ram.handle.contains(address));
-        let Some(target) = mapped.next() else {
-            return false;
-        };
-        if mapped.next().is_some() {
-            return false;
-        }
-        target.handle.set_protected(address, protected)
+        self.unique_ram_for_address(address)
+            .map(|ram| ram.handle.set_protected(address, protected))
+            .unwrap_or(false)
     }
 
     pub fn clear_memory_protection(&self) {
@@ -504,5 +597,35 @@ mod tests {
         assert_eq!(fabric.mapped_ram_card_count(0x1800), 0);
         assert_eq!(fabric.mapped_ram_card_count(0x3000), 0);
         assert_eq!(fabric.peek_unique_memory(0x3000), None);
+    }
+
+    #[test]
+    fn compiled_memory_responders_match_physical_address_decoders() {
+        let mut config = simple_hardware();
+        config
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Ram(
+                    S100RamCardConfig::fully_populated(
+                        S100RamBoardModel::Mits1KStatic88Mcs,
+                        0x0800,
+                    ),
+                )),
+            )
+            .unwrap();
+        let fabric = S100RuntimeFabric::new(config, RamInit::Zeroed).unwrap();
+        assert_eq!(fabric.memory_responder_mask(0x0010), s100_slot_mask(2));
+        assert_eq!(
+            fabric.memory_responder_mask(0x0800),
+            s100_slot_mask(2) | s100_slot_mask(3)
+        );
+        assert_eq!(fabric.memory_responder_mask(0x1800), 0);
+    }
+
+    #[test]
+    fn fast_unmapped_read_keeps_only_cpu_in_transaction_and_returns_open_bus() {
+        let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
+        assert_eq!(fabric.fast_memory_slot_mask(0x3000), s100_slot_mask(1));
+        assert_eq!(fabric.fast_memory_read(0x3000, 0x82).unwrap(), S100_OPEN_BUS_VALUE);
     }
 }
