@@ -21,6 +21,13 @@ rfd = "0.15"
 rand = "0.9"
 serialport = { version = "4.9", default-features = false }
 
+# Several end-to-end emulator regressions deliberately execute tens of millions
+# of 8080 T-states through the live S-100 backplane. Test builds keep assertions
+# enabled, but compiling that hardware hot path at opt-level 0 makes a normal
+# `cargo test` look hung even when the emulated machine is progressing correctly.
+[profile.test]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
