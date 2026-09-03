@@ -309,20 +309,24 @@ impl S100RuntimeFabric {
         self.ram_for_slot(mask.trailing_zeros() as usize + 1)
     }
 
-    /// Three zero-time digital deltas are sufficient for the longest current
-    /// generic combinational chain. Cycle will eventually use dirty-net wakeups;
-    /// this full-card settle remains the safe general path while serial migrates.
+    /// Propagate at most three zero-time digital deltas, but stop as soon as the
+    /// electrical bus is stable. The first delta after CPU/package/chassis input
+    /// changes is always observed: a card may have host-side state (for example
+    /// the CPU package pins) that must process that edge even if the resulting
+    /// connector levels happen to equal the previous sample. Once one resolved
+    /// sample has been observed, however, resolving the same sample again cannot
+    /// wake any new combinational state, so replaying another observe/resolve
+    /// round would only duplicate work.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
         extra_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
         let mut display_drive = display.drive(self.backplane.sample());
+        let mut last_observed_sample: Option<S100BusSample> = None;
+
         for _ in 0..DIGITAL_SETTLE_DELTAS {
             if extra_drives.is_empty() {
-                // Exact Cycle calls this path on every PHI edge. Keep the
-                // Display/Control contribution on the stack instead of doing a
-                // heap allocation/free for every digital delta.
                 self.backplane
                     .resolve_current_drives(std::slice::from_ref(&display_drive))?;
             } else {
@@ -331,7 +335,16 @@ impl S100RuntimeFabric {
                 chassis.extend(extra_drives.iter().cloned());
                 self.backplane.resolve_current_drives(&chassis)?;
             }
+
+            if last_observed_sample
+                .as_ref()
+                .is_some_and(|previous| previous == self.backplane.sample())
+            {
+                break;
+            }
+
             self.backplane.observe_cards();
+            last_observed_sample = Some(self.backplane.sample().clone());
             display_drive = display.drive(self.backplane.sample());
         }
         Ok(self.backplane.sample())
