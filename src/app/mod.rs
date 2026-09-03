@@ -33,6 +33,8 @@ use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig, SerialBoard,
     TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
 };
+#[cfg(test)]
+use crate::config::RamSize;
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
 use crate::peripherals::asr33::{
     self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
@@ -226,9 +228,10 @@ impl RusTairApp {
                     self.config.machine.ram_init,
                 );
 
-                // Serial cards are still in the staged legacy runtime bridge.
-                // Keep their existing global configuration until 88-SIO and
-                // 88-2SIO themselves become live S100BusCard implementations.
+                // Serial cards are now live S-100 slots too. Endpoint/debugger
+                // ownership is still being migrated from the old singleton bridge,
+                // so reapply those bridge-facing settings until both sides share
+                // only the per-slot card handles.
                 self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
                 self.machine.configure_serial_board(self.config.machine.serial_board);
                 self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
