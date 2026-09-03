@@ -1,4 +1,5 @@
 use super::super::*;
+use super::s100_memory_inspection::{mapping_detail, mapping_summary};
 
 #[derive(Clone)]
 struct FrontPanelOperatorUiState {
@@ -156,8 +157,10 @@ impl RusTairApp {
             ));
         }
         self.audio.play_once("assets/click.mp3");
+        let mapping = self.machine.inspect_memory_mapping(address);
         self.status = format!(
-            "Front Panel Operator: EXAMINE selected address {address:04X}h through the real panel path"
+            "Front Panel Operator: EXAMINE selected {address:04X}h through the real panel path — {}",
+            mapping_summary(&mapping),
         );
         Ok(())
     }
@@ -190,31 +193,42 @@ impl RusTairApp {
             ));
         }
 
-        if usize::from(address) >= self.machine.installed_ram_bytes() {
-            return Err(format!(
-                "Address {address:04X}h is outside the currently installed {} bytes of RAM.",
-                self.machine.installed_ram_bytes()
-            ));
-        }
-
+        // Do not pre-validate the address with a host-side RAM-size shortcut.
+        // A real Altair operator can assert DEPOSIT on an unmapped or overlapped
+        // address too. Let the physical S-100 transaction happen, then inspect
+        // which cards actually decoded it.
         self.machine.deposit(deposit_next);
-        let observed = self.machine.peek_memory(address);
-        if observed != Some(byte) {
-            return Err(format!(
-                "{} at {address:04X}h should have stored {byte:02X}h; read-back is {}.",
-                if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" },
-                observed
-                    .map(|value| format!("{value:02X}h"))
-                    .unwrap_or_else(|| "unmapped".into())
-            ));
-        }
+        let inspection = self.machine.inspect_memory_mapping(address);
+        let operation = if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" };
 
-        self.audio.play_once("assets/click.mp3");
-        self.status = format!(
-            "Front Panel Operator: {} stored {byte:02X}h at {address:04X}h",
-            if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" }
-        );
-        Ok(())
+        match inspection.drivers.as_slice() {
+            [] => {
+                return Err(format!(
+                    "{operation} bus cycle executed at {address:04X}h with {byte:02X}h, but no RAM card decoded the address — {}.",
+                    mapping_summary(&inspection),
+                ));
+            }
+            [driver] if driver.value != byte => {
+                return Err(format!(
+                    "{operation} bus cycle executed at {address:04X}h with {byte:02X}h, but Slot {:02} now contains {:02X}h{}.",
+                    driver.slot,
+                    driver.value,
+                    if driver.protected { " (card/protection state blocked the write)" } else { "" },
+                ));
+            }
+            [driver] => {
+                self.audio.play_once("assets/click.mp3");
+                self.status = format!(
+                    "Front Panel Operator: {operation} stored {byte:02X}h at {address:04X}h in Slot {:02}",
+                    driver.slot,
+                );
+                Ok(())
+            }
+            _ => Err(format!(
+                "{operation} bus cycle executed at {address:04X}h with {byte:02X}h, but multiple RAM cards decode that address. The operator did not choose one card: {}",
+                mapping_detail(address, &inspection),
+            )),
+        }
     }
 
     fn standalone_switch_tooltip(value: u16, role: &str) -> String {
@@ -275,6 +289,7 @@ impl RusTairApp {
                     ui.heading("Front Panel Operator");
                     ui.small("A didactic front-panel console: each Config switches action positions the real A15..A0 switches; each Execute action uses the emulated EXAMINE / DEPOSIT / DEPOSIT NEXT path. Watch the main Altair panel while stepping through the program.");
                     ui.small(".BIN/.ROM and assembled machine-code images are treated as sequential bytes. CP/M .COM defaults to 0100h. A .TAP can be inspected as raw bytes here, but authentic paper-tape loading should still use the ASR-33 plus the appropriate bootstrap.");
+                    ui.small("S-100 mapping/read-back shown here is host-side instrumentation after the panel operation. It never chooses a RAM card or substitutes for the panel bus cycle.");
                     ui.add_space(6.0);
 
                     let base = state.base_address;
@@ -312,7 +327,7 @@ impl RusTairApp {
                                     ui.end_row();
                                     ui.label("Machine");
                                     ui.label(format!(
-                                        "{} · {} · {} bytes RAM",
+                                        "{} · {} · {} bytes across installed S-100 RAM cards",
                                         if self.machine.powered() { "POWER ON" } else { "POWER OFF" },
                                         if self.machine.running() { "RUNNING" } else { "STOPPED" },
                                         self.machine.installed_ram_bytes(),
@@ -391,7 +406,11 @@ impl RusTairApp {
                                         else {
                                             continue;
                                         };
-                                        let stored = self.machine.peek_memory(address) == Some(byte);
+                                        let inspection = self.machine.inspect_memory_mapping(address);
+                                        let stored = matches!(
+                                            inspection.drivers.as_slice(),
+                                            [driver] if driver.value == byte
+                                        );
                                         egui::Grid::new((
                                             "standalone-front-panel-operator-row",
                                             index,
@@ -407,7 +426,8 @@ impl RusTairApp {
                                                 },
                                                 egui::RichText::new(format!("{address:04X}"))
                                                     .monospace(),
-                                            );
+                                            )
+                                            .on_hover_text(mapping_detail(address, &inspection));
                                             ui.monospace(format!("{address:06o}"));
                                             ui.monospace(format!("{byte:02X} / {byte:03o}"));
                                             ui.label(if index == 0 {
@@ -446,7 +466,7 @@ impl RusTairApp {
                                         });
                                     }
                                 });
-                            ui.small("Green addresses already contain the expected byte. That is read-back information only: Execute still performs the real panel operation and never silently jumps to a row.");
+                            ui.small("Green addresses mean exactly one S-100 RAM card currently decodes the address and contains the expected byte. Mapping/read-back is observation only: Execute still performs the real panel operation and never silently jumps to a row.");
                         });
 
                     ui.add_space(4.0);
