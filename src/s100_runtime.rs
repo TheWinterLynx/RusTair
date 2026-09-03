@@ -9,12 +9,17 @@ use crate::config::{
     MAX_S100_SLOTS,
 };
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
+use crate::machine::RuntimeSerialCardHandle;
 use crate::s100::S100Signal;
 use crate::s100_backplane::{
     s100_slot_mask, S100Backplane, S100BackplaneError, S100BusSample, S100CardDrive,
     S100SlotMask,
 };
 use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
+use crate::s100_io::S100IoDecodeIndex;
+use crate::s100_io_card::{
+    S100IoCardAdapter, MITS_88_2SIO_IO_CARD, MITS_88_SIO_IO_CARD,
+};
 use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle};
 
 pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
@@ -102,12 +107,19 @@ struct RuntimeRamSlot {
     handle: RuntimeRamHandle,
 }
 
+#[derive(Clone)]
+struct RuntimeSerialSlot {
+    slot: usize,
+    handle: RuntimeSerialCardHandle,
+}
+
 pub struct S100RuntimeFabric {
     hardware: S100HardwareConfig,
     backplane: S100Backplane,
     cpu_slot: usize,
     cpu: Mits8080CpuBoardHandle,
     ram: Vec<RuntimeRamSlot>,
+    serial: Vec<RuntimeSerialSlot>,
     /// Predecoded hardware response for every 16-bit address. A bit means that
     /// the card in that physical connector can decode the address. Real cards
     /// see the address bus in parallel; this table is the software equivalent of
@@ -116,7 +128,9 @@ pub struct S100RuntimeFabric {
     /// Slot -> RAM vector index, used only after the responder mask has already
     /// established which physical card(s) can participate.
     ram_by_slot: [Option<usize>; MAX_S100_SLOTS],
-    pending_serial_slots: Vec<usize>,
+    /// Compiled A0..A7 and interrupt-pad decode for the installed serial cards.
+    /// Multiple responder bits are deliberately retained for electrical overlap.
+    io_decode: S100IoDecodeIndex,
 }
 
 impl S100RuntimeFabric {
@@ -127,11 +141,12 @@ impl S100RuntimeFabric {
         let hardware = hardware
             .validate()
             .map_err(S100RuntimeBuildError::InvalidHardware)?;
+        let io_decode = S100IoDecodeIndex::from_hardware(hardware);
         let mut backplane = S100Backplane::new(hardware.fitted_connectors());
         let mut cpu_slot = None;
         let mut cpu_handle = None;
         let mut ram = Vec::new();
-        let mut pending_serial_slots = Vec::new();
+        let mut serial = Vec::new();
 
         for (slot, config) in hardware.installed_cards() {
             match config {
@@ -159,9 +174,35 @@ impl S100RuntimeFabric {
                         .map_err(S100RuntimeBuildError::Backplane)?;
                     ram.push(RuntimeRamSlot { slot, handle });
                 }
-                S100InstalledCardConfig::Mits88Sio(_)
-                | S100InstalledCardConfig::Mits88TwoSio { .. } => {
-                    pending_serial_slots.push(slot);
+                S100InstalledCardConfig::Mits88Sio(config) => {
+                    let (device, handle) = RuntimeSerialCardHandle::new_sio(config);
+                    let card = S100IoCardAdapter::new(
+                        &MITS_88_SIO_IO_CARD,
+                        config.address.status(),
+                        2,
+                        device,
+                    );
+                    backplane
+                        .insert(slot, Box::new(card))
+                        .map_err(S100RuntimeBuildError::Backplane)?;
+                    serial.push(RuntimeSerialSlot { slot, handle });
+                }
+                S100InstalledCardConfig::Mits88TwoSio {
+                    straps,
+                    interrupt_wiring,
+                } => {
+                    let (device, handle) =
+                        RuntimeSerialCardHandle::new_two_sio(straps, interrupt_wiring);
+                    let card = S100IoCardAdapter::new(
+                        &MITS_88_2SIO_IO_CARD,
+                        straps.address.base(),
+                        4,
+                        device,
+                    );
+                    backplane
+                        .insert(slot, Box::new(card))
+                        .map_err(S100RuntimeBuildError::Backplane)?;
+                    serial.push(RuntimeSerialSlot { slot, handle });
                 }
             }
         }
@@ -188,9 +229,10 @@ impl S100RuntimeFabric {
             cpu_slot,
             cpu,
             ram,
+            serial,
             memory_responders,
             ram_by_slot,
-            pending_serial_slots,
+            io_decode,
         };
         fabric
             .settle(DisplayControlLines::default(), &[])
@@ -214,8 +256,11 @@ impl S100RuntimeFabric {
         self.cpu_slot
     }
 
-    pub fn pending_serial_slots(&self) -> &[usize] {
-        &self.pending_serial_slots
+    pub(crate) fn serial_handle_for_slot(&self, slot: usize) -> Option<RuntimeSerialCardHandle> {
+        self.serial
+            .iter()
+            .find(|installed| installed.slot == slot)
+            .map(|installed| installed.handle.clone())
     }
 
     pub fn set_cpu_package_pins(&self, pins: Cpu8080Pins) {
@@ -236,6 +281,19 @@ impl S100RuntimeFabric {
 
     fn fast_memory_slot_mask(&self, address: u16) -> S100SlotMask {
         s100_slot_mask(self.cpu_slot) | self.memory_responder_mask(address)
+    }
+
+    fn io_responder_mask(&self, port: u8) -> S100SlotMask {
+        self.io_decode.port_responders(port)
+    }
+
+    fn fast_io_slot_mask(&self, port: u8) -> S100SlotMask {
+        s100_slot_mask(self.cpu_slot) | self.io_responder_mask(port)
+    }
+
+    #[inline]
+    fn io_bus_address(port: u8) -> u16 {
+        u16::from(port) * 0x0101
     }
 
     fn ram_for_slot(&self, slot: usize) -> Option<&RuntimeRamSlot> {
@@ -293,9 +351,9 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    /// Update wire levels without letting a selected RAM card process another
-    /// state transition. Used only to release pWR after a Fast write; the next
-    /// transaction then starts from the electrically released CPU output.
+    /// Update wire levels without letting a selected card process another state
+    /// transition. Used to release pWR after a Fast write; the next transaction
+    /// then starts from the electrically released CPU output.
     fn fast_resolve_only(
         &mut self,
         selected: S100SlotMask,
@@ -371,6 +429,101 @@ impl S100RuntimeFabric {
             phi2: false,
             address: Some(address),
             data_out: Some(status_word),
+            sync: true,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.fast_delta(selected, display)?;
+
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            address: Some(address),
+            data_out: Some(value),
+            sync: false,
+            dbin: false,
+            wr_n: false,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display)?;
+
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(address),
+            data_out: Some(value),
+            sync: false,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.fast_resolve_only(selected, display)?;
+        Ok(())
+    }
+
+    /// Fast IN reconstructs the real CPU-board status latch and DBIN strobe. The
+    /// register adapter performs its side effect only when sINP and DBIN overlap;
+    /// one additional propagation delta then returns the selected card(s)' DI to
+    /// the 8080 package input. Overlapping cards remain simultaneous responders.
+    pub fn fast_io_read(&mut self, port: u8) -> Result<u8, S100BackplaneError> {
+        let selected = self.fast_io_slot_mask(port);
+        let display = Self::fast_display();
+        let address = Self::io_bus_address(port);
+
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            address: Some(address),
+            data_out: Some(0x42),
+            sync: true,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display)?;
+
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(address),
+            data_out: None,
+            sync: false,
+            dbin: true,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        self.fast_delta(selected, display)?;
+        self.fast_delta(selected, display)?;
+        Ok(self.cpu_package_inputs().data_in)
+    }
+
+    /// Fast OUT is the electrical counterpart of `fast_io_read`: status 10h is
+    /// latched by the CPU board, then DO + active-low pWR reach every decoder in
+    /// the compiled responder mask. The adapter guarantees one register write
+    /// even though a second digital delta is required for causal propagation.
+    pub fn fast_io_write(&mut self, port: u8, value: u8) -> Result<(), S100BackplaneError> {
+        let selected = self.fast_io_slot_mask(port);
+        let display = Self::fast_display();
+        let address = Self::io_bus_address(port);
+
+        self.set_cpu_package_pins(Cpu8080Pins {
+            phi1: true,
+            phi2: false,
+            address: Some(address),
+            data_out: Some(0x10),
             sync: true,
             dbin: false,
             wr_n: true,
@@ -516,7 +669,7 @@ impl S100RuntimeFabric {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::S100InstalledCardConfig;
+    use crate::config::{S100InstalledCardConfig, SioAddressPair, SioHardwareConfig};
     use crate::s100_chassis::S100ChassisConfig;
     use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
@@ -540,6 +693,26 @@ mod tests {
         config
     }
 
+    fn serial_hardware() -> S100HardwareConfig {
+        let mut config = simple_hardware();
+        config
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+            )
+            .unwrap();
+        config
+            .set_slot(
+                4,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps: crate::config::TwoSioStraps::default(),
+                    interrupt_wiring: crate::config::TwoSioInterruptWiring::default(),
+                }),
+            )
+            .unwrap();
+        config
+    }
+
     #[test]
     fn configured_cpu_and_ram_are_live_slots_on_one_backplane() {
         let fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
@@ -556,12 +729,88 @@ mod tests {
     }
 
     #[test]
+    fn configured_serial_cards_are_live_slots_on_the_same_backplane() {
+        let fabric = S100RuntimeFabric::new(serial_hardware(), RamInit::Zeroed).unwrap();
+        assert_eq!(
+            fabric.backplane().slots()[2].descriptor().unwrap().key,
+            "mits-88-sio-live-io"
+        );
+        assert_eq!(
+            fabric.backplane().slots()[3].descriptor().unwrap().key,
+            "mits-88-2sio-live-io"
+        );
+        assert_eq!(fabric.io_responder_mask(0x00), s100_slot_mask(3));
+        assert_eq!(fabric.io_responder_mask(0x01), s100_slot_mask(3));
+        for port in 0x10..=0x13 {
+            assert_eq!(fabric.io_responder_mask(port), s100_slot_mask(4));
+        }
+    }
+
+    #[test]
     fn fast_read_and_write_cross_cpu_board_backplane_and_ram_card() {
         let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
         fabric.fast_memory_write(0x0123, 0x5a, 0x00).unwrap();
         assert_eq!(fabric.peek_unique_memory(0x0123), Some(0x5a));
         assert_eq!(fabric.fast_memory_read(0x0123, 0x82).unwrap(), 0x5a);
         assert_eq!(fabric.cpu_latched_status_word(), 0x82);
+    }
+
+    #[test]
+    fn fast_sio_input_consumes_the_existing_com2502_through_the_backplane() {
+        let mut fabric = S100RuntimeFabric::new(serial_hardware(), RamInit::Zeroed).unwrap();
+        let handle = fabric.serial_handle_for_slot(3).unwrap();
+        assert_eq!(handle.board(), crate::config::SerialBoard::Sio88);
+        assert_eq!(handle.base(), 0x00);
+        assert!(handle.receive(0, b'R'));
+        handle.advance_t_states(200_000);
+        assert!(!handle.rx_empty(0));
+        assert_eq!(fabric.fast_io_read(0x01).unwrap(), b'R');
+        assert!(handle.rx_empty(0));
+        assert_eq!(fabric.cpu_latched_status_word(), 0x42);
+    }
+
+    #[test]
+    fn fast_two_sio_output_crosses_backplane_to_the_existing_mc6850() {
+        let mut fabric = S100RuntimeFabric::new(serial_hardware(), RamInit::Zeroed).unwrap();
+        let handle = fabric.serial_handle_for_slot(4).unwrap();
+        assert_eq!(handle.board(), crate::config::SerialBoard::TwoSio88);
+        assert_eq!(handle.base(), 0x10);
+        fabric.fast_io_write(0x10, 0x15).unwrap();
+        fabric.fast_io_write(0x11, b'T').unwrap();
+        handle.advance_t_states(200_000);
+        assert_eq!(handle.tx_front(0), Some(b'T'));
+        assert_eq!(fabric.cpu_latched_status_word(), 0x10);
+    }
+
+    #[test]
+    fn overlapping_serial_decoders_contend_on_live_di_instead_of_first_match_wins() {
+        let mut config = simple_hardware();
+        let sio = SioHardwareConfig {
+            address: SioAddressPair::try_new(0x10).unwrap(),
+            ..SioHardwareConfig::default()
+        };
+        config
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88Sio(sio)))
+            .unwrap();
+        config
+            .set_slot(
+                4,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps: crate::config::TwoSioStraps::default(),
+                    interrupt_wiring: crate::config::TwoSioInterruptWiring::default(),
+                }),
+            )
+            .unwrap();
+        let mut fabric = S100RuntimeFabric::new(config, RamInit::Zeroed).unwrap();
+        assert_eq!(
+            fabric.io_responder_mask(0x10),
+            s100_slot_mask(3) | s100_slot_mask(4)
+        );
+        assert_eq!(fabric.fast_io_read(0x10).unwrap(), S100_OPEN_BUS_VALUE);
+        assert!(
+            (0..8).any(|bit| fabric.sample().signal_is_contended(S100Signal::DataIn(bit))),
+            "different status bytes must appear as real DI contention"
+        );
     }
 
     #[test]
