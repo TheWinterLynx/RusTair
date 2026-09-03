@@ -25,8 +25,8 @@ fn ram_inspector_primary_sidebar_sections_are_collapsible() {
             "CURRENT INSTRUCTION",
             "Explain selected instruction",
             "Selected byte / editor",
+            "S-100 RAM cards / physical map",
             "Memory activity overlay",
-            "1 KiB protection map",
             "CPU REGISTERS",
             "How to read this inspector",
         ],
@@ -91,6 +91,17 @@ fn ram_activity_overlay_has_explicit_three_slot_markers() {
     assert!(source.contains("top = EXEC, middle = READ, bottom = WRITE"));
     assert!(source.contains("IN/OUT are I/O bus activity, not RAM activity"));
     assert!(source.contains("Open full Memory Activity"));
+}
+
+#[test]
+fn ram_inspector_describes_physical_mapping_states() {
+    let source = include_str!("../src/app/ui/memory_viewer.rs");
+    assert!(source.contains("-- = UNMAPPED/open bus FFh"));
+    assert!(source.contains("underlined byte = non-contended OVERLAP"));
+    assert!(source.contains("!! = electrical CONTENTION"));
+    assert!(source.contains("Patch physical RAM byte"));
+    assert!(!source.contains("1 KiB protection map"));
+    assert!(!source.contains("guest reads return 00h"));
 }
 
 #[test]
