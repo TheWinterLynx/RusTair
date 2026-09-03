@@ -210,31 +210,13 @@ pub struct S100IoCardAdapter<D> {
     read_cycle_port: Option<u8>,
     read_drive: Option<u8>,
     write_cycle_port: Option<u8>,
+    /// Persistent connector output state. Real TTL/tri-state outputs retain
+    /// their electrical state until an input or device event changes them; they
+    /// are not recomputed merely because the backplane samples the slot again.
+    cached_drive: S100CardDrive,
 }
 
 impl<D> S100IoCardAdapter<D> {
-    pub fn new(
-        descriptor: &'static S100CardDescriptor,
-        base: u8,
-        width: u8,
-        device: D,
-    ) -> Self {
-        assert!(width != 0, "S-100 I/O card must decode at least one port");
-        assert!(
-            u16::from(base) + u16::from(width) <= 256,
-            "S-100 I/O decode window must fit in A0..A7"
-        );
-        Self {
-            descriptor,
-            base,
-            width,
-            device,
-            read_cycle_port: None,
-            read_drive: None,
-            write_cycle_port: None,
-        }
-    }
-
     pub fn device(&self) -> &D {
         &self.device
     }
@@ -269,6 +251,51 @@ impl<D> S100IoCardAdapter<D> {
     fn selected_port(&self, sample: &S100BusSample) -> Option<(u8, u8)> {
         let port = Self::low_address(sample)?;
         self.offset_for_port(port).map(|offset| (port, offset))
+    }
+}
+
+impl<D: S100IoRegisterDevice> S100IoCardAdapter<D> {
+    pub fn new(
+        descriptor: &'static S100CardDescriptor,
+        base: u8,
+        width: u8,
+        device: D,
+    ) -> Self {
+        assert!(width != 0, "S-100 I/O card must decode at least one port");
+        assert!(
+            u16::from(base) + u16::from(width) <= 256,
+            "S-100 I/O decode window must fit in A0..A7"
+        );
+        let mut card = Self {
+            descriptor,
+            base,
+            width,
+            device,
+            read_cycle_port: None,
+            read_drive: None,
+            write_cycle_port: None,
+            cached_drive: S100CardDrive::new(),
+        };
+        card.refresh_cached_drive();
+        card
+    }
+
+    fn refresh_cached_drive(&mut self) {
+        let mut drive = S100CardDrive::new();
+        if let Some(value) = self.read_drive {
+            drive.drive_data_in(value);
+        }
+
+        let lines = self.device.bus_lines();
+        drive.pull_low(S100Signal::InterruptRequest, lines.pint);
+        for level in 0..8 {
+            drive.pull_low(
+                S100Signal::VectorInterrupt(level),
+                lines.vi_asserted & (1 << level) != 0,
+            );
+        }
+        drive.pull_low(S100Signal::Ready, lines.ready_low);
+        self.cached_drive = drive;
     }
 }
 
@@ -319,24 +346,12 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
         } else {
             self.write_cycle_port = None;
         }
+
+        self.refresh_cached_drive();
     }
 
     fn drive_s100(&self) -> S100CardDrive {
-        let mut drive = S100CardDrive::new();
-        if let Some(value) = self.read_drive {
-            drive.drive_data_in(value);
-        }
-
-        let lines = self.device.bus_lines();
-        drive.pull_low(S100Signal::InterruptRequest, lines.pint);
-        for level in 0..8 {
-            drive.pull_low(
-                S100Signal::VectorInterrupt(level),
-                lines.vi_asserted & (1 << level) != 0,
-            );
-        }
-        drive.pull_low(S100Signal::Ready, lines.ready_low);
-        drive
+        self.cached_drive
     }
 }
 
