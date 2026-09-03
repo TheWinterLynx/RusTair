@@ -272,6 +272,61 @@ impl S100HardwareConfig {
             .sum()
     }
 
+    fn ram_card_contains(card: S100InstalledCardConfig, address: u16) -> bool {
+        let address = u32::from(address);
+        match card {
+            S100InstalledCardConfig::Ram(config) => {
+                let start = u32::from(config.base_address);
+                address >= start && address < start + config.populated_bytes as u32
+            }
+            S100InstalledCardConfig::FastRamCompatibility(config) => {
+                let start = u32::from(config.base_address);
+                address >= start && address < start + config.populated_bytes as u32
+            }
+            _ => false,
+        }
+    }
+
+    /// Number of physical RAM cards whose address decoder selects this byte.
+    /// Zero represents an unmapped gap and values above one represent a genuine
+    /// overlap that the electrical runtime must resolve rather than hide.
+    pub fn ram_responder_count(self, address: u16) -> usize {
+        self.installed_cards()
+            .filter(|(_, card)| Self::ram_card_contains(*card, address))
+            .count()
+    }
+
+    /// Bytes from 0000h upward that are decoded by exactly one RAM card at every
+    /// address. This is the meaningful capacity for loaders/CP-M environments
+    /// that require a flat low-memory region; aggregate installed bytes are not.
+    pub fn unique_ram_prefix_bytes(self) -> usize {
+        let mut bytes = 0usize;
+        for address in 0u32..0x1_0000 {
+            if self.ram_responder_count(address as u16) != 1 {
+                break;
+            }
+            bytes += 1;
+        }
+        bytes
+    }
+
+    /// Whether every byte in one requested address range has exactly one RAM
+    /// responder. Host loaders may use this to validate placement; guest memory
+    /// transactions still go through the live S-100 fabric.
+    pub fn ram_range_is_uniquely_mapped(self, start: u16, len: usize) -> bool {
+        if len == 0 {
+            return true;
+        }
+        let start = usize::from(start);
+        let Some(end) = start.checked_add(len) else {
+            return false;
+        };
+        if end > 0x1_0000 {
+            return false;
+        }
+        (start..end).all(|address| self.ram_responder_count(address as u16) == 1)
+    }
+
     /// Validate the persisted electrical assembly. RAM address overlap is not an
     /// error here: mis-strapped real cards are representable and the electrical
     /// backplane must expose their DI contention at runtime.
@@ -346,14 +401,17 @@ impl S100HardwareConfig {
 
 impl Default for S100HardwareConfig {
     fn default() -> Self {
-        Self::from_legacy_globals(
-            RamSize::default(),
-            RamBoardProfile::default(),
-            SerialBoard::default(),
-            SioHardwareConfig::default(),
-            TwoSioStraps::default(),
-            TwoSioInterruptWiring::default(),
-        )
+        // This is an explicit compatibility starter assembly, not a call into
+        // the pre-v5 migration path. Legacy aggregate settings are allowed to
+        // enter only through `from_legacy_globals` while reading an old config.
+        let mut config = Self::empty(S100ChassisConfig::original_8800(1))
+            .expect("default original Altair chassis is valid");
+        config.slots[0] = Some(S100InstalledCardConfig::Mits8080Cpu);
+        config.slots[1] = Some(S100InstalledCardConfig::FastRamCompatibility(
+            FastRamCompatibilityConfig::no_wait(0, 8 * 1024),
+        ));
+        config.slots[2] = Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()));
+        config
     }
 }
 
@@ -406,11 +464,12 @@ mod tests {
     }
 
     #[test]
-    fn default_inventory_preserves_old_machine_semantics_without_claiming_history() {
+    fn default_inventory_preserves_old_machine_semantics_without_calling_migration() {
         let config = S100HardwareConfig::default();
         assert_eq!(config.chassis, S100ChassisConfig::original_8800(1));
         assert_eq!(config.cpu_slots().collect::<Vec<_>>(), vec![1]);
-        assert_eq!(config.installed_ram_bytes(), RamSize::K8.bytes());
+        assert_eq!(config.installed_ram_bytes(), 8 * 1024);
+        assert_eq!(config.unique_ram_prefix_bytes(), 8 * 1024);
         assert!(matches!(
             config.slot(2),
             Some(S100InstalledCardConfig::FastRamCompatibility(_))
@@ -472,6 +531,34 @@ mod tests {
         config.set_slot(2, Some(S100InstalledCardConfig::Ram(ram))).unwrap();
         config.set_slot(3, Some(S100InstalledCardConfig::Ram(ram))).unwrap();
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn unique_low_ram_prefix_stops_at_first_gap_or_overlap() {
+        let mut gap = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        gap.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        gap.set_slot(2, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+            S100RamBoardModel::Mits4KStatic88_4Mcs,
+            0x0000,
+        )))).unwrap();
+        gap.set_slot(3, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+            S100RamBoardModel::Mits4KStatic88_4Mcs,
+            0x2000,
+        )))).unwrap();
+        assert_eq!(gap.installed_ram_bytes(), 8 * 1024);
+        assert_eq!(gap.unique_ram_prefix_bytes(), 4 * 1024);
+        assert!(gap.ram_range_is_uniquely_mapped(0x0000, 0x1000));
+        assert!(!gap.ram_range_is_uniquely_mapped(0x0000, 0x2000));
+
+        let mut overlap = gap;
+        overlap.set_slot(3, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+            S100RamBoardModel::Mits1KStatic88Mcs,
+            0x0800,
+        )))).unwrap();
+        assert_eq!(overlap.ram_responder_count(0x07ff), 1);
+        assert_eq!(overlap.ram_responder_count(0x0800), 2);
+        assert_eq!(overlap.unique_ram_prefix_bytes(), 0x0800);
+        assert!(!overlap.ram_range_is_uniquely_mapped(0x0000, 0x1000));
     }
 
     #[test]
