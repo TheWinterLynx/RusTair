@@ -392,8 +392,9 @@ impl Default for TerminalSpeed {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct MachineConfig {
-    /// Persisted processor identity retained for backwards-compatible config.ini
-    /// files. `cpu_board()` is the physical configuration view used by new code.
+    /// Persisted processor identity retained only for backwards-compatible
+    /// config.ini migration. Runtime/UI CPU identity comes from the installed
+    /// S-100 CPU card in `s100_hardware`.
     pub cpu_model: CpuModel,
     pub ram_size: RamSize,
     pub ram_init: RamInit,
@@ -412,22 +413,15 @@ pub struct MachineConfig {
     /// Slot-native physical S-100 assembly. During the staged migration the
     /// legacy aggregate RAM/serial fields above remain runtime-compatible, while
     /// this inventory is already the authoritative persisted/user-editable
-    /// representation that Fast and Cycle will share when the live backplane is
-    /// connected.
+    /// representation that Fast and Cycle share for mounted hardware.
     pub s100_hardware: S100HardwareConfig,
 }
 
 impl MachineConfig {
-    /// Physical CPU board implied by the current persisted processor setting.
-    ///
-    /// Today the mapping is intentionally one-to-one. When a real Z80 core and
-    /// a specific historical Z80 S-100 board are implemented, persistence can
-    /// migrate from `cpu_model` to an explicit board key without inventing a
-    /// dormant Z80 state in advance.
-    pub const fn cpu_board(self) -> CpuBoard {
-        match self.cpu_model {
-            CpuModel::Intel8080 => CpuBoard::Mits8080,
-        }
+    /// Compatibility accessor retained while old callers migrate. The physical
+    /// S-100 inventory is authoritative; `cpu_model` is never consulted here.
+    pub fn cpu_board(self) -> CpuBoard {
+        self.active_cpu_board()
     }
 
     pub const fn serial_status_port(self) -> u8 {
@@ -508,6 +502,7 @@ mod tests {
         let config = AppConfig::default();
         let board = config.machine.cpu_board();
         assert_eq!(config.machine.cpu_model, CpuModel::Intel8080);
+        assert_eq!(board, config.machine.active_cpu_board());
         assert_eq!(board, CpuBoard::Mits8080);
         assert_eq!(board.cpu_model(), CpuModel::Intel8080);
         assert_eq!(board.clock_hz(), 2_000_000);
