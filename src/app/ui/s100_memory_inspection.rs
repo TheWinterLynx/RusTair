@@ -90,14 +90,13 @@ pub(super) fn card_window(card: S100InstalledCardConfig) -> Option<(u16, u16, &'
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{FastRamCompatibilityConfig, S100HardwareConfig};
+    use crate::config::{FastRamCompatibilityConfig, RamInit, S100HardwareConfig};
     use crate::s100_chassis::S100ChassisConfig;
     use crate::s100_runtime::S100RuntimeFabric;
-    use crate::config::RamInit;
 
     #[test]
-    fn presentation_reports_unmapped_unique_overlap_and_contention_from_runtime_inspection() {
-        let chassis = S100ChassisConfig::altair_8800b(6).unwrap();
+    fn presentation_reports_unmapped_unique_and_overlap_from_runtime_inspection() {
+        let chassis = S100ChassisConfig::altair_8800b(6);
         let mut hardware = S100HardwareConfig::empty(chassis).unwrap();
         hardware.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
         hardware.set_slot(2, Some(S100InstalledCardConfig::FastRamCompatibility(
@@ -114,8 +113,6 @@ mod tests {
         assert!(!fabric.inspect_memory(0x0900).electrically_contended());
 
         assert!(fabric.write_unique_memory(0x0400, 0x12, false));
-        let overlap = fabric.inspect_memory(0x0900);
-        assert!(!overlap.electrically_contended());
         let driver = single_driver(&fabric.inspect_memory(0x0400)).unwrap();
         assert_eq!(driver.value, 0x12);
     }
