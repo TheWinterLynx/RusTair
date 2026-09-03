@@ -64,7 +64,8 @@ pub(super) fn mapping_detail(address: u16, inspection: &RuntimeMemoryInspection)
     text
 }
 
-pub(super) fn single_driver(inspection: &RuntimeMemoryInspection) -> Option<&RuntimeRamDriver> {
+#[cfg(test)]
+fn single_driver(inspection: &RuntimeMemoryInspection) -> Option<&RuntimeRamDriver> {
     match inspection.drivers.as_slice() {
         [driver] => Some(driver),
         _ => None,
@@ -105,7 +106,7 @@ mod tests {
         hardware.set_slot(3, Some(S100InstalledCardConfig::FastRamCompatibility(
             FastRamCompatibilityConfig::no_wait(0x0800, 0x1000),
         ))).unwrap();
-        let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+        let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
 
         assert!(mapping_summary(&fabric.inspect_memory(0x2000)).contains("UNMAPPED"));
         assert!(mapping_summary(&fabric.inspect_memory(0x0400)).contains("Slot 02"));
@@ -113,7 +114,8 @@ mod tests {
         assert!(!fabric.inspect_memory(0x0900).electrically_contended());
 
         assert!(fabric.write_unique_memory(0x0400, 0x12, false));
-        let driver = single_driver(&fabric.inspect_memory(0x0400)).unwrap();
+        let inspection = fabric.inspect_memory(0x0400);
+        let driver = single_driver(&inspection).unwrap();
         assert_eq!(driver.value, 0x12);
     }
 }
