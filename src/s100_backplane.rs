@@ -7,7 +7,6 @@
 use crate::s100::{S100Card, S100CardDescriptor, S100ContactRole, S100Signal};
 
 pub const S100_CONTACT_COUNT: usize = 100;
-const PIN_COUNT_WITH_ZERO: usize = S100_CONTACT_COUNT + 1;
 const PIN_MASK_WORDS: usize = 2;
 const DRIVER_COUNT_BITS: usize = 8;
 pub type S100SlotMask = u32;
@@ -37,6 +36,11 @@ fn mask_set(mask: &mut PinMask, pin: usize, set: bool) {
     } else {
         mask[word] &= !bit;
     }
+}
+
+#[inline]
+fn masks_intersect(a: &PinMask, b: &PinMask) -> bool {
+    (a[0] & b[0]) != 0 || (a[1] & b[1]) != 0
 }
 
 #[inline]
@@ -80,6 +84,26 @@ pub const fn s100_slot_mask(slot: usize) -> S100SlotMask {
         0
     } else {
         1u32 << (slot - 1)
+    }
+}
+
+/// Logical connector changes produced by one resolver delta. The two machine
+/// words correspond to the 100 physical contacts; no card-family knowledge is
+/// encoded here. Driver-count-only changes deliberately do not wake hardware:
+/// TTL inputs react to the resolved electrical state, not to how many equal
+/// sources happen to be holding that same level.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct S100BusChange {
+    pins: PinMask,
+}
+
+impl S100BusChange {
+    pub fn is_empty(self) -> bool {
+        self.pins == [0; PIN_MASK_WORDS]
+    }
+
+    fn intersects(self, sensitivity: &PinMask) -> bool {
+        masks_intersect(&self.pins, sensitivity)
     }
 }
 
@@ -319,6 +343,21 @@ impl S100BusSample {
             .map(|value| value as u8);
     }
 
+    fn electrical_change_from(
+        &self,
+        old_defined: PinMask,
+        old_high: PinMask,
+        old_contention: PinMask,
+    ) -> S100BusChange {
+        let mut pins = [0; PIN_MASK_WORDS];
+        for word in 0..PIN_MASK_WORDS {
+            pins[word] = (self.defined[word] ^ old_defined[word])
+                | (self.high[word] ^ old_high[word])
+                | (self.contention[word] ^ old_contention[word]);
+        }
+        S100BusChange { pins }
+    }
+
     pub fn pin(&self, pin: u8) -> Option<S100ResolvedPin> {
         let pin = pin as usize;
         if pin > S100_CONTACT_COUNT {
@@ -420,6 +459,8 @@ pub struct S100Slot {
     card: Option<Box<dyn S100ElectricalCard>>,
     strong_outputs: PinMask,
     open_collector_outputs: PinMask,
+    input_sensitivity: PinMask,
+    cached_drive: S100CardDrive,
 }
 
 impl S100Slot {
@@ -429,6 +470,8 @@ impl S100Slot {
             card: None,
             strong_outputs: [0; PIN_MASK_WORDS],
             open_collector_outputs: [0; PIN_MASK_WORDS],
+            input_sensitivity: [0; PIN_MASK_WORDS],
+            cached_drive: S100CardDrive::new(),
         }
     }
 
@@ -439,6 +482,7 @@ impl S100Slot {
     fn set_drive_contract(&mut self, descriptor: &'static S100CardDescriptor) {
         self.strong_outputs = [0; PIN_MASK_WORDS];
         self.open_collector_outputs = [0; PIN_MASK_WORDS];
+        self.input_sensitivity = [0; PIN_MASK_WORDS];
         for contact in descriptor.contacts {
             let Some(pin) = contact.pin() else {
                 continue;
@@ -450,7 +494,10 @@ impl S100Slot {
                 S100ContactRole::OpenCollectorOutput => {
                     Self::allow(&mut self.open_collector_outputs, pin);
                 }
-                S100ContactRole::Input | S100ContactRole::Power => {}
+                S100ContactRole::Input => {
+                    Self::allow(&mut self.input_sensitivity, pin);
+                }
+                S100ContactRole::Power => {}
             }
         }
     }
@@ -458,6 +505,12 @@ impl S100Slot {
     fn clear_drive_contract(&mut self) {
         self.strong_outputs = [0; PIN_MASK_WORDS];
         self.open_collector_outputs = [0; PIN_MASK_WORDS];
+        self.input_sensitivity = [0; PIN_MASK_WORDS];
+        self.cached_drive = S100CardDrive::new();
+    }
+
+    fn observes_change(&self, change: S100BusChange) -> bool {
+        change.intersects(&self.input_sensitivity)
     }
 
     pub fn number(&self) -> usize {
@@ -566,6 +619,12 @@ impl S100Backplane {
             return Err(S100BackplaneError::SlotOccupied { slot });
         }
         target.set_drive_contract(card.s100_descriptor());
+        let drive = card.drive_s100();
+        if let Err(error) = validate_card_drive(target, &drive) {
+            target.clear_drive_contract();
+            return Err(error);
+        }
+        target.cached_drive = drive;
         target.card = Some(card);
         Ok(())
     }
@@ -635,6 +694,91 @@ impl S100Backplane {
         }
     }
 
+    /// Re-sample card outputs only for slots whose state may have changed outside
+    /// the backplane (for example CPU package pins or an asynchronously advanced
+    /// UART). The cached connector drive remains the sole value used by the
+    /// resolver until another physical input wakes that card.
+    pub fn refresh_cached_drives(
+        &mut self,
+        selected: S100SlotMask,
+    ) -> Result<S100SlotMask, S100BackplaneError> {
+        let mut changed = 0;
+        for slot in &mut self.slots {
+            let bit = s100_slot_mask(slot.number);
+            if selected & bit == 0 {
+                continue;
+            }
+            let Some(card) = slot.card.as_ref() else {
+                continue;
+            };
+            let drive = card.drive_s100();
+            validate_card_drive(slot, &drive)?;
+            if drive != slot.cached_drive {
+                slot.cached_drive = drive;
+                changed |= bit;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Observe only cards connected as inputs to nets that actually changed.
+    /// `forced` covers state transitions originating on the non-S-100 side of a
+    /// board, such as the Intel package pins on the CPU card. After observation,
+    /// the card's drive is refreshed once and cached for subsequent deltas.
+    pub fn observe_changed_cards(
+        &mut self,
+        change: S100BusChange,
+        forced: S100SlotMask,
+        selected: S100SlotMask,
+    ) -> Result<S100SlotMask, S100BackplaneError> {
+        let observed = &self.sample;
+        let mut drive_changed = 0;
+        for slot in &mut self.slots {
+            let bit = s100_slot_mask(slot.number);
+            if selected & bit == 0 || (forced & bit == 0 && !slot.observes_change(change)) {
+                continue;
+            }
+            let Some(card) = slot.card.as_mut() else {
+                continue;
+            };
+            card.observe_s100(observed);
+            let drive = card.drive_s100();
+            validate_card_drive(slot, &drive)?;
+            if drive != slot.cached_drive {
+                slot.cached_drive = drive;
+                drive_changed |= bit;
+            }
+        }
+        Ok(drive_changed)
+    }
+
+    /// Resolve cached card outputs. This is the event-driven hot path: cards that
+    /// were not woken by a changed input do not execute merely because another
+    /// zero-time propagation delta occurred.
+    pub fn resolve_cached_selected_drives(
+        &mut self,
+        selected: S100SlotMask,
+        chassis_drives: &[S100CardDrive],
+    ) -> S100BusChange {
+        let old_defined = self.sample.defined;
+        let old_high = self.sample.high;
+        let old_contention = self.sample.contention;
+        let (passive_defined, passive_high) =
+            Self::begin_resolution(&mut self.sample, &self.passive_sample);
+        for slot in &self.slots {
+            if selected & s100_slot_mask(slot.number) != 0 && slot.card.is_some() {
+                self.sample.add_drive(&slot.cached_drive);
+            }
+        }
+        for drive in chassis_drives {
+            self.sample.add_drive(drive);
+        }
+        self.sample
+            .finalize_driver_levels(passive_defined, passive_high);
+        self.sample
+            .electrical_change_from(old_defined, old_high, old_contention)
+    }
+
     /// Resolve the current drives of every slotted card plus optional chassis
     /// wiring that is not itself an S-100 slot (for example Display/Control).
     pub fn resolve_current_drives(
@@ -644,33 +788,16 @@ impl S100Backplane {
         self.resolve_selected_drives(S100SlotMask::MAX, chassis_drives)
     }
 
-    /// Resolve only predecoded participating slots. The resolver itself remains
-    /// card-family agnostic: it receives only a connector mask and still applies
-    /// the same pin-role validation, tri-state, open-collector and contention
-    /// rules to every selected electrical drive.
+    /// Compatibility/general resolver. It refreshes every selected card before
+    /// resolving, preserving the old API semantics for tests and low-frequency
+    /// callers. Production Cycle/Fast hot paths use the cached event API above.
     pub fn resolve_selected_drives(
         &mut self,
         selected: S100SlotMask,
         chassis_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
-        let (passive_defined, passive_high) =
-            Self::begin_resolution(&mut self.sample, &self.passive_sample);
-        for slot in &self.slots {
-            if selected & s100_slot_mask(slot.number) == 0 {
-                continue;
-            }
-            let Some(card) = slot.card.as_ref() else {
-                continue;
-            };
-            let drive = card.drive_s100();
-            validate_card_drive(slot, &drive)?;
-            self.sample.add_drive(&drive);
-        }
-        for drive in chassis_drives {
-            self.sample.add_drive(drive);
-        }
-        self.sample
-            .finalize_driver_levels(passive_defined, passive_high);
+        self.refresh_cached_drives(selected)?;
+        let _ = self.resolve_cached_selected_drives(selected, chassis_drives);
         Ok(&self.sample)
     }
 
@@ -720,6 +847,8 @@ fn validate_card_drive(slot: &S100Slot, drive: &S100CardDrive) -> Result<(), S10
 mod tests {
     use super::*;
     use crate::s100::{S100CardClass, S100CardContact};
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     const READY_OC: &[S100CardContact] = &[S100CardContact::new(
         S100Signal::Ready,
@@ -733,6 +862,10 @@ mod tests {
         S100Signal::Address(0),
         S100ContactRole::Input,
     )];
+    const REACTIVE_CONTACTS: &[S100CardContact] = &[
+        S100CardContact::new(S100Signal::Address(0), S100ContactRole::Input),
+        S100CardContact::new(S100Signal::DataIn(0), S100ContactRole::TriStateOutput),
+    ];
 
     static READY_CARD: S100CardDescriptor = S100CardDescriptor {
         key: "test-ready",
@@ -755,6 +888,13 @@ mod tests {
         historical: false,
         contacts: A0_INPUT,
     };
+    static REACTIVE_CARD: S100CardDescriptor = S100CardDescriptor {
+        key: "test-reactive",
+        label: "test reactive card",
+        class: S100CardClass::Compatibility,
+        historical: false,
+        contacts: REACTIVE_CONTACTS,
+    };
 
     struct FixedCard {
         descriptor: &'static S100CardDescriptor,
@@ -770,6 +910,30 @@ mod tests {
     impl S100ElectricalCard for FixedCard {
         fn drive_s100(&self) -> S100CardDrive {
             self.drive
+        }
+    }
+
+    struct ReactiveCard {
+        observations: Rc<RefCell<usize>>,
+        a0: bool,
+    }
+
+    impl S100Card for ReactiveCard {
+        fn s100_descriptor(&self) -> &'static S100CardDescriptor {
+            &REACTIVE_CARD
+        }
+    }
+
+    impl S100ElectricalCard for ReactiveCard {
+        fn observe_s100(&mut self, sample: &S100BusSample) {
+            *self.observations.borrow_mut() += 1;
+            self.a0 = sample.signal_level(S100Signal::Address(0)) == Some(true);
+        }
+
+        fn drive_s100(&self) -> S100CardDrive {
+            let mut drive = S100CardDrive::new();
+            drive.drive_tristate(S100Signal::DataIn(0), Some(self.a0));
+            drive
         }
     }
 
@@ -902,9 +1066,8 @@ mod tests {
             drive,
         };
         let mut backplane = S100Backplane::new(1);
-        backplane.insert(1, Box::new(card)).unwrap();
         assert!(matches!(
-            backplane.step(),
+            backplane.insert(1, Box::new(card)),
             Err(S100BackplaneError::IllegalCardDrive {
                 slot: 1,
                 pin: 79,
@@ -928,6 +1091,35 @@ mod tests {
             backplane.sample().signal_level(S100Signal::DataIn(0)),
             Some(true)
         );
+    }
+
+    #[test]
+    fn cached_event_path_wakes_only_cards_connected_to_changed_inputs() {
+        let observations = Rc::new(RefCell::new(0usize));
+        let card = ReactiveCard {
+            observations: Rc::clone(&observations),
+            a0: false,
+        };
+        let mut backplane = S100Backplane::new(1);
+        backplane.insert(1, Box::new(card)).unwrap();
+
+        let mut address = S100CardDrive::new();
+        address.drive_signal(S100Signal::Address(0), true);
+        let change = backplane.resolve_cached_selected_drives(S100SlotMask::MAX, &[address]);
+        assert!(!change.is_empty());
+        let changed_drives = backplane
+            .observe_changed_cards(change, 0, S100SlotMask::MAX)
+            .unwrap();
+        assert_eq!(changed_drives, s100_slot_mask(1));
+        assert_eq!(*observations.borrow(), 1);
+
+        let _ = backplane.resolve_cached_selected_drives(S100SlotMask::MAX, &[address]);
+        let stable = backplane.resolve_cached_selected_drives(S100SlotMask::MAX, &[address]);
+        assert!(stable.is_empty());
+        backplane
+            .observe_changed_cards(stable, 0, S100SlotMask::MAX)
+            .unwrap();
+        assert_eq!(*observations.borrow(), 1);
     }
 
     #[test]
