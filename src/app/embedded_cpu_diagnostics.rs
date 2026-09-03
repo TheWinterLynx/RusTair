@@ -1,5 +1,8 @@
 use super::*;
+use crate::config::{S100InstalledCardConfig, SioHardwareConfig};
 use crate::machine::CpuDiagnosticResult;
+use crate::s100_chassis::S100ChassisConfig;
+use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
 const CPM_COM_LOAD_ADDRESS: u16 = 0x0100;
 const CPM_PAGE_ZERO_SIZE: usize = 0x0100;
@@ -215,9 +218,39 @@ fn format_diff(actual: u64, expected: u64) -> String {
     if diff > 0 { format!("+{diff}") } else { diff.to_string() }
 }
 
+fn configured_cpu_board(hardware: S100HardwareConfig) -> CpuBoard {
+    hardware
+        .active_cpu_board()
+        .expect("validated S-100 configuration contains exactly one CPU board")
+}
+
+fn baseline_hardware() -> S100HardwareConfig {
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1))
+        .expect("one original 88-EC section is valid");
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+    hardware
+        .set_slot(
+            2,
+            Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+                S100RamBoardModel::Mits1KStatic88Mcs,
+                0x0000,
+            ))),
+        )
+        .unwrap();
+    hardware
+        .set_slot(
+            3,
+            Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+        )
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
 fn baseline_machine(engine: EmulationEngine, program: &[u8]) -> Result<BackendHost, String> {
     let mut machine = BackendHost::from_engine(engine).map_err(|error| error.to_string())?;
-    machine.configure_memory(RamSize::K1, RamInit::Zeroed);
+    machine.configure_s100_hardware(baseline_hardware(), RamInit::Zeroed);
     machine.power(true);
     machine.set_running(false);
     machine.reset();
@@ -403,7 +436,7 @@ impl RusTairApp {
         let running = self.embedded_diagnostics.active_test.is_some() || self.embedded_diagnostics.suite.is_some();
         let speed_locked = running || self.embedded_diagnostics.individual_result.is_some() || self.embedded_diagnostics.suite_report.is_some();
         let busy = picker_open || running;
-        let cpu_board = self.config.machine.cpu_board();
+        let cpu_board = configured_cpu_board(self.config.machine.s100_hardware);
         ui.small("Embedded Intel 8080 tests execute as real guest code through the selected backend. The RusTair baseline also runs through the currently selected Rust engine and covers EI/DI, HALT, I/O and bus-arbitration behaviour.");
         ui.separator();
 
@@ -428,7 +461,7 @@ impl RusTairApp {
 
         ui.separator();
         if ui.add_enabled(!busy, egui::Button::new("Run full CPU diagnostic suite")).clicked() { self.start_embedded_cpu_suite(); ui.close(); }
-        ui.small("Suite: selected-engine RusTair baseline → 8080PRE → TST8080 → CPUTEST → 8080EXM. Requires at least 32 KiB RAM.");
+        ui.small("Suite: selected-engine RusTair baseline → 8080PRE → TST8080 → CPUTEST → 8080EXM. Requires at least 32 KiB of uniquely mapped RAM from 0000h.");
 
         ui.menu_button("Run individual test", |ui| {
             let enabled = !busy;
@@ -467,13 +500,15 @@ impl RusTairApp {
     }
 
     fn start_embedded_cpu_suite(&mut self) {
-        if self.machine.installed_ram_bytes() < 32 * 1024 {
-            self.report_load_error(format!("The full embedded CPU diagnostic suite includes CPUTEST.COM and requires at least 32 KiB RAM. The current machine has {}. Configure 32, 48 or 64 KiB and run the suite again.", self.config.machine.ram_size.label()));
+        let hardware = self.config.machine.s100_hardware;
+        let usable = hardware.unique_ram_prefix_bytes();
+        if usable < 32 * 1024 {
+            self.report_load_error(format!("The full embedded CPU diagnostic suite includes CPUTEST.COM and requires at least 32 KiB of uniquely mapped RAM from 0000h. The current S-100 chassis provides {} contiguous bytes from 0000h ({} bytes installed across RAM cards).", usable, hardware.installed_ram_bytes()));
             return;
         }
         let control = run_control_line_baseline(self.machine.engine());
         let speed = self.embedded_diagnostics.speed;
-        let cpu_board = self.config.machine.cpu_board();
+        let cpu_board = configured_cpu_board(hardware);
         self.embedded_diagnostics.individual_result = None;
         self.embedded_diagnostics.control_report = None;
         self.embedded_diagnostics.suite_report = None;
@@ -503,18 +538,20 @@ impl RusTairApp {
             return false;
         }
 
-        let installed = self.machine.installed_ram_bytes();
+        let hardware = self.config.machine.s100_hardware;
+        let installed = hardware.installed_ram_bytes();
+        let usable = hardware.unique_ram_prefix_bytes();
         let image_end = CPM_COM_LOAD_ADDRESS as usize + bytes.len();
         let minimum_bytes = image_end.saturating_add(CPM_STACK_GUARD_BYTES).saturating_add(CPM_BDOS_PAGE_BYTES);
-        let Some(bdos_base_usize) = installed.checked_sub(CPM_BDOS_PAGE_BYTES) else {
-            self.report_load_error(format!("{} cannot start because {} RAM is too small for the CP/M diagnostic environment.", test.filename(), self.config.machine.ram_size.label()));
+        let Some(bdos_base_usize) = usable.checked_sub(CPM_BDOS_PAGE_BYTES) else {
+            self.report_load_error(format!("{} cannot start because the S-100 chassis has no complete 256-byte BDOS page in its uniquely mapped low-memory region ({} contiguous bytes from 0000h, {} bytes installed in total).", test.filename(), usable, installed));
             return false;
         };
         let Some(tpa_limit) = bdos_base_usize.checked_sub(CPM_STACK_GUARD_BYTES) else {
-            self.report_load_error(format!("{} has no stack area below BDOS.", test.filename())); return false;
+            self.report_load_error(format!("{} has no stack area below BDOS in the uniquely mapped low-memory region.", test.filename())); return false;
         };
         if image_end > tpa_limit {
-            self.report_load_error(format!("{} is {} bytes and needs at least {} KiB including the CP/M stack/BDOS reserve. The current machine has {}.", test.filename(), bytes.len(), minimum_bytes.div_ceil(1024), self.config.machine.ram_size.label()));
+            self.report_load_error(format!("{} is {} bytes and needs at least {} KiB including the CP/M stack/BDOS reserve. The current S-100 chassis provides {} contiguous uniquely mapped bytes from 0000h ({} bytes installed in total).", test.filename(), bytes.len(), minimum_bytes.div_ceil(1024), usable, installed));
             return false;
         }
 
@@ -532,7 +569,7 @@ impl RusTairApp {
         self.external_com.reset_line_timing();
         self.machine.clear_memory_protection();
         self.machine.clear_transient_memory_guards();
-        let clean_ram = vec![0u8; installed];
+        let clean_ram = vec![0u8; usable];
         self.machine.load_bytes(0, &clean_ram);
         self.machine.load_bytes(0, &environment.page_zero);
         self.machine.load_bytes(CPM_COM_LOAD_ADDRESS, bytes);
@@ -551,7 +588,7 @@ impl RusTairApp {
         }
         self.machine.set_running(true);
         let endpoint = self.serial_router.device_on(connection).map(Self::serial_device_name).unwrap_or("no endpoint connected");
-        let cpu_board = self.config.machine.cpu_board();
+        let cpu_board = configured_cpu_board(hardware);
         self.status = format!(
             "Embedded CPU diagnostic running: {} — {} — output via {} → {}",
             test.filename(),
@@ -589,7 +626,7 @@ impl RusTairApp {
             self.embedded_diagnostics.individual_result = Some(CompletedDiagnostic {
                 result,
                 speed: self.embedded_diagnostics.speed,
-                cpu_board: self.config.machine.cpu_board(),
+                cpu_board: configured_cpu_board(self.config.machine.s100_hardware),
             });
         }
     }
@@ -727,6 +764,15 @@ mod tests {
             let report = run_control_line_baseline(engine);
             assert!(report.passed(), "{}: {:#?}", engine.label(), report.checks);
         }
+    }
+
+    #[test]
+    fn embedded_baseline_uses_explicit_physical_s100_cards() {
+        let hardware = baseline_hardware();
+        assert_eq!(hardware.active_cpu_board_slot(), Some((1, CpuBoard::Mits8080)));
+        assert!(matches!(hardware.slot(2), Some(S100InstalledCardConfig::Ram(_))));
+        assert!(matches!(hardware.slot(3), Some(S100InstalledCardConfig::Mits88Sio(_))));
+        assert_eq!(hardware.unique_ram_prefix_bytes(), 1024);
     }
 
     #[test]
