@@ -52,6 +52,16 @@ fn historical_starter_hardware() -> S100HardwareConfig {
         .unwrap()
 }
 
+/// Exact 8800b starter comparison assembly with the 88-2SIO physically removed.
+/// Keeping chassis, CPU board and 88-16MCS RAM identical means the adjacent
+/// benchmark row isolates the cost of installing only the serial card instead
+/// of conflating it with a different RAM board/chassis configuration.
+fn historical_starter_without_two_sio() -> S100HardwareConfig {
+    let mut hardware = historical_starter_hardware();
+    hardware.set_slot(3, None).unwrap();
+    hardware.validate().unwrap()
+}
+
 fn run_t_states(machine: &mut BackendHost, target: u64) -> u64 {
     let start = machine.intel8080_state().total_t_states.unwrap_or(0);
     loop {
@@ -129,6 +139,7 @@ fn measure_fast_and_cycle_effective_mhz() {
 
     for (scenario, hardware) in [
         ("CPU + 88-4MCS 4K Static", minimal_historical_hardware()),
+        ("8800b + 16K Static", historical_starter_without_two_sio()),
         ("8800b + 16K Static + 88-2SIO", historical_starter_hardware()),
     ] {
         for engine in [
