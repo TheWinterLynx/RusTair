@@ -26,9 +26,8 @@ pub(super) enum CycleExecutionEvent {
 ///
 /// Every production T-state is decomposed into the real PHI1/PHI2 edges. CPU
 /// package pins are driven through the live MITS CPU board and resolved S-100
-/// fabric; RAM DI/PRDY may therefore change after PHI1 and are sampled by the
-/// processor at PHI2 of that same T-state. Serial I/O remains an explicit
-/// transitional overlay until 88-SIO/88-2SIO become live S-100 cards.
+/// fabric; RAM and serial DI/PRDY may therefore change after PHI1 and are sampled
+/// by the processor at PHI2 of that same T-state.
 pub struct CycleAccurateMachineBackend {
     machine: AltairChassis,
     cpu: Cpu8080Cycle,
@@ -161,9 +160,15 @@ impl CycleAccurateMachineBackend {
 
         let address = self.cpu.pins().address.unwrap_or(0);
         match self.cpu.machine_cycle() {
-            MachineCycle::InputRead => Some(self.machine.bus.cycle_input_port(address as u8)),
+            MachineCycle::InputRead if address as u8 == 0xff => {
+                Some(self.machine.bus.cycle_input_port(0xff))
+            }
+            MachineCycle::InputRead if !self.machine.bus.cycle_uses_physical_serial() => {
+                Some(self.machine.bus.cycle_input_port(address as u8))
+            }
             MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
-                Some(self.machine.bus.direct_interrupt_opcode())
+                (!self.machine.bus.cycle_uses_physical_serial())
+                    .then(|| self.machine.bus.direct_interrupt_opcode())
             }
             MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
                 if address == u16::MAX =>
@@ -177,7 +182,10 @@ impl CycleAccurateMachineBackend {
     }
 
     fn apply_trace_side_effects(&mut self, trace: &TickTrace, record_instruction: bool) {
-        if trace.t_state == TState::T3 && trace.machine_cycle == MachineCycle::OutputWrite {
+        if !self.machine.bus.cycle_uses_physical_serial()
+            && trace.t_state == TState::T3
+            && trace.machine_cycle == MachineCycle::OutputWrite
+        {
             if let (Some(address), Some(value)) = (trace.pins.address, trace.pins.data_out) {
                 self.machine.bus.cycle_output_port(address as u8, value);
             }
@@ -230,7 +238,11 @@ impl CycleAccurateMachineBackend {
                 }
             }
             MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
-                Some(self.machine.bus.direct_interrupt_opcode())
+                if self.machine.bus.cycle_uses_physical_serial() {
+                    Some(sampled_data_in)
+                } else {
+                    Some(self.machine.bus.direct_interrupt_opcode())
+                }
             }
             _ => None,
         }
@@ -392,13 +404,16 @@ impl CycleAccurateMachineBackend {
         self.machine.bus.cycle_set_ready_input(ready);
         let memory_ready = self.memory_ready_for_current_t_state();
         let legacy_ready = ready && memory_ready;
+        let physical_serial = self.machine.bus.cycle_uses_physical_serial();
         let legacy_data_override = self.legacy_data_override_for_current_t_state(front_panel_data);
         let lines = self.machine.bus.cpu_control_lines();
         let mut initial_inputs = self.machine.bus.cycle_live_s100_inputs();
-        initial_inputs.ready &= legacy_ready && lines.ready;
-        initial_inputs.interrupt = lines.interrupt;
-        initial_inputs.hold = lines.hold;
-        initial_inputs.reset = lines.reset;
+        if !physical_serial {
+            initial_inputs.ready &= legacy_ready && lines.ready;
+            initial_inputs.interrupt = lines.interrupt;
+            initial_inputs.hold = lines.hold;
+            initial_inputs.reset = lines.reset;
+        }
         if let Some(value) = legacy_data_override {
             initial_inputs.data_in = value;
         }
@@ -414,11 +429,13 @@ impl CycleAccurateMachineBackend {
                 let mut live = bus
                     .cycle_drive_live_s100_edge(pins)
                     .expect("validated S-100 hardware must resolve every Cycle edge");
-                let legacy_lines = bus.cpu_control_lines();
-                live.ready &= ready && legacy_lines.ready;
-                live.interrupt = legacy_lines.interrupt;
-                live.hold = legacy_lines.hold;
-                live.reset = legacy_lines.reset;
+                if !physical_serial {
+                    let legacy_lines = bus.cpu_control_lines();
+                    live.ready &= ready && legacy_lines.ready;
+                    live.interrupt = legacy_lines.interrupt;
+                    live.hold = legacy_lines.hold;
+                    live.reset = legacy_lines.reset;
+                }
                 if let Some(value) = legacy_data_override {
                     live.data_in = value;
                 }
@@ -1546,5 +1563,28 @@ mod tests {
         assert_eq!(teaching.s100_di, live.data_in());
         assert_eq!(teaching.s100_do, live.data_out());
         assert_eq!(teaching.interrupt, Some(backend.machine().bus.cpu_control_lines().interrupt));
+    }
+
+    #[test]
+    fn explicit_chassis_ignores_a_different_byte_in_the_legacy_serial_singleton() {
+        use crate::config::{RamInit, S100HardwareConfig};
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend.machine.bus.configure_s100_hardware_memory(
+            S100HardwareConfig::historical_8800b_18_slot_starter(),
+            RamInit::Zeroed,
+        ).unwrap();
+        backend.machine.bus.configure_serial_board(SerialBoard::TwoSio88);
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0xdb, 0x11]).unwrap();
+        backend.machine.bus.inject_legacy_serial_for_test(0x11, b'L');
+        assert!(backend.machine.bus.debugger_inject_serial_rx(0x11, b'P'));
+        backend.run().unwrap();
+        backend.service_execution(11).unwrap();
+
+        assert_eq!(backend.cpu().registers().a, b'P');
+        assert!(!backend.machine.bus.legacy_serial_empty_for_test(),
+            "the obsolete singleton must not have participated in the physical IN");
     }
 }

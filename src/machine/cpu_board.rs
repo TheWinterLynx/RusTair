@@ -335,13 +335,15 @@ impl super::AltairBus {
             if let Some(word) = pins.data_out {
                 self.s100.latch_cpu_status(word);
             }
+        }
+        if !self.cycle_uses_physical_serial() && pins.phi1 && pins.sync {
             let signals = self.s100.signals();
             let port = signals.address as u8;
             if signals.inp && self.io.input_wait_states(port) != 0 {
                 self.s100.set_memory_ready_input(false);
             }
         }
-        if pins.phi1 && pins.wait {
+        if !self.cycle_uses_physical_serial() && pins.phi1 && pins.wait {
             let signals = self.s100.signals();
             let port = signals.address as u8;
             if signals.inp && self.io.input_wait_states(port) != 0 {
