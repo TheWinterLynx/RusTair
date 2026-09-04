@@ -23,6 +23,8 @@ use crate::s100_memory::{
 
 const LEGACY_COMPATIBILITY_PROTECTION_UNIT: usize = 1024;
 
+type RamDriveSignature = (Option<u8>, bool, bool);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeRamConfig {
     Historical(S100RamCardConfig),
@@ -101,6 +103,10 @@ struct RuntimeRamState {
     previous_memory_read: bool,
     previous_protect: bool,
     previous_unprotect: bool,
+    /// Physical connector output is persistent state. Rebuilding eight DI pins
+    /// plus PRDY/PROT on every observation was pure host work when those outputs
+    /// had not changed. Keep the exact drive latched just like the CPU board.
+    cached_drive: S100CardDrive,
 }
 
 impl RuntimeRamState {
@@ -109,7 +115,7 @@ impl RuntimeRamState {
         if init == RamInit::Random {
             rand::rng().fill_bytes(&mut bytes);
         }
-        Self {
+        let mut state = Self {
             config,
             bytes,
             protected: vec![false; config.protection_unit_count()],
@@ -121,7 +127,10 @@ impl RuntimeRamState {
             previous_memory_read: false,
             previous_protect: false,
             previous_unprotect: false,
-        }
+            cached_drive: S100CardDrive::new(),
+        };
+        state.rebuild_cached_drive();
+        state
     }
 
     fn offset_for(&self, address: u16) -> Option<usize> {
@@ -146,7 +155,7 @@ impl RuntimeRamState {
             .is_some_and(|offset| self.is_offset_protected(offset))
     }
 
-    fn set_protected(&mut self, address: u16, protected: bool) -> bool {
+    fn set_protected_raw(&mut self, address: u16, protected: bool) -> bool {
         if !self.config.supports_front_panel_protect() {
             return false;
         }
@@ -166,7 +175,7 @@ impl RuntimeRamState {
         Some(self.bytes[offset])
     }
 
-    fn write_byte(&mut self, address: u16, value: u8, respect_protection: bool) -> bool {
+    fn write_byte_raw(&mut self, address: u16, value: u8, respect_protection: bool) -> bool {
         let Some(offset) = self.offset_for(address) else {
             return false;
         };
@@ -175,6 +184,40 @@ impl RuntimeRamState {
         }
         self.bytes[offset] = value;
         true
+    }
+
+    #[inline]
+    fn drive_signature(&self) -> RamDriveSignature {
+        let data_in = if self.memory_read {
+            self.selected_offset.map(|offset| self.bytes[offset])
+        } else {
+            None
+        };
+        let ready_low = self.wait_clocks_remaining != 0;
+        let protect_high = self.selected_offset.is_some_and(|offset| {
+            self.config.supports_front_panel_protect() && self.is_offset_protected(offset)
+        });
+        (data_in, ready_low, protect_high)
+    }
+
+    fn rebuild_cached_drive(&mut self) {
+        let (data_in, ready_low, protect_high) = self.drive_signature();
+        let mut drive = S100CardDrive::new();
+        if let Some(value) = data_in {
+            drive.drive_data_in(value);
+        }
+        drive.pull_low(S100Signal::Ready, ready_low);
+        if protect_high {
+            drive.drive_tristate(S100Signal::ProtectStatus, Some(true));
+        }
+        self.cached_drive = drive;
+    }
+
+    #[inline]
+    fn refresh_cached_drive_if_changed(&mut self, before: RamDriveSignature) {
+        if self.drive_signature() != before {
+            self.rebuild_cached_drive();
+        }
     }
 
     fn reset_timing(&mut self) {
@@ -208,9 +251,11 @@ impl RuntimeRamHandle {
     }
 
     pub fn write_byte(&self, address: u16, value: u8, respect_protection: bool) -> bool {
-        self.state
-            .borrow_mut()
-            .write_byte(address, value, respect_protection)
+        let mut state = self.state.borrow_mut();
+        let before = state.drive_signature();
+        let written = state.write_byte_raw(address, value, respect_protection);
+        state.refresh_cached_drive_if_changed(before);
+        written
     }
 
     pub fn is_protected(&self, address: u16) -> bool {
@@ -218,11 +263,18 @@ impl RuntimeRamHandle {
     }
 
     pub fn set_protected(&self, address: u16, protected: bool) -> bool {
-        self.state.borrow_mut().set_protected(address, protected)
+        let mut state = self.state.borrow_mut();
+        let before = state.drive_signature();
+        let changed = state.set_protected_raw(address, protected);
+        state.refresh_cached_drive_if_changed(before);
+        changed
     }
 
     pub fn clear_protection(&self) {
-        self.state.borrow_mut().protected.fill(false);
+        let mut state = self.state.borrow_mut();
+        let before = state.drive_signature();
+        state.protected.fill(false);
+        state.refresh_cached_drive_if_changed(before);
     }
 
     pub fn initialize(&self, init: RamInit) {
@@ -233,6 +285,7 @@ impl RuntimeRamHandle {
         }
         state.protected.fill(false);
         state.reset_timing();
+        state.rebuild_cached_drive();
     }
 
     pub fn load(&self, address: u16, data: &[u8]) -> usize {
@@ -240,8 +293,10 @@ impl RuntimeRamHandle {
         let Some(first) = state.offset_for(address) else {
             return 0;
         };
+        let before = state.drive_signature();
         let len = data.len().min(state.bytes.len().saturating_sub(first));
         state.bytes[first..first + len].copy_from_slice(&data[..len]);
+        state.refresh_cached_drive_if_changed(before);
         len
     }
 }
@@ -301,6 +356,7 @@ impl S100Card for RuntimeRamCard {
 impl S100ElectricalCard for RuntimeRamCard {
     fn observe_s100(&mut self, sample: &S100BusSample) {
         let mut state = self.state.borrow_mut();
+        let before = state.drive_signature();
         let sync = sample.signal_level(S100Signal::Sync) == Some(true);
         let clock = sample.signal_level(S100Signal::Clock) == Some(true);
         let protect = sample.signal_level(S100Signal::Protect) == Some(true);
@@ -316,17 +372,17 @@ impl S100ElectricalCard for RuntimeRamCard {
         // resulting bus line; it does not infer writes from CPU package state.
         if let (Some(address), Some(value)) = (sample.address(), sample.data_out()) {
             if sample.signal_level(S100Signal::MemoryWrite) == Some(true) {
-                let _ = state.write_byte(address, value, true);
+                let _ = state.write_byte_raw(address, value, true);
             }
         }
 
         if state.selected_offset.is_some() && state.config.supports_front_panel_protect() {
             if let Some(address) = sample.address() {
                 if protect && !state.previous_protect {
-                    let _ = state.set_protected(address, true);
+                    let _ = state.set_protected_raw(address, true);
                 }
                 if unprotect && !state.previous_unprotect {
-                    let _ = state.set_protected(address, false);
+                    let _ = state.set_protected_raw(address, false);
                 }
             }
         }
@@ -349,25 +405,12 @@ impl S100ElectricalCard for RuntimeRamCard {
         state.previous_clock = clock;
         state.previous_protect = protect;
         state.previous_unprotect = unprotect;
+        state.refresh_cached_drive_if_changed(before);
     }
 
+    #[inline]
     fn drive_s100(&self) -> S100CardDrive {
-        let state = self.state.borrow();
-        let mut drive = S100CardDrive::new();
-        if state.memory_read {
-            if let Some(offset) = state.selected_offset {
-                drive.drive_data_in(state.bytes[offset]);
-            }
-        }
-        if state.wait_clocks_remaining != 0 {
-            drive.pull_low(S100Signal::Ready, true);
-        }
-        if let Some(offset) = state.selected_offset {
-            if state.config.supports_front_panel_protect() && state.is_offset_protected(offset) {
-                drive.drive_tristate(S100Signal::ProtectStatus, Some(true));
-            }
-        }
-        drive
+        self.state.borrow().cached_drive
     }
 }
 
@@ -463,5 +506,22 @@ mod tests {
         assert!(handle.is_protected(0x0400));
         assert!(handle.is_protected(0x07ff));
         assert!(!handle.is_protected(0x0800));
+    }
+
+    #[test]
+    fn cached_drive_tracks_host_mutation_when_selected() {
+        let (mut card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+        let backplane = S100Backplane::new(0);
+        let master = read_drive(0x0010, false, false);
+        let observed = backplane.resolve_drive_sets(&[master.clone()]);
+        card.observe_s100(&observed);
+        assert_eq!(backplane.resolve_drive_sets(&[master.clone(), card.drive_s100()]).data_in(), Some(0));
+
+        assert!(handle.write_byte(0x0010, 0x5a, false));
+        assert_eq!(backplane.resolve_drive_sets(&[master, card.drive_s100()]).data_in(), Some(0x5a));
     }
 }
