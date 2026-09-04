@@ -914,8 +914,11 @@ impl S100Backplane {
             };
             card.observe_s100(observed);
             let drive = card.drive_s100();
-            validate_card_drive(slot, &drive)?;
             if drive != slot.cached_drive {
+                // The previous cached drive was already contract-checked at
+                // insertion or at the last connector transition. Revalidate only
+                // when the card actually proposes a new electrical drive.
+                validate_card_drive(slot, &drive)?;
                 slot.cached_drive = drive;
                 drive_changed |= bit;
             }
