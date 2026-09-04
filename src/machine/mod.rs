@@ -144,8 +144,19 @@ impl RuntimeSerialCardHandle {
     }
 
     pub(crate) fn advance_t_states(&self, t_states: u64) {
-        self.state.borrow_mut().advance_t_states(t_states);
-        self.connector_dirty.set(true);
+        if t_states == 0 {
+            return;
+        }
+        let mut state = self.state.borrow_mut();
+        let before_pint = state.interrupt_request();
+        let before_vi = state.vector_interrupt_requests();
+        state.advance_t_states(t_states);
+        let connector_changed = before_pint != state.interrupt_request()
+            || before_vi != state.vector_interrupt_requests();
+        drop(state);
+        if connector_changed {
+            self.connector_dirty.set(true);
+        }
     }
 
     pub(crate) fn rx_empty(&self, port_index: usize) -> bool {
@@ -1423,5 +1434,17 @@ mod tests {
         bus.debugger_output_port(0x01, b'O');
         assert_eq!(bus.sio_vector_interrupt_requests(), 0, "DATA OUT resets the Rev0 output-ready flip-flop");
         assert_eq!(bus.sio_handshake_lines(), Some((false, false, false, false)));
+    }
+
+    #[test]
+    fn idle_uart_time_does_not_dirty_an_unchanged_s100_connector() {
+        let (mut device, handle) = RuntimeSerialCardHandle::new_two_sio(
+            TwoSioStraps::default(),
+            TwoSioInterruptWiring::default(),
+        );
+        let _ = device.bus_lines();
+        assert!(!device.external_drive_dirty());
+        handle.advance_t_states(1);
+        assert!(!device.external_drive_dirty());
     }
 }
