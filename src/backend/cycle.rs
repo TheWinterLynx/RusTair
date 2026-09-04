@@ -261,12 +261,22 @@ impl CycleAccurateMachineBackend {
                 trace.machine_cycle,
                 MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
             );
-        let sample = Cycle8080S100Adapter::sample_with_front_panel_direct(
+        let mut sample = Cycle8080S100Adapter::sample_with_front_panel_direct(
             trace,
             visible_data,
             front_panel_direct,
             ready,
         );
+        if self.machine.bus.cycle_uses_physical_serial() && !front_panel_direct {
+            // The exact CPU package may already have converted a released DI bus
+            // into its guest-visible open-bus byte (currently FFh). Do not feed
+            // that package-side interpretation back into the legacy panel plane
+            // as though a card had started driving DI. The DATA lamps are wired
+            // to S-100 DI, so explicit hardware must project the live electrical
+            // value: mapped RAM/I/O remains visible, while High-Z keeps the last
+            // actually driven panel value.
+            sample.data_in = self.machine.bus.cycle_live_s100_sample().data_in();
+        }
         self.machine.bus.drive_cpu_board_sample(sample);
         visible_data
     }
