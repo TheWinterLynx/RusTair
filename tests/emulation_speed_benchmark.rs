@@ -9,12 +9,15 @@ const ALTAIR_CLOCK_HZ: f64 = 2_000_000.0;
 const WARMUP_T_STATES: u64 = 250_000;
 const MEASURE_T_STATES: u64 = 5_000_000;
 const SERVICE_CHUNK_T_STATES: u32 = 100_000;
+const BENCH_ROUNDS: usize = 3;
 
 // NOP ; JMP 0000h
 //
 // This deliberately keeps the CPU fetching real opcodes and operands from the
 // installed S-100 RAM instead of benchmarking a host-side empty loop.
 const BENCH_PROGRAM: [u8; 4] = [0x00, 0xc3, 0x00, 0x00];
+
+type HardwareFactory = fn() -> S100HardwareConfig;
 
 #[derive(Clone, Copy)]
 struct ResultRow {
@@ -112,15 +115,38 @@ fn benchmark_one(
     }
 }
 
-fn print_row(row: ResultRow) {
+fn median_row(rows: &[ResultRow]) -> ResultRow {
+    let mut ordered = rows.to_vec();
+    ordered.sort_by(|a, b| a.mhz.total_cmp(&b.mhz));
+    ordered[ordered.len() / 2]
+}
+
+fn print_rows(rows: &[ResultRow]) {
+    let row = median_row(rows);
+    let min_mhz = rows
+        .iter()
+        .map(|sample| sample.mhz)
+        .fold(f64::INFINITY, f64::min);
+    let max_mhz = rows
+        .iter()
+        .map(|sample| sample.mhz)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let spread_pct = if row.mhz == 0.0 {
+        0.0
+    } else {
+        (max_mhz - min_mhz) / row.mhz * 100.0
+    };
     println!(
-        "{:<28} | {:<30} | {:>10} T | {:>8.3} s | {:>8.3} MHz | {:>7.2}x Altair 2 MHz",
+        "{:<28} | {:<30} | {:>10} T | {:>8.3} s | {:>8.3} MHz | {:>7.2}x Altair 2 MHz | range {:>6.3}-{:>6.3} ({:>4.1}%)",
         row.engine.label(),
         row.scenario,
         row.t_states,
         row.elapsed.as_secs_f64(),
         row.mhz,
         row.realtime_multiple,
+        min_mhz,
+        max_mhz,
+        spread_pct,
     );
 }
 
@@ -133,20 +159,51 @@ fn print_row(row: ResultRow) {
 fn measure_fast_and_cycle_effective_mhz() {
     println!();
     println!("RusTair effective 8080 throughput");
-    println!("Measurement: {MEASURE_T_STATES} emulated T-states after {WARMUP_T_STATES}T warm-up");
+    println!(
+        "Measurement: median of {BENCH_ROUNDS} rounds × {MEASURE_T_STATES} emulated T-states after {WARMUP_T_STATES}T warm-up"
+    );
+    println!("Odd rounds reverse scenario/engine order to expose thermal/order drift");
     println!("Reference: MITS Altair 8800 nominal CPU clock = 2.000 MHz");
     println!();
 
-    for (scenario, hardware) in [
-        ("CPU + 88-4MCS 4K Static", minimal_historical_hardware()),
-        ("8800b + 16K Static", historical_starter_without_two_sio()),
-        ("8800b + 16K Static + 88-2SIO", historical_starter_hardware()),
-    ] {
-        for engine in [
-            EmulationEngine::RustFast8080,
-            EmulationEngine::RustCycleAccurate8080,
-        ] {
-            print_row(benchmark_one(engine, scenario, hardware));
+    let cases: [(&'static str, HardwareFactory); 3] = [
+        ("CPU + 88-4MCS 4K Static", minimal_historical_hardware),
+        ("8800b + 16K Static", historical_starter_without_two_sio),
+        ("8800b + 16K Static + 88-2SIO", historical_starter_hardware),
+    ];
+    let engines = [
+        EmulationEngine::RustFast8080,
+        EmulationEngine::RustCycleAccurate8080,
+    ];
+    let mut samples = vec![Vec::<ResultRow>::new(); cases.len() * engines.len()];
+
+    for round in 0..BENCH_ROUNDS {
+        let reverse = round & 1 != 0;
+        for scenario_step in 0..cases.len() {
+            let scenario_index = if reverse {
+                cases.len() - 1 - scenario_step
+            } else {
+                scenario_step
+            };
+            for engine_step in 0..engines.len() {
+                let engine_index = if reverse {
+                    engines.len() - 1 - engine_step
+                } else {
+                    engine_step
+                };
+                let (scenario, factory) = cases[scenario_index];
+                samples[scenario_index * engines.len() + engine_index].push(benchmark_one(
+                    engines[engine_index],
+                    scenario,
+                    factory(),
+                ));
+            }
+        }
+    }
+
+    for scenario_index in 0..cases.len() {
+        for engine_index in 0..engines.len() {
+            print_rows(&samples[scenario_index * engines.len() + engine_index]);
         }
     }
 }
