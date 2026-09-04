@@ -879,8 +879,8 @@ impl S100Backplane {
                 continue;
             };
             let drive = card.refresh_external_drive();
-            validate_card_drive(slot, &drive)?;
             if drive != slot.cached_drive {
+                validate_card_drive(slot, &drive)?;
                 slot.cached_drive = drive;
                 changed |= bit;
             }
