@@ -267,14 +267,21 @@ impl CycleAccurateMachineBackend {
             front_panel_direct,
             ready,
         );
-        if self.machine.bus.cycle_uses_physical_serial() && !front_panel_direct {
-            // The exact CPU package may already have converted a released DI bus
-            // into its guest-visible open-bus byte (currently FFh). Do not feed
-            // that package-side interpretation back into the legacy panel plane
-            // as though a card had started driving DI. The DATA lamps are wired
-            // to S-100 DI, so explicit hardware must project the live electrical
-            // value: mapped RAM/I/O remains visible, while High-Z keeps the last
-            // actually driven panel value.
+        let live_memory_read = matches!(
+            trace.machine_cycle,
+            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+        );
+        if !front_panel_direct
+            && (live_memory_read || self.machine.bus.cycle_uses_physical_serial())
+        {
+            // `sampled_data_in` is the byte seen at the 8080 package after the
+            // MITS CPU-board input path has resolved an undriven bus to the
+            // guest-visible open-bus value. The front-panel DATA lamps instead
+            // sit on physical S-100 DI. Memory cycles therefore always project
+            // the live fabric DI level, even for the aggregate compatibility
+            // chassis; physical serial cycles do the same once the serial card
+            // itself is installed in that fabric. High-Z consequently retains
+            // the last actually driven panel byte instead of fabricating FFh.
             sample.data_in = self.machine.bus.cycle_live_s100_sample().data_in();
         }
         self.machine.bus.drive_cpu_board_sample(sample);
