@@ -13,6 +13,9 @@ const LAMP_INT: usize = 9;
 const LAMP_WAIT: usize = 10;
 const LAMP_HLDA: usize = 11;
 const LAMP_COUNT: usize = 12;
+const PACKED_DATA_SHIFT: usize = 16;
+const PACKED_LAMP_SHIFT: usize = 24;
+const DUTY_COUNTER_PLANES: usize = u64::BITS as usize;
 const STATUS_INSTRUCTION_FETCH: u8 = 0xa2;
 
 // Presentation persistence only. Electrical duty is accumulated independently
@@ -166,6 +169,29 @@ impl S100Signals {
             self.hlda,
         ]
     }
+
+    #[inline]
+    fn lamp_mask(&self) -> u16 {
+        u16::from(self.inte) << LAMP_INTE
+            | u16::from(self.prot) << LAMP_PROT
+            | u16::from(self.memr) << LAMP_MEMR
+            | u16::from(self.inp) << LAMP_INP
+            | u16::from(self.m1) << LAMP_M1
+            | u16::from(self.out) << LAMP_OUT
+            | u16::from(self.hlta) << LAMP_HLTA
+            | u16::from(self.stack) << LAMP_STACK
+            | u16::from(self.wo) << LAMP_WO
+            | u16::from(self.int_ack) << LAMP_INT
+            | u16::from(self.wait) << LAMP_WAIT
+            | u16::from(self.hlda) << LAMP_HLDA
+    }
+
+    #[inline]
+    fn packed_lamp_activity(&self) -> u64 {
+        u64::from(self.address)
+            | (u64::from(self.panel_data) << PACKED_DATA_SHIFT)
+            | (u64::from(self.lamp_mask()) << PACKED_LAMP_SHIFT)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -241,11 +267,12 @@ impl PanelLampSnapshot {
     }
 }
 
-#[derive(Default)]
 struct PanelLampIntegrator {
-    address_on: [u64; 16],
-    data_on: [u64; 8],
-    lamps_on: [u64; LAMP_COUNT],
+    /// Bit-sliced unsigned counters. Bit N of every plane is one binary digit of
+    /// the accumulated ON time for packed lamp N. A normal Cycle sample with
+    /// weight=1 increments all 36 visible lamps in parallel instead of executing
+    /// 36 branches and 36 independent saturating additions.
+    on_count_planes: [u64; DUTY_COUNTER_PLANES],
     total_weight: u64,
     /// Last complete electrical-duty window, before any optical filtering.
     raw_duty: PanelLampSnapshot,
@@ -253,29 +280,57 @@ struct PanelLampIntegrator {
     snapshot: PanelLampSnapshot,
 }
 
+impl Default for PanelLampIntegrator {
+    fn default() -> Self {
+        Self {
+            on_count_planes: [0; DUTY_COUNTER_PLANES],
+            total_weight: 0,
+            raw_duty: PanelLampSnapshot::default(),
+            snapshot: PanelLampSnapshot::default(),
+        }
+    }
+}
+
 impl PanelLampIntegrator {
+    #[inline]
+    fn add_mask_at_plane(&mut self, mut carry: u64, mut plane: usize) {
+        while carry != 0 && plane < DUTY_COUNTER_PLANES {
+            let next = self.on_count_planes[plane] & carry;
+            self.on_count_planes[plane] ^= carry;
+            carry = next;
+            plane += 1;
+        }
+        debug_assert_eq!(carry, 0, "front-panel duty counter overflow");
+    }
+
+    #[inline]
+    fn add_weighted_mask(&mut self, mask: u64, weight: u64) {
+        let mut remaining = weight;
+        let mut plane = 0usize;
+        while remaining != 0 {
+            if remaining & 1 != 0 {
+                self.add_mask_at_plane(mask, plane);
+            }
+            remaining >>= 1;
+            plane += 1;
+        }
+    }
+
+    #[inline]
     fn sample(&mut self, signals: &S100Signals, weight: u32) {
-        let weight = u64::from(weight);
-        if weight == 0 {
+        let requested = u64::from(weight);
+        if requested == 0 {
             return;
         }
-        for bit in 0..16 {
-            if signals.address & (1u16 << bit) != 0 {
-                self.address_on[bit] = self.address_on[bit].saturating_add(weight);
-            }
+        // Preserve the previous saturating behavior even for pathological host
+        // intervals: once the total duration reaches u64::MAX there is no further
+        // representable electrical time to add to any per-lamp counter.
+        let accepted = requested.min(u64::MAX - self.total_weight);
+        if accepted == 0 {
+            return;
         }
-        for bit in 0..8 {
-            if signals.panel_data & (1u8 << bit) != 0 {
-                self.data_on[bit] = self.data_on[bit].saturating_add(weight);
-            }
-        }
-        let lamps = signals.lamp_states();
-        for bit in 0..LAMP_COUNT {
-            if lamps[bit] {
-                self.lamps_on[bit] = self.lamps_on[bit].saturating_add(weight);
-            }
-        }
-        self.total_weight = self.total_weight.saturating_add(weight);
+        self.add_weighted_mask(signals.packed_lamp_activity(), accepted);
+        self.total_weight += accepted;
     }
 
     fn binary_snapshot(signals: &S100Signals) -> PanelLampSnapshot {
@@ -293,19 +348,31 @@ impl PanelLampIntegrator {
         snapshot
     }
 
+    #[inline]
+    fn packed_count(&self, packed_bit: usize) -> u64 {
+        let mask = 1u64 << packed_bit;
+        let mut value = 0u64;
+        for (plane, bits) in self.on_count_planes.iter().copied().enumerate() {
+            if bits & mask != 0 {
+                value |= 1u64 << plane;
+            }
+        }
+        value
+    }
+
     fn accumulated_duty(&self) -> PanelLampSnapshot {
         debug_assert!(self.total_weight != 0);
         let total = self.total_weight as f32;
         let mut duty = PanelLampSnapshot::default();
         for bit in 0..16 {
-            duty.address[bit] = self.address_on[bit] as f32 / total;
+            duty.address[bit] = self.packed_count(bit) as f32 / total;
         }
         for bit in 0..8 {
-            duty.data[bit] = self.data_on[bit] as f32 / total;
+            duty.data[bit] = self.packed_count(PACKED_DATA_SHIFT + bit) as f32 / total;
         }
         let mut lamps = [0.0; LAMP_COUNT];
         for bit in 0..LAMP_COUNT {
-            lamps[bit] = self.lamps_on[bit] as f32 / total;
+            lamps[bit] = self.packed_count(PACKED_LAMP_SHIFT + bit) as f32 / total;
         }
         duty.set_lamp_array(lamps);
         duty
@@ -366,9 +433,7 @@ impl PanelLampIntegrator {
     }
 
     fn clear_activity(&mut self) {
-        self.address_on.fill(0);
-        self.data_on.fill(0);
-        self.lamps_on.fill(0);
+        self.on_count_planes.fill(0);
         self.total_weight = 0;
     }
 }
