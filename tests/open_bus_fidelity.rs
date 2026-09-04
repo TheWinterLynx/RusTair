@@ -40,6 +40,11 @@ fn cycle_exact_t2_keeps_unmapped_s100_di_floating_before_cpu_samples_open_bus_ff
     assert_eq!(host.intel8080_state().pc, 0x0100);
     assert_eq!(host.peek_memory(0x0100), None);
 
+    // The final mapped byte read before the unmapped fetch is the high address
+    // operand 01h. The original front-panel DATA lamps are fed from S-100 DI and
+    // retain that last visible level while DI is subsequently released.
+    const LAST_PANEL_DI: u8 = 0x01;
+
     host.debugger_step_t_state(); // opcode fetch T1 at 0100h
     host.debugger_step_t_state(); // T2: no RAM card drives DI0..DI7.
     let t2 = host.bus_teaching_snapshot().expect("exact T2 sample");
@@ -52,8 +57,8 @@ fn cycle_exact_t2_keeps_unmapped_s100_di_floating_before_cpu_samples_open_bus_ff
     );
     assert_eq!(
         t2.panel_data,
-        Some(OPEN_BUS),
-        "the front-panel input path may render released TTL inputs as the open-bus value"
+        Some(LAST_PANEL_DI),
+        "the front-panel DATA lamps retain the last driven DI value while the bus is released"
     );
 
     host.debugger_step_t_state(); // T3: CPU input buffers consume the released bus as FFh.
@@ -67,6 +72,11 @@ fn cycle_exact_t2_keeps_unmapped_s100_di_floating_before_cpu_samples_open_bus_ff
         t3.cpu_data,
         Some(OPEN_BUS),
         "the MITS CPU-board input path defines the guest-visible open-bus value"
+    );
+    assert_eq!(
+        t3.panel_data,
+        Some(LAST_PANEL_DI),
+        "sampling open bus at the CPU must not fabricate a new driven level on the front-panel DI lamps"
     );
 }
 
