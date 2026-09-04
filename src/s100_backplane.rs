@@ -532,6 +532,14 @@ pub trait S100ElectricalCard: S100Card {
     /// high impedance/released.
     fn drive_s100(&self) -> S100CardDrive;
 
+    /// Whether an event outside the S-100 input path may have changed this
+    /// card's connector outputs. The conservative default preserves the existing
+    /// semantics for ordinary cards; devices with an explicit dirty latch can
+    /// make idle refresh a zero-work predicate instead of rebuilding a drive.
+    fn external_drive_dirty(&self) -> bool {
+        true
+    }
+
     /// Refresh connector outputs after state changed outside the S-100 input
     /// path (for example a character arriving at a serial connector). Most
     /// cards have no such boundary and can return their persistent drive.
@@ -862,8 +870,8 @@ impl S100Backplane {
 
     /// Re-sample card outputs only for slots whose state may have changed outside
     /// the backplane (for example CPU package pins or an asynchronously advanced
-    /// UART). The cached connector drive remains the sole value used by the
-    /// resolver until another physical input wakes that card.
+    /// UART). Cards that can prove their external side is clean skip the virtual
+    /// refresh and S100CardDrive copy/compare entirely.
     pub fn refresh_cached_drives(
         &mut self,
         selected: S100SlotMask,
@@ -878,6 +886,9 @@ impl S100Backplane {
             let Some(card) = slot.card.as_mut() else {
                 continue;
             };
+            if !card.external_drive_dirty() {
+                continue;
+            }
             let drive = card.refresh_external_drive();
             if drive != slot.cached_drive {
                 validate_card_drive(slot, &drive)?;
