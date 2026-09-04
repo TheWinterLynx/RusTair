@@ -295,6 +295,20 @@ impl Mits8080CpuBoardHandle {
         self.state.borrow_mut().set_package_pins(pins);
     }
 
+    /// Update the Intel-package side and return the CPU board's resulting
+    /// connector drive in the same borrow. `S100RuntimeFabric` uses this to push
+    /// the already-computed physical connector state into the backplane cache
+    /// instead of immediately re-entering the card through a virtual drive call.
+    /// No other card is visible through this handle.
+    pub(crate) fn set_package_pins_and_connector_drive(
+        &self,
+        pins: Cpu8080Pins,
+    ) -> S100CardDrive {
+        let mut state = self.state.borrow_mut();
+        state.set_package_pins(pins);
+        state.cached_drive
+    }
+
     pub fn package_pins(&self) -> Cpu8080Pins {
         self.state.borrow().pins
     }
