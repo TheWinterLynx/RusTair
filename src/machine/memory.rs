@@ -379,13 +379,13 @@ impl Memory {
         self.fabric.installed_ram_bytes()
     }
 
-    pub(super) fn initialize(&self) {
+    pub(super) fn initialize(&mut self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(self.init_mode);
         self.reset_timing();
     }
 
-    pub(super) fn randomize(&self) {
+    pub(super) fn randomize(&mut self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(RamInit::Random);
         self.reset_timing();
@@ -407,7 +407,7 @@ impl Memory {
         self.basic32_probe_write = None;
     }
 
-    pub(super) fn load(&self, address: u16, data: &[u8]) {
+    pub(super) fn load(&mut self, address: u16, data: &[u8]) {
         let _ = self.fabric.load_bytes(address, data);
     }
 
@@ -441,7 +441,7 @@ impl Memory {
     }
 
     pub(super) fn debugger_write(
-        &self,
+        &mut self,
         address: u16,
         value: u8,
         respect_protection: bool,
@@ -462,7 +462,7 @@ impl Memory {
         self.fabric.memory_is_protected(address)
     }
 
-    pub(super) fn set_protected(&self, address: u16, protected: bool) {
+    pub(super) fn set_protected(&mut self, address: u16, protected: bool) {
         let _ = self
             .fabric
             .set_unique_memory_protection(address, protected);
