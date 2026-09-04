@@ -246,6 +246,13 @@ impl S100RuntimeFabric {
         fabric
             .settle(DisplayControlLines::default(), &[])
             .map_err(S100RuntimeBuildError::Backplane)?;
+        // Seed package-side inputs exactly once from the first resolved S-100
+        // sample. Later settles can trust the compiled connector fan-out: CPU
+        // package-pin changes affect its connector outputs via refresh_cached_drives,
+        // while only a real change on one of the CPU card's S-100 inputs needs to
+        // wake its input sampler again.
+        let cpu_slot_mask = fabric.cpu_slot_mask();
+        fabric.backplane.observe_selected_cards(cpu_slot_mask);
         Ok(fabric)
     }
 
@@ -514,11 +521,12 @@ impl S100RuntimeFabric {
     /// sensitivity comes directly from its historical connector descriptor and
     /// its output drive remains cached until one of those inputs wakes it.
     ///
-    /// The CPU slot is forced to observe the first delta because Intel package
-    /// pins are on the non-S-100 side of that board. Serial slots are refreshed
-    /// once at the start because their UART state can currently advance through
-    /// host endpoint handles between edges. Neither exception bypasses the bus:
-    /// their resulting connector drives still resolve electrically here.
+    /// CPU package-side changes are materialized into the CPU card's cached
+    /// connector drive before resolution. After construction's one input seed,
+    /// the CPU observes again only when a declared S-100 input actually changes.
+    /// Serial slots are refreshed once at the start because their UART state can
+    /// currently advance through host endpoint handles between edges. Neither
+    /// exception bypasses the bus: resulting connector drives still resolve here.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
@@ -530,7 +538,6 @@ impl S100RuntimeFabric {
             .refresh_cached_drives(cpu_slot | self.externally_mutable_slots)?;
 
         let mut display_drive = display.drive(self.backplane.sample());
-        let mut forced_observe = cpu_slot;
 
         for _ in 0..DIGITAL_SETTLE_DELTAS {
             let change = if extra_drives.is_empty() {
@@ -546,12 +553,9 @@ impl S100RuntimeFabric {
                     .resolve_cached_selected_drives(selected, &chassis)
             };
 
-            let changed_drives = self.backplane.observe_changed_cards(
-                change,
-                forced_observe,
-                selected,
-            )?;
-            forced_observe = 0;
+            let changed_drives = self
+                .backplane
+                .observe_changed_cards(change, 0, selected)?;
 
             let next_display_drive = display.drive(self.backplane.sample());
             let display_changed = next_display_drive != display_drive;
