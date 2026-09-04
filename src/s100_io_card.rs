@@ -368,6 +368,10 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
         self.cached_drive
     }
 
+    fn external_drive_dirty(&self) -> bool {
+        self.device.external_drive_dirty()
+    }
+
     fn refresh_external_drive(&mut self) -> S100CardDrive {
         if self.device.external_drive_dirty() {
             self.refresh_cached_drive();
