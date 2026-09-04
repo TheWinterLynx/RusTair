@@ -1,7 +1,9 @@
 use std::hint::black_box;
 use std::time::Instant;
 
-use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
+use rustair::config::{
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring, TwoSioStraps,
+};
 use rustair::cpu8080_cycle::Cpu8080Pins;
 use rustair::s100_backplane::{s100_slot_mask, S100Backplane};
 use rustair::s100_chassis::S100ChassisConfig;
@@ -31,10 +33,53 @@ fn simple_hardware() -> S100HardwareConfig {
     config.validate().unwrap()
 }
 
+fn serial_hardware() -> S100HardwareConfig {
+    let mut config = simple_hardware();
+    config
+        .set_slot(
+            3,
+            Some(S100InstalledCardConfig::Mits88TwoSio {
+                straps: TwoSioStraps::default(),
+                interrupt_wiring: TwoSioInterruptWiring::default(),
+            }),
+        )
+        .unwrap();
+    config.validate().unwrap()
+}
+
 fn report(label: &str, iterations: u64, elapsed: std::time::Duration) {
     let ns = elapsed.as_secs_f64() * 1_000_000_000.0 / iterations as f64;
     let mops = iterations as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     println!("{label:<42} {ns:>10.2} ns/op   {mops:>8.3} Mops/s");
+}
+
+fn profile_runtime_address_edges(label: &str, hardware: S100HardwareConfig) {
+    let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+    let display = DisplayControlLines {
+        ready: true,
+        run: true,
+        ..DisplayControlLines::default()
+    };
+    let start = Instant::now();
+    let mut checksum = 0u8;
+    for i in 0..ITER {
+        let address = if i & 1 == 0 { 0x0122 } else { 0x0123 };
+        fabric.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(address),
+            data_out: None,
+            sync: false,
+            dbin: true,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        checksum ^= fabric.settle(display, &[]).unwrap().data_in_or(0xff);
+    }
+    black_box(checksum);
+    report(label, ITER, start.elapsed());
 }
 
 #[test]
@@ -160,4 +205,12 @@ fn profile_s100_hot_path_components() {
         );
     }
     report("one CPU+RAM event-driven edge", ITER, start.elapsed());
+
+    // Cycle's remaining serial penalty is not in idle connector refresh: profile
+    // an irrelevant A0 transition while no I/O status strobe is asserted. A real
+    // 88-2SIO sees those address wires, but its register decoder has no work to
+    // perform during a memory transaction. Comparing these two rows tells us the
+    // software cost of merely waking the installed serial card on that edge.
+    profile_runtime_address_edges("runtime address edge CPU+RAM", simple_hardware());
+    profile_runtime_address_edges("runtime address edge +88-2SIO", serial_hardware());
 }
