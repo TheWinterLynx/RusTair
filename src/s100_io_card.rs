@@ -203,6 +203,12 @@ pub trait S100IoRegisterDevice {
     /// This keeps board-specific edge logic behind the register-device boundary.
     fn observe_bus(&mut self, _sample: &S100BusSample, _selected: bool) -> bool { false }
 
+    /// Return true only for a device whose board-wide logic genuinely needs to
+    /// inspect unrelated bus deltas while neither sINP nor sOUT is active. The
+    /// adapter itself still preserves POC edges and the transition leaving an
+    /// I/O window, so ordinary decoded register cards can remain quiescent.
+    fn requires_idle_bus_observation(&self) -> bool { false }
+
     /// Whether state changed through a host connector or independent device
     /// clock since the adapter last rebuilt its cached S-100 outputs.
     fn external_drive_dirty(&self) -> bool { true }
@@ -218,6 +224,8 @@ pub struct S100IoCardAdapter<D> {
     read_cycle_port: Option<u8>,
     read_drive: Option<u8>,
     write_cycle_port: Option<u8>,
+    io_status_active: bool,
+    power_on_clear: bool,
     /// Persistent connector output state. Real TTL/tri-state outputs retain
     /// their electrical state until an input or device event changes them; they
     /// are not recomputed merely because the backplane samples the slot again.
@@ -282,6 +290,8 @@ impl<D: S100IoRegisterDevice> S100IoCardAdapter<D> {
             read_cycle_port: None,
             read_drive: None,
             write_cycle_port: None,
+            io_status_active: false,
+            power_on_clear: false,
             cached_drive: S100CardDrive::new(),
         };
         card.refresh_cached_drive();
@@ -317,13 +327,29 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
     fn observe_s100(&mut self, sample: &S100BusSample) {
         let inp = sample.signal_level(S100Signal::Inp) == Some(true);
         let out = sample.signal_level(S100Signal::Out) == Some(true);
+        let io_status_active = inp || out;
+        let power_on_clear = sample.signal_level(S100Signal::PowerOnClear) == Some(true);
+
+        // The physical connector still sees every declared input transition.
+        // Once the register decoder is outside an I/O status window, however,
+        // address/data/DBIN/WAIT activity cannot affect this adapter. Observe the
+        // first transition out of a window and both POC edges, then let later
+        // unrelated deltas become an O(1) state check instead of re-entering the
+        // underlying UART/register model.
+        let observe_board = io_status_active
+            || self.io_status_active
+            || power_on_clear != self.power_on_clear
+            || self.device.requires_idle_bus_observation();
+        self.io_status_active = io_status_active;
+        self.power_on_clear = power_on_clear;
+        if !observe_board {
+            return;
+        }
 
         // A0..A7 are physically connected and remain part of the card's input
         // sensitivity. Their decode only has a behavioral consequence while an
-        // I/O status line is active, however. During memory/idle bus activity we
-        // still let the device observe POC/WAIT release state, but avoid walking
-        // eight address contacts merely because the CPU changed its address.
-        let selected = if inp || out {
+        // I/O status line is active.
+        let selected = if io_status_active {
             self.selected_port(sample)
         } else {
             None
@@ -403,6 +429,7 @@ mod tests {
         writes: Vec<(u8, u8)>,
         read_values: [u8; 4],
         lines: S100IoDeviceLines,
+        bus_observations: usize,
     }
 
     #[derive(Clone)]
@@ -421,6 +448,11 @@ mod tests {
 
         fn bus_lines(&self) -> S100IoDeviceLines {
             self.0.borrow().lines
+        }
+
+        fn observe_bus(&mut self, _sample: &S100BusSample, _selected: bool) -> bool {
+            self.0.borrow_mut().bus_observations += 1;
+            false
         }
     }
 
@@ -453,6 +485,45 @@ mod tests {
         drive.drive_signal(S100Signal::Write, wr_n);
         drive.drive_data_out(data);
         drive
+    }
+
+    #[test]
+    fn idle_bus_deltas_do_not_reenter_the_register_device() {
+        let state = Rc::new(RefCell::new(FakeState::default()));
+        let card = S100IoCardAdapter::new(
+            &MITS_88_2SIO_IO_CARD,
+            0x44,
+            4,
+            FakeDevice(Rc::clone(&state)),
+        );
+        let mut backplane = S100Backplane::new(2);
+        backplane.insert(2, Box::new(card)).unwrap();
+        let selected = s100_slot_mask(2);
+
+        let idle_a = drive_io(0x44, false, false, false, true, 0x11);
+        backplane.resolve_selected_drives(selected, &[idle_a]).unwrap();
+        backplane.observe_selected_cards(selected);
+        assert_eq!(state.borrow().bus_observations, 0);
+
+        let idle_b = drive_io(0x45, false, false, true, true, 0x22);
+        backplane.resolve_selected_drives(selected, &[idle_b]).unwrap();
+        backplane.observe_selected_cards(selected);
+        assert_eq!(state.borrow().bus_observations, 0);
+
+        let io_window = drive_io(0x44, true, false, false, true, 0);
+        backplane.resolve_selected_drives(selected, &[io_window]).unwrap();
+        backplane.observe_selected_cards(selected);
+        assert_eq!(state.borrow().bus_observations, 1);
+
+        let leave_io = drive_io(0x44, false, false, false, true, 0);
+        backplane.resolve_selected_drives(selected, &[leave_io]).unwrap();
+        backplane.observe_selected_cards(selected);
+        assert_eq!(state.borrow().bus_observations, 2);
+
+        let idle_c = drive_io(0x46, false, false, true, true, 0x33);
+        backplane.resolve_selected_drives(selected, &[idle_c]).unwrap();
+        backplane.observe_selected_cards(selected);
+        assert_eq!(state.borrow().bus_observations, 2);
     }
 
     #[test]
