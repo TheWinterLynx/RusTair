@@ -315,7 +315,19 @@ impl<D> S100Card for S100IoCardAdapter<D> {
 
 impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
     fn observe_s100(&mut self, sample: &S100BusSample) {
-        let selected = self.selected_port(sample);
+        let inp = sample.signal_level(S100Signal::Inp) == Some(true);
+        let out = sample.signal_level(S100Signal::Out) == Some(true);
+
+        // A0..A7 are physically connected and remain part of the card's input
+        // sensitivity. Their decode only has a behavioral consequence while an
+        // I/O status line is active, however. During memory/idle bus activity we
+        // still let the device observe POC/WAIT release state, but avoid walking
+        // eight address contacts merely because the CPU changed its address.
+        let selected = if inp || out {
+            self.selected_port(sample)
+        } else {
+            None
+        };
         let mut drive_dirty = self.device.observe_bus(sample, selected.is_some());
         let previous_read_drive = self.read_drive;
 
@@ -323,8 +335,7 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
         // strobe. Only their overlap constitutes the register read. Keeping the
         // port latched while that strobe remains active prevents multiple
         // resolver deltas from clearing RDA or consuming a FIFO more than once.
-        let read_active = sample.signal_level(S100Signal::Inp) == Some(true)
-            && sample.signal_level(S100Signal::DataBusIn) == Some(true);
+        let read_active = inp && sample.signal_level(S100Signal::DataBusIn) == Some(true);
         if read_active {
             if let Some((port, offset)) = selected {
                 if self.read_cycle_port != Some(port) {
@@ -345,8 +356,7 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
         // occurs once when that physical combination first becomes active for a
         // selected port; holding pWR low across another propagation delta does
         // not duplicate the device write.
-        let write_active = sample.signal_level(S100Signal::Out) == Some(true)
-            && sample.signal_level(S100Signal::Write) == Some(false);
+        let write_active = out && sample.signal_level(S100Signal::Write) == Some(false);
         if write_active {
             if let (Some((port, offset)), Some(value)) = (selected, sample.data_out()) {
                 if self.write_cycle_port != Some(port) {
