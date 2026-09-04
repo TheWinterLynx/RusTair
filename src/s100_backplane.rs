@@ -900,6 +900,32 @@ impl S100Backplane {
         Ok(changed)
     }
 
+    /// Push a connector drive that the chassis fabric has already obtained from
+    /// that exact physical card instance. This is not a synthetic bus source: it
+    /// updates the normal slot cache, validates the same connector contract, and
+    /// the drive still reaches every other card only through normal S-100
+    /// resolution. It removes a redundant virtual `drive_s100()` round-trip when
+    /// the caller just changed a card's non-S-100 side and already has its drive.
+    pub(crate) fn update_cached_slot_drive(
+        &mut self,
+        slot: usize,
+        drive: S100CardDrive,
+    ) -> Result<bool, S100BackplaneError> {
+        let slot_count = self.slots.len();
+        let bit = s100_slot_mask(slot);
+        let target = self
+            .slots
+            .get_mut(slot.checked_sub(1).unwrap_or(usize::MAX))
+            .ok_or(S100BackplaneError::InvalidSlot { slot, slot_count })?;
+        validate_card_drive(target, &drive)?;
+        if drive == target.cached_drive {
+            return Ok(false);
+        }
+        target.cached_drive = drive;
+        self.dirty_drive_slots |= bit;
+        Ok(true)
+    }
+
     /// Observe exactly the slots wired to changed input contacts plus any slots
     /// forced by a non-S100-side event (for example Intel package pins). The
     /// per-contact fan-out was compiled when cards were inserted, so no chassis
