@@ -82,6 +82,63 @@ fn profile_runtime_address_edges(label: &str, hardware: S100HardwareConfig) {
     report(label, ITER, start.elapsed());
 }
 
+fn profile_runtime_dbin_edges(label: &str, hardware: S100HardwareConfig) {
+    let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+    let display = DisplayControlLines {
+        ready: true,
+        run: true,
+        ..DisplayControlLines::default()
+    };
+    let start = Instant::now();
+    let mut checksum = 0u8;
+    for i in 0..ITER {
+        fabric.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(0x0123),
+            data_out: None,
+            sync: false,
+            dbin: i & 1 == 0,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        checksum ^= fabric.settle(display, &[]).unwrap().data_in_or(0xff);
+    }
+    black_box(checksum);
+    report(label, ITER, start.elapsed());
+}
+
+fn profile_runtime_data_out_edges(label: &str, hardware: S100HardwareConfig) {
+    let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+    let display = DisplayControlLines {
+        ready: true,
+        run: true,
+        ..DisplayControlLines::default()
+    };
+    let start = Instant::now();
+    let mut checksum = 0u8;
+    for i in 0..ITER {
+        let value = if i & 1 == 0 { 0x00 } else { 0xff };
+        fabric.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(0x0123),
+            data_out: Some(value),
+            sync: false,
+            dbin: false,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        checksum ^= fabric.settle(display, &[]).unwrap().data_out().unwrap_or(0xff);
+    }
+    black_box(checksum);
+    report(label, ITER, start.elapsed());
+}
+
 #[test]
 #[ignore = "manual S-100 hot-path profiler"]
 fn profile_s100_hot_path_components() {
@@ -206,11 +263,14 @@ fn profile_s100_hot_path_components() {
     }
     report("one CPU+RAM event-driven edge", ITER, start.elapsed());
 
-    // Cycle's remaining serial penalty is not in idle connector refresh: profile
-    // an irrelevant A0 transition while no I/O status strobe is asserted. A real
-    // 88-2SIO sees those address wires, but its register decoder has no work to
-    // perform during a memory transaction. Comparing these two rows tells us the
-    // software cost of merely waking the installed serial card on that edge.
+    // Profile the S-100 inputs a serial card sees during ordinary memory traffic.
+    // These are physical wires and remain connected; the paired rows isolate the
+    // software cost of waking an idle 88-2SIO when each otherwise irrelevant net
+    // changes. Address was already shown to be cheap after gated port decoding.
     profile_runtime_address_edges("runtime address edge CPU+RAM", simple_hardware());
     profile_runtime_address_edges("runtime address edge +88-2SIO", serial_hardware());
+    profile_runtime_dbin_edges("runtime DBIN edge CPU+RAM", simple_hardware());
+    profile_runtime_dbin_edges("runtime DBIN edge +88-2SIO", serial_hardware());
+    profile_runtime_data_out_edges("runtime DO edge CPU+RAM", simple_hardware());
+    profile_runtime_data_out_edges("runtime DO edge +88-2SIO", serial_hardware());
 }
