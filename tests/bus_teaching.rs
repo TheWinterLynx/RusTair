@@ -62,7 +62,7 @@ fn cycle_teacher_exposes_reset_released_stop_before_first_t_state() {
 }
 
 #[test]
-fn cycle_t_state_step_exposes_exact_m1_t1_sample() {
+fn cycle_t1_exposes_raw_status_before_8212_latches_on_t2_phi1() {
     let mut host = prepared(EmulationEngine::RustCycleAccurate8080, &[0x00]);
     assert_eq!(
         host.bus_teaching_snapshot().unwrap().accuracy,
@@ -72,22 +72,39 @@ fn cycle_t_state_step_exposes_exact_m1_t1_sample() {
 
     let before = host.intel8080_state().total_t_states.unwrap();
     host.debugger_step_t_state();
-    let after = host.intel8080_state().total_t_states.unwrap();
-    assert_eq!(after, before + 1);
+    let after_t1 = host.intel8080_state().total_t_states.unwrap();
+    assert_eq!(after_t1, before + 1);
 
-    let snapshot = host.bus_teaching_snapshot().expect("exact Cycle sample");
-    assert_eq!(snapshot.accuracy, BusTeachingAccuracy::Exact);
-    assert_eq!(snapshot.machine_cycle, BusMachineCycle::InstructionFetch);
-    assert_eq!(snapshot.machine_cycle_index, Some(1));
-    assert_eq!(snapshot.t_state, BusTState::T1);
-    assert_eq!(snapshot.instruction_address, Some(0x0000));
-    assert_eq!(snapshot.address, Some(0x0000));
-    assert_eq!(snapshot.status_word, Some(0xA2));
-    assert_eq!(snapshot.pins.sync, Some(true));
-    assert_eq!(snapshot.status.memr, Some(true));
-    assert_eq!(snapshot.status.m1, Some(true));
-    assert_eq!(snapshot.status.wo, Some(true));
-    assert_eq!(snapshot.total_t_states, Some(after));
+    // Intel switches SYNC and the status byte on the leading PHI2 of T1. The
+    // MITS processor board clocks IC K (8212) only when SYNC and PHI1 coincide,
+    // which is the following leading PHI1 at the start of T2. Therefore an exact
+    // T1 snapshot must distinguish the raw 8080/S-100 DO status byte from the
+    // still-previous latched S-100 status outputs.
+    let t1 = host.bus_teaching_snapshot().expect("exact Cycle T1 sample");
+    assert_eq!(t1.accuracy, BusTeachingAccuracy::Exact);
+    assert_eq!(t1.machine_cycle, BusMachineCycle::InstructionFetch);
+    assert_eq!(t1.machine_cycle_index, Some(1));
+    assert_eq!(t1.t_state, BusTState::T1);
+    assert_eq!(t1.instruction_address, Some(0x0000));
+    assert_eq!(t1.address, Some(0x0000));
+    assert_eq!(t1.pins.sync, Some(true));
+    assert_eq!(t1.cpu_data, Some(0xA2));
+    assert_eq!(t1.s100_do, Some(0xA2));
+    assert_eq!(t1.status_word, Some(0x00));
+    assert_eq!(t1.status.memr, Some(false));
+    assert_eq!(t1.status.m1, Some(false));
+    assert_eq!(t1.status.wo, Some(false));
+    assert_eq!(t1.total_t_states, Some(after_t1));
+
+    host.debugger_step_t_state();
+    let after_t2 = host.intel8080_state().total_t_states.unwrap();
+    assert_eq!(after_t2, after_t1 + 1);
+    let t2 = host.bus_teaching_snapshot().expect("exact Cycle T2 sample");
+    assert_eq!(t2.t_state, BusTState::T2);
+    assert_eq!(t2.status_word, Some(0xA2));
+    assert_eq!(t2.status.memr, Some(true));
+    assert_eq!(t2.status.m1, Some(true));
+    assert_eq!(t2.status.wo, Some(true));
 }
 
 #[test]
