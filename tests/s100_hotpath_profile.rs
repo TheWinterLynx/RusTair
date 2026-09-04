@@ -53,13 +53,50 @@ fn report(label: &str, iterations: u64, elapsed: std::time::Duration) {
     println!("{label:<42} {ns:>10.2} ns/op   {mops:>8.3} Mops/s");
 }
 
-fn profile_runtime_address_edges(label: &str, hardware: S100HardwareConfig) {
-    let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
-    let display = DisplayControlLines {
+fn running_display() -> DisplayControlLines {
+    DisplayControlLines {
         ready: true,
         run: true,
         ..DisplayControlLines::default()
-    };
+    }
+}
+
+fn stable_package_pins() -> Cpu8080Pins {
+    Cpu8080Pins {
+        phi1: false,
+        phi2: true,
+        address: Some(0x0123),
+        data_out: None,
+        sync: false,
+        dbin: true,
+        wr_n: true,
+        inte: false,
+        wait: false,
+        hlda: false,
+    }
+}
+
+fn profile_runtime_stable_settle(label: &str, hardware: S100HardwareConfig) {
+    let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+    let display = running_display();
+    fabric.set_cpu_package_pins(stable_package_pins());
+    let _ = fabric.settle(display, &[]).unwrap();
+
+    // No package pin, chassis line or card state changes in this loop. The delta
+    // therefore isolates fixed per-settle bookkeeping caused solely by having an
+    // additional but electrically clean card installed.
+    let start = Instant::now();
+    let mut checksum = 0u8;
+    for _ in 0..ITER {
+        checksum ^= fabric.settle(display, &[]).unwrap().data_in_or(0xff);
+    }
+    black_box(checksum);
+    report(label, ITER, start.elapsed());
+}
+
+fn profile_runtime_address_edges(label: &str, hardware: S100HardwareConfig) {
+    let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+    let display = running_display();
     let start = Instant::now();
     let mut checksum = 0u8;
     for i in 0..ITER {
@@ -84,11 +121,7 @@ fn profile_runtime_address_edges(label: &str, hardware: S100HardwareConfig) {
 
 fn profile_runtime_dbin_edges(label: &str, hardware: S100HardwareConfig) {
     let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
-    let display = DisplayControlLines {
-        ready: true,
-        run: true,
-        ..DisplayControlLines::default()
-    };
+    let display = running_display();
     let start = Instant::now();
     let mut checksum = 0u8;
     for i in 0..ITER {
@@ -112,11 +145,7 @@ fn profile_runtime_dbin_edges(label: &str, hardware: S100HardwareConfig) {
 
 fn profile_runtime_data_out_edges(label: &str, hardware: S100HardwareConfig) {
     let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
-    let display = DisplayControlLines {
-        ready: true,
-        run: true,
-        ..DisplayControlLines::default()
-    };
+    let display = running_display();
     let start = Instant::now();
     let mut checksum = 0u8;
     for i in 0..ITER {
@@ -197,11 +226,7 @@ fn profile_s100_hot_path_components() {
         hlda: false,
     });
     backplane.refresh_cached_drives(selected).unwrap();
-    let display = DisplayControlLines {
-        ready: true,
-        run: true,
-        ..DisplayControlLines::default()
-    };
+    let display = running_display();
     let display_drive = display.drive(backplane.sample());
     let _ = backplane.resolve_cached_selected_drives(selected, &[display_drive]);
 
@@ -263,10 +288,16 @@ fn profile_s100_hot_path_components() {
     }
     report("one CPU+RAM event-driven edge", ITER, start.elapsed());
 
+    // First isolate fixed per-settle installation cost when no electrical input
+    // changes at all. Any gap here cannot come from A0..A7/DBIN/DO decoding: it
+    // is bookkeeping such as checking externally mutable serial connector state.
+    profile_runtime_stable_settle("runtime stable settle CPU+RAM", simple_hardware());
+    profile_runtime_stable_settle("runtime stable settle +88-2SIO", serial_hardware());
+
     // Profile the S-100 inputs a serial card sees during ordinary memory traffic.
     // These are physical wires and remain connected; the paired rows isolate the
     // software cost of waking an idle 88-2SIO when each otherwise irrelevant net
-    // changes. Address was already shown to be cheap after gated port decoding.
+    // changes.
     profile_runtime_address_edges("runtime address edge CPU+RAM", simple_hardware());
     profile_runtime_address_edges("runtime address edge +88-2SIO", serial_hardware());
     profile_runtime_dbin_edges("runtime DBIN edge CPU+RAM", simple_hardware());
