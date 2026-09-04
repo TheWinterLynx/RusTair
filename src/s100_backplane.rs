@@ -122,10 +122,6 @@ impl S100BusChange {
     pub fn is_empty(self) -> bool {
         self.pins == [0; PIN_MASK_WORDS]
     }
-
-    fn intersects(self, sensitivity: &PinMask) -> bool {
-        masks_intersect(&self.pins, sensitivity)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -606,10 +602,6 @@ impl S100Slot {
         self.resolved_drive = S100CardDrive::new();
     }
 
-    fn observes_change(&self, change: S100BusChange) -> bool {
-        change.intersects(&self.input_sensitivity)
-    }
-
     pub fn number(&self) -> usize {
         self.number
     }
@@ -647,6 +639,15 @@ pub struct S100Backplane {
     /// and then folds active card drives into bit-sliced driver counters.
     passive_sample: S100BusSample,
     sample: S100BusSample,
+    /// One bit per physically occupied connector. Hot paths iterate this mask
+    /// directly instead of rescanning empty chassis connectors.
+    occupied_slots: S100SlotMask,
+    /// For each physical contact, the slots that actually declare that contact
+    /// as an INPUT. This is the compiled fan-out graph for event propagation.
+    input_observers: [S100SlotMask; S100_CONTACT_COUNT + 1],
+    /// Slots whose cached connector output differs from what is currently folded
+    /// into the persistent resolver. Selection changes are added separately.
+    dirty_drive_slots: S100SlotMask,
     /// Transaction mask whose contributions are currently folded into `sample`.
     incremental_selected: S100SlotMask,
     /// Non-slot Display/Control contribution currently folded into `sample`.
@@ -664,6 +665,9 @@ impl S100Backplane {
                 .collect(),
             passive_sample: S100BusSample::default(),
             sample: S100BusSample::default(),
+            occupied_slots: 0,
+            input_observers: [0; S100_CONTACT_COUNT + 1],
+            dirty_drive_slots: 0,
             incremental_selected: 0,
             incremental_chassis_drive: S100CardDrive::new(),
             incremental_valid: false,
@@ -698,6 +702,42 @@ impl S100Backplane {
         &self.sample
     }
 
+    fn update_observer_index(&mut self, sensitivity: PinMask, slot_bit: S100SlotMask, add: bool) {
+        for word in 0..PIN_MASK_WORDS {
+            let mut bits = sensitivity[word];
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let pin = word * 64 + bit;
+                if pin > S100_CONTACT_COUNT {
+                    continue;
+                }
+                if add {
+                    self.input_observers[pin] |= slot_bit;
+                } else {
+                    self.input_observers[pin] &= !slot_bit;
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn observers_for_change(&self, change: S100BusChange) -> S100SlotMask {
+        let mut observers = 0;
+        for word in 0..PIN_MASK_WORDS {
+            let mut bits = change.pins[word];
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let pin = word * 64 + bit;
+                if pin <= S100_CONTACT_COUNT {
+                    observers |= self.input_observers[pin];
+                }
+            }
+        }
+        observers
+    }
+
     pub fn set_passive_bias(&mut self, signal: S100Signal, level: Option<bool>) {
         let pin = signal.pin().expect("valid S-100 signal") as usize;
         self.passive_sample.set_resolved_pin(
@@ -719,22 +759,30 @@ impl S100Backplane {
         card: Box<dyn S100ElectricalCard>,
     ) -> Result<(), S100BackplaneError> {
         let slot_count = self.slots.len();
-        let target = self
-            .slots
-            .get_mut(slot.checked_sub(1).unwrap_or(usize::MAX))
-            .ok_or(S100BackplaneError::InvalidSlot { slot, slot_count })?;
-        if target.card.is_some() {
-            return Err(S100BackplaneError::SlotOccupied { slot });
+        let slot_bit = s100_slot_mask(slot);
+        let sensitivity;
+        {
+            let target = self
+                .slots
+                .get_mut(slot.checked_sub(1).unwrap_or(usize::MAX))
+                .ok_or(S100BackplaneError::InvalidSlot { slot, slot_count })?;
+            if target.card.is_some() {
+                return Err(S100BackplaneError::SlotOccupied { slot });
+            }
+            target.set_drive_contract(card.s100_descriptor());
+            let drive = card.drive_s100();
+            if let Err(error) = validate_card_drive(target, &drive) {
+                target.clear_drive_contract();
+                return Err(error);
+            }
+            target.cached_drive = drive;
+            target.resolved_drive = S100CardDrive::new();
+            sensitivity = target.input_sensitivity;
+            target.card = Some(card);
         }
-        target.set_drive_contract(card.s100_descriptor());
-        let drive = card.drive_s100();
-        if let Err(error) = validate_card_drive(target, &drive) {
-            target.clear_drive_contract();
-            return Err(error);
-        }
-        target.cached_drive = drive;
-        target.resolved_drive = S100CardDrive::new();
-        target.card = Some(card);
+        self.occupied_slots |= slot_bit;
+        self.dirty_drive_slots |= slot_bit;
+        self.update_observer_index(sensitivity, slot_bit, true);
         self.incremental_valid = false;
         Ok(())
     }
@@ -744,12 +792,21 @@ impl S100Backplane {
         slot: usize,
     ) -> Result<Option<Box<dyn S100ElectricalCard>>, S100BackplaneError> {
         let slot_count = self.slots.len();
-        let target = self
-            .slots
-            .get_mut(slot.checked_sub(1).unwrap_or(usize::MAX))
-            .ok_or(S100BackplaneError::InvalidSlot { slot, slot_count })?;
-        let card = target.card.take();
-        target.clear_drive_contract();
+        let slot_bit = s100_slot_mask(slot);
+        let sensitivity;
+        let card;
+        {
+            let target = self
+                .slots
+                .get_mut(slot.checked_sub(1).unwrap_or(usize::MAX))
+                .ok_or(S100BackplaneError::InvalidSlot { slot, slot_count })?;
+            sensitivity = target.input_sensitivity;
+            card = target.card.take();
+            target.clear_drive_contract();
+        }
+        self.update_observer_index(sensitivity, slot_bit, false);
+        self.occupied_slots &= !slot_bit;
+        self.dirty_drive_slots &= !slot_bit;
         self.incremental_valid = false;
         Ok(card)
     }
@@ -789,17 +846,15 @@ impl S100Backplane {
         self.observe_selected_cards(S100SlotMask::MAX);
     }
 
-    /// Observe only cards whose already-compiled decode mask says they can be
-    /// affected by this transaction. Real slots still see the wires in parallel;
-    /// this mask merely avoids serially executing impossible responders in the
-    /// software model.
+    /// Observe only physically occupied slots in the selected set. Iterating the
+    /// u32 mask avoids rescanning empty connectors in an 18-slot chassis.
     pub fn observe_selected_cards(&mut self, selected: S100SlotMask) {
         let observed = &self.sample;
-        for slot in &mut self.slots {
-            if selected & s100_slot_mask(slot.number) == 0 {
-                continue;
-            }
-            if let Some(card) = slot.card.as_mut() {
+        let mut pending = selected & self.occupied_slots;
+        while pending != 0 {
+            let index = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            if let Some(card) = self.slots[index].card.as_mut() {
                 card.observe_s100(observed);
             }
         }
@@ -814,11 +869,12 @@ impl S100Backplane {
         selected: S100SlotMask,
     ) -> Result<S100SlotMask, S100BackplaneError> {
         let mut changed = 0;
-        for slot in &mut self.slots {
-            let bit = s100_slot_mask(slot.number);
-            if selected & bit == 0 {
-                continue;
-            }
+        let mut pending = selected & self.occupied_slots;
+        while pending != 0 {
+            let index = pending.trailing_zeros() as usize;
+            let bit = 1u32 << index;
+            pending &= pending - 1;
+            let slot = &mut self.slots[index];
             let Some(card) = slot.card.as_mut() else {
                 continue;
             };
@@ -829,13 +885,14 @@ impl S100Backplane {
                 changed |= bit;
             }
         }
+        self.dirty_drive_slots |= changed;
         Ok(changed)
     }
 
-    /// Observe only cards connected as inputs to nets that actually changed.
-    /// `forced` covers state transitions originating on the non-S-100 side of a
-    /// board, such as the Intel package pins on the CPU card. After observation,
-    /// the card's drive is refreshed once and cached for subsequent deltas.
+    /// Observe exactly the slots wired to changed input contacts plus any slots
+    /// forced by a non-S100-side event (for example Intel package pins). The
+    /// per-contact fan-out was compiled when cards were inserted, so no chassis
+    /// scan or per-slot sensitivity test occurs on the propagation hot path.
     pub fn observe_changed_cards(
         &mut self,
         change: S100BusChange,
@@ -843,12 +900,15 @@ impl S100Backplane {
         selected: S100SlotMask,
     ) -> Result<S100SlotMask, S100BackplaneError> {
         let observed = &self.sample;
+        let mut pending = (forced | self.observers_for_change(change))
+            & selected
+            & self.occupied_slots;
         let mut drive_changed = 0;
-        for slot in &mut self.slots {
-            let bit = s100_slot_mask(slot.number);
-            if selected & bit == 0 || (forced & bit == 0 && !slot.observes_change(change)) {
-                continue;
-            }
+        while pending != 0 {
+            let index = pending.trailing_zeros() as usize;
+            let bit = 1u32 << index;
+            pending &= pending - 1;
+            let slot = &mut self.slots[index];
             let Some(card) = slot.card.as_mut() else {
                 continue;
             };
@@ -860,6 +920,7 @@ impl S100Backplane {
                 drive_changed |= bit;
             }
         }
+        self.dirty_drive_slots |= drive_changed;
         Ok(drive_changed)
     }
 
@@ -873,9 +934,13 @@ impl S100Backplane {
         let old_contention = self.sample.contention;
         let (passive_defined, passive_high) =
             Self::begin_resolution(&mut self.sample, &self.passive_sample);
-        for slot in &mut self.slots {
-            let active = selected & s100_slot_mask(slot.number) != 0 && slot.card.is_some();
-            let drive = if active {
+        let mut pending = self.occupied_slots;
+        while pending != 0 {
+            let index = pending.trailing_zeros() as usize;
+            let bit = 1u32 << index;
+            pending &= pending - 1;
+            let slot = &mut self.slots[index];
+            let drive = if selected & bit != 0 {
                 slot.cached_drive
             } else {
                 S100CardDrive::new()
@@ -888,6 +953,7 @@ impl S100Backplane {
             .finalize_driver_levels(passive_defined, passive_high);
         self.incremental_selected = selected;
         self.incremental_chassis_drive = chassis_drive;
+        self.dirty_drive_slots = 0;
         self.incremental_valid = true;
         self.sample
             .electrical_change_from(old_defined, old_high, old_contention)
@@ -906,9 +972,14 @@ impl S100Backplane {
         let old_high = self.sample.high;
         let old_contention = self.sample.contention;
 
-        for slot in &mut self.slots {
-            let active = selected & s100_slot_mask(slot.number) != 0 && slot.card.is_some();
-            let target = if active {
+        let selection_changed = selected ^ self.incremental_selected;
+        let mut pending = (self.dirty_drive_slots | selection_changed) & self.occupied_slots;
+        while pending != 0 {
+            let index = pending.trailing_zeros() as usize;
+            let bit = 1u32 << index;
+            pending &= pending - 1;
+            let slot = &mut self.slots[index];
+            let target = if selected & bit != 0 {
                 slot.cached_drive
             } else {
                 S100CardDrive::new()
@@ -917,6 +988,7 @@ impl S100Backplane {
                 self.sample.replace_drive(&slot.resolved_drive, &target);
                 slot.resolved_drive = target;
             }
+            self.dirty_drive_slots &= !bit;
         }
 
         if chassis_drive != self.incremental_chassis_drive {
@@ -958,10 +1030,11 @@ impl S100Backplane {
         let old_contention = self.sample.contention;
         let (passive_defined, passive_high) =
             Self::begin_resolution(&mut self.sample, &self.passive_sample);
-        for slot in &self.slots {
-            if selected & s100_slot_mask(slot.number) != 0 && slot.card.is_some() {
-                self.sample.add_drive(&slot.cached_drive);
-            }
+        let mut pending = selected & self.occupied_slots;
+        while pending != 0 {
+            let index = pending.trailing_zeros() as usize;
+            pending &= pending - 1;
+            self.sample.add_drive(&self.slots[index].cached_drive);
         }
         for drive in chassis_drives {
             self.sample.add_drive(drive);
