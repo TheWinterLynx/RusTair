@@ -9,8 +9,8 @@ fn engine_recreation_reapplies_physical_interrupt_wiring() {
         .expect("app must own the engine-recreation boundary");
     let tail = &APP_SOURCE[start..];
     let end = tail
-        .find("fn apply_memory_configuration")
-        .expect("helper after engine-recreation boundary");
+        .find("fn apply_s100_hardware_configuration")
+        .expect("S-100 hardware helper after engine-recreation boundary");
     let function = &tail[..end];
 
     assert!(function.contains("self.machine.replace_engine(engine)"));
