@@ -248,7 +248,7 @@ impl S100RuntimeFabric {
             .map_err(S100RuntimeBuildError::Backplane)?;
         // Seed package-side inputs exactly once from the first resolved S-100
         // sample. Later settles can trust the compiled connector fan-out: CPU
-        // package-pin changes affect its connector outputs via refresh_cached_drives,
+        // package-pin changes are pushed directly into its normal slot cache,
         // while only a real change on one of the CPU card's S-100 inputs needs to
         // wake its input sampler again.
         let cpu_slot_mask = fabric.cpu_slot_mask();
@@ -465,8 +465,11 @@ impl S100RuntimeFabric {
         for installed in &self.serial { installed.handle.clear_io_trace(); }
     }
 
-    pub fn set_cpu_package_pins(&self, pins: Cpu8080Pins) {
-        self.cpu.set_package_pins(pins);
+    pub fn set_cpu_package_pins(&mut self, pins: Cpu8080Pins) {
+        let drive = self.cpu.set_package_pins_and_connector_drive(pins);
+        self.backplane
+            .update_cached_slot_drive(self.cpu_slot, drive)
+            .expect("validated MITS CPU connector drive must match its slot contract");
     }
 
     pub fn cpu_package_inputs(&self) -> Cpu8080Inputs {
@@ -521,21 +524,21 @@ impl S100RuntimeFabric {
     /// sensitivity comes directly from its historical connector descriptor and
     /// its output drive remains cached until one of those inputs wakes it.
     ///
-    /// CPU package-side changes are materialized into the CPU card's cached
-    /// connector drive before resolution. After construction's one input seed,
-    /// the CPU observes again only when a declared S-100 input actually changes.
-    /// Serial slots are refreshed once at the start because their UART state can
-    /// currently advance through host endpoint handles between edges. Neither
-    /// exception bypasses the bus: resulting connector drives still resolve here.
+    /// CPU package-side changes are already pushed into the CPU slot's cached
+    /// connector drive by `set_cpu_package_pins`. Serial slots alone need an
+    /// external refresh here because their UART state can advance through host
+    /// endpoint handles between bus edges. Neither path bypasses S-100: all
+    /// resulting drives still resolve through the same connector graph below.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
         extra_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
         let selected = S100SlotMask::MAX;
-        let cpu_slot = self.cpu_slot_mask();
-        self.backplane
-            .refresh_cached_drives(cpu_slot | self.externally_mutable_slots)?;
+        if self.externally_mutable_slots != 0 {
+            self.backplane
+                .refresh_cached_drives(self.externally_mutable_slots)?;
+        }
 
         let mut display_drive = display.drive(self.backplane.sample());
 
@@ -578,8 +581,9 @@ impl S100RuntimeFabric {
 
     /// Resolve one causal propagation delta for a predecoded Fast transaction.
     /// Fast still exercises the installed CPU/RAM/I/O cards and the same
-    /// electrical resolver. `package_changed` only tells the compiled fabric that
-    /// the CPU board's non-S-100 package side needs one forced observation.
+    /// electrical resolver. `package_changed` only means the CPU input sampler is
+    /// forced after the connector transition; its output drive has already been
+    /// pushed to the slot cache by `set_cpu_package_pins`.
     fn fast_delta(
         &mut self,
         selected: S100SlotMask,
@@ -587,11 +591,7 @@ impl S100RuntimeFabric {
         package_changed: bool,
     ) -> Result<(), S100BackplaneError> {
         let cpu_slot = self.cpu_slot_mask();
-        let externally_dirty = if package_changed {
-            cpu_slot | (selected & self.externally_mutable_slots)
-        } else {
-            0
-        };
+        let externally_dirty = selected & self.externally_mutable_slots;
         if externally_dirty != 0 {
             self.backplane.refresh_cached_drives(externally_dirty)?;
         }
@@ -608,15 +608,17 @@ impl S100RuntimeFabric {
     }
 
     /// Update wire levels without replaying a card state transition. The CPU
-    /// package has changed, so refresh that card's cached drive once, then resolve
-    /// the physical connector state with the selected responders still present.
+    /// connector cache was updated at the package boundary; only serial devices
+    /// that may have changed asynchronously need an external refresh here.
     fn fast_resolve_only(
         &mut self,
         selected: S100SlotMask,
         display: DisplayControlLines,
     ) -> Result<(), S100BackplaneError> {
-        let refresh = self.cpu_slot_mask() | (selected & self.externally_mutable_slots);
-        self.backplane.refresh_cached_drives(refresh)?;
+        let refresh = selected & self.externally_mutable_slots;
+        if refresh != 0 {
+            self.backplane.refresh_cached_drives(refresh)?;
+        }
         let display_drive = display.drive(self.backplane.sample());
         let _ = self
             .backplane
