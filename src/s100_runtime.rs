@@ -265,11 +265,197 @@ impl S100RuntimeFabric {
         self.cpu_slot
     }
 
+    #[cfg(test)]
     pub(crate) fn serial_handle_for_slot(&self, slot: usize) -> Option<RuntimeSerialCardHandle> {
         self.serial
             .iter()
             .find(|installed| installed.slot == slot)
             .map(|installed| installed.handle.clone())
+    }
+
+    fn serial_handle_for_port(&self, port_index: usize) -> Option<&RuntimeSerialCardHandle> {
+        self.serial.iter().map(|installed| &installed.handle)
+            .find(|handle| handle.supports_port(port_index))
+    }
+
+    pub(crate) fn primary_serial_board(&self) -> Option<crate::config::SerialBoard> {
+        self.serial.first().map(|installed| installed.handle.board())
+    }
+
+    pub(crate) fn primary_sio_hardware(&self) -> Option<crate::config::SioHardwareConfig> {
+        self.serial.iter().find_map(|installed| installed.handle.sio_hardware())
+    }
+
+    pub(crate) fn primary_two_sio_straps(&self) -> Option<crate::config::TwoSioStraps> {
+        self.serial.iter().find_map(|installed| installed.handle.two_sio_straps())
+    }
+
+    pub(crate) fn primary_two_sio_interrupt_wiring(&self) -> Option<crate::config::TwoSioInterruptWiring> {
+        self.serial.iter().find_map(|installed| installed.handle.two_sio_interrupt_wiring())
+    }
+
+    fn serial_handle_for_data_port(&self, port: u8) -> Option<&RuntimeSerialCardHandle> {
+        self.serial.iter().map(|installed| &installed.handle)
+            .find(|handle| handle.data_port_matches(port))
+    }
+
+    pub(crate) fn advance_serial_time(&self, t_states: u64) {
+        for installed in &self.serial { installed.handle.advance_t_states(t_states); }
+    }
+
+    pub(crate) fn serial_receive(&self, port_index: usize, byte: u8) -> bool {
+        self.serial_handle_for_port(port_index).is_some_and(|handle| handle.receive(port_index, byte))
+    }
+
+    pub(crate) fn serial_rx_empty(&self, port_index: usize) -> bool {
+        self.serial_handle_for_port(port_index).map_or(true, |handle| handle.rx_empty(port_index))
+    }
+
+    pub(crate) fn serial_rx_len(&self, port_index: usize) -> usize {
+        self.serial_handle_for_port(port_index).map_or(0, |handle| handle.rx_len(port_index))
+    }
+
+    pub(crate) fn serial_rx_line_idle(&self, port_index: usize) -> bool {
+        self.serial_handle_for_port(port_index).map_or(true, |handle| handle.rx_line_idle(port_index))
+    }
+
+    pub(crate) fn serial_tx_busy(&self, port_index: usize) -> bool {
+        self.serial_handle_for_port(port_index).is_some_and(|handle| handle.tx_busy(port_index))
+    }
+
+    pub(crate) fn serial_tx_front(&self, port_index: usize) -> Option<u8> {
+        self.serial_handle_for_port(port_index).and_then(|handle| handle.tx_front(port_index))
+    }
+
+    pub(crate) fn serial_tx_complete(&self, port_index: usize) -> Option<u8> {
+        self.serial_handle_for_port(port_index).and_then(|handle| handle.tx_complete(port_index))
+    }
+
+    pub(crate) fn clear_serial(&self) {
+        for installed in &self.serial { installed.handle.clear(); }
+    }
+
+    pub(crate) fn serial_modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
+        self.serial_handle_for_port(port_index).and_then(|handle| handle.modem_lines(port_index))
+    }
+
+    pub(crate) fn set_serial_modem_inputs(&self, port_index: usize, cts: bool, dcd: bool) -> bool {
+        self.serial_handle_for_port(port_index)
+            .is_some_and(|handle| handle.set_modem_inputs(port_index, cts, dcd))
+    }
+
+    pub(crate) fn set_serial_receive_break(&self, port_index: usize, active: bool) -> bool {
+        self.serial_handle_for_port(port_index)
+            .is_some_and(|handle| handle.set_receive_break(port_index, active))
+    }
+
+    pub(crate) fn sio_handshake_lines(&self) -> Option<(bool, bool, bool, bool, bool, bool)> {
+        self.serial.iter().map(|installed| &installed.handle)
+            .find(|handle| handle.board() == crate::config::SerialBoard::Sio88)
+            .and_then(RuntimeSerialCardHandle::sio_handshake_lines)
+    }
+
+    pub(crate) fn pulse_sio_input_device_ready(&self) -> bool {
+        self.serial.iter().map(|installed| &installed.handle)
+            .find(|handle| handle.board() == crate::config::SerialBoard::Sio88)
+            .is_some_and(RuntimeSerialCardHandle::pulse_sio_input_device_ready)
+    }
+
+    pub(crate) fn pulse_sio_output_device_ready(&self) -> bool {
+        self.serial.iter().map(|installed| &installed.handle)
+            .find(|handle| handle.board() == crate::config::SerialBoard::Sio88)
+            .is_some_and(RuntimeSerialCardHandle::pulse_sio_output_device_ready)
+    }
+
+    pub(crate) fn debugger_inject_serial_rx(&self, port: u8, byte: u8) -> bool {
+        self.serial_handle_for_data_port(port).is_some_and(|handle| handle.debugger_inject_rx(port, byte))
+    }
+
+    pub(crate) fn debugger_clear_serial_rx(&self, port: u8) -> bool {
+        self.serial_handle_for_data_port(port).is_some_and(|handle| handle.debugger_clear_rx(port))
+    }
+
+    pub(crate) fn debugger_clear_serial_tx(&self, port: u8) -> bool {
+        self.serial_handle_for_data_port(port).is_some_and(|handle| handle.debugger_clear_tx(port))
+    }
+
+    pub(crate) fn debugger_complete_serial_tx(&self, port: u8) -> Option<u8> {
+        self.serial_handle_for_data_port(port).and_then(|handle| handle.debugger_complete_tx(port))
+    }
+
+    pub(crate) fn peek_io_port(&self, port: u8) -> u8 {
+        let mut value = None;
+        for handle in self.serial.iter().map(|installed| &installed.handle)
+            .filter(|handle| handle.decodes_port(port))
+        {
+            let candidate = handle.peek_input(port);
+            value = Some(match value {
+                None => candidate,
+                Some(previous) if previous == candidate => previous,
+                Some(_) => S100_OPEN_BUS_VALUE,
+            });
+        }
+        value.unwrap_or(S100_OPEN_BUS_VALUE)
+    }
+
+    pub(crate) fn debugger_input_port(&self, port: u8) -> u8 {
+        let mut value = None;
+        for handle in self.serial.iter().map(|installed| &installed.handle)
+            .filter(|handle| handle.decodes_port(port))
+        {
+            let candidate = handle.debugger_input(port);
+            value = Some(match value {
+                None => candidate,
+                Some(previous) if previous == candidate => previous,
+                Some(_) => S100_OPEN_BUS_VALUE,
+            });
+        }
+        value.unwrap_or(S100_OPEN_BUS_VALUE)
+    }
+
+    pub(crate) fn debugger_output_port(&self, port: u8, value: u8) {
+        for handle in self.serial.iter().map(|installed| &installed.handle)
+            .filter(|handle| handle.decodes_port(port))
+        {
+            handle.debugger_output(port, value);
+        }
+    }
+
+    pub(crate) fn serial_vector_interrupt_requests(&self) -> u8 {
+        self.serial.iter().fold(0, |mask, installed| {
+            mask | installed.handle.vector_interrupt_requests()
+        })
+    }
+
+    pub(crate) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
+        let mut result = (None, None, 0u64, 0u64);
+        for handle in self.serial.iter().map(|installed| &installed.handle)
+            .filter(|handle| handle.decodes_port(port))
+        {
+            let activity = handle.io_port_activity(port);
+            if activity.0.is_some() { result.0 = activity.0; }
+            if activity.1.is_some() { result.1 = activity.1; }
+            result.2 = result.2.saturating_add(activity.2);
+            result.3 = result.3.saturating_add(activity.3);
+        }
+        result
+    }
+
+    pub(crate) fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
+        let mut events = Vec::new();
+        for installed in &self.serial { events.extend(installed.handle.io_trace_snapshot()); }
+        events.sort_unstable_by_key(|event| event.0);
+        events
+    }
+
+    pub(crate) fn io_trace_enabled(&self) -> bool {
+        self.serial.iter().any(|installed| installed.handle.io_trace_enabled())
+    }
+    pub(crate) fn set_io_trace_enabled(&self, enabled: bool) {
+        for installed in &self.serial { installed.handle.set_io_trace_enabled(enabled); }
+    }
+    pub(crate) fn clear_io_trace(&self) {
+        for installed in &self.serial { installed.handle.clear_io_trace(); }
     }
 
     pub fn set_cpu_package_pins(&self, pins: Cpu8080Pins) {
@@ -782,6 +968,21 @@ mod tests {
         config
     }
 
+    fn sio_hardware(config: SioHardwareConfig) -> S100HardwareConfig {
+        let mut hardware = simple_hardware();
+        hardware.set_slot(3, Some(S100InstalledCardConfig::Mits88Sio(config))).unwrap();
+        hardware
+    }
+
+    fn two_sio_hardware(wiring: crate::config::TwoSioInterruptWiring) -> S100HardwareConfig {
+        let mut hardware = simple_hardware();
+        hardware.set_slot(3, Some(S100InstalledCardConfig::Mits88TwoSio {
+            straps: crate::config::TwoSioStraps::default(),
+            interrupt_wiring: wiring,
+        })).unwrap();
+        hardware
+    }
+
     #[test]
     fn configured_cpu_and_ram_are_live_slots_on_one_backplane() {
         let fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
@@ -813,6 +1014,136 @@ mod tests {
         for port in 0x10..=0x13 {
             assert_eq!(fabric.io_responder_mask(port), s100_slot_mask(4));
         }
+    }
+
+    #[test]
+    fn physical_sio_rev1_routes_independent_ready_sources_to_vi_without_pint() {
+        use crate::config::{SioInterruptTarget, SioInterruptWiring};
+        let mut config = SioHardwareConfig::default();
+        config.interrupt_wiring = SioInterruptWiring {
+            input: SioInterruptTarget::Vi3,
+            output: SioInterruptTarget::Vi5,
+        };
+        let mut fabric = S100RuntimeFabric::new(sio_hardware(config), RamInit::Zeroed).unwrap();
+        fabric.fast_io_write(config.address.status(), 0x03).unwrap();
+        assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'R'));
+        fabric.settle(DisplayControlLines::default(), &[]).unwrap();
+
+        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(3)), Some(false));
+        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(5)), Some(false));
+        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true));
+    }
+
+    #[test]
+    fn physical_sio_pint_respects_independent_input_and_output_enables() {
+        use crate::config::{SioInterruptTarget, SioInterruptWiring};
+        let mut config = SioHardwareConfig::default();
+        config.interrupt_wiring = SioInterruptWiring {
+            input: SioInterruptTarget::Pint,
+            output: SioInterruptTarget::Disconnected,
+        };
+        let mut fabric = S100RuntimeFabric::new(sio_hardware(config), RamInit::Zeroed).unwrap();
+        assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'I'));
+
+        fabric.fast_io_write(config.address.status(), 0x02).unwrap();
+        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true),
+            "enabling only the disconnected output source must not assert PINT");
+
+        fabric.fast_io_write(config.address.status(), 0x01).unwrap();
+        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(false),
+            "the independently enabled input source must assert its PINT wiring");
+
+        config.interrupt_wiring = SioInterruptWiring {
+            input: SioInterruptTarget::Disconnected,
+            output: SioInterruptTarget::Pint,
+        };
+        let mut output_fabric =
+            S100RuntimeFabric::new(sio_hardware(config), RamInit::Zeroed).unwrap();
+        output_fabric.fast_io_write(config.address.status(), 0x02).unwrap();
+        assert_eq!(
+            output_fabric
+                .sample()
+                .signal_level(S100Signal::InterruptRequest),
+            Some(false),
+            "the independently enabled COM2502 transmit-ready source must assert PINT"
+        );
+    }
+
+    #[test]
+    fn physical_sio_rev0_uses_external_ready_not_com2502_ready_for_pint() {
+        use crate::config::{SioInterruptTarget, SioInterruptWiring, SioRevision};
+        let mut config = SioHardwareConfig::default();
+        config.revision = SioRevision::Rev0;
+        config.interrupt_wiring = SioInterruptWiring {
+            input: SioInterruptTarget::Pint,
+            output: SioInterruptTarget::Disconnected,
+        };
+        let mut fabric = S100RuntimeFabric::new(sio_hardware(config), RamInit::Zeroed).unwrap();
+        fabric.fast_io_write(config.address.status(), 0x01).unwrap();
+        assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'R'));
+        fabric.settle(DisplayControlLines::default(), &[]).unwrap();
+        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true),
+            "COM2502 RDA must not fabricate the Rev0 external-ready request");
+
+        assert!(fabric.pulse_sio_input_device_ready());
+        fabric.settle(DisplayControlLines::default(), &[]).unwrap();
+        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(false));
+    }
+
+    #[test]
+    fn physical_two_sio_routes_both_acia_requests_independently() {
+        use crate::config::{TwoSioInterruptTarget, TwoSioInterruptWiring};
+        let wiring = TwoSioInterruptWiring {
+            port0: TwoSioInterruptTarget::Vi2,
+            port1: TwoSioInterruptTarget::Vi6,
+        };
+        let mut fabric = S100RuntimeFabric::new(two_sio_hardware(wiring), RamInit::Zeroed).unwrap();
+        fabric.fast_io_write(0x10, 0x95).unwrap();
+        fabric.fast_io_write(0x12, 0x95).unwrap();
+        assert!(fabric.debugger_inject_serial_rx(0x11, b'A'));
+        assert!(fabric.debugger_inject_serial_rx(0x13, b'B'));
+        fabric.settle(DisplayControlLines::default(), &[]).unwrap();
+
+        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(2)), Some(false));
+        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(6)), Some(false));
+        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true));
+    }
+
+    #[test]
+    fn overlapping_physical_serial_cards_both_consume_read_and_contend() {
+        let config = SioHardwareConfig::default();
+        let mut hardware = sio_hardware(config);
+        hardware.set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(config))).unwrap();
+        let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+        let first = fabric.serial_handle_for_slot(3).unwrap();
+        let second = fabric.serial_handle_for_slot(4).unwrap();
+        assert!(first.debugger_inject_rx(config.address.data(), 0x00));
+        assert!(second.debugger_inject_rx(config.address.data(), 0xff));
+
+        assert_eq!(fabric.fast_io_read(config.address.data()).unwrap(), S100_OPEN_BUS_VALUE);
+        assert!(first.rx_empty(0) && second.rx_empty(0), "both selected cards must perform the read");
+        for bit in 0..8 {
+            assert!(fabric.sample().signal_is_contended(S100Signal::DataIn(bit)));
+        }
+    }
+
+    #[test]
+    fn elapsed_emulated_time_reaches_every_installed_serial_card() {
+        let config = SioHardwareConfig::default();
+        let mut hardware = sio_hardware(config);
+        hardware.set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(config))).unwrap();
+        let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+        let first = fabric.serial_handle_for_slot(3).unwrap();
+        let second = fabric.serial_handle_for_slot(4).unwrap();
+        assert!(first.receive(0, b'A'));
+        assert!(second.receive(0, b'B'));
+        assert_eq!(first.peek_input(config.address.status()) & 0x01, 0x01);
+        assert_eq!(second.peek_input(config.address.status()) & 0x01, 0x01);
+
+        fabric.advance_serial_time(200_000);
+
+        assert_eq!(first.peek_input(config.address.data()), b'A');
+        assert_eq!(second.peek_input(config.address.data()), b'B');
     }
 
     #[test]

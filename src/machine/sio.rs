@@ -80,6 +80,8 @@ impl Default for SioPort {
 }
 
 impl SioPort {
+    #[cfg(test)]
+    pub(in crate::machine) fn rx_full(&self) -> bool { self.rx_full }
     pub(in crate::machine) fn new(config: SioHardwareConfig) -> Self {
         Self {
             config,
@@ -118,7 +120,6 @@ impl SioPort {
     pub(in crate::machine) fn receive_len(&self) -> usize {
         usize::from(self.rx_full) + usize::from(self.rx_shift.is_some())
     }
-    pub(in crate::machine) fn rx_full(&self) -> bool { self.rx_full }
     pub(in crate::machine) fn tx_buffer_empty(&self) -> bool { self.tx_holding.is_none() }
 
     /// External connector RIN ready pulse. This sets only the original Rev0
@@ -133,8 +134,6 @@ impl SioPort {
         self.output_device_ready = true;
     }
 
-    pub(in crate::machine) fn input_device_ready(&self) -> bool { self.input_device_ready }
-    pub(in crate::machine) fn output_device_ready(&self) -> bool { self.output_device_ready }
 
     fn parity_bit(&self, value: u8) -> bool {
         let bits = self.config.format.data_bits.bits();

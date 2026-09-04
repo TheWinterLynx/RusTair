@@ -35,6 +35,9 @@ impl super::AltairBus {
     /// device-ready flip-flop that the pulse set. RSI/TSO are the instantaneous
     /// asynchronous serial levels; idle is MARK/HIGH. BIN/BOT are board outputs.
     pub fn sio_logical_lines(&self) -> Option<(bool, bool, bool, bool, bool, bool)> {
+        if self.cycle_uses_physical_serial() {
+            return self.memory.sio_handshake_lines();
+        }
         let lines = self.io.sio_handshake_lines()?;
         Some((
             lines.rsi_high,

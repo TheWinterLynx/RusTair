@@ -535,6 +535,13 @@ pub trait S100ElectricalCard: S100Card {
     /// Return the levels this card currently drives. Everything omitted remains
     /// high impedance/released.
     fn drive_s100(&self) -> S100CardDrive;
+
+    /// Refresh connector outputs after state changed outside the S-100 input
+    /// path (for example a character arriving at a serial connector). Most
+    /// cards have no such boundary and can return their persistent drive.
+    fn refresh_external_drive(&mut self) -> S100CardDrive {
+        self.drive_s100()
+    }
 }
 
 pub struct S100Slot {
@@ -812,10 +819,10 @@ impl S100Backplane {
             if selected & bit == 0 {
                 continue;
             }
-            let Some(card) = slot.card.as_ref() else {
+            let Some(card) = slot.card.as_mut() else {
                 continue;
             };
-            let drive = card.drive_s100();
+            let drive = card.refresh_external_drive();
             validate_card_drive(slot, &drive)?;
             if drive != slot.cached_drive {
                 slot.cached_drive = drive;

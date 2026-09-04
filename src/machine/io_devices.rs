@@ -223,8 +223,28 @@ impl IoDevices {
                 && self.two_sio_irq(index)
         })
     }
+    fn sio_interrupt_sources(&self) -> (bool, bool) {
+        if self.serial_board != SerialBoard::Sio88 {
+            return (false, false);
+        }
+        let status = self.sio.status();
+        let input = self.sio_control & 0x01 != 0 && status & 0x01 == 0;
+        let output = self.sio_control & 0x02 != 0 && status & 0x80 == 0;
+        (input, output)
+    }
     pub(super) fn vector_interrupt_requests(&self) -> u8 {
-        if self.serial_board != SerialBoard::TwoSio88 { return 0; }
+        if self.serial_board == SerialBoard::Sio88 {
+            let (input, output) = self.sio_interrupt_sources();
+            let wiring = self.sio.config().interrupt_wiring;
+            let mut mask = 0u8;
+            if input {
+                if let Some(level) = wiring.input.vector_level() { mask |= 1 << level; }
+            }
+            if output {
+                if let Some(level) = wiring.output.vector_level() { mask |= 1 << level; }
+            }
+            return mask;
+        }
         let mut mask = 0u8;
         for index in [0usize, 1] {
             if !self.two_sio_irq(index) { continue; }
@@ -340,13 +360,9 @@ impl IoDevices {
     pub(super) fn interrupt_request(&self) -> bool {
         match self.serial_board {
             SerialBoard::Sio88 => {
-                let (input_ready, output_ready) = match self.sio.config().revision {
-                    SioRevision::Rev0 => (self.sio.input_device_ready(), self.sio.output_device_ready()),
-                    SioRevision::Rev1 => (self.sio.rx_full(), self.sio.tx_buffer_empty()),
-                };
-                let rx_irq = self.sio_control & 0x01 != 0 && input_ready;
-                let tx_irq = self.sio_control & 0x02 != 0 && output_ready;
-                rx_irq || tx_irq
+                let (input, output) = self.sio_interrupt_sources();
+                let wiring = self.sio.config().interrupt_wiring;
+                (input && wiring.input.drives_pint()) || (output && wiring.output.drives_pint())
             }
             SerialBoard::TwoSio88 => self.two_sio_pint_request(),
         }
@@ -373,7 +389,7 @@ impl IoDevices {
             },
         }
     }
-    fn peek_input(&self, port: u8) -> u8 {
+    pub(super) fn peek_input(&self, port: u8) -> u8 {
         match self.serial_board {
             SerialBoard::Sio88 => {
                 if port == self.sio_status_port() {
@@ -522,7 +538,15 @@ impl IoDevices {
         self.sio_control = 0;
     }
 
-    fn debugger_inject_rx(&mut self, port: u8, byte: u8) -> bool {
+    pub(super) fn trace_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
+        self.trace.port_activity(port)
+    }
+    pub(super) fn trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> { self.trace.snapshot() }
+    pub(super) fn trace_enabled(&self) -> bool { self.trace.enabled }
+    pub(super) fn set_trace_enabled(&mut self, enabled: bool) { self.trace.set_enabled(enabled); }
+    pub(super) fn clear_trace(&mut self) { self.trace.clear_events(); }
+
+    pub(super) fn debugger_inject_rx(&mut self, port: u8, byte: u8) -> bool {
         let Some(index) = self.data_port_index(port) else { return false; };
         match self.serial_board {
             SerialBoard::Sio88 => self.sio.debugger_inject_received_character(byte),
@@ -531,7 +555,7 @@ impl IoDevices {
         self.trace.record(IO_TRACE_RX_ENQUEUE, port, byte);
         true
     }
-    fn debugger_clear_rx(&mut self, port: u8) -> bool {
+    pub(super) fn debugger_clear_rx(&mut self, port: u8) -> bool {
         let Some(index) = self.data_port_index(port) else { return false; };
         match self.serial_board {
             SerialBoard::Sio88 => self.sio.clear_receive_for_debugger(),
@@ -539,7 +563,7 @@ impl IoDevices {
         }
         true
     }
-    fn debugger_clear_tx(&mut self, port: u8) -> bool {
+    pub(super) fn debugger_clear_tx(&mut self, port: u8) -> bool {
         let Some(index) = self.data_port_index(port) else { return false; };
         match self.serial_board {
             SerialBoard::Sio88 => self.sio.clear_transmit_for_debugger(),
@@ -547,7 +571,7 @@ impl IoDevices {
         }
         true
     }
-    fn debugger_complete_tx(&mut self, port: u8) -> Option<u8> {
+    pub(super) fn debugger_complete_tx(&mut self, port: u8) -> Option<u8> {
         let index = self.data_port_index(port)?;
         let byte = match self.serial_board {
             SerialBoard::Sio88 => self.sio.debugger_complete_one_tx()?,
@@ -559,47 +583,78 @@ impl IoDevices {
 }
 
 impl AltairBus {
+    #[cfg(test)]
+    pub(crate) fn inject_legacy_serial_for_test(&mut self, port: u8, byte: u8) {
+        let _ = self.io.debugger_inject_rx(port, byte);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn legacy_serial_empty_for_test(&self) -> bool { self.io.serial_rx_empty() }
+
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         self.io.configure_serial_board(board);
         self.refresh_interrupt_request_line();
     }
-    pub fn serial_board(&self) -> SerialBoard { self.io.serial_board() }
+    pub fn serial_board(&self) -> SerialBoard {
+        if self.cycle_uses_physical_serial() {
+            self.memory.primary_serial_board().unwrap_or_else(|| self.io.serial_board())
+        } else { self.io.serial_board() }
+    }
 
     pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) {
         self.io.configure_sio_hardware(config);
         self.refresh_interrupt_request_line();
     }
-    pub fn sio_hardware(&self) -> SioHardwareConfig { self.io.sio_hardware() }
+    pub fn sio_hardware(&self) -> SioHardwareConfig {
+        if self.cycle_uses_physical_serial() {
+            self.memory.primary_sio_hardware().unwrap_or_else(|| self.io.sio_hardware())
+        } else { self.io.sio_hardware() }
+    }
 
     pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
         self.io.configure_two_sio_straps(straps);
         self.refresh_interrupt_request_line();
     }
-    pub fn two_sio_straps(&self) -> TwoSioStraps { self.io.two_sio_straps() }
+    pub fn two_sio_straps(&self) -> TwoSioStraps {
+        if self.cycle_uses_physical_serial() {
+            self.memory.primary_two_sio_straps().unwrap_or_else(|| self.io.two_sio_straps())
+        } else { self.io.two_sio_straps() }
+    }
 
     pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
         self.io.configure_two_sio_interrupt_wiring(wiring);
         self.refresh_interrupt_request_line();
     }
     pub fn two_sio_interrupt_wiring(&self) -> TwoSioInterruptWiring {
-        self.io.two_sio_interrupt_wiring()
+        if self.cycle_uses_physical_serial() {
+            self.memory.primary_two_sio_interrupt_wiring()
+                .unwrap_or_else(|| self.io.two_sio_interrupt_wiring())
+        } else { self.io.two_sio_interrupt_wiring() }
     }
     /// Active raw 88-Vector Interrupt request levels sourced by the 88-2SIO.
     /// Bit n corresponds to VIn. This does not itself assert processor PINT; an
     /// installed 88-VI board must consume/arbitrate these lines separately.
     pub fn two_sio_vector_interrupt_requests(&self) -> u8 {
+        if self.cycle_uses_physical_serial() { return self.memory.serial_vector_interrupt_requests(); }
         self.io.vector_interrupt_requests()
     }
 
     pub fn serial_modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
-        self.io.modem_lines(port_index)
+        if self.cycle_uses_physical_serial() { self.memory.serial_modem_lines(port_index) }
+        else { self.io.modem_lines(port_index) }
     }
     pub fn set_serial_modem_inputs(&mut self, port_index: usize, cts_high: bool, dcd_high: bool) -> bool {
+        if self.cycle_uses_physical_serial() {
+            return self.memory.set_serial_modem_inputs(port_index, cts_high, dcd_high);
+        }
         let changed = self.io.set_modem_inputs(port_index, cts_high, dcd_high);
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
     pub fn set_serial_receive_break(&mut self, port_index: usize, active: bool) -> bool {
+        if self.cycle_uses_physical_serial() {
+            return self.memory.set_serial_receive_break(port_index, active);
+        }
         let changed = self.io.set_receive_break(port_index, active);
         if changed { self.refresh_interrupt_request_line(); }
         changed
@@ -609,6 +664,9 @@ impl AltairBus {
     /// logical 88-SIO board/interface boundary. A/B/C change electrical levels,
     /// but these named signal semantics remain the same.
     pub fn sio_handshake_lines(&self) -> Option<(bool, bool, bool, bool)> {
+        if self.cycle_uses_physical_serial() {
+            return self.memory.sio_handshake_lines().map(|lines| (lines.1, lines.2, lines.4, lines.5));
+        }
         self.io.sio_handshake_lines().map(|lines| {
             (
                 lines.input_device_ready,
@@ -619,17 +677,23 @@ impl AltairBus {
         })
     }
     pub fn pulse_sio_input_device_ready(&mut self) -> bool {
+        if self.cycle_uses_physical_serial() { return self.memory.pulse_sio_input_device_ready(); }
         let changed = self.io.pulse_sio_input_device_ready();
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
     pub fn pulse_sio_output_device_ready(&mut self) -> bool {
+        if self.cycle_uses_physical_serial() { return self.memory.pulse_sio_output_device_ready(); }
         let changed = self.io.pulse_sio_output_device_ready();
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
 
     pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
+        if self.cycle_uses_physical_serial() {
+            self.memory.advance_serial_time(t_states);
+            return;
+        }
         self.io.advance_t_states(t_states);
         self.refresh_interrupt_request_line();
     }
@@ -641,56 +705,100 @@ impl AltairBus {
         self.io.ready_for_input_t_state(port, input_read, phase)
     }
 
-    pub fn serial_port1_receive(&mut self, byte: u8) { self.io.port1_receive(byte); self.refresh_interrupt_request_line(); }
-    pub fn serial_port1_rx_empty(&self) -> bool { self.io.port1_rx_empty() }
-    pub fn serial_port1_rx_len(&self) -> usize { self.io.port1_rx_len() }
-    pub fn serial_port1_rx_line_idle(&self) -> bool { self.io.port1_rx_line_idle() }
-    pub fn serial_port1_tx_front(&self) -> Option<u8> { self.io.port1_tx_front() }
+    pub fn serial_port1_receive(&mut self, byte: u8) {
+        if self.cycle_uses_physical_serial() { let _ = self.memory.serial_receive(1, byte); }
+        else { self.io.port1_receive(byte); self.refresh_interrupt_request_line(); }
+    }
+    pub fn serial_port1_rx_empty(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.serial_rx_empty(1) } else { self.io.port1_rx_empty() }
+    }
+    pub fn serial_port1_rx_len(&self) -> usize {
+        if self.cycle_uses_physical_serial() { self.memory.serial_rx_len(1) } else { self.io.port1_rx_len() }
+    }
+    pub fn serial_port1_rx_line_idle(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.serial_rx_line_idle(1) } else { self.io.port1_rx_line_idle() }
+    }
+    pub fn serial_port1_tx_front(&self) -> Option<u8> {
+        if self.cycle_uses_physical_serial() { self.memory.serial_tx_front(1) } else { self.io.port1_tx_front() }
+    }
     pub fn serial_port1_tx_complete(&mut self) -> Option<u8> {
+        if self.cycle_uses_physical_serial() { return self.memory.serial_tx_complete(1); }
         let completed = self.io.port1_tx_complete(); self.refresh_interrupt_request_line(); completed
     }
-    pub fn serial_port1_tx_busy(&self) -> bool { self.io.port1_tx_busy() }
+    pub fn serial_port1_tx_busy(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.serial_tx_busy(1) } else { self.io.port1_tx_busy() }
+    }
     pub(crate) fn serial_interrupt_request(&self) -> bool { self.io.interrupt_request() }
     pub(crate) fn serial_interrupt_opcode(&self) -> u8 { self.io.direct_interrupt_opcode() }
 
-    pub fn serial_rx_line_idle(&self) -> bool { self.io.serial_rx_line_idle() }
+    pub fn serial_rx_line_idle(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.serial_rx_line_idle(0) } else { self.io.serial_rx_line_idle() }
+    }
 
     pub fn peek_io_port(&self, port: u8) -> u8 {
-        if port == 0xff { self.panel.input() } else { self.io.peek_input(port) }
+        if port == 0xff { self.panel.input() }
+        else if self.cycle_uses_physical_serial() { self.memory.peek_io_port(port) }
+        else { self.io.peek_input(port) }
     }
-    pub fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) { self.io.trace.port_activity(port) }
-    pub fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> { self.io.trace.snapshot() }
-    pub fn io_trace_enabled(&self) -> bool { self.io.trace.enabled }
-    pub fn set_io_trace_enabled(&mut self, enabled: bool) { self.io.trace.set_enabled(enabled); }
-    pub fn clear_io_trace(&mut self) { self.io.trace.clear_events(); }
+    pub fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
+        if self.cycle_uses_physical_serial() { self.memory.io_port_activity(port) }
+        else { self.io.trace_port_activity(port) }
+    }
+    pub fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
+        if self.cycle_uses_physical_serial() { self.memory.io_trace_snapshot() }
+        else { self.io.trace_snapshot() }
+    }
+    pub fn io_trace_enabled(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.io_trace_enabled() }
+        else { self.io.trace_enabled() }
+    }
+    pub fn set_io_trace_enabled(&mut self, enabled: bool) {
+        if self.cycle_uses_physical_serial() { self.memory.set_io_trace_enabled(enabled); }
+        else { self.io.set_trace_enabled(enabled); }
+    }
+    pub fn clear_io_trace(&mut self) {
+        if self.cycle_uses_physical_serial() { self.memory.clear_io_trace(); }
+        else { self.io.clear_trace(); }
+    }
 
     pub fn debugger_input_port(&mut self, port: u8) -> u8 {
+        if port != 0xff && self.cycle_uses_physical_serial() {
+            return self.memory.debugger_input_port(port);
+        }
         let value = <Self as Bus>::input(self, port);
         if port == 0xff { self.io.trace.record(IO_TRACE_IN, port, value); }
         self.refresh_interrupt_request_line();
         value
     }
     pub fn debugger_output_port(&mut self, port: u8, value: u8) {
+        if port != 0xff && self.cycle_uses_physical_serial() {
+            self.memory.debugger_output_port(port, value);
+            return;
+        }
         <Self as Bus>::output(self, port, value);
         if port == 0xff { self.io.trace.record(IO_TRACE_OUT, port, value); }
         self.refresh_interrupt_request_line();
     }
     pub fn debugger_inject_serial_rx(&mut self, data_port: u8, byte: u8) -> bool {
+        if self.cycle_uses_physical_serial() { return self.memory.debugger_inject_serial_rx(data_port, byte); }
         let changed = self.io.debugger_inject_rx(data_port, byte);
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
     pub fn debugger_clear_serial_rx(&mut self, data_port: u8) -> bool {
+        if self.cycle_uses_physical_serial() { return self.memory.debugger_clear_serial_rx(data_port); }
         let changed = self.io.debugger_clear_rx(data_port);
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
     pub fn debugger_clear_serial_tx(&mut self, data_port: u8) -> bool {
+        if self.cycle_uses_physical_serial() { return self.memory.debugger_clear_serial_tx(data_port); }
         let changed = self.io.debugger_clear_tx(data_port);
         if changed { self.refresh_interrupt_request_line(); }
         changed
     }
     pub fn debugger_complete_serial_tx(&mut self, data_port: u8) -> Option<u8> {
+        if self.cycle_uses_physical_serial() { return self.memory.debugger_complete_serial_tx(data_port); }
         let completed = self.io.debugger_complete_tx(data_port);
         self.refresh_interrupt_request_line();
         completed

@@ -198,6 +198,14 @@ pub trait S100IoRegisterDevice {
     fn bus_lines(&self) -> S100IoDeviceLines {
         S100IoDeviceLines::default()
     }
+
+    /// Observe card-wide bus timing that is not itself a register strobe.
+    /// This keeps board-specific edge logic behind the register-device boundary.
+    fn observe_bus(&mut self, _sample: &S100BusSample, _selected: bool) -> bool { false }
+
+    /// Whether state changed through a host connector or independent device
+    /// clock since the adapter last rebuilt its cached S-100 outputs.
+    fn external_drive_dirty(&self) -> bool { true }
 }
 
 /// Converts S-100 I/O strobes into register operations without owning the
@@ -308,6 +316,8 @@ impl<D> S100Card for S100IoCardAdapter<D> {
 impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
     fn observe_s100(&mut self, sample: &S100BusSample) {
         let selected = self.selected_port(sample);
+        let mut drive_dirty = self.device.observe_bus(sample, selected.is_some());
+        let previous_read_drive = self.read_drive;
 
         // sINP is the latched I/O-read status; DBIN is the actual 8080 input
         // strobe. Only their overlap constitutes the register read. Keeping the
@@ -320,6 +330,7 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
                 if self.read_cycle_port != Some(port) {
                     self.read_drive = Some(self.device.read_register(offset));
                     self.read_cycle_port = Some(port);
+                    drive_dirty = true;
                 }
             } else {
                 self.read_cycle_port = None;
@@ -341,16 +352,26 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
                 if self.write_cycle_port != Some(port) {
                     self.device.write_register(offset, value);
                     self.write_cycle_port = Some(port);
+                    drive_dirty = true;
                 }
             }
         } else {
             self.write_cycle_port = None;
         }
 
-        self.refresh_cached_drive();
+        if drive_dirty || self.read_drive != previous_read_drive {
+            self.refresh_cached_drive();
+        }
     }
 
     fn drive_s100(&self) -> S100CardDrive {
+        self.cached_drive
+    }
+
+    fn refresh_external_drive(&mut self) -> S100CardDrive {
+        if self.device.external_drive_dirty() {
+            self.refresh_cached_drive();
+        }
         self.cached_drive
     }
 }

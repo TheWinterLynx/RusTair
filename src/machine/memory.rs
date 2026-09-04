@@ -70,6 +70,87 @@ impl Default for Memory {
 }
 
 impl Memory {
+    pub(super) fn uses_explicit_hardware(&self) -> bool { !self.legacy_aggregate }
+
+    pub(super) fn advance_serial_time(&self, t_states: u64) {
+        self.fabric.advance_serial_time(t_states);
+    }
+
+    pub(super) fn serial_receive(&self, port: usize, byte: u8) -> bool {
+        self.fabric.serial_receive(port, byte)
+    }
+
+    pub(super) fn serial_rx_empty(&self, port: usize) -> bool { self.fabric.serial_rx_empty(port) }
+    pub(super) fn serial_rx_len(&self, port: usize) -> usize { self.fabric.serial_rx_len(port) }
+    pub(super) fn serial_rx_line_idle(&self, port: usize) -> bool { self.fabric.serial_rx_line_idle(port) }
+    pub(super) fn serial_tx_busy(&self, port: usize) -> bool { self.fabric.serial_tx_busy(port) }
+    pub(super) fn serial_tx_front(&self, port: usize) -> Option<u8> { self.fabric.serial_tx_front(port) }
+    pub(super) fn serial_tx_complete(&self, port: usize) -> Option<u8> { self.fabric.serial_tx_complete(port) }
+    pub(super) fn clear_serial(&self) { self.fabric.clear_serial(); }
+    pub(super) fn serial_modem_lines(&self, port: usize) -> Option<(bool, bool, bool, bool)> {
+        self.fabric.serial_modem_lines(port)
+    }
+    pub(super) fn set_serial_modem_inputs(&self, port: usize, cts: bool, dcd: bool) -> bool {
+        self.fabric.set_serial_modem_inputs(port, cts, dcd)
+    }
+    pub(super) fn set_serial_receive_break(&self, port: usize, active: bool) -> bool {
+        self.fabric.set_serial_receive_break(port, active)
+    }
+    pub(super) fn sio_handshake_lines(&self) -> Option<(bool, bool, bool, bool, bool, bool)> {
+        self.fabric.sio_handshake_lines()
+    }
+    pub(super) fn pulse_sio_input_device_ready(&self) -> bool {
+        self.fabric.pulse_sio_input_device_ready()
+    }
+    pub(super) fn pulse_sio_output_device_ready(&self) -> bool {
+        self.fabric.pulse_sio_output_device_ready()
+    }
+    pub(super) fn debugger_inject_serial_rx(&self, port: u8, byte: u8) -> bool {
+        self.fabric.debugger_inject_serial_rx(port, byte)
+    }
+    pub(super) fn debugger_clear_serial_rx(&self, port: u8) -> bool {
+        self.fabric.debugger_clear_serial_rx(port)
+    }
+    pub(super) fn debugger_clear_serial_tx(&self, port: u8) -> bool {
+        self.fabric.debugger_clear_serial_tx(port)
+    }
+    pub(super) fn debugger_complete_serial_tx(&self, port: u8) -> Option<u8> {
+        self.fabric.debugger_complete_serial_tx(port)
+    }
+    pub(super) fn peek_io_port(&self, port: u8) -> u8 { self.fabric.peek_io_port(port) }
+    pub(super) fn debugger_input_port(&self, port: u8) -> u8 {
+        self.fabric.debugger_input_port(port)
+    }
+    pub(super) fn debugger_output_port(&self, port: u8, value: u8) {
+        self.fabric.debugger_output_port(port, value);
+    }
+    pub(super) fn serial_vector_interrupt_requests(&self) -> u8 {
+        self.fabric.serial_vector_interrupt_requests()
+    }
+    pub(super) fn primary_serial_board(&self) -> Option<SerialBoard> {
+        self.fabric.primary_serial_board()
+    }
+    pub(super) fn primary_sio_hardware(&self) -> Option<SioHardwareConfig> {
+        self.fabric.primary_sio_hardware()
+    }
+    pub(super) fn primary_two_sio_straps(&self) -> Option<TwoSioStraps> {
+        self.fabric.primary_two_sio_straps()
+    }
+    pub(super) fn primary_two_sio_interrupt_wiring(&self) -> Option<TwoSioInterruptWiring> {
+        self.fabric.primary_two_sio_interrupt_wiring()
+    }
+    pub(super) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
+        self.fabric.io_port_activity(port)
+    }
+    pub(super) fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
+        self.fabric.io_trace_snapshot()
+    }
+    pub(super) fn io_trace_enabled(&self) -> bool { self.fabric.io_trace_enabled() }
+    pub(super) fn set_io_trace_enabled(&self, enabled: bool) {
+        self.fabric.set_io_trace_enabled(enabled);
+    }
+    pub(super) fn clear_io_trace(&self) { self.fabric.clear_io_trace(); }
+
     fn legacy_hardware(size: RamSize, profile: RamBoardProfile) -> S100HardwareConfig {
         S100HardwareConfig::from_legacy_globals(
             size,

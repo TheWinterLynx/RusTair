@@ -6,7 +6,7 @@ mod memory;
 mod panel_bus;
 mod serial;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -17,7 +17,9 @@ use crate::config::{
     SioInterruptWiring, SioRevision, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080::{Bus, Cpu8080};
-use crate::s100_io_card::S100IoRegisterDevice;
+use crate::s100::S100Signal;
+use crate::s100_backplane::S100BusSample;
+use crate::s100_io_card::{S100IoDeviceLines, S100IoRegisterDevice};
 use cpu_board::{Fast8080S100Adapter, S100Cycle};
 use front_panel::FrontPanelController;
 use io_devices::IoDevices;
@@ -44,13 +46,14 @@ pub struct CpuDiagnosticResult {
 /// Shared ownership boundary for one physical serial card instance.
 ///
 /// `IoDevices` still contains the already-audited COM2502/MC6850 models, but a
-/// runtime S-100 slot and its host-side endpoint handle now point at the same
-/// instance instead of constructing a second UART. The legacy machine singleton
-/// remains temporarily separate until endpoint/debugger routing is switched to
-/// these per-slot handles in the next migration step.
+/// runtime S-100 slot and its host-side endpoint handle point at the same
+/// instance instead of constructing a second UART. Explicit Cycle chassis route
+/// endpoints and debugger operations through these per-slot handles; the legacy
+/// singleton remains only for Fast and aggregate-configuration compatibility.
 #[derive(Clone)]
 pub(crate) struct RuntimeSerialCardHandle {
     state: Rc<RefCell<IoDevices>>,
+    connector_dirty: Rc<Cell<bool>>,
     board: SerialBoard,
     base: u8,
 }
@@ -60,6 +63,9 @@ pub(crate) struct RuntimeSerialCardHandle {
 /// a clone of the handle above. Both mutate the same finite UART state.
 pub(crate) struct RuntimeSerialCardDevice {
     handle: RuntimeSerialCardHandle,
+    previous_clear: bool,
+    input_wait_active: bool,
+    input_cycle_waited: bool,
 }
 
 impl RuntimeSerialCardHandle {
@@ -71,12 +77,16 @@ impl RuntimeSerialCardHandle {
         state.configure_sio_hardware(config);
         let handle = Self {
             state: Rc::new(RefCell::new(state)),
+            connector_dirty: Rc::new(Cell::new(true)),
             board: SerialBoard::Sio88,
             base: config.address.status(),
         };
         (
             RuntimeSerialCardDevice {
                 handle: handle.clone(),
+                previous_clear: false,
+                input_wait_active: false,
+                input_cycle_waited: false,
             },
             handle,
         )
@@ -92,12 +102,16 @@ impl RuntimeSerialCardHandle {
         state.configure_two_sio_interrupt_wiring(interrupt_wiring);
         let handle = Self {
             state: Rc::new(RefCell::new(state)),
+            connector_dirty: Rc::new(Cell::new(true)),
             board: SerialBoard::TwoSio88,
             base: straps.address.base(),
         };
         (
             RuntimeSerialCardDevice {
                 handle: handle.clone(),
+                previous_clear: false,
+                input_wait_active: false,
+                input_cycle_waited: false,
             },
             handle,
         )
@@ -107,13 +121,12 @@ impl RuntimeSerialCardHandle {
         self.board
     }
 
-    pub(crate) const fn base(&self) -> u8 {
-        self.base
-    }
+    #[cfg(test)]
+    pub(crate) const fn base(&self) -> u8 { self.base }
 
     pub(crate) fn receive(&self, port_index: usize, byte: u8) -> bool {
         let mut state = self.state.borrow_mut();
-        match (self.board, port_index) {
+        let received = match (self.board, port_index) {
             (_, 0) => {
                 state.serial_receive(byte);
                 true
@@ -123,11 +136,16 @@ impl RuntimeSerialCardHandle {
                 true
             }
             _ => false,
+        };
+        if received {
+            self.connector_dirty.set(true);
         }
+        received
     }
 
     pub(crate) fn advance_t_states(&self, t_states: u64) {
         self.state.borrow_mut().advance_t_states(t_states);
+        self.connector_dirty.set(true);
     }
 
     pub(crate) fn rx_empty(&self, port_index: usize) -> bool {
@@ -147,6 +165,171 @@ impl RuntimeSerialCardHandle {
             _ => None,
         }
     }
+
+    pub(crate) fn supports_port(&self, port_index: usize) -> bool {
+        port_index == 0 || (self.board == SerialBoard::TwoSio88 && port_index == 1)
+    }
+
+    pub(crate) fn data_port_matches(&self, port: u8) -> bool {
+        let state = self.state.borrow();
+        match self.board {
+            SerialBoard::Sio88 => port == state.sio_hardware().address.data(),
+            SerialBoard::TwoSio88 => matches!(state.two_sio_straps().address.offset(port), Some(1) | Some(3)),
+        }
+    }
+
+    pub(crate) fn decodes_port(&self, port: u8) -> bool {
+        let state = self.state.borrow();
+        match self.board {
+            SerialBoard::Sio88 => {
+                port == state.sio_hardware().address.status()
+                    || port == state.sio_hardware().address.data()
+            }
+            SerialBoard::TwoSio88 => state.two_sio_straps().address.offset(port).is_some(),
+        }
+    }
+
+    pub(crate) fn peek_input(&self, port: u8) -> u8 { self.state.borrow().peek_input(port) }
+    pub(crate) fn debugger_input(&self, port: u8) -> u8 {
+        let value = self.state.borrow_mut().input(port);
+        self.connector_dirty.set(true);
+        value
+    }
+    pub(crate) fn debugger_output(&self, port: u8, value: u8) {
+        self.state.borrow_mut().output(port, value);
+        self.connector_dirty.set(true);
+    }
+
+    pub(crate) fn rx_len(&self, port_index: usize) -> usize {
+        let state = self.state.borrow();
+        match (self.board, port_index) {
+            (_, 0) => state.serial_rx_len(),
+            (SerialBoard::TwoSio88, 1) => state.port1_rx_len(),
+            _ => 0,
+        }
+    }
+
+    pub(crate) fn rx_line_idle(&self, port_index: usize) -> bool {
+        let state = self.state.borrow();
+        match (self.board, port_index) {
+            (_, 0) => state.serial_rx_line_idle(),
+            (SerialBoard::TwoSio88, 1) => state.port1_rx_line_idle(),
+            _ => true,
+        }
+    }
+
+    pub(crate) fn tx_busy(&self, port_index: usize) -> bool {
+        let state = self.state.borrow();
+        match (self.board, port_index) {
+            (_, 0) => state.serial_tx_busy(),
+            (SerialBoard::TwoSio88, 1) => state.port1_tx_busy(),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn tx_complete(&self, port_index: usize) -> Option<u8> {
+        let mut state = self.state.borrow_mut();
+        let completed = match (self.board, port_index) {
+            (_, 0) => state.serial_tx_complete(),
+            (SerialBoard::TwoSio88, 1) => state.port1_tx_complete(),
+            _ => None,
+        };
+        self.connector_dirty.set(true);
+        completed
+    }
+
+    pub(crate) fn clear(&self) {
+        self.state.borrow_mut().clear_serial();
+        self.connector_dirty.set(true);
+    }
+
+    pub(crate) fn modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
+        self.state.borrow().modem_lines(port_index)
+    }
+
+    pub(crate) fn set_modem_inputs(&self, port_index: usize, cts: bool, dcd: bool) -> bool {
+        let accepted = self.state.borrow_mut().set_modem_inputs(port_index, cts, dcd);
+        self.connector_dirty.set(true);
+        accepted
+    }
+
+    pub(crate) fn set_receive_break(&self, port_index: usize, active: bool) -> bool {
+        let accepted = self.state.borrow_mut().set_receive_break(port_index, active);
+        self.connector_dirty.set(true);
+        accepted
+    }
+
+    pub(crate) fn sio_handshake_lines(&self) -> Option<(bool, bool, bool, bool, bool, bool)> {
+        let state = self.state.borrow();
+        let lines = state.sio_handshake_lines()?;
+        Some((lines.rsi_high, lines.input_device_ready, lines.output_device_ready,
+              lines.tso_high, lines.bin_high, lines.bot_high))
+    }
+
+    pub(crate) fn pulse_sio_input_device_ready(&self) -> bool {
+        let pulsed = self.state.borrow_mut().pulse_sio_input_device_ready();
+        self.connector_dirty.set(true);
+        pulsed
+    }
+
+    pub(crate) fn pulse_sio_output_device_ready(&self) -> bool {
+        let pulsed = self.state.borrow_mut().pulse_sio_output_device_ready();
+        self.connector_dirty.set(true);
+        pulsed
+    }
+
+    pub(crate) fn debugger_inject_rx(&self, port: u8, byte: u8) -> bool {
+        let injected = self.state.borrow_mut().debugger_inject_rx(port, byte);
+        self.connector_dirty.set(true);
+        injected
+    }
+
+    pub(crate) fn debugger_clear_rx(&self, port: u8) -> bool {
+        let cleared = self.state.borrow_mut().debugger_clear_rx(port);
+        self.connector_dirty.set(true);
+        cleared
+    }
+
+    pub(crate) fn debugger_clear_tx(&self, port: u8) -> bool {
+        let cleared = self.state.borrow_mut().debugger_clear_tx(port);
+        self.connector_dirty.set(true);
+        cleared
+    }
+
+    pub(crate) fn debugger_complete_tx(&self, port: u8) -> Option<u8> {
+        let completed = self.state.borrow_mut().debugger_complete_tx(port);
+        self.connector_dirty.set(true);
+        completed
+    }
+
+    pub(crate) fn vector_interrupt_requests(&self) -> u8 {
+        self.state.borrow().vector_interrupt_requests()
+    }
+
+    pub(crate) fn sio_hardware(&self) -> Option<SioHardwareConfig> {
+        (self.board == SerialBoard::Sio88).then(|| self.state.borrow().sio_hardware())
+    }
+
+    pub(crate) fn two_sio_straps(&self) -> Option<TwoSioStraps> {
+        (self.board == SerialBoard::TwoSio88).then(|| self.state.borrow().two_sio_straps())
+    }
+
+    pub(crate) fn two_sio_interrupt_wiring(&self) -> Option<TwoSioInterruptWiring> {
+        (self.board == SerialBoard::TwoSio88)
+            .then(|| self.state.borrow().two_sio_interrupt_wiring())
+    }
+
+    pub(crate) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
+        self.state.borrow().trace_port_activity(port)
+    }
+    pub(crate) fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
+        self.state.borrow().trace_snapshot()
+    }
+    pub(crate) fn io_trace_enabled(&self) -> bool { self.state.borrow().trace_enabled() }
+    pub(crate) fn set_io_trace_enabled(&self, enabled: bool) {
+        self.state.borrow_mut().set_trace_enabled(enabled);
+    }
+    pub(crate) fn clear_io_trace(&self) { self.state.borrow_mut().clear_trace(); }
 }
 
 impl S100IoRegisterDevice for RuntimeSerialCardDevice {
@@ -159,6 +342,54 @@ impl S100IoRegisterDevice for RuntimeSerialCardDevice {
         let port = self.handle.base.wrapping_add(offset);
         self.handle.state.borrow_mut().output(port, value);
     }
+
+    fn bus_lines(&self) -> S100IoDeviceLines {
+        let state = self.handle.state.borrow();
+        let lines = S100IoDeviceLines {
+            pint: state.interrupt_request(),
+            vi_asserted: state.vector_interrupt_requests(),
+            ready_low: self.input_wait_active,
+        };
+        self.handle.connector_dirty.set(false);
+        lines
+    }
+
+    fn observe_bus(&mut self, sample: &S100BusSample, selected: bool) -> bool {
+        let mut drive_dirty = false;
+        let clear = sample.signal_level(S100Signal::PowerOnClear) == Some(true);
+        if clear && !self.previous_clear {
+            self.handle.clear();
+            self.input_wait_active = false;
+            self.input_cycle_waited = false;
+            drive_dirty = true;
+        }
+        self.previous_clear = clear;
+
+        if self.handle.board != SerialBoard::TwoSio88 {
+            return drive_dirty;
+        }
+
+        let input_cycle = selected && sample.signal_level(S100Signal::Inp) == Some(true);
+        if !input_cycle {
+            drive_dirty |= self.input_wait_active;
+            self.input_wait_active = false;
+            self.input_cycle_waited = false;
+            return drive_dirty;
+        }
+        let waiting = sample.signal_level(S100Signal::Wait) == Some(true);
+        if waiting && self.input_wait_active {
+            self.input_wait_active = false;
+            self.input_cycle_waited = true;
+            drive_dirty = true;
+        } else if !waiting && !self.input_cycle_waited && !self.input_wait_active {
+            self.input_wait_active = true;
+            drive_dirty = true;
+        }
+        drive_dirty
+    }
+
+    fn external_drive_dirty(&self) -> bool { self.handle.connector_dirty.get() }
+
 }
 
 #[derive(Clone, Debug)]
@@ -242,6 +473,10 @@ impl Default for AltairBus {
 }
 
 impl AltairBus {
+    pub(crate) fn cycle_uses_physical_serial(&self) -> bool {
+        self.exact_t_state_clock_owner && self.memory.uses_explicit_hardware()
+    }
+
     pub(crate) fn set_exact_t_state_clock_owner(&mut self, enabled: bool) {
         self.exact_t_state_clock_owner = enabled;
     }
@@ -264,19 +499,36 @@ impl AltairBus {
     pub fn is_protected(&self, address: u16) -> bool { self.memory.is_protected(address) }
     pub fn set_protected(&mut self, address: u16, protected: bool) { self.memory.set_protected(address, protected); self.refresh_protect_line(); }
     pub fn serial_receive(&mut self, byte: u8) {
+        if self.cycle_uses_physical_serial() {
+            let _ = self.memory.serial_receive(0, byte);
+            return;
+        }
         self.io.serial_receive(byte);
         self.refresh_interrupt_request_line();
     }
-    pub fn serial_rx_empty(&self) -> bool { self.io.serial_rx_empty() }
-    pub fn serial_rx_len(&self) -> usize { self.io.serial_rx_len() }
-    pub fn serial_tx_front(&self) -> Option<u8> { self.io.serial_tx_front() }
+    pub fn serial_rx_empty(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.serial_rx_empty(0) } else { self.io.serial_rx_empty() }
+    }
+    pub fn serial_rx_len(&self) -> usize {
+        if self.cycle_uses_physical_serial() { self.memory.serial_rx_len(0) } else { self.io.serial_rx_len() }
+    }
+    pub fn serial_tx_front(&self) -> Option<u8> {
+        if self.cycle_uses_physical_serial() { self.memory.serial_tx_front(0) } else { self.io.serial_tx_front() }
+    }
     pub fn serial_tx_complete(&mut self) -> Option<u8> {
+        if self.cycle_uses_physical_serial() { return self.memory.serial_tx_complete(0); }
         let completed = self.io.serial_tx_complete();
         self.refresh_interrupt_request_line();
         completed
     }
-    pub fn tx_busy(&self) -> bool { self.io.serial_tx_busy() }
+    pub fn tx_busy(&self) -> bool {
+        if self.cycle_uses_physical_serial() { self.memory.serial_tx_busy(0) } else { self.io.serial_tx_busy() }
+    }
     pub fn clear_serial(&mut self) {
+        if self.cycle_uses_physical_serial() {
+            self.memory.clear_serial();
+            return;
+        }
         self.io.clear_serial();
         self.sio_interrupt_control = 0;
         self.refresh_interrupt_request_line();
@@ -402,6 +654,7 @@ impl AltairBus {
     /// VIn. These raw lines never fabricate a processor restart opcode by
     /// themselves; only a separate 88-VI implementation may arbitrate them.
     pub fn sio_vector_interrupt_requests(&self) -> u8 {
+        if self.cycle_uses_physical_serial() { return self.memory.serial_vector_interrupt_requests(); }
         if self.io.serial_board() != SerialBoard::Sio88 { return 0; }
         let (input, output) = self.sio_internal_interrupt_sources();
         let wiring = self.io.sio_hardware().interrupt_wiring;
@@ -416,6 +669,7 @@ impl AltairBus {
     }
 
     pub(crate) fn refresh_interrupt_request_line(&mut self) {
+        if self.cycle_uses_physical_serial() { return; }
         let asserted = match self.io.serial_board() {
             SerialBoard::Sio88 => self.sio_pint_request(),
             SerialBoard::TwoSio88 => self.serial_interrupt_request(),
@@ -452,7 +706,11 @@ impl AltairBus {
             // CPU-clock quantum, but leave PINT projection to Cycle's existing
             // post-sample refresh so the Teacher snapshot keeps the interrupt
             // level the processor actually saw on this tick.
-            self.io.advance_t_states(1);
+            if self.memory.uses_explicit_hardware() {
+                self.memory.advance_serial_time(1);
+            } else {
+                self.io.advance_t_states(1);
+            }
         }
     }
 
