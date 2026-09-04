@@ -32,13 +32,13 @@ pub(super) struct Memory {
     init_mode: RamInit,
     board_profile: RamBoardProfile,
     legacy_aggregate: bool,
-    /// True when at least one installed card has PHI1 or PHI2 as a connector
-    /// input. If false, falling a phase cannot affect any external card state;
-    /// the exact CPU core still emits that historical edge, but the software
-    /// circuit need not execute a zero-information settle for it.
-    phase_fall_requires_settle: bool,
-    /// Last package-pin callback seen by the live fabric. This lets Cycle prove
-    /// that a callback changed only PHI1/PHI2 from HIGH to LOW before eliding it.
+    /// True when at least one installed card consumes PHI1, PHI2 or the buffered
+    /// CLOC net as a connector input. If false, an edge that changes only those
+    /// three physical clock nets cannot affect card state or CPU package inputs.
+    phase_edge_requires_settle: bool,
+    /// Last package-pin callback seen by the live fabric. Cycle can use this to
+    /// prove that a callback changed only clock phase and therefore carries no
+    /// new information to the installed card inventory.
     last_cycle_pins: Cpu8080Pins,
     read_wait_active: bool,
     read_wait_remaining: u8,
@@ -59,7 +59,7 @@ impl Default for Memory {
             legacy_aggregate: true,
             // Legacy tests still consume the old edge projection. Be conservative
             // there; phase-elision is enabled only for explicit physical chassis.
-            phase_fall_requires_settle: true,
+            phase_edge_requires_settle: true,
             last_cycle_pins: Cpu8080Pins::default(),
             read_wait_active: false,
             read_wait_remaining: 0,
@@ -171,19 +171,22 @@ impl Memory {
             .expect("legacy RAM compatibility assembly must be valid")
     }
 
-    fn phase_fall_listener_present(fabric: &S100RuntimeFabric) -> bool {
+    fn phase_edge_listener_present(fabric: &S100RuntimeFabric) -> bool {
         fabric.backplane().slots().iter().any(|slot| {
             slot.descriptor().is_some_and(|descriptor| {
                 descriptor.contacts.iter().any(|contact| {
                     contact.role == S100ContactRole::Input
-                        && matches!(contact.signal, S100Signal::Phi1 | S100Signal::Phi2)
+                        && matches!(
+                            contact.signal,
+                            S100Signal::Phi1 | S100Signal::Phi2 | S100Signal::Clock
+                        )
                 })
             })
         })
     }
 
-    fn falling_phase_is_unobserved(&self, pins: Cpu8080Pins) -> bool {
-        if self.legacy_aggregate || self.phase_fall_requires_settle {
+    fn phase_only_edge_is_unobserved(&self, pins: Cpu8080Pins) -> bool {
+        if self.legacy_aggregate || self.phase_edge_requires_settle {
             return false;
         }
         let previous = self.last_cycle_pins;
@@ -198,9 +201,21 @@ impl Memory {
         if !same_non_phase {
             return false;
         }
+
         let phi1_falling = previous.phi1 && !pins.phi1 && !previous.phi2 && !pins.phi2;
         let phi2_falling = previous.phi2 && !pins.phi2 && !previous.phi1 && !pins.phi1;
-        phi1_falling || phi2_falling
+
+        // PHI1 rising is deliberately *not* elided here. It is the earliest edge
+        // of every T-state and therefore materializes any asynchronous
+        // Display/Control or serial-card change before the processor's PHI2
+        // sample. This is exactly the safety boundary that the old broad rising-
+        // edge optimization violated. PHI2 rising, by contrast, is safe to omit
+        // when the semantic 8080 outputs did not change: PHI1 of this same
+        // T-state has already settled every non-clock source, and no installed
+        // card consumes PHI2/CLOC.
+        let phi2_rising = !previous.phi1 && !pins.phi1 && !previous.phi2 && pins.phi2;
+
+        phi1_falling || phi2_falling || phi2_rising
     }
 
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
@@ -208,7 +223,7 @@ impl Memory {
         self.init_mode = init_mode;
         self.legacy_aggregate = true;
         self.fabric = Self::legacy_fabric(size, self.board_profile, init_mode);
-        self.phase_fall_requires_settle = true;
+        self.phase_edge_requires_settle = true;
         self.last_cycle_pins = Cpu8080Pins::default();
         self.clear_transient_guards();
         self.reset_timing();
@@ -220,7 +235,7 @@ impl Memory {
         init_mode: RamInit,
     ) -> Result<(), crate::s100_runtime::S100RuntimeBuildError> {
         let fabric = S100RuntimeFabric::new(hardware, init_mode)?;
-        self.phase_fall_requires_settle = Self::phase_fall_listener_present(&fabric);
+        self.phase_edge_requires_settle = Self::phase_edge_listener_present(&fabric);
         self.fabric = fabric;
         self.init_mode = init_mode;
         self.legacy_aggregate = false;
@@ -243,14 +258,18 @@ impl Memory {
         pins: Cpu8080Pins,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
-        // PHI1/PHI2 falling edges remain real events in Cpu8080Cycle. When the
-        // installed connector inventory proves that no card observes either
-        // phase, however, lowering the package phase cannot change READY, HOLD,
-        // DI, interrupts or any card state. Reuse the already-settled inputs and
-        // let the next rising edge update the physical sample. A card added later
-        // with PHI1/PHI2 INPUT contacts disables this optimization automatically.
-        if self.falling_phase_is_unobserved(pins) {
+        // Cpu8080Cycle still emits all four historical edges. Falling edges and
+        // PHI2 rising edges whose *only* electrical consequence is PHI1/PHI2/CLOC
+        // can be folded when the installed connector inventory proves nobody
+        // consumes those nets. PHI1 rising always settles: it remains the hard
+        // synchronization point for asynchronous RUN/RESET/READY/serial changes.
+        if self.phase_only_edge_is_unobserved(pins) {
             self.last_cycle_pins = pins;
+            // Keep the physical CPU board's package-side phase/CLOC state exact
+            // even though resolving those unobserved connector outputs would be
+            // zero-information work. The next meaningful edge folds the cached
+            // drive back into the backplane before any card can observe it.
+            self.fabric.set_cpu_package_pins(pins);
             return Ok(self.fabric.cpu_package_inputs());
         }
         self.last_cycle_pins = pins;
