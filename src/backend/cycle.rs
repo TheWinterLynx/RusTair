@@ -22,6 +22,32 @@ pub(super) enum CycleExecutionEvent {
     InstructionComplete,
 }
 
+/// Compact exact observation retained on every Cycle T-state.
+///
+/// This deliberately stores only electrical facts that can become historical
+/// when the chassis changes later. The rich teaching object (including the
+/// 36-float visible lamp snapshot and decoded Option-heavy status structure) is
+/// materialized only when UI/debugger code actually asks for it. Execution thus
+/// pays for exact capture, not for presentation formatting, on every T-state.
+#[derive(Clone, Copy, Debug)]
+struct ExactTeachingTick {
+    instruction_address: u16,
+    trace: TickTrace,
+    sampled_inputs: Cpu8080Inputs,
+    status_word: u8,
+    status_inte: bool,
+    status_prot: bool,
+    status_wait: bool,
+    status_hlda: bool,
+    cpu_data: Option<u8>,
+    s100_di: Option<u8>,
+    s100_do: Option<u8>,
+    panel_data: u8,
+    interrupt: bool,
+    hold: bool,
+    reset: bool,
+}
+
 /// Host-driven machine backend around the validated Intel 8080 core.
 ///
 /// Every production T-state is decomposed into the real PHI1/PHI2 edges. CPU
@@ -32,10 +58,9 @@ pub struct CycleAccurateMachineBackend {
     machine: AltairChassis,
     cpu: Cpu8080Cycle,
     instruction_address: u16,
-    /// Exact teaching snapshot derived from the live S-100 fabric for CPU/RAM.
-    /// Legacy projection is retained only for front-panel direct jam and serial
-    /// cards that have not yet migrated to `S100BusCard` runtime instances.
-    last_teaching_snapshot: Option<BusTeachingSnapshot>,
+    /// Last exact electrical T-state, retained in a compact execution form.
+    /// Presentation objects are materialized lazily by `teaching_snapshot()`.
+    last_teaching_tick: Option<ExactTeachingTick>,
     /// STOP may be asserted while HLDA suppresses PSYNC. Once the first resumed
     /// T1 captures the physical STOP latch, finish the real T2 -> TW handshake
     /// before host execution freezes.
@@ -51,7 +76,7 @@ impl Default for CycleAccurateMachineBackend {
             machine: AltairChassis::default(),
             cpu: Cpu8080Cycle::new(),
             instruction_address: 0,
-            last_teaching_snapshot: None,
+            last_teaching_tick: None,
             stop_wait_park_pending: false,
             cpu_fault: None,
         }
@@ -62,7 +87,52 @@ impl CycleAccurateMachineBackend {
     pub fn machine(&self) -> &AltairChassis { &self.machine }
     pub fn machine_mut(&mut self) -> &mut AltairChassis { &mut self.machine }
     pub fn cpu(&self) -> &Cpu8080Cycle { &self.cpu }
-    pub(super) fn teaching_snapshot(&self) -> Option<BusTeachingSnapshot> { self.last_teaching_snapshot }
+
+    pub(super) fn teaching_snapshot(&self) -> Option<BusTeachingSnapshot> {
+        let tick = self.last_teaching_tick?;
+        let trace = tick.trace;
+        let mut status = BusStatusLines::from_status_word(Some(tick.status_word));
+        status.inte = Some(tick.status_inte);
+        status.prot = Some(tick.status_prot);
+        status.wait = Some(tick.status_wait);
+        status.hlda = Some(tick.status_hlda);
+        Some(BusTeachingSnapshot {
+            accuracy: BusTeachingAccuracy::Exact,
+            engine: EmulationEngine::RustCycleAccurate8080,
+            instruction_address: Some(tick.instruction_address),
+            opcode: trace.opcode,
+            machine_cycle: trace.machine_cycle.into(),
+            machine_cycle_index: Some(trace.machine_cycle_index),
+            t_state: trace.t_state.into(),
+            address: trace.pins.address,
+            data: tick.cpu_data,
+            cpu_data: tick.cpu_data,
+            s100_di: tick.s100_di,
+            s100_do: tick.s100_do,
+            panel_data: Some(tick.panel_data),
+            status_word: Some(tick.status_word),
+            pins: BusCpuPins {
+                phi1: Some(trace.pins.phi1),
+                phi2: Some(trace.pins.phi2),
+                sync: Some(trace.pins.sync),
+                dbin: Some(trace.pins.dbin),
+                wr_n: Some(trace.pins.wr_n),
+                inte: Some(trace.pins.inte),
+                wait: Some(trace.pins.wait),
+                hlda: Some(trace.pins.hlda),
+            },
+            status,
+            ready: Some(tick.sampled_inputs.ready),
+            interrupt: Some(tick.interrupt),
+            hold: Some(tick.hold),
+            reset: Some(tick.reset),
+            total_t_states: Some(trace.total_t_states),
+            instruction_t_states: Some(trace.instruction_t_states),
+            instruction_complete: Some(trace.instruction_complete),
+            visible_lamps: self.machine.panel_lamps(),
+            current_chassis: None,
+        })
+    }
 
     fn snapshot_cpu(&self) -> CpuState {
         let r = self.cpu.registers();
@@ -288,10 +358,11 @@ impl CycleAccurateMachineBackend {
         visible_data
     }
 
-    fn capture_teaching_snapshot(
+    /// Retain the exact electrical facts for the just-completed T-state without
+    /// constructing presentation-heavy teaching data on the execution hot path.
+    fn retain_teaching_tick(
         &mut self,
         trace: &TickTrace,
-        _visible_data: Option<u8>,
         sampled_inputs: Cpu8080Inputs,
         front_panel_data: Option<u8>,
     ) {
@@ -306,14 +377,18 @@ impl CycleAccurateMachineBackend {
             );
         let lines = self.machine.bus.cpu_control_lines();
 
-        let (status_word, status, cpu_data, s100_di, s100_do) = if live_memory {
+        let (
+            status_word,
+            status_inte,
+            status_prot,
+            status_wait,
+            status_hlda,
+            cpu_data,
+            s100_di,
+            s100_do,
+        ) = if live_memory {
             let sample = self.machine.bus.cycle_live_s100_sample();
-            let status_word = Some(self.machine.bus.cycle_live_s100_status_word());
-            let mut status = BusStatusLines::from_status_word(status_word);
-            status.inte = Some(sample.signal_level(S100Signal::InterruptEnable).unwrap_or(false));
-            status.prot = Some(sample.signal_level(S100Signal::ProtectStatus).unwrap_or(false));
-            status.wait = Some(sample.signal_level(S100Signal::Wait).unwrap_or(false));
-            status.hlda = Some(sample.signal_level(S100Signal::HoldAcknowledge).unwrap_or(false));
+            let status_word = self.machine.bus.cycle_live_s100_status_word();
             let cpu_data = trace.pins.data_out.or_else(|| {
                 matches!(
                     trace.machine_cycle,
@@ -321,67 +396,52 @@ impl CycleAccurateMachineBackend {
                 )
                 .then_some(sampled_inputs.data_in)
             });
-            (status_word, status, cpu_data, sample.data_in(), sample.data_out())
-        } else {
-            let status_word = Some(self.machine.bus.raw_s100_status_word());
-            let mut status = BusStatusLines::from_status_word(status_word);
-            status.inte = Some(self.machine.bus.raw_s100_inte());
-            status.prot = Some(self.machine.bus.raw_s100_prot());
-            status.wait = Some(self.machine.bus.raw_s100_wait());
-            status.hlda = Some(self.machine.bus.raw_s100_hlda());
             (
                 status_word,
-                status,
+                sample.signal_level(S100Signal::InterruptEnable).unwrap_or(false),
+                sample.signal_level(S100Signal::ProtectStatus).unwrap_or(false),
+                sample.signal_level(S100Signal::Wait).unwrap_or(false),
+                sample.signal_level(S100Signal::HoldAcknowledge).unwrap_or(false),
+                cpu_data,
+                sample.data_in(),
+                sample.data_out(),
+            )
+        } else {
+            (
+                self.machine.bus.raw_s100_status_word(),
+                self.machine.bus.raw_s100_inte(),
+                self.machine.bus.raw_s100_prot(),
+                self.machine.bus.raw_s100_wait(),
+                self.machine.bus.raw_s100_hlda(),
                 self.machine.bus.raw_cpu_data(),
                 self.machine.bus.raw_s100_data_in(),
                 self.machine.bus.raw_s100_data_out(),
             )
         };
 
-        let panel_data = Some(self.machine.bus.raw_panel_data());
-        self.last_teaching_snapshot = Some(BusTeachingSnapshot {
-            accuracy: BusTeachingAccuracy::Exact,
-            engine: EmulationEngine::RustCycleAccurate8080,
-            instruction_address: Some(self.instruction_address),
-            opcode: trace.opcode,
-            machine_cycle: trace.machine_cycle.into(),
-            machine_cycle_index: Some(trace.machine_cycle_index),
-            t_state: trace.t_state.into(),
-            address: trace.pins.address,
-            data: cpu_data,
+        self.last_teaching_tick = Some(ExactTeachingTick {
+            instruction_address: self.instruction_address,
+            trace: *trace,
+            sampled_inputs,
+            status_word,
+            status_inte,
+            status_prot,
+            status_wait,
+            status_hlda,
             cpu_data,
             s100_di,
             s100_do,
-            panel_data,
-            status_word,
-            pins: BusCpuPins {
-                phi1: Some(trace.pins.phi1),
-                phi2: Some(trace.pins.phi2),
-                sync: Some(trace.pins.sync),
-                dbin: Some(trace.pins.dbin),
-                wr_n: Some(trace.pins.wr_n),
-                inte: Some(trace.pins.inte),
-                wait: Some(trace.pins.wait),
-                hlda: Some(trace.pins.hlda),
-            },
-            status,
-            ready: Some(sampled_inputs.ready),
-            interrupt: Some(lines.interrupt),
-            hold: Some(lines.hold),
-            reset: Some(lines.reset),
-            total_t_states: Some(trace.total_t_states),
-            instruction_t_states: Some(trace.instruction_t_states),
-            instruction_complete: Some(trace.instruction_complete),
-            visible_lamps: self.machine.panel_lamps(),
-            current_chassis: None,
+            panel_data: self.machine.bus.raw_panel_data(),
+            interrupt: lines.interrupt,
+            hold: lines.hold,
+            reset: lines.reset,
         });
     }
 
-    fn refresh_teaching_visible_lamps(&mut self) {
-        if let Some(snapshot) = self.last_teaching_snapshot.as_mut() {
-            snapshot.visible_lamps = self.machine.panel_lamps();
-        }
-    }
+    /// Visible lamps are read lazily when a teaching snapshot is materialized,
+    /// so pause/commit paths no longer need to copy the 36-float lamp structure.
+    #[inline]
+    fn refresh_teaching_visible_lamps(&mut self) {}
 
     fn memory_ready_for_current_t_state(&mut self) -> bool {
         let memory_read = matches!(
@@ -466,18 +526,13 @@ impl CycleAccurateMachineBackend {
             self.cpu_fault = Some(fault);
         }
         self.apply_trace_side_effects(&trace, record_instruction);
-        let visible_data = self.drive_s100_t_state(
+        let _ = self.drive_s100_t_state(
             &trace,
             sampled_inputs.data_in,
             front_panel_data,
             sampled_inputs.ready,
         );
-        self.capture_teaching_snapshot(
-            &trace,
-            visible_data,
-            sampled_inputs,
-            front_panel_data,
-        );
+        self.retain_teaching_tick(&trace, sampled_inputs, front_panel_data);
 
         self.machine.bus.refresh_interrupt_request_line();
 
@@ -819,7 +874,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
             self.machine.cycle_power_chassis(false, false, 0, false);
             self.cpu = Cpu8080Cycle::new();
         }
-        self.last_teaching_snapshot = None;
+        self.last_teaching_tick = None;
         self.stop_wait_park_pending = false;
         self.cpu_fault = None;
         Ok(())
@@ -907,7 +962,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn assert_reset(&mut self) -> BackendResult<()> {
-        self.last_teaching_snapshot = None;
+        self.last_teaching_tick = None;
         self.stop_wait_park_pending = false;
         self.machine.cycle_assert_front_panel_reset_from_cpu();
         self.reset_cycle_core_from_s100();
