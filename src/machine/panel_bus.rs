@@ -37,13 +37,13 @@ pub(super) struct S100Signals {
     /// S-100 DI0-DI7: data travelling toward the processor board. The original
     /// MITS documentation defines IN/OUT relative to the processor.
     pub data_in: Option<u8>,
-    /// S-100 DO0-DO7: data travelling away from the processor board.
+    /// S-100 DO0-DI7: data travelling away from the processor board.
     pub data_out: Option<u8>,
     /// Intel 8080 package D0-D7 after the CPU-board input/output buffering.
     /// `None` represents a released/undriven processor data bus.
     pub cpu_data: Option<u8>,
     /// Electrical source used by the eight front-panel DATA lamps. Schematic
-    /// 880-105 wires those lamps to S-100 DI0-DI7, not DO0-DO7. Keep the last
+    /// 880-105 wires those lamps to S-100 DI0-DI7, not DO0-DI7. Keep the last
     /// DI value here when DI is temporarily undriven so write/status activity
     /// cannot masquerade as front-panel input data.
     pub panel_data: u8,
@@ -333,6 +333,48 @@ impl PanelLampIntegrator {
         self.total_weight += accepted;
     }
 
+    /// Add one reconstructed instruction-level machine cycle without replaying
+    /// its identical T2/T3(/T4) presentation samples one at a time. ADDRESS and
+    /// latched status are constant across the cycle; only the DI-wired DATA lamp
+    /// byte may change after T1 on a read. This is therefore exactly equivalent
+    /// to the old Fast adapter's 3/4 calls to `sample`, but reduces them to a few
+    /// packed counter additions and does not touch the physical S-100 fabric.
+    #[inline]
+    fn sample_reconstructed_cycle(
+        &mut self,
+        common_mask: u64,
+        first_panel_data: u8,
+        final_panel_data: u8,
+        t_states: u32,
+        data_changes_after_t1: bool,
+    ) {
+        let requested = u64::from(t_states);
+        if requested == 0 {
+            return;
+        }
+        let accepted = requested.min(u64::MAX - self.total_weight);
+        if accepted == 0 {
+            return;
+        }
+
+        self.add_weighted_mask(common_mask, accepted);
+        if data_changes_after_t1 {
+            self.add_weighted_mask(u64::from(first_panel_data) << PACKED_DATA_SHIFT, 1);
+            if accepted > 1 {
+                self.add_weighted_mask(
+                    u64::from(final_panel_data) << PACKED_DATA_SHIFT,
+                    accepted - 1,
+                );
+            }
+        } else {
+            self.add_weighted_mask(
+                u64::from(first_panel_data) << PACKED_DATA_SHIFT,
+                accepted,
+            );
+        }
+        self.total_weight += accepted;
+    }
+
     fn binary_snapshot(signals: &S100Signals) -> PanelLampSnapshot {
         let mut snapshot = PanelLampSnapshot {
             address: bits16(signals.address),
@@ -534,7 +576,7 @@ impl S100BusState {
 
     /// Drive the CPU-board clock and command/control outputs exactly at one
     /// observed edge. These are real backplane nets, not UI reconstructions:
-    /// PHI2=pin24, PHI1=pin25, CLOC=pin49, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
+    /// PHI2=pin24, PHI1 pin 25, CLOC=pin49, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
     pub(super) fn drive_cpu_board_edge(
         &mut self,
         phi1: bool,
@@ -565,6 +607,70 @@ impl S100BusState {
     /// instruction-level Fast retains its explicitly reconstructed status path.
     pub(super) fn latch_cpu_status(&mut self, word: u8) {
         self.signals.apply_status_word(word);
+    }
+
+    /// Fast/reconstructed counterpart of `drive_cpu_t_state`. The instruction-
+    /// level core knows that T1 presents the status byte and the remaining
+    /// machine-cycle states present one stable data phase. Fold those repeated
+    /// samples directly into the bit-sliced lamp integrator while leaving the
+    /// final observable reconstructed bus state identical to the old adapter.
+    #[inline]
+    pub(super) fn drive_reconstructed_cpu_cycle(
+        &mut self,
+        address: u16,
+        data: u8,
+        status_word: u8,
+        t_states: u32,
+        reads_data_from_s100: bool,
+        writes_data_to_s100: bool,
+        protected: bool,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+    ) {
+        debug_assert!(t_states >= 1);
+        debug_assert!(!(reads_data_from_s100 && writes_data_to_s100));
+
+        let first_panel_data = self.signals.panel_data;
+        self.signals.reset = false;
+        self.signals.inte = inte;
+        self.signals.ready = ready;
+        self.signals.wait = wait;
+        self.signals.hlda = false;
+        self.signals.owner = BusOwner::Cpu;
+        self.signals.address = address;
+        self.signals.prot = protected;
+        self.signals.apply_status_word(status_word);
+
+        let common_mask = u64::from(address)
+            | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
+        let final_panel_data = if reads_data_from_s100 {
+            data
+        } else {
+            first_panel_data
+        };
+        self.lamps.sample_reconstructed_cycle(
+            common_mask,
+            first_panel_data,
+            final_panel_data,
+            t_states,
+            reads_data_from_s100,
+        );
+
+        if reads_data_from_s100 {
+            self.signals.cpu_data = Some(data);
+            self.signals.data_in = Some(data);
+            self.signals.data_out = None;
+            self.signals.panel_data = data;
+        } else if writes_data_to_s100 {
+            self.signals.cpu_data = Some(data);
+            self.signals.data_in = None;
+            self.signals.data_out = Some(data);
+        } else {
+            self.signals.cpu_data = None;
+            self.signals.data_in = None;
+            self.signals.data_out = None;
+        }
     }
 
     /// Drive exactly one CPU T-state into the S-100/front-panel model.
@@ -854,6 +960,38 @@ mod tests {
         assert_eq!(integrator.raw_duty.wo, 1.0);
         assert!(integrator.snapshot.wo > 0.0);
         assert!(integrator.snapshot.wo < 1.0);
+    }
+
+    #[test]
+    fn reconstructed_cycle_matches_expanded_fetch_duty() {
+        let mut expanded = S100BusState::default();
+        let mut packed = S100BusState::default();
+        for bus in [&mut expanded, &mut packed] {
+            bus.release_front_panel_reset(0, 0x5a, false, false, true);
+            bus.lamps.clear_activity();
+        }
+
+        expanded.drive_cpu_t_state(
+            Some(1), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
+            true, false, false,
+        );
+        for _ in 0..3 {
+            expanded.drive_cpu_t_state(
+                Some(1), Some(0x33), Some(0x33), None, None, false, false,
+                true, false, false,
+            );
+        }
+        packed.drive_reconstructed_cpu_cycle(
+            1, 0x33, 0xa2, 4, true, false, false, false, true, false,
+        );
+
+        assert_eq!(packed.lamps.total_weight, expanded.lamps.total_weight);
+        assert_eq!(packed.lamps.raw_duty_snapshot(), expanded.lamps.raw_duty_snapshot());
+        assert_eq!(packed.signals().address, expanded.signals().address);
+        assert_eq!(packed.signals().panel_data, expanded.signals().panel_data);
+        assert_eq!(packed.signals().data_in, expanded.signals().data_in);
+        assert_eq!(packed.signals().data_out, expanded.signals().data_out);
+        assert_eq!(packed.signals().lamp_mask(), expanded.signals().lamp_mask());
     }
 
     #[test]
