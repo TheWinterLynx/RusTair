@@ -74,10 +74,12 @@ impl<'a> FullInstructionBus<'a> {
     }
 
     /// Project one whole external 8080 machine cycle into the canonical front
-    /// panel without replaying the physical S-100 connector graph. T1 carries the
-    /// processor status byte; the remaining states carry the read/write data
-    /// phase. This is the same electrical-duty abstraction already validated for
-    /// instruction-level reconstruction, but it is now owned by Cycle Full.
+    /// panel without replaying the physical S-100 connector graph. During T1 the
+    /// CPU already presents the next status byte on D/DO, but the MITS CPU-board
+    /// 8212 still exposes the *previous* latched S-100 status. The new status is
+    /// captured at the following PHI1 edge, before the T2 panel sample. Full must
+    /// preserve that one-T-state delay or mixed cycle classes produce subtly
+    /// different M1/MEMR/STACK/W-O duty from exact Partial execution.
     #[inline]
     fn project_machine_cycle(
         &mut self,
@@ -91,19 +93,22 @@ impl<'a> FullInstructionBus<'a> {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
 
+        // T1: status byte is on processor D/DO, but the 8212 has not latched it
+        // yet. Passing no status_word here deliberately retains the previous
+        // physical S-100 status lamps for exactly this T-state.
         self.bus.cycle_drive_s100_t_state(
             Some(address),
             Some(status_word),
             None,
             Some(status_word),
-            Some(status_word),
+            None,
             self.inte,
             true,
             false,
             false,
         );
 
-        for _ in 1..t_states {
+        for t_state in 1..t_states {
             let (cpu_data, data_in, data_out) = if reads_data {
                 (Some(data), Some(data), None)
             } else if writes_data {
@@ -111,12 +116,15 @@ impl<'a> FullInstructionBus<'a> {
             } else {
                 (None, None, None)
             };
+            // The new 8212 status becomes visible at PHI1 immediately before T2
+            // is sampled; later states retain it without another latch event.
+            let latched_status = (t_state == 1).then_some(status_word);
             self.bus.cycle_drive_s100_t_state(
                 Some(address),
                 cpu_data,
                 data_in,
                 data_out,
-                None,
+                latched_status,
                 self.inte,
                 true,
                 false,
