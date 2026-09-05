@@ -49,7 +49,7 @@ pub struct CpuDiagnosticResult {
 /// runtime S-100 slot and its host-side endpoint handle point at the same
 /// instance instead of constructing a second UART. Explicit Cycle chassis route
 /// endpoints and debugger operations through these per-slot handles; the legacy
-/// singleton remains only for aggregate-configuration compatibility.
+/// singleton remains only for Fast and aggregate-configuration compatibility.
 #[derive(Clone)]
 pub(crate) struct RuntimeSerialCardHandle {
     state: Rc<RefCell<IoDevices>>,
@@ -458,7 +458,7 @@ pub struct AltairBus {
     sio_interrupt_control: u8,
     /// True only for the chassis owned by the exact Cycle backend. Every call to
     /// `drive_cpu_board_sample` is then one real 8080 clock T-state and may advance
-    /// independent card oscillators without making the semantic adapter double-count
+    /// independent card oscillators without making the Fast adapter double-count
     /// its reconstructed samples.
     exact_t_state_clock_owner: bool,
     diagnostic_meter: Option<CpuDiagnosticMeter>,
@@ -627,6 +627,11 @@ impl AltairBus {
     fn freeze_panel_bus(&mut self) { self.s100.freeze(); }
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) { self.s100.commit(dt, dynamic); }
 
+    /// Active 88-SIO interrupt sources after software D0/D1 enables but before
+    /// the physical IN/OUT/BH routing pads. D0/D7 are already resolved by the
+    /// selected board revision: Rev0 exposes the external RIN/ROT device-ready
+    /// flip-flops there, while Rev1 exposes the internal COM2502 RDA/TBMT ready
+    /// conditions. Routing therefore stays revision-agnostic at this boundary.
     fn sio_internal_interrupt_sources(&self) -> (bool, bool) {
         if self.io.serial_board() != SerialBoard::Sio88 {
             return (false, false);
@@ -656,6 +661,9 @@ impl AltairBus {
         self.io.sio_hardware().interrupt_wiring
     }
 
+    /// Active raw 88-SIO requests presented to an optional 88-VI board. Bit n is
+    /// VIn. These raw lines never fabricate a processor restart opcode by
+    /// themselves; only a separate 88-VI implementation may arbitrate them.
     pub fn sio_vector_interrupt_requests(&self) -> u8 {
         if self.cycle_uses_physical_serial() { return self.memory.serial_vector_interrupt_requests(); }
         if self.io.serial_board() != SerialBoard::Sio88 { return 0; }
@@ -705,6 +713,10 @@ impl AltairBus {
             sample.hlda,
         );
         if self.exact_t_state_clock_owner {
+            // Advance the independent serial-card oscillators by exactly this real
+            // CPU-clock quantum, but leave PINT projection to Cycle's existing
+            // post-sample refresh so the Teacher snapshot keeps the interrupt
+            // level the processor actually saw on this tick.
             if self.memory.uses_explicit_hardware() {
                 self.memory.advance_serial_time(1);
             } else {
@@ -858,6 +870,7 @@ pub struct AltairMachine {
     pub cpu: Cpu8080,
     pub bus: AltairBus,
     pub powered: bool,
+    /// Mirrors the physical RUN/STOP R-S latch, not merely "CPU is executing".
     pub running: bool,
     stop_switch_asserted: bool,
     run_switch_asserted: bool,
@@ -1078,6 +1091,10 @@ impl AltairMachine {
         }
     }
 
+    /// Advance clocks that belong to powered chassis cards while the CPU is not
+    /// being serviced by the instruction-level engine (for example front-panel
+    /// STOP). The runtime will supply this path from virtual chassis time rather
+    /// than abusing endpoint presentation timers.
     pub fn advance_idle_chassis_time(&mut self, t_states: u64) {
         if self.powered { self.bus.advance_serial_hardware_time(t_states); }
     }
@@ -1421,7 +1438,7 @@ mod tests {
 
     #[test]
     fn idle_uart_time_does_not_dirty_an_unchanged_s100_connector() {
-        let (device, handle) = RuntimeSerialCardHandle::new_two_sio(
+        let (mut device, handle) = RuntimeSerialCardHandle::new_two_sio(
             TwoSioStraps::default(),
             TwoSioInterruptWiring::default(),
         );
