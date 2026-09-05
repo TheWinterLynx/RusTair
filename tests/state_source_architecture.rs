@@ -1,16 +1,23 @@
 const CYCLE: &str = include_str!("../src/backend/cycle.rs");
+const CYCLE_PARTIAL: &str = include_str!("../src/backend/cycle/partial_impl.rs");
+const CYCLE_FULL: &str = include_str!("../src/backend/cycle/full.rs");
 const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
 const MACHINE: &str = include_str!("../src/machine/mod.rs");
 const CHASSIS: &str = include_str!("../src/machine/chassis.rs");
 const MEMORY: &str = include_str!("../src/machine/memory.rs");
 const PANEL_BUS: &str = include_str!("../src/machine/panel_bus.rs");
 
+fn cycle_module_contains(needle: &str) -> bool {
+    CYCLE.contains(needle) || CYCLE_PARTIAL.contains(needle) || CYCLE_FULL.contains(needle)
+}
+
 #[test]
 fn cycle_teacher_has_no_parallel_s100_status_or_protection_latch() {
-    assert!(!CYCLE.contains("teaching_status_latch"));
-    assert!(!CYCLE.contains("teaching_prot_latch"));
-    assert!(CYCLE.contains("raw_s100_status_word()"));
-    assert!(CYCLE.contains("raw_s100_prot()"));
+    assert!(CYCLE.contains("include!(\"cycle/partial_impl.rs\")"));
+    assert!(!cycle_module_contains("teaching_status_latch"));
+    assert!(!cycle_module_contains("teaching_prot_latch"));
+    assert!(CYCLE_PARTIAL.contains("raw_s100_status_word()"));
+    assert!(CYCLE_PARTIAL.contains("raw_s100_prot()"));
 }
 
 #[test]
@@ -47,19 +54,19 @@ fn panel_lamp_integrator_remains_presentation_only() {
 #[test]
 fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
     assert!(
-        !CYCLE.contains("sync_machine_cpu"),
+        !cycle_module_contains("sync_machine_cpu"),
         "Cycle must never restore the legacy Cpu8080 mirror synchronization path"
     );
     assert!(
-        !CYCLE.contains("machine.cpu"),
+        !cycle_module_contains("machine.cpu"),
         "Cycle backend must not read or write AltairMachine.cpu"
     );
     assert!(
-        !CYCLE.contains("cycle_registers_from_fast"),
+        !cycle_module_contains("cycle_registers_from_fast"),
         "Cycle power-on state must not be seeded through the Fast CPU"
     );
     assert!(
-        CYCLE.contains("random_power_on_cpu_state"),
+        CYCLE_PARTIAL.contains("random_power_on_cpu_state"),
         "Cycle should own its undefined power-on CPU sample"
     );
 }
@@ -73,19 +80,19 @@ fn cycle_physically_owns_cpu_free_chassis_while_fast_keeps_its_cpu() {
     assert!(!CHASSIS.contains("DerefMut"), "chassis ownership must remain explicit");
 
     assert!(
-        CYCLE.contains("use crate::machine::{AltairChassis,"),
+        CYCLE_PARTIAL.contains("use crate::machine::{AltairChassis,"),
         "Cycle must import the CPU-free chassis explicitly"
     );
     assert!(
-        CYCLE.contains("machine: AltairChassis"),
+        CYCLE_PARTIAL.contains("machine: AltairChassis"),
         "Cycle's physical container must be AltairChassis"
     );
     assert!(
-        !CYCLE.contains("AltairChassis as AltairMachine"),
+        !cycle_module_contains("AltairChassis as AltairMachine"),
         "Cycle must not hide its CPU-free chassis behind the Fast machine name"
     );
     assert!(
-        !CYCLE.contains("machine: AltairMachine"),
+        !cycle_module_contains("machine: AltairMachine"),
         "Cycle must not own the Fast AltairMachine as its physical container"
     );
 
