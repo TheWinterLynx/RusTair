@@ -67,13 +67,10 @@ fn authentic_reader_waits_for_rx_shift_path_not_for_guest_to_empty_rdr() {
         "RDR occupancy must not become hidden host flow control"
     );
 
-    // Exercise the actual 88-2SIO receiver boundary. Configure port 0 exactly
-    // like the authentic loader (11h = /16, 8N2, RTS LOW), then inject one tape
-    // character. While that frame is shifting the physical receive path is busy.
-    // After 100 ms at 110 baud the shift path is free again, but RDR remains full
-    // until the guest performs IN 11h. This is the state that permits a later
-    // character to arrive and create real MC6850 overrun.
-    let mut machine = BackendHost::rust_fast();
+    // Exercise the actual 88-2SIO receiver boundary through the unified
+    // Adaptive Cycle backend. Configure port 0 exactly like the authentic
+    // loader (11h = /16, 8N2, RTS LOW), then inject one tape character.
+    let mut machine = BackendHost::default();
     machine.configure_memory(RamSize::K4, RamInit::Zeroed);
     machine.configure_serial_board(SerialBoard::TwoSio88);
     machine.power(true);
