@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::config::S100InstalledCardConfig;
 use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Pins};
@@ -14,6 +16,22 @@ use super::super::BackendResult;
 /// excludes IN/OUT, so reserving 18 T-states still guarantees we never overshoot
 /// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
+
+/// Compile the Cycle core's authoritative Full/Partial opcode classifier once.
+/// The exact same predicate still defines eligibility; hot execution only turns
+/// the repeated decoder walk into one indexed byte lookup.
+fn full_opcode_table() -> &'static [bool; 256] {
+    static TABLE: OnceLock<[bool; 256]> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut table = [false; 256];
+        let mut opcode = 0usize;
+        while opcode < table.len() {
+            table[opcode] = Cpu8080Cycle::full_opcode_class_supported(opcode as u8);
+            opcode += 1;
+        }
+        table
+    })
+}
 
 /// Prepared guest-bus recorder for Cycle Full. Memory traffic uses the same
 /// bus-owned S-100 decode and RuntimeRamCard storage as the electrical fabric,
@@ -313,12 +331,13 @@ impl CycleAccurateMachineBackend {
             return None;
         }
 
+        let opcode_table = full_opcode_table();
         let first_opcode = self
             .machine
             .bus
             .peek_memory(self.cpu.registers().pc)
             .unwrap_or(0xff);
-        if !self.cpu.full_execution_opcode_supported(first_opcode) {
+        if !opcode_table[first_opcode as usize] {
             return None;
         }
 
@@ -336,7 +355,7 @@ impl CycleAccurateMachineBackend {
             while *remaining >= FULL_EXECUTION_MAX_T_STATES {
                 let opcode_address = full.pc;
                 let opcode = full_bus.bus.peek_memory(opcode_address).unwrap_or(0xff);
-                if !Cpu8080Cycle::full_opcode_class_supported(opcode) {
+                if !opcode_table[opcode as usize] {
                     break;
                 }
 
