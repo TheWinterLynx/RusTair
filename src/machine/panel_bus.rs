@@ -37,20 +37,19 @@ pub(super) struct S100Signals {
     /// S-100 DI0-DI7: data travelling toward the processor board. The original
     /// MITS documentation defines IN/OUT relative to the processor.
     pub data_in: Option<u8>,
-    /// S-100 DO0-DI7: data travelling away from the processor board.
+    /// S-100 DO0-DO7: data travelling away from the processor board.
     pub data_out: Option<u8>,
     /// Intel 8080 package D0-D7 after the CPU-board input/output buffering.
     /// `None` represents a released/undriven processor data bus.
     pub cpu_data: Option<u8>,
     /// Electrical source used by the eight front-panel DATA lamps. Schematic
-    /// 880-105 wires those lamps to S-100 DI0-DI7, not DO0-DI7. Keep the last
+    /// 880-105 wires those lamps to S-100 DI0-DI7, not DO0-DO7. Keep the last
     /// DI value here when DI is temporarily undriven so write/status activity
     /// cannot masquerade as front-panel input data.
     pub panel_data: u8,
     /// Original Altair CPU-board clock outputs on the S-100 backplane.
-    /// PHI2 is pin 24, PHI1 pin 25, and CLOC is the separately buffered 2.000 MHz
-    /// oscillator on pin 49. `None` means there is no exact instantaneous Cycle
-    /// sample; instruction-level Fast must not invent sub-instruction clock state.
+    /// PHI2 is pin 24, PHI1 is pin 25, and CLOC is the separately buffered 2.000 MHz
+    /// oscillator on pin 49. `None` means there is no exact instantaneous sample.
     pub phi1: Option<bool>,
     pub phi2: Option<bool>,
     pub cloc: Option<bool>,
@@ -333,36 +332,11 @@ impl PanelLampIntegrator {
         self.total_weight += accepted;
     }
 
-    /// Add one reconstructed instruction-level machine cycle without replaying
-    /// its identical T2/T3(/T4) presentation samples one at a time. ADDRESS and
-    /// latched status are constant across the cycle; only the DI-wired DATA lamp
-    /// byte may change after T1 on a read. This is therefore exactly equivalent
-    /// to the old Fast adapter's 3/4 calls to `sample`, but reduces them to a few
-    /// packed counter additions and does not touch the physical S-100 fabric.
-    #[inline]
-    fn sample_reconstructed_cycle(
-        &mut self,
-        common_mask: u64,
-        first_panel_data: u8,
-        final_panel_data: u8,
-        t_states: u32,
-        data_changes_after_t1: bool,
-    ) {
-        self.sample_reconstructed_cycle_with_latched_status(
-            common_mask,
-            common_mask,
-            first_panel_data,
-            final_panel_data,
-            t_states,
-            data_changes_after_t1,
-        );
-    }
-
     /// Cycle Full variant of the packed reconstruction. The MITS 8212 exposes
     /// the previous S-100 status during T1 and latches the new status at the PHI1
     /// edge before T2. ADDRESS/PROT and DATA timing are otherwise identical to
-    /// the reconstructed machine-cycle path, so two weighted masks exactly
-    /// replace the old per-T-state replay without touching the physical fabric.
+    /// the external machine-cycle path, so two weighted masks exactly replace
+    /// per-T-state replay without touching the physical fabric.
     #[inline]
     fn sample_reconstructed_cycle_with_latched_status(
         &mut self,
@@ -558,9 +532,8 @@ impl S100BusState {
         self.signals.ready = self.signals.front_panel_ready && self.signals.memory_ready;
     }
 
-    /// Instruction-level/Fast compatibility helper. That backend has no exact
-    /// T2->TW transition to supply WAIT, so it deliberately approximates WAIT as
-    /// the inverse of READY while stopped.
+    /// Compatibility helper for aggregate/non-edge paths. Those callers have no
+    /// exact T2->TW transition to supply WAIT, so WAIT follows inverse READY while stopped.
     pub(super) fn set_ready(&mut self, ready: bool) {
         self.signals.front_panel_ready = ready;
         self.signals.memory_ready = true;
@@ -603,7 +576,7 @@ impl S100BusState {
 
     /// Drive the CPU-board clock and command/control outputs exactly at one
     /// observed edge. These are real backplane nets, not UI reconstructions:
-    /// PHI2=pin24, PHI1 pin 25, CLOC=pin49, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
+    /// PHI2=pin24, PHI1=pin25, CLOC=pin49, PSYNC=pin76, /PWR=pin77, PDBIN=pin78.
     pub(super) fn drive_cpu_board_edge(
         &mut self,
         phi1: bool,
@@ -630,74 +603,10 @@ impl S100BusState {
     }
 
     /// The MITS CPU board latches the processor status byte into its 8212 when
-    /// SYNC and PHI1 coincide. Cycle calls this only at that physical edge;
-    /// instruction-level Fast retains its explicitly reconstructed status path.
+    /// SYNC and PHI1 coincide. Partial calls this at that physical edge; Full
+    /// preserves the same one-T-state visibility delay in its weighted projection.
     pub(super) fn latch_cpu_status(&mut self, word: u8) {
         self.signals.apply_status_word(word);
-    }
-
-    /// Fast/reconstructed counterpart of `drive_cpu_t_state`. The instruction-
-    /// level core knows that T1 presents the status byte and the remaining
-    /// machine-cycle states present one stable data phase. Fold those repeated
-    /// samples directly into the bit-sliced lamp integrator while leaving the
-    /// final observable reconstructed bus state identical to the old adapter.
-    #[inline]
-    pub(super) fn drive_reconstructed_cpu_cycle(
-        &mut self,
-        address: u16,
-        data: u8,
-        status_word: u8,
-        t_states: u32,
-        reads_data_from_s100: bool,
-        writes_data_to_s100: bool,
-        protected: bool,
-        inte: bool,
-        ready: bool,
-        wait: bool,
-    ) {
-        debug_assert!(t_states >= 1);
-        debug_assert!(!(reads_data_from_s100 && writes_data_to_s100));
-
-        let first_panel_data = self.signals.panel_data;
-        self.signals.reset = false;
-        self.signals.inte = inte;
-        self.signals.ready = ready;
-        self.signals.wait = wait;
-        self.signals.hlda = false;
-        self.signals.owner = BusOwner::Cpu;
-        self.signals.address = address;
-        self.signals.prot = protected;
-        self.signals.apply_status_word(status_word);
-
-        let common_mask = u64::from(address)
-            | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
-        let final_panel_data = if reads_data_from_s100 {
-            data
-        } else {
-            first_panel_data
-        };
-        self.lamps.sample_reconstructed_cycle(
-            common_mask,
-            first_panel_data,
-            final_panel_data,
-            t_states,
-            reads_data_from_s100,
-        );
-
-        if reads_data_from_s100 {
-            self.signals.cpu_data = Some(data);
-            self.signals.data_in = Some(data);
-            self.signals.data_out = None;
-            self.signals.panel_data = data;
-        } else if writes_data_to_s100 {
-            self.signals.cpu_data = Some(data);
-            self.signals.data_in = None;
-            self.signals.data_out = Some(data);
-        } else {
-            self.signals.cpu_data = None;
-            self.signals.data_in = None;
-            self.signals.data_out = None;
-        }
     }
 
     /// Cycle Full counterpart of `drive_cpu_t_state`. It preserves the exact
@@ -808,9 +717,8 @@ impl S100BusState {
     /// the original CPU-board buffers. The front-panel DATA display follows DI
     /// only (880-105), so DO/status traffic never updates `panel_data`.
     ///
-    /// `status_word` is used by the instruction-level Fast reconstruction. In
-    /// exact Cycle execution the 8212 status latch is driven separately from the
-    /// real SYNC+PHI1 edge and this argument is normally `None`.
+    /// `status_word` is used when a caller explicitly projects a latch update.
+    /// Exact Partial execution normally drives the 8212 from the real SYNC+PHI1 edge.
     pub(super) fn drive_cpu_t_state(
         &mut self,
         address: Option<u16>,
@@ -1087,8 +995,6 @@ mod tests {
         let mut on = off;
         on.memr = true;
 
-        // This deliberately exceeds the old 32,000-sample presentation cap in
-        // the first OFF half. The correct electrical duty is still exactly 50%.
         integrator.sample(&off, 40_000);
         integrator.sample(&on, 40_000);
         integrator.commit(&on, Duration::from_millis(16), true);
@@ -1132,38 +1038,6 @@ mod tests {
     }
 
     #[test]
-    fn reconstructed_cycle_matches_expanded_fetch_duty() {
-        let mut expanded = S100BusState::default();
-        let mut packed = S100BusState::default();
-        for bus in [&mut expanded, &mut packed] {
-            bus.release_front_panel_reset(0, 0x5a, false, false, true);
-            bus.lamps.clear_activity();
-        }
-
-        expanded.drive_cpu_t_state(
-            Some(1), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
-            true, false, false,
-        );
-        for _ in 0..3 {
-            expanded.drive_cpu_t_state(
-                Some(1), Some(0x33), Some(0x33), None, None, false, false,
-                true, false, false,
-            );
-        }
-        packed.drive_reconstructed_cpu_cycle(
-            1, 0x33, 0xa2, 4, true, false, false, false, true, false,
-        );
-
-        assert_eq!(packed.lamps.total_weight, expanded.lamps.total_weight);
-        assert_eq!(packed.lamps.raw_duty_snapshot(), expanded.lamps.raw_duty_snapshot());
-        assert_eq!(packed.signals().address, expanded.signals().address);
-        assert_eq!(packed.signals().panel_data, expanded.signals().panel_data);
-        assert_eq!(packed.signals().data_in, expanded.signals().data_in);
-        assert_eq!(packed.signals().data_out, expanded.signals().data_out);
-        assert_eq!(packed.signals().lamp_mask(), expanded.signals().lamp_mask());
-    }
-
-    #[test]
     fn cycle_full_weighted_cycle_matches_expanded_8212_latch_delay() {
         let mut expanded = S100BusState::default();
         let mut packed = S100BusState::default();
@@ -1172,8 +1046,6 @@ mod tests {
             bus.lamps.clear_activity();
         }
 
-        // Exact MemoryRead after a fetch: T1 still displays M1 status, T2 latches
-        // 82h and starts showing the new DI byte, T3 retains both.
         expanded.drive_cpu_t_state(
             Some(0x1234), Some(0x82), None, Some(0x82), None, false, false,
             true, false, false,
@@ -1210,8 +1082,6 @@ mod tests {
         assert!(!phi1.pdbin);
         assert!(phi1.pwr_n);
 
-        // CLOC is a separate oscillator net: it retains its level through the
-        // non-overlap dead time instead of becoming unknown when PHI1/PHI2 are 0.
         bus.drive_cpu_board_edge(false, false, false, false, true);
         let dead_after_phi1 = bus.signals();
         assert_eq!(dead_after_phi1.phi1, Some(false));
@@ -1444,21 +1314,18 @@ mod tests {
         bus.drive_power_on_state(0x0000, 0x3c, false, false, false);
         assert_eq!(bus.signals().panel_data, 0x3c);
 
-        // Status byte leaves the CPU through DO and must not change DATA LEDs.
         bus.drive_cpu_t_state(
             Some(0x0000), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
             true, false, false,
         );
         assert_eq!(bus.signals().panel_data, 0x3c);
 
-        // Memory data on DI is the source that updates the physical DATA LEDs.
         bus.drive_cpu_t_state(
             Some(0x0000), Some(0x7e), Some(0x7e), None, None, false, false,
             true, false, false,
         );
         assert_eq!(bus.signals().panel_data, 0x7e);
 
-        // A CPU write on DO must leave the last DI-derived lamp value alone.
         bus.drive_cpu_t_state(
             Some(0x0001), Some(0x00), None, Some(0x00), Some(0x00), false, false,
             true, false, false,
