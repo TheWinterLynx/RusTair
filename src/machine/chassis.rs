@@ -7,8 +7,9 @@ use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 /// CPU-independent physical state of the Altair 8800 chassis.
 ///
 /// This type deliberately owns no processor implementation and no processor
-/// registers. Fast keeps the existing `AltairMachine`; Cycle owns this chassis
-/// beside its exact processor core. Ownership stays explicit and field-based.
+/// registers. Adaptive Cycle owns this chassis beside its Partial core and its
+/// internal Full semantic executor; both strategies therefore observe one
+/// physical S-100 machine.
 pub struct AltairChassis {
     pub bus: AltairBus,
     pub powered: bool,
@@ -21,10 +22,10 @@ pub struct AltairChassis {
 impl Default for AltairChassis {
     fn default() -> Self {
         let mut bus = AltairBus::default();
-        // Unlike the Fast adapter's reconstructed machine-cycle samples, every
-        // CPU-board sample driven by this chassis is one real Cycle-core T-state.
-        // Independent card oscillators can therefore advance exactly once per
-        // sample without relying on another CPU implementation.
+        // Every exact CPU-board sample driven by this chassis is one real
+        // Partial-core T-state. Independent card oscillators can therefore
+        // advance exactly once per sample; Full advances equivalent elapsed
+        // card time explicitly at its synchronization boundary.
         bus.set_exact_t_state_clock_owner(true);
         Self {
             bus,
@@ -75,9 +76,9 @@ impl AltairChassis {
     }
 
     /// Select only the physical serial board. Any processor reset caused by a
-    /// board change belongs to the backend that owns that processor core. A real
-    /// card swap is a machine reconfiguration, so Cycle mirrors Fast by dropping
-    /// the RUN latch before the backend performs its processor RESET sequence.
+    /// board change belongs to the backend that owns the processor core. A real
+    /// card swap is a machine reconfiguration, so the chassis drops the RUN
+    /// latch before Adaptive Cycle performs its processor RESET sequence.
     pub fn configure_serial_board(&mut self, board: SerialBoard) {
         if self.bus.serial_board() == board {
             return;
@@ -95,7 +96,7 @@ impl AltairChassis {
 
     /// Move the physical revision/address/baud/format/interface configuration on
     /// the installed or dormant 88-SIO card. Processor reset remains the
-    /// responsibility of the Cycle backend that owns the exact CPU core.
+    /// responsibility of the Adaptive Cycle backend that owns the CPU core.
     pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) {
         if self.bus.sio_hardware() == config {
             return;
