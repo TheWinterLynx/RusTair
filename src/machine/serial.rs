@@ -97,13 +97,20 @@ impl super::AltairBus {
         self.s100.set_inte(enabled);
     }
 
-    /// Preserve optional CPU diagnostic metering without forcing an otherwise
-    /// eligible Full instruction through the T-state-heavy Partial path.
+    /// Canonical instruction-completion hook shared by both Adaptive Cycle paths.
+    /// It exists only for optional diagnostic metering; guest execution remains
+    /// owned by FullInstructionBus or the exact Partial T-state path.
     #[inline]
-    pub(crate) fn cycle_full_instruction_complete(&mut self, address: u16, t_states: u32) {
+    pub(crate) fn cycle_instruction_complete(&mut self, address: u16, t_states: u32) {
         if self.diagnostic_meter.is_some() {
             self.record_cpu_diagnostic_instruction(address, t_states);
         }
+    }
+
+    /// Full uses the same neutral completion hook as Partial.
+    #[inline]
+    pub(crate) fn cycle_full_instruction_complete(&mut self, address: u16, t_states: u32) {
+        self.cycle_instruction_complete(address, t_states);
     }
 }
 
