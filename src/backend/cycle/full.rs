@@ -200,6 +200,9 @@ impl FullPanelActivity {
                 }
             }
 
+            // The table contains only completed chronological activity. Flush it
+            // with the latest state last so the canonical S-100 presentation is
+            // still a valid predecessor for whatever Full records next.
             self.flush_histogram(bus, self.latest_committed_key);
         }
     }
@@ -231,6 +234,9 @@ impl FullPanelActivity {
     ) {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
+
+        // Once another external machine cycle starts, the previous one can no
+        // longer be the final presentation boundary and is safe to coalesce.
         self.commit_pending(bus);
 
         let first_key = Self::state_key(
@@ -282,6 +288,9 @@ impl FullPanelActivity {
             return;
         };
 
+        // Every state before the final machine cycle may be replayed in any order
+        // for raw duty, but end with the true predecessor so the canonical helper
+        // sees exactly the 8212/panel DATA state that existed before final T1.
         self.flush_histogram(bus, self.latest_committed_key);
         bus.cycle_full_project_panel_cycle(
             pending.address,
@@ -298,6 +307,9 @@ impl FullPanelActivity {
     }
 }
 
+/// Compile the Cycle core's authoritative Full/Partial opcode classifier once.
+/// The exact same predicate still defines eligibility; hot execution only turns
+/// the repeated decoder walk into one indexed byte lookup.
 fn full_opcode_table() -> &'static [bool; 256] {
     static TABLE: OnceLock<[bool; 256]> = OnceLock::new();
     TABLE.get_or_init(|| {
@@ -311,6 +323,11 @@ fn full_opcode_table() -> &'static [bool; 256] {
     })
 }
 
+/// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
+/// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
+/// expensive connector graph remains lazy until an actual synchronization
+/// boundary. Front-panel duty is accumulated locally across the semantic window
+/// and folded into the canonical integrator only at synchronization boundaries.
 struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
@@ -962,7 +979,6 @@ mod tests {
             .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
             .unwrap();
         backend.power(true).unwrap();
-        backend.assert_reset().unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]).unwrap();
