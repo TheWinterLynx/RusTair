@@ -257,7 +257,7 @@ impl MachineBackend for NativeMachineBackend {
     }
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
         if self.instruction_trace.enabled() || self.debug_control.active() { self.service_execution_with_debug_boundaries(t_state_budget); }
-        else if self.machine.running { self.machine.run_cycles(t_state_budget); }
+        else if self.machine.running { self.machine.run_cycles_compiled_fast(t_state_budget); }
         Ok(())
     }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
