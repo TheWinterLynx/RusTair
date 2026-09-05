@@ -91,7 +91,7 @@ impl super::AltairBus {
 
     /// DI/EI are CPU-internal instructions, but INTE is a real processor-board
     /// output visible on the S-100/front panel. Full updates that same canonical
-    /// bus state directly instead of routing through the removed semantic machine.
+    /// bus state directly instead of routing through a second machine.
     #[inline]
     pub(crate) fn cycle_full_set_inte(&mut self, enabled: bool) {
         self.s100.set_inte(enabled);
@@ -104,6 +104,58 @@ impl super::AltairBus {
         if self.diagnostic_meter.is_some() {
             self.record_cpu_diagnostic_instruction(address, t_states);
         }
+    }
+}
+
+/// `Cpu8080` Full executes against `FullInstructionBus`, not against `AltairBus`.
+/// This trait implementation exists only because `FullInstructionBus` delegates
+/// the two bus-visible callbacks whose semantics belong to the physical chassis:
+/// INTE projection and optional diagnostic completion. Every actual guest
+/// transfer is deliberately rejected here so no second semantic machine can
+/// silently bypass the Adaptive Cycle dispatcher.
+impl crate::cpu8080::Bus for super::AltairBus {
+    fn read(&mut self, _address: u16) -> u8 {
+        panic!("Adaptive Full guest reads must use FullInstructionBus")
+    }
+
+    fn write(&mut self, _address: u16, _value: u8) {
+        panic!("Adaptive Full guest writes must use FullInstructionBus")
+    }
+
+    fn input(&mut self, _port: u8) -> u8 {
+        panic!("IN is a Full/Partial synchronization barrier")
+    }
+
+    fn output(&mut self, _port: u8, _value: u8) {
+        panic!("OUT is a Full/Partial synchronization barrier")
+    }
+
+    fn set_inte(&mut self, enabled: bool) {
+        self.cycle_full_set_inte(enabled);
+    }
+
+    fn opcode_fetch(&mut self, _address: u16) -> u8 {
+        panic!("Adaptive Full opcode fetches must use FullInstructionBus")
+    }
+
+    fn stack_read(&mut self, _address: u16) -> u8 {
+        panic!("Adaptive Full stack reads must use FullInstructionBus")
+    }
+
+    fn stack_write(&mut self, _address: u16, _value: u8) {
+        panic!("Adaptive Full stack writes must use FullInstructionBus")
+    }
+
+    fn halt_ack(&mut self, _address: u16, _opcode: u8) {
+        panic!("HLT acknowledge is a Full/Partial synchronization barrier")
+    }
+
+    fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {
+        panic!("interrupt acknowledge is a Full/Partial synchronization barrier")
+    }
+
+    fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        self.cycle_full_instruction_complete(address, t_states);
     }
 }
 
