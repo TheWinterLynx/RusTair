@@ -3,7 +3,6 @@ use std::time::Duration;
 use rand::RngCore;
 
 use crate::config::SerialBoard;
-use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
