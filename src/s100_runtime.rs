@@ -125,6 +125,14 @@ pub struct S100RuntimeFabric {
     /// Fast transaction phase begins; subsequent zero-time deltas use the cached
     /// connector drive until an S-100 input wakes the card.
     externally_mutable_slots: S100SlotMask,
+    /// Display/Control state used by the last completed production settle. A
+    /// repeated identical request with no pending CPU/UART connector transition
+    /// is already the physically resolved bus and can return immediately.
+    last_settled_display: Option<DisplayControlLines>,
+    /// True when the CPU board's cached connector drive has changed since the
+    /// last real resolver pass. Phase-only Cycle edges may intentionally stack
+    /// here until the next electrically observable edge.
+    cpu_connector_pending: bool,
     /// Predecoded hardware response for every 16-bit address. A bit means that
     /// the card in that physical connector can decode the address. Real cards
     /// see the address bus in parallel; this table is the software equivalent of
@@ -239,6 +247,8 @@ impl S100RuntimeFabric {
             ram,
             serial,
             externally_mutable_slots,
+            last_settled_display: None,
+            cpu_connector_pending: false,
             memory_responders,
             ram_by_slot,
             io_decode,
@@ -467,9 +477,11 @@ impl S100RuntimeFabric {
 
     pub fn set_cpu_package_pins(&mut self, pins: Cpu8080Pins) {
         let drive = self.cpu.set_package_pins_and_connector_drive(pins);
-        self.backplane
+        let changed = self
+            .backplane
             .update_cached_slot_drive(self.cpu_slot, drive)
             .expect("validated MITS CPU connector drive must match its slot contract");
+        self.cpu_connector_pending |= changed;
     }
 
     pub fn cpu_package_inputs(&self) -> Cpu8080Inputs {
@@ -518,6 +530,28 @@ impl S100RuntimeFabric {
         self.ram_for_slot(mask.trailing_zeros() as usize + 1)
     }
 
+    fn refresh_external_connector_drives(&mut self) -> Result<bool, S100BackplaneError> {
+        if self.externally_mutable_slots == 0 {
+            return Ok(false);
+        }
+        Ok(self
+            .backplane
+            .refresh_cached_drives(self.externally_mutable_slots)?
+            != 0)
+    }
+
+    /// Prove that a PHI1 synchronization edge carries no new non-clock
+    /// information from outside the CPU package. The caller separately proves
+    /// that installed cards do not consume PHI1/PHI2/CLOC and that the 8212
+    /// status latch will not change on this edge.
+    pub(crate) fn can_elide_phase_only_rising(
+        &mut self,
+        display: DisplayControlLines,
+    ) -> Result<bool, S100BackplaneError> {
+        let external_changed = self.refresh_external_connector_drives()?;
+        Ok(!external_changed && self.last_settled_display == Some(display))
+    }
+
     /// Event-driven zero-time propagation. The connector still settles through
     /// the same causal deltas as the physical cards, but Rust does not execute a
     /// card merely because some unrelated S-100 net changed. Each slot's input
@@ -535,9 +569,18 @@ impl S100RuntimeFabric {
         extra_drives: &[S100CardDrive],
     ) -> Result<&S100BusSample, S100BackplaneError> {
         let selected = S100SlotMask::MAX;
-        if self.externally_mutable_slots != 0 {
-            self.backplane
-                .refresh_cached_drives(self.externally_mutable_slots)?;
+        let external_changed = self.refresh_external_connector_drives()?;
+
+        // With no connector transition, no Display/Control transition and no
+        // temporary chassis source, the current sample *is already* the fully
+        // settled physical bus. Re-running the bit-sliced resolver would only
+        // spend host cycles; it cannot advance emulated time or card state.
+        if extra_drives.is_empty()
+            && !self.cpu_connector_pending
+            && !external_changed
+            && self.last_settled_display == Some(display)
+        {
+            return Ok(self.backplane.sample());
         }
 
         let mut display_drive = display.drive(self.backplane.sample());
@@ -568,6 +611,8 @@ impl S100RuntimeFabric {
                 break;
             }
         }
+        self.cpu_connector_pending = false;
+        self.last_settled_display = extra_drives.is_empty().then_some(display);
         Ok(self.backplane.sample())
     }
 
@@ -590,6 +635,7 @@ impl S100RuntimeFabric {
         display: DisplayControlLines,
         package_changed: bool,
     ) -> Result<(), S100BackplaneError> {
+        self.last_settled_display = None;
         let cpu_slot = self.cpu_slot_mask();
         let externally_dirty = selected & self.externally_mutable_slots;
         if externally_dirty != 0 {
@@ -600,6 +646,7 @@ impl S100RuntimeFabric {
         let change = self
             .backplane
             .resolve_cached_selected_drives(selected, &[display_drive]);
+        self.cpu_connector_pending = false;
         let forced = if package_changed { cpu_slot } else { 0 };
         let _ = self
             .backplane
@@ -615,6 +662,7 @@ impl S100RuntimeFabric {
         selected: S100SlotMask,
         display: DisplayControlLines,
     ) -> Result<(), S100BackplaneError> {
+        self.last_settled_display = None;
         let refresh = selected & self.externally_mutable_slots;
         if refresh != 0 {
             self.backplane.refresh_cached_drives(refresh)?;
@@ -623,6 +671,7 @@ impl S100RuntimeFabric {
         let _ = self
             .backplane
             .resolve_cached_selected_drives(selected, &[display_drive]);
+        self.cpu_connector_pending = false;
         Ok(())
     }
 
@@ -1229,6 +1278,41 @@ mod tests {
         let drive = DisplayControlLines::default().drive(&sample);
         let resolved = fabric.backplane().resolve_drive_sets(&[drive]);
         assert_eq!(resolved.signal_level(S100Signal::MemoryWrite), Some(true));
+    }
+
+    #[test]
+    fn stable_settle_keeps_the_existing_physical_sample() {
+        let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        };
+        fabric.set_cpu_package_pins(Cpu8080Pins {
+            phi1: false,
+            phi2: true,
+            address: Some(0x0123),
+            data_out: None,
+            sync: false,
+            dbin: true,
+            wr_n: true,
+            inte: false,
+            wait: false,
+            hlda: false,
+        });
+        let before = fabric.settle(display, &[]).unwrap().clone();
+        let after = fabric.settle(display, &[]).unwrap();
+        assert_eq!(&before, after);
+    }
+
+    #[test]
+    fn phase_only_rising_proof_rejects_changed_display_control() {
+        let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
+        let stopped = DisplayControlLines::default();
+        fabric.settle(stopped, &[]).unwrap();
+        assert!(fabric.can_elide_phase_only_rising(stopped).unwrap());
+        let running = DisplayControlLines { ready: true, run: true, ..stopped };
+        assert!(!fabric.can_elide_phase_only_rising(running).unwrap());
     }
 
     #[test]
