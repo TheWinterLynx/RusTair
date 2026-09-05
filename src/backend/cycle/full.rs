@@ -9,8 +9,10 @@ use super::super::BackendResult;
 
 /// No supported Intel 8080 instruction exceeds 18 T-states without external
 /// wait states (XTHL is the longest). The compiled chassis below admits only
-/// no-wait static RAM and no I/O cards, so reserving 18 T-states before entering
-/// full execution guarantees we never overshoot the caller's exact budget.
+/// no-wait static RAM for memory traffic. Serial cards may be present only while
+/// their UART timing is electrically quiet, and the full opcode set deliberately
+/// excludes IN/OUT, so reserving 18 T-states still guarantees we never overshoot
+/// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 
 /// Thin recorder around the existing AltairBus. Guest reads/writes still use
@@ -123,9 +125,11 @@ impl Bus for FullInstructionBus<'_> {
 }
 
 impl CycleAccurateMachineBackend {
-    /// First compiled chassis class: one MITS 8080 CPU plus non-overlapping
-    /// asynchronous/no-wait MITS static RAM boards. Every other real card keeps
-    /// the partial engine authoritative until it gets an explicit event model.
+    /// Compiled chassis class: one MITS 8080 CPU plus non-overlapping,
+    /// asynchronous/no-wait MITS static RAM boards. 88-SIO/88-2SIO cards may be
+    /// installed because the compiled opcode set cannot perform I/O and the host
+    /// window separately proves that their UARTs have no timed transition in
+    /// flight. Other real cards stay on Partial until they get an event model.
     ///
     /// This proof is evaluated once per host timeslice, not once per instruction.
     /// That mirrors MAME's prepared address spaces: after POWER-OFF hardware has
@@ -159,10 +163,39 @@ impl CycleAccurateMachineBackend {
                     ranges.push((start, end));
                     saw_ram = true;
                 }
+                S100InstalledCardConfig::Mits88Sio(_)
+                | S100InstalledCardConfig::Mits88TwoSio { .. } => {}
                 _ => return false,
             }
         }
         saw_ram
+    }
+
+    fn compiled_full_chassis_has_serial(&self) -> bool {
+        self.machine
+            .bus
+            .s100_hardware_memory()
+            .installed_cards()
+            .any(|(_, card)| {
+                matches!(
+                    card,
+                    S100InstalledCardConfig::Mits88Sio(_)
+                        | S100InstalledCardConfig::Mits88TwoSio { .. }
+                )
+            })
+    }
+
+    /// While all physical serial shift paths are idle, advancing their baud
+    /// oscillators cannot change S-100 PRDY/PINT/VI or UART register state. The
+    /// elapsed phase may therefore be folded in one exact batch immediately
+    /// before re-entering Partial. A pending/completed endpoint TX byte is kept
+    /// conservative via `serial_*_tx_busy()` even though it has no future bit
+    /// edge of its own.
+    fn compiled_serial_timing_is_quiet(&self) -> bool {
+        self.machine.bus.serial_rx_line_idle()
+            && !self.machine.bus.serial_tx_busy()
+            && self.machine.bus.serial_port1_rx_line_idle()
+            && !self.machine.bus.serial_port1_tx_busy()
     }
 
     #[inline]
@@ -240,16 +273,20 @@ impl CycleAccurateMachineBackend {
         }
 
         // Host input cannot mutate the chassis concurrently inside this
-        // synchronous service call. With this first plan there are also no cards
-        // with an independent clock/IRQ source, so READY/HOLD/INTR are stable for
-        // the entire Full window. If any is already active we simply remain on
-        // Partial, where the exact sampling rules continue to apply.
+        // synchronous service call. Static RAM has no asynchronous source. A
+        // serial card is also safe for Full while both UART shift paths are idle:
+        // only its free-running baud phase advances, which is folded below before
+        // the first Partial edge. Active RX/TX/BREAK immediately keeps the entire
+        // window on Partial where exact edge timing remains authoritative.
+        let serial_clocked = self.compiled_full_chassis_has_serial();
         let full_window = self.compiled_full_chassis_available()
+            && (!serial_clocked || self.compiled_serial_timing_is_quiet())
             && lines.ready
             && !lines.hold
             && !(lines.interrupt && self.cpu.interrupts_enabled());
 
         let mut remaining = t_state_budget;
+        let mut deferred_serial_t_states = 0u64;
         while remaining != 0 && self.machine.running {
             if let Some(opcode) = self.compiled_full_opcode(remaining, full_window) {
                 if let Some(elapsed) = self.execute_compiled_full_instruction(opcode) {
@@ -258,8 +295,23 @@ impl CycleAccurateMachineBackend {
                     // a release-build guard if future opcode coverage changes.
                     debug_assert!(elapsed <= remaining);
                     remaining = remaining.saturating_sub(elapsed);
+                    if serial_clocked {
+                        deferred_serial_t_states = deferred_serial_t_states
+                            .saturating_add(u64::from(elapsed));
+                    }
                     continue;
                 }
+            }
+
+            // No serial state transition could occur while the quiet Full block
+            // ran, but its independent baud oscillator never stopped. Materialize
+            // the exact accumulated phase before any Partial T-state can observe
+            // or mutate the serial card (especially an IN/OUT instruction).
+            if deferred_serial_t_states != 0 {
+                self.machine
+                    .bus
+                    .advance_serial_hardware_time(deferred_serial_t_states);
+                deferred_serial_t_states = 0;
             }
 
             let ready = self.machine.bus.cycle_front_panel_ready_input();
@@ -272,6 +324,12 @@ impl CycleAccurateMachineBackend {
                 self.park_physical_stop_at_first_tw();
                 break;
             }
+        }
+
+        if deferred_serial_t_states != 0 {
+            self.machine
+                .bus
+                .advance_serial_hardware_time(deferred_serial_t_states);
         }
         self.machine.bus.refresh_interrupt_request_line();
         self.fail_if_cpu_fault("service execution")
@@ -354,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_full_rejects_phase_sensitive_serial_and_overlapping_ram_chassis() {
+    fn compiled_full_allows_idle_serial_but_rejects_wait_ram_and_overlap() {
         let mut wait_hardware =
             S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
         wait_hardware
@@ -389,7 +447,9 @@ mod tests {
                 RamInit::Zeroed,
             )
             .unwrap();
-        assert!(!serial.compiled_full_chassis_available());
+        assert!(serial.compiled_full_chassis_available());
+        assert!(serial.compiled_full_chassis_has_serial());
+        assert!(serial.compiled_serial_timing_is_quiet());
 
         let mut overlap = static_4k_hardware();
         overlap
