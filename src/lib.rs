@@ -1,3 +1,4 @@
+pub mod adaptive_metrics;
 pub mod app;
 pub mod audio;
 pub mod backend;
