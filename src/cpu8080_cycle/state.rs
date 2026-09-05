@@ -81,29 +81,26 @@ impl Cpu8080Cycle {
         true
     }
 
-    /// MAME-style `full` execution is legal only at a clean instruction
-    /// boundary and only for instruction families whose external machine-cycle
-    /// schedule can currently be reconstructed without a mid-instruction event.
-    ///
-    /// The stateful T-state engine remains the `partial` oracle. I/O, HLT,
-    /// delayed interrupt-enable transitions and instruction families with extra
-    /// non-bus cycles interleaved between external cycles stay on that path until
-    /// their compiled schedules are added explicitly.
-    pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
-        if self.machine_cycle != MachineCycle::InstructionFetch
-            || self.t_state != TState::T1
-            || self.current_instruction_t_states != 0
-            || self.halted
-            || self.holding
-            || self.hold_pending
-            || self.reset_asserted
-            || self.fault.is_some()
-            || self.ei_pending
-            || self.enable_inte_after_instruction
-        {
-            return false;
-        }
+    #[inline]
+    fn full_execution_boundary_ready(&self) -> bool {
+        self.machine_cycle == MachineCycle::InstructionFetch
+            && self.t_state == TState::T1
+            && self.current_instruction_t_states == 0
+            && !self.halted
+            && !self.holding
+            && !self.hold_pending
+            && !self.reset_asserted
+            && self.fault.is_none()
+            && !self.ei_pending
+            && !self.enable_inte_after_instruction
+    }
 
+    /// Instruction families whose external machine-cycle schedule is already
+    /// representable by the compiled Full bridge. This predicate intentionally
+    /// contains no mutable Cycle-core state so one prepared semantic core may run
+    /// many consecutive instructions without copying registers back after each
+    /// opcode merely to ask the same class question again.
+    pub(crate) fn full_opcode_class_supported(opcode: u8) -> bool {
         matches!(
             decode(opcode),
             Instruction::Nop
@@ -138,21 +135,24 @@ impl Cpu8080Cycle {
         )
     }
 
-    /// Execute one whole instruction using RusTair's validated instruction-level
-    /// 8080 semantics, then import the programmer-visible result back into this
-    /// exact core at the next clean fetch boundary.
+    /// MAME-style `full` execution is legal only at a clean instruction
+    /// boundary and only for instruction families whose external machine-cycle
+    /// schedule can currently be reconstructed without a mid-instruction event.
     ///
-    /// This is deliberately *not* a second authority: it can run only when the
-    /// partial core proves it is at InstructionFetch/T1 with no pending EI/HOLD
-    /// state, and the caller must separately execute/project the exact compiled
-    /// S-100 machine-cycle schedule. Any unsupported condition returns `None`
-    /// before the bus or processor state is touched.
-    pub(crate) fn execute_full_instruction<B: Bus>(
-        &mut self,
-        bus: &mut B,
-        opcode: u8,
-    ) -> Option<u32> {
-        if !self.full_execution_opcode_supported(opcode) {
+    /// The stateful T-state engine remains the `partial` oracle. I/O, HLT,
+    /// delayed interrupt-enable transitions and instruction families with extra
+    /// non-bus cycles interleaved between external cycles stay on that path until
+    /// their compiled schedules are added explicitly.
+    pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
+        self.full_execution_boundary_ready() && Self::full_opcode_class_supported(opcode)
+    }
+
+    /// Export one clean Cycle boundary into the validated instruction-level 8080
+    /// semantic core. A Full execution window may keep this core authoritative
+    /// for multiple supported instructions and import it only once when a real
+    /// synchronization boundary is reached.
+    pub(crate) fn begin_full_execution_window(&self) -> Option<Cpu8080> {
+        if !self.full_execution_boundary_ready() {
             return None;
         }
 
@@ -170,11 +170,21 @@ impl Cpu8080Cycle {
         full.inte = self.inte;
         full.halted = false;
         full.cycles = self.total_t_states;
+        Some(full)
+    }
 
-        let before = full.cycles;
-        let elapsed = full.step(bus);
-        debug_assert_eq!(full.cycles.saturating_sub(before), u64::from(elapsed));
-
+    /// Import one completed Full window at the next exact InstructionFetch/T1
+    /// boundary. No guest-visible state is skipped here: every instruction in
+    /// the window was executed by the same semantic core and every memory access
+    /// already went through the bus-owned compiled S-100 decoder.
+    pub(crate) fn commit_full_execution_window(
+        &mut self,
+        full: &Cpu8080,
+        completed: u64,
+        last_elapsed: u32,
+    ) {
+        debug_assert!(completed != 0);
+        debug_assert!(!full.halted);
         self.registers = Registers {
             a: full.a,
             b: full.b,
@@ -194,9 +204,9 @@ impl Cpu8080Cycle {
         self.hold_pending = false;
         self.holding = false;
         self.total_t_states = full.cycles;
-        self.completed_instructions = self.completed_instructions.saturating_add(1);
+        self.completed_instructions = self.completed_instructions.saturating_add(completed);
         self.current_instruction_t_states = 0;
-        self.last_instruction_t_states = Some(elapsed);
+        self.last_instruction_t_states = Some(last_elapsed);
         self.opcode = None;
         self.instruction = Instruction::Nop;
         self.operand_low = 0;
@@ -206,7 +216,30 @@ impl Cpu8080Cycle {
         self.fault = None;
         self.begin_instruction_fetch();
         self.pins.inte = self.inte;
+    }
 
+    /// Execute one whole instruction using RusTair's validated instruction-level
+    /// 8080 semantics, then import the programmer-visible result back into this
+    /// exact core at the next clean fetch boundary.
+    ///
+    /// This remains as the narrow one-instruction bridge used by focused tests;
+    /// production Full execution uses `begin_full_execution_window` and
+    /// `commit_full_execution_window` so the register set is copied only at real
+    /// synchronization boundaries rather than once per opcode.
+    pub(crate) fn execute_full_instruction<B: Bus>(
+        &mut self,
+        bus: &mut B,
+        opcode: u8,
+    ) -> Option<u32> {
+        if !self.full_execution_opcode_supported(opcode) {
+            return None;
+        }
+
+        let mut full = self.begin_full_execution_window()?;
+        let before = full.cycles;
+        let elapsed = full.step(bus);
+        debug_assert_eq!(full.cycles.saturating_sub(before), u64::from(elapsed));
+        self.commit_full_execution_window(&full, 1, elapsed);
         Some(elapsed)
     }
 
@@ -275,6 +308,36 @@ mod tests {
         assert_eq!(cpu.registers().pc, 2);
         assert_eq!(cpu.total_t_states(), 7);
         assert_eq!(cpu.completed_instructions(), 1);
+        assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(cpu.t_state(), TState::T1);
+    }
+
+    #[test]
+    fn full_window_imports_many_semantic_instructions_once() {
+        struct TestBus {
+            memory: [u8; 16],
+        }
+        impl Bus for TestBus {
+            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
+            fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
+        }
+
+        let mut cpu = Cpu8080Cycle::new();
+        let mut bus = TestBus { memory: [0; 16] };
+        bus.memory[..4].copy_from_slice(&[0x04, 0x04, 0x05, 0x00]); // INR B, INR B, DCR B, NOP
+        let mut full = cpu.begin_full_execution_window().unwrap();
+        let mut last = 0;
+        for _ in 0..4 {
+            let opcode = bus.memory[full.pc as usize];
+            assert!(Cpu8080Cycle::full_opcode_class_supported(opcode));
+            last = full.step(&mut bus);
+        }
+        cpu.commit_full_execution_window(&full, 4, last);
+
+        assert_eq!(cpu.registers().b, 1);
+        assert_eq!(cpu.registers().pc, 4);
+        assert_eq!(cpu.total_t_states(), 19);
+        assert_eq!(cpu.completed_instructions(), 4);
         assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch);
         assert_eq!(cpu.t_state(), TState::T1);
     }
