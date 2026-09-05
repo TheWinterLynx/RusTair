@@ -1,40 +1,49 @@
-use rustair::backend::{BackendHost, BusTState, EmulationEngine};
+use rustair::backend::{BackendHost, BusTState};
 use rustair::config::{RamInit, RamSize, SerialBoard};
-use rustair::cpu8080::Bus;
 use rustair::machine::AltairBus;
 
 const OPEN_BUS: u8 = 0xff;
 
-#[test]
-fn uninstalled_memory_is_absent_to_debugger_but_ff_to_guest() {
-    let mut bus = AltairBus::default();
-    bus.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
+fn prepared_host(program: &[u8]) -> BackendHost {
+    let mut host = BackendHost::default();
+    host.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
+    host.power(true);
+    host.front_panel_reset();
+    host.load_bytes(0, program);
+    host
+}
 
-    assert_eq!(bus.peek_memory(0x00ff), Some(0x00));
-    assert_eq!(bus.peek_memory(0x0100), None);
-    assert_eq!(bus.read(0x0100), OPEN_BUS);
-    assert_eq!(bus.opcode_fetch(0x0100), OPEN_BUS);
-    assert_eq!(bus.stack_read(0x0100), OPEN_BUS);
+#[test]
+fn uninstalled_memory_is_absent_to_debugger_but_ff_to_guest_reads() {
+    let mut host = prepared_host(&[0x3a, 0x00, 0x01]); // LDA 0100h
+    assert_eq!(host.peek_memory(0x00ff), Some(0x00));
+    assert_eq!(host.peek_memory(0x0100), None);
+
+    host.debugger_step_instruction();
+    assert_eq!(host.intel8080_state().a, OPEN_BUS);
+
+    let mut stack = prepared_host(&[0x31, 0x00, 0x01, 0xc1]); // LXI SP,0100h / POP B
+    stack.debugger_step_instruction();
+    stack.debugger_step_instruction();
+    let cpu = stack.intel8080_state();
+    assert_eq!((cpu.b, cpu.c), (OPEN_BUS, OPEN_BUS));
 }
 
 #[test]
 fn writes_into_uninstalled_memory_do_not_create_ram_or_change_open_bus() {
-    let mut bus = AltairBus::default();
-    bus.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
+    let mut host = prepared_host(&[0x3e, 0x5a, 0x32, 0x00, 0x01]); // MVI A,5Ah / STA 0100h
+    host.debugger_step_instruction();
+    host.debugger_step_instruction();
+    assert_eq!(host.peek_memory(0x0100), None);
 
-    bus.write(0x0100, 0x5a);
-    assert_eq!(bus.peek_memory(0x0100), None);
-    assert_eq!(bus.read(0x0100), OPEN_BUS);
+    let mut reader = prepared_host(&[0x3a, 0x00, 0x01]); // LDA 0100h
+    reader.debugger_step_instruction();
+    assert_eq!(reader.intel8080_state().a, OPEN_BUS);
 }
 
 #[test]
 fn cycle_exact_t2_keeps_unmapped_s100_di_floating_before_cpu_samples_open_bus_ff_at_t3() {
-    let mut host = BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080)
-        .expect("built-in Cycle backend");
-    host.configure_memory(RamSize::Bytes256, RamInit::Zeroed);
-    host.power(true);
-    host.front_panel_reset();
-    host.load_bytes(0, &[0xc3, 0x00, 0x01]); // JMP 0100h, outside installed RAM.
+    let mut host = prepared_host(&[0xc3, 0x00, 0x01]); // JMP 0100h, outside installed RAM.
 
     host.debugger_step_instruction();
     assert_eq!(host.intel8080_state().pc, 0x0100);
@@ -85,11 +94,11 @@ fn unmapped_io_reads_ff_with_88_sio_installed() {
     let mut bus = AltairBus::default();
     bus.configure_serial_board(SerialBoard::Sio88);
 
-    assert_eq!(bus.input(0x10), OPEN_BUS);
-    assert_eq!(bus.input(0x11), OPEN_BUS);
-    assert_eq!(bus.input(0x12), OPEN_BUS);
-    assert_eq!(bus.input(0x13), OPEN_BUS);
-    assert_eq!(bus.input(0x7e), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x10), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x11), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x12), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x13), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x7e), OPEN_BUS);
 }
 
 #[test]
@@ -97,9 +106,9 @@ fn unmapped_io_reads_ff_with_88_2sio_installed() {
     let mut bus = AltairBus::default();
     bus.configure_serial_board(SerialBoard::TwoSio88);
 
-    assert_eq!(bus.input(0x00), OPEN_BUS);
-    assert_eq!(bus.input(0x01), OPEN_BUS);
-    assert_eq!(bus.input(0x7e), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x00), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x01), OPEN_BUS);
+    assert_eq!(bus.debugger_input_port(0x7e), OPEN_BUS);
 }
 
 #[test]
@@ -109,6 +118,6 @@ fn open_bus_does_not_override_a_responding_device() {
 
     // A selected 6850 responds at its status port. With no received character
     // and an empty transmitter the currently modelled status is TDRE only.
-    assert_eq!(bus.input(0x10), 0x02);
-    assert_eq!(bus.input(0x12), 0x02);
+    assert_eq!(bus.debugger_input_port(0x10), 0x02);
+    assert_eq!(bus.debugger_input_port(0x12), 0x02);
 }
