@@ -58,6 +58,29 @@ impl Cpu8080Cycle {
         self.pins.inte = inte;
     }
 
+    /// Complete the zero-time internal transition that the partial core performs
+    /// at the top of the first tick after the physical RESET line is released.
+    ///
+    /// RESET assertion already established PC=0, disabled INTE and returned the
+    /// core to InstructionFetch/T1. Releasing RESET does not itself consume an
+    /// 8080 T-state; the partial executor merely clears this bookkeeping latch
+    /// before driving that T1. Full execution must perform the same transition
+    /// explicitly or it would incorrectly reject the first post-RESET opcode.
+    pub(crate) fn prepare_full_boundary_after_reset_release(&mut self) -> bool {
+        if self.machine_cycle != MachineCycle::InstructionFetch
+            || self.t_state != TState::T1
+            || self.current_instruction_t_states != 0
+            || self.halted
+            || self.holding
+            || self.hold_pending
+            || self.fault.is_some()
+        {
+            return false;
+        }
+        self.reset_asserted = false;
+        true
+    }
+
     /// MAME-style `full` execution is legal only at a clean instruction
     /// boundary and only for instruction families whose external machine-cycle
     /// schedule can currently be reconstructed without a mid-instruction event.
