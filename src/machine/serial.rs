@@ -107,6 +107,14 @@ impl super::AltairBus {
         }
     }
 
+    /// Inherent Partial-path entry point. This intentionally is not a
+    /// `cpu8080::Bus` implementation: it only forwards completed-instruction
+    /// metering into the same neutral Cycle hook used by Full.
+    #[inline]
+    pub(crate) fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        self.cycle_instruction_complete(address, t_states);
+    }
+
     /// Full uses the same neutral completion hook as Partial.
     #[inline]
     pub(crate) fn cycle_full_instruction_complete(&mut self, address: u16, t_states: u32) {
