@@ -28,7 +28,7 @@ use self::external_serial::ExternalSerialState;
 use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
-use crate::backend::{BackendHost, BackendSerialPort};
+use crate::backend::{BackendHost, BackendSerialPort, EmulationEngine};
 use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig, SerialBoard,
     TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
