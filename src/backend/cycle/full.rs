@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 
+use crate::adaptive_metrics::{self, AdaptiveFallbackReason};
 use crate::config::S100InstalledCardConfig;
 use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Pins};
@@ -199,9 +200,6 @@ impl FullPanelActivity {
                 }
             }
 
-            // The table contains only completed chronological activity. Flush it
-            // with the latest state last so the canonical S-100 presentation is
-            // still a valid predecessor for whatever Full records next.
             self.flush_histogram(bus, self.latest_committed_key);
         }
     }
@@ -233,9 +231,6 @@ impl FullPanelActivity {
     ) {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
-
-        // Once another external machine cycle starts, the previous one can no
-        // longer be the final presentation boundary and is safe to coalesce.
         self.commit_pending(bus);
 
         let first_key = Self::state_key(
@@ -287,9 +282,6 @@ impl FullPanelActivity {
             return;
         };
 
-        // Every state before the final machine cycle may be replayed in any order
-        // for raw duty, but end with the true predecessor so the canonical helper
-        // sees exactly the 8212/panel DATA state that existed before final T1.
         self.flush_histogram(bus, self.latest_committed_key);
         bus.cycle_full_project_panel_cycle(
             pending.address,
@@ -306,9 +298,6 @@ impl FullPanelActivity {
     }
 }
 
-/// Compile the Cycle core's authoritative Full/Partial opcode classifier once.
-/// The exact same predicate still defines eligibility; hot execution only turns
-/// the repeated decoder walk into one indexed byte lookup.
 fn full_opcode_table() -> &'static [bool; 256] {
     static TABLE: OnceLock<[bool; 256]> = OnceLock::new();
     TABLE.get_or_init(|| {
@@ -322,11 +311,6 @@ fn full_opcode_table() -> &'static [bool; 256] {
     })
 }
 
-/// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
-/// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
-/// expensive connector graph remains lazy until an actual synchronization
-/// boundary. Front-panel duty is accumulated locally across the semantic window
-/// and folded into the canonical integrator only at synchronization boundaries.
 struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
@@ -752,6 +736,43 @@ impl CycleAccurateMachineBackend {
         Some(elapsed_total)
     }
 
+    fn compiled_full_fallback_reason(
+        &self,
+        remaining: u32,
+        full_window_blocker: Option<AdaptiveFallbackReason>,
+    ) -> AdaptiveFallbackReason {
+        if let Some(reason) = full_window_blocker { return reason; }
+        if remaining < FULL_EXECUTION_MAX_T_STATES { return AdaptiveFallbackReason::BudgetTail; }
+        if !self.at_instruction_boundary() { return AdaptiveFallbackReason::NotInstructionBoundary; }
+        if self.stop_wait_park_pending { return AdaptiveFallbackReason::StopWaitPending; }
+        if self.cpu_fault.is_some() { return AdaptiveFallbackReason::CpuFault; }
+        if self.machine.bus.cpu_control_lines().reset { return AdaptiveFallbackReason::Reset; }
+
+        let opcode = self
+            .machine
+            .bus
+            .peek_memory(self.cpu.registers().pc)
+            .unwrap_or(0xff);
+        if !full_opcode_table()[opcode as usize] {
+            AdaptiveFallbackReason::OpcodeBarrier
+        } else {
+            AdaptiveFallbackReason::FullWindowUnavailable
+        }
+    }
+
+    fn record_partial_metrics_span(
+        &self,
+        partial_start_t: &mut Option<u64>,
+        partial_reason: &mut Option<AdaptiveFallbackReason>,
+    ) {
+        let Some(start_t) = partial_start_t.take() else { return; };
+        let elapsed = self.cpu.total_t_states().saturating_sub(start_t);
+        adaptive_metrics::record_partial_span(
+            elapsed,
+            partial_reason.take().unwrap_or(AdaptiveFallbackReason::FullWindowUnavailable),
+        );
+    }
+
     pub(super) fn service_execution_compiled(
         &mut self,
         t_state_budget: u32,
@@ -767,20 +788,46 @@ impl CycleAccurateMachineBackend {
         }
 
         let serial_clocked = self.compiled_full_chassis_has_serial();
-        let full_window = self.compiled_full_chassis_available()
-            && (!serial_clocked || self.compiled_serial_timing_is_quiet())
+        let chassis_available = self.compiled_full_chassis_available();
+        let serial_quiet = !serial_clocked || self.compiled_serial_timing_is_quiet();
+        let full_window = chassis_available
+            && serial_quiet
             && lines.ready
             && !lines.hold
             && !(lines.interrupt && self.cpu.interrupts_enabled());
+        let full_window_blocker = if !chassis_available {
+            Some(AdaptiveFallbackReason::ChassisUnsupported)
+        } else if !serial_quiet {
+            Some(AdaptiveFallbackReason::SerialActive)
+        } else if !lines.ready {
+            Some(AdaptiveFallbackReason::ReadyLow)
+        } else if lines.hold {
+            Some(AdaptiveFallbackReason::Hold)
+        } else if lines.interrupt && self.cpu.interrupts_enabled() {
+            Some(AdaptiveFallbackReason::InterruptPending)
+        } else {
+            None
+        };
 
         let mut remaining = t_state_budget;
         let mut deferred_serial_t_states = 0u64;
+        let mut partial_start_t = None;
+        let mut partial_reason = None;
         while remaining != 0 && self.machine.running {
+            let before_completed = self.cpu.completed_instructions();
             if let Some(elapsed) = self.execute_compiled_full_window(&mut remaining, full_window) {
+                self.record_partial_metrics_span(&mut partial_start_t, &mut partial_reason);
+                let completed = self.cpu.completed_instructions().saturating_sub(before_completed);
+                adaptive_metrics::record_full_window(completed, elapsed);
                 if serial_clocked {
                     deferred_serial_t_states = deferred_serial_t_states.saturating_add(elapsed);
                 }
                 continue;
+            }
+
+            if partial_start_t.is_none() {
+                partial_start_t = Some(self.cpu.total_t_states());
+                partial_reason = Some(self.compiled_full_fallback_reason(remaining, full_window_blocker));
             }
 
             if deferred_serial_t_states != 0 {
@@ -794,6 +841,7 @@ impl CycleAccurateMachineBackend {
             let trace = self.tick_once(ready);
             remaining -= 1;
             if trace.fault.is_some() {
+                self.record_partial_metrics_span(&mut partial_start_t, &mut partial_reason);
                 return self.fail_if_cpu_fault("service execution");
             }
             if self.stop_wait_park_pending {
@@ -802,6 +850,7 @@ impl CycleAccurateMachineBackend {
             }
         }
 
+        self.record_partial_metrics_span(&mut partial_start_t, &mut partial_reason);
         if deferred_serial_t_states != 0 {
             self.machine
                 .bus
@@ -913,6 +962,7 @@ mod tests {
             .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
             .unwrap();
         backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]).unwrap();
