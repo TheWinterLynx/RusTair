@@ -93,9 +93,10 @@ impl<'a> FullInstructionBus<'a> {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
 
-        // T1: status byte is on processor D/DO, but the 8212 has not latched it
-        // yet. Passing no status_word here deliberately retains the previous
-        // physical S-100 status lamps for exactly this T-state.
+        // T1 changes the address/protection selection. The remaining states of
+        // the same machine cycle keep those physical lines stable, so presenting
+        // `None` afterwards is exactly equivalent at the panel but avoids
+        // re-decoding the same RAM protection latch on every reconstructed T-state.
         self.bus.cycle_drive_s100_t_state(
             Some(address),
             Some(status_word),
@@ -120,7 +121,7 @@ impl<'a> FullInstructionBus<'a> {
             // is sampled; later states retain it without another latch event.
             let latched_status = (t_state == 1).then_some(status_word);
             self.bus.cycle_drive_s100_t_state(
-                Some(address),
+                None,
                 cpu_data,
                 data_in,
                 data_out,
@@ -142,13 +143,13 @@ impl<'a> FullInstructionBus<'a> {
     /// the same weight before closing the semantic instruction.
     #[inline]
     fn project_internal_tail(&mut self, t_states: u32) {
-        let Some(address) = self.last_projected_address else {
+        let Some(_address) = self.last_projected_address else {
             debug_assert_eq!(t_states, 0);
             return;
         };
         for _ in 0..t_states {
             self.bus.cycle_drive_s100_t_state(
-                Some(address),
+                None,
                 None,
                 None,
                 None,
