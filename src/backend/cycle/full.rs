@@ -16,6 +16,20 @@ use super::super::BackendResult;
 /// excludes IN/OUT, so reserving 18 T-states still guarantees we never overshoot
 /// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
+const FULL_READ_CACHE_ENTRIES: usize = 64;
+
+#[derive(Clone, Copy)]
+struct FullReadCacheEntry {
+    address: u16,
+    value: u8,
+    valid: bool,
+}
+
+const EMPTY_FULL_READ_CACHE_ENTRY: FullReadCacheEntry = FullReadCacheEntry {
+    address: 0,
+    value: 0,
+    valid: false,
+};
 
 /// Compile the Cycle core's authoritative Full/Partial opcode classifier once.
 /// The exact same predicate still defines eligibility; hot execution only turns
@@ -51,6 +65,13 @@ struct FullInstructionBus<'a> {
     /// adds those residual states while the last S-100 address/status remain held.
     projected_t_states: u32,
     last_projected_address: Option<u16>,
+    /// Tiny read-through cache scoped to this synchronous Full window. The
+    /// admitted chassis contains only non-overlapping static RAM, every guest
+    /// write crosses this same bus and invalidates its exact address, and no host
+    /// mutation can interleave inside the call. It therefore removes repeated
+    /// decoder/RefCell reads without changing S-100 ownership or self-modifying
+    /// code semantics.
+    read_cache: [FullReadCacheEntry; FULL_READ_CACHE_ENTRIES],
     /// Opcode already inspected by the Full dispatcher. Static RAM reads have no
     /// side effects, so the dispatcher may classify the byte once and let the
     /// semantic core consume that same fetch without performing a second memory
@@ -69,7 +90,38 @@ impl<'a> FullInstructionBus<'a> {
             boundary_pins,
             projected_t_states: 0,
             last_projected_address: None,
+            read_cache: [EMPTY_FULL_READ_CACHE_ENTRY; FULL_READ_CACHE_ENTRIES],
             prefetched_opcode: None,
+        }
+    }
+
+    #[inline]
+    fn read_cache_index(address: u16) -> usize {
+        let address = address as usize;
+        (address ^ (address >> 6)) & (FULL_READ_CACHE_ENTRIES - 1)
+    }
+
+    #[inline]
+    fn guest_read(&mut self, address: u16) -> u8 {
+        let index = Self::read_cache_index(address);
+        let cached = self.read_cache[index];
+        if cached.valid && cached.address == address {
+            return cached.value;
+        }
+        let value = self.bus.cycle_full_guest_read(address);
+        self.read_cache[index] = FullReadCacheEntry {
+            address,
+            value,
+            valid: true,
+        };
+        value
+    }
+
+    #[inline]
+    fn invalidate_guest_read(&mut self, address: u16) {
+        let index = Self::read_cache_index(address);
+        if self.read_cache[index].valid && self.read_cache[index].address == address {
+            self.read_cache[index].valid = false;
         }
     }
 
@@ -165,7 +217,7 @@ impl<'a> FullInstructionBus<'a> {
 impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn read(&mut self, address: u16) -> u8 {
-        let value = self.bus.cycle_full_guest_read(address);
+        let value = self.guest_read(address);
         self.project_machine_cycle(address, value, 0x82, 3, true, false);
         self.remember_read_boundary(address);
         value
@@ -174,6 +226,7 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn write(&mut self, address: u16, value: u8) {
         self.bus.cycle_full_guest_write(address, value);
+        self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x00, 3, false, true);
         self.remember_write_boundary(address, value);
     }
@@ -200,7 +253,7 @@ impl Bus for FullInstructionBus<'_> {
                 return opcode;
             }
         }
-        let value = self.bus.cycle_full_guest_read(address);
+        let value = self.guest_read(address);
         self.project_machine_cycle(address, value, 0xa2, 4, true, false);
         self.remember_read_boundary(address);
         value
@@ -208,7 +261,7 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn stack_read(&mut self, address: u16) -> u8 {
-        let value = self.bus.cycle_full_guest_read(address);
+        let value = self.guest_read(address);
         self.project_machine_cycle(address, value, 0x86, 3, true, false);
         self.remember_read_boundary(address);
         value
@@ -217,6 +270,7 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
         self.bus.cycle_full_guest_write(address, value);
+        self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x04, 3, false, true);
         self.remember_write_boundary(address, value);
     }
@@ -419,7 +473,7 @@ impl CycleAccurateMachineBackend {
 
             while *remaining >= FULL_EXECUTION_MAX_T_STATES {
                 let opcode_address = full.pc;
-                let opcode = full_bus.bus.peek_memory(opcode_address).unwrap_or(0xff);
+                let opcode = full_bus.guest_read(opcode_address);
                 if !opcode_table[opcode as usize] {
                     break;
                 }
@@ -613,6 +667,16 @@ mod tests {
 
         backend.service_execution_compiled(1).unwrap();
         assert_eq!(backend.cpu.total_t_states(), 17);
+    }
+
+    #[test]
+    fn compiled_full_read_cache_invalidates_on_guest_write() {
+        let mut backend = prepare_static_backend(&[0x00]);
+        backend.machine.bus.debugger_write_memory(0x0020, 0x11, false);
+        let mut full_bus = FullInstructionBus::new(&mut backend.machine.bus, false);
+        assert_eq!(full_bus.guest_read(0x0020), 0x11);
+        full_bus.write(0x0020, 0x5a);
+        assert_eq!(full_bus.guest_read(0x0020), 0x5a);
     }
 
     #[test]
