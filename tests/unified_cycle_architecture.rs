@@ -14,7 +14,7 @@ fn rust_files_under(root: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn removed_fast_backend_cannot_reenter_product_or_tests() {
+fn removed_fast_backend_and_semantic_machine_cannot_reenter_product_or_tests() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut files = Vec::new();
     rust_files_under(&root.join("src"), &mut files);
@@ -27,6 +27,11 @@ fn removed_fast_backend_cannot_reenter_product_or_tests() {
         "BackendHost::rust_fast",
         "mod fast_exec",
         "select_emulation_engine",
+        "AltairMachine",
+        "Fast8080S100Adapter",
+        "fast_front_panel_",
+        "service_fast_interrupt",
+        "fast_wait_t_states",
     ];
 
     for path in files {
@@ -35,7 +40,7 @@ fn removed_fast_backend_cannot_reenter_product_or_tests() {
         for token in forbidden {
             assert!(
                 !source.contains(token),
-                "removed Fast backend token {token:?} reappeared in {}",
+                "removed Fast/semantic-machine token {token:?} reappeared in {}",
                 path.display(),
             );
         }
@@ -47,10 +52,13 @@ fn cpu8080_semantic_core_remains_internal_full_executor_not_a_second_backend() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let full = fs::read_to_string(root.join("src/backend/cycle/full.rs")).unwrap();
     let backend = fs::read_to_string(root.join("src/backend/mod.rs")).unwrap();
+    let machine = fs::read_to_string(root.join("src/machine/mod.rs")).unwrap();
 
     assert!(full.contains("use crate::cpu8080::Bus;"));
     assert!(full.contains("begin_full_execution_window"));
     assert!(full.contains("FullInstructionBus"));
     assert!(!backend.contains("mod native;"));
-    assert_eq!(backend.matches("RustCycleAccurate8080").count() > 0, true);
+    assert!(backend.contains("RustCycleAccurate8080"));
+    assert!(!machine.contains("pub struct AltairMachine"));
+    assert!(!machine.contains("Cpu8080"));
 }
