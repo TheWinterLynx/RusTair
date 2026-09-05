@@ -123,16 +123,20 @@ impl Bus for FullInstructionBus<'_> {
 }
 
 impl CycleAccurateMachineBackend {
-    /// First compiled chassis class: one MITS 8080 CPU plus any number of the
+    /// First compiled chassis class: one MITS 8080 CPU plus non-overlapping
     /// asynchronous/no-wait MITS static RAM boards. Every other real card keeps
     /// the partial engine authoritative until it gets an explicit event model.
     ///
-    /// This whitelist is intentionally physical rather than performance-based:
-    /// 88-MCS needs READY waits, dynamic/synchronous RAM observes clocks, and
-    /// SIO/2SIO can change state from independent serial clocks.
+    /// This proof is evaluated once per host timeslice, not once per instruction.
+    /// That mirrors MAME's prepared address spaces: after POWER-OFF hardware has
+    /// been materialized, execution consumes a compact capability fact rather
+    /// than repeatedly rediscovering the topology on every opcode.
     fn compiled_full_chassis_available(&self) -> bool {
+        let hardware = self.machine.bus.s100_hardware_memory();
         let mut saw_ram = false;
-        for (_, card) in self.machine.bus.s100_hardware_memory().installed_cards() {
+        let mut ranges: Vec<(u32, u32)> = Vec::new();
+
+        for (_, card) in hardware.installed_cards() {
             match card {
                 S100InstalledCardConfig::Mits8080Cpu => {}
                 S100InstalledCardConfig::Ram(config)
@@ -142,6 +146,17 @@ impl CycleAccurateMachineBackend {
                             | S100RamBoardModel::Mits16KStatic88_16Mcs
                     ) =>
                 {
+                    let start = u32::from(config.base_address);
+                    let end = start + config.populated_bytes as u32;
+                    if ranges
+                        .iter()
+                        .any(|&(other_start, other_end)| start < other_end && other_start < end)
+                    {
+                        // Overlap is legal physical S-100 hardware and must retain
+                        // the generic resolver so equal drives/contention remain visible.
+                        return false;
+                    }
+                    ranges.push((start, end));
                     saw_ram = true;
                 }
                 _ => return false,
@@ -150,34 +165,27 @@ impl CycleAccurateMachineBackend {
         saw_ram
     }
 
-    fn compiled_full_opcode(&mut self, remaining: u32) -> Option<u8> {
-        if remaining < FULL_EXECUTION_MAX_T_STATES
+    #[inline]
+    fn compiled_full_opcode(&self, remaining: u32, full_window: bool) -> Option<u8> {
+        if !full_window
+            || remaining < FULL_EXECUTION_MAX_T_STATES
             || !self.at_instruction_boundary()
             || self.stop_wait_park_pending
             || self.cpu_fault.is_some()
-            || !self.compiled_full_chassis_available()
         {
             return None;
         }
 
-        // Full is entered only at the same boundary where the partial core would
-        // arbitrate INTR/HOLD/READY. No host-side event can arrive in the middle
-        // of this synchronous call, and this first compiled chassis class has no
-        // independent-clock card, so the accepted instruction is deterministic.
-        self.machine.bus.refresh_interrupt_request_line();
-        let lines = self.machine.bus.cpu_control_lines();
-        if !lines.ready
-            || lines.reset
-            || lines.hold
-            || (lines.interrupt && self.cpu.interrupts_enabled())
-        {
-            return None;
-        }
-
+        // The chassis proof guarantees a unique static-RAM responder wherever
+        // memory is populated. `peek_memory` therefore uses the already-compiled
+        // S-100 RAM decode instead of the general inspection/resolution path.
+        // An unmapped fetch is open bus FFh and stays on Partial (RST 7 is not
+        // compiled yet), preserving exact floating-DI behavior.
         let opcode = self
             .machine
             .bus
-            .preview_guest_memory(self.cpu.registers().pc);
+            .peek_memory(self.cpu.registers().pc)
+            .unwrap_or(0xff);
         self.cpu
             .full_execution_opcode_supported(opcode)
             .then_some(opcode)
@@ -204,7 +212,6 @@ impl CycleAccurateMachineBackend {
         // edge can be elided again.
         self.machine.bus.cycle_mark_full_execution_desynced();
         self.last_teaching_tick = None;
-        self.machine.bus.refresh_interrupt_request_line();
         Some(elapsed)
     }
 
@@ -212,6 +219,7 @@ impl CycleAccurateMachineBackend {
         &mut self,
         t_state_budget: u32,
     ) -> BackendResult<()> {
+        self.machine.bus.refresh_interrupt_request_line();
         let lines = self.machine.bus.cpu_control_lines();
         if t_state_budget == 0
             || !self.machine.powered
@@ -221,9 +229,19 @@ impl CycleAccurateMachineBackend {
             return self.fail_if_cpu_fault("service execution");
         }
 
+        // Host input cannot mutate the chassis concurrently inside this
+        // synchronous service call. With this first plan there are also no cards
+        // with an independent clock/IRQ source, so READY/HOLD/INTR are stable for
+        // the entire Full window. If any is already active we simply remain on
+        // Partial, where the exact sampling rules continue to apply.
+        let full_window = self.compiled_full_chassis_available()
+            && lines.ready
+            && !lines.hold
+            && !(lines.interrupt && self.cpu.interrupts_enabled());
+
         let mut remaining = t_state_budget;
         while remaining != 0 && self.machine.running {
-            if let Some(opcode) = self.compiled_full_opcode(remaining) {
+            if let Some(opcode) = self.compiled_full_opcode(remaining, full_window) {
                 if let Some(elapsed) = self.execute_compiled_full_instruction(opcode) {
                     // Static no-wait eligibility plus the 18T reservation above
                     // make this a proof, not a heuristic. Keep saturating_sub as
@@ -245,6 +263,7 @@ impl CycleAccurateMachineBackend {
                 break;
             }
         }
+        self.machine.bus.refresh_interrupt_request_line();
         self.fail_if_cpu_fault("service execution")
     }
 
@@ -303,8 +322,9 @@ mod tests {
         backend.load_bytes(0x0010, &[0x5a, 0xa5]).unwrap();
         backend.run().unwrap();
 
+        assert!(backend.compiled_full_chassis_available());
         let opcode = backend
-            .compiled_full_opcode(FULL_EXECUTION_MAX_T_STATES)
+            .compiled_full_opcode(FULL_EXECUTION_MAX_T_STATES, true)
             .expect("static 4K chassis must compile");
         assert_eq!(opcode, 0x2a);
         assert_eq!(backend.execute_compiled_full_instruction(opcode), Some(16));
@@ -323,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_full_rejects_phase_sensitive_or_serial_chassis() {
+    fn compiled_full_rejects_phase_sensitive_serial_and_overlapping_ram_chassis() {
         let mut wait_hardware =
             S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
         wait_hardware
@@ -359,5 +379,25 @@ mod tests {
             )
             .unwrap();
         assert!(!serial.compiled_full_chassis_available());
+
+        let mut overlap = static_4k_hardware();
+        overlap
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Ram(
+                    S100RamCardConfig::fully_populated(
+                        S100RamBoardModel::Mits4KStatic88_4Mcs,
+                        0,
+                    ),
+                )),
+            )
+            .unwrap();
+        let mut overlapped = CycleAccurateMachineBackend::default();
+        overlapped
+            .machine
+            .bus
+            .configure_s100_hardware_memory(overlap, RamInit::Zeroed)
+            .unwrap();
+        assert!(!overlapped.compiled_full_chassis_available());
     }
 }
