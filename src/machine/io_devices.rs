@@ -4,11 +4,10 @@ use crate::config::{
     SerialBoard, SioHardwareConfig, SioRevision, TwoSioBaudTap as ConfigTwoSioBaudTap,
     TwoSioInterruptTarget, TwoSioInterruptWiring, TwoSioStraps,
 };
-use crate::cpu8080::Bus;
 
 use super::memory::{MemoryReadyPhase, S100_OPEN_BUS_VALUE};
 use super::serial::sio::{SioHandshakeLines, SioPort};
-use super::{AltairBus, AltairMachine, CLOCK_HZ};
+use super::{AltairBus, CLOCK_HZ};
 
 #[path = "two_sio.rs"]
 mod two_sio;
@@ -697,10 +696,6 @@ impl AltairBus {
         self.io.advance_t_states(t_states);
         self.refresh_interrupt_request_line();
     }
-    pub(crate) fn fast_account_io_input_wait(&mut self, port: u8) {
-        let wait_states = u32::from(!self.cycle_io_ready(port, true, MemoryReadyPhase::T2));
-        self.fast_wait_t_states = self.fast_wait_t_states.saturating_add(wait_states);
-    }
     pub(crate) fn cycle_io_ready(&self, port: u8, input_read: bool, phase: MemoryReadyPhase) -> bool {
         self.io.ready_for_input_t_state(port, input_read, phase)
     }
@@ -765,7 +760,7 @@ impl AltairBus {
         if port != 0xff && self.cycle_uses_physical_serial() {
             return self.memory.debugger_input_port(port);
         }
-        let value = <Self as Bus>::input(self, port);
+        let value = if port == 0xff { self.panel.input() } else { self.io.input(port) };
         if port == 0xff { self.io.trace.record(IO_TRACE_IN, port, value); }
         self.refresh_interrupt_request_line();
         value
@@ -775,8 +770,16 @@ impl AltairBus {
             self.memory.debugger_output_port(port, value);
             return;
         }
-        <Self as Bus>::output(self, port, value);
-        if port == 0xff { self.io.trace.record(IO_TRACE_OUT, port, value); }
+        if port == 0xff {
+            self.io.trace.record(IO_TRACE_OUT, port, value);
+        } else {
+            if self.io.serial_board() == SerialBoard::Sio88
+                && port == self.io.sio_hardware().address.status()
+            {
+                self.sio_interrupt_control = value & 0x03;
+            }
+            self.io.output(port, value);
+        }
         self.refresh_interrupt_request_line();
     }
     pub fn debugger_inject_serial_rx(&mut self, data_port: u8, byte: u8) -> bool {
@@ -802,58 +805,6 @@ impl AltairBus {
         let completed = self.io.debugger_complete_tx(data_port);
         self.refresh_interrupt_request_line();
         completed
-    }
-}
-
-impl AltairMachine {
-    pub fn configure_serial_board(&mut self, board: SerialBoard) {
-        if self.bus.serial_board() == board { return; }
-        self.running = false;
-        self.bus.configure_serial_board(board);
-        self.bus.clear_transient_memory_guards();
-        if self.powered { self.reset(); } else { self.cpu.reset(); }
-    }
-    pub fn serial_board(&self) -> SerialBoard { self.bus.serial_board() }
-
-    pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) {
-        if self.bus.sio_hardware() == config { return; }
-        self.running = false;
-        self.bus.configure_sio_hardware(config);
-        self.bus.clear_transient_memory_guards();
-        if self.powered && self.bus.serial_board() == SerialBoard::Sio88 {
-            self.reset();
-        } else {
-            self.cpu.reset();
-        }
-    }
-    pub fn sio_hardware(&self) -> SioHardwareConfig { self.bus.sio_hardware() }
-
-    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
-        if self.bus.two_sio_straps() == straps { return; }
-        self.running = false;
-        self.bus.configure_two_sio_straps(straps);
-        self.bus.clear_transient_memory_guards();
-        if self.powered && self.bus.serial_board() == SerialBoard::TwoSio88 {
-            self.reset();
-        } else {
-            self.cpu.reset();
-        }
-    }
-    pub fn two_sio_straps(&self) -> TwoSioStraps { self.bus.two_sio_straps() }
-
-    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
-        if self.bus.two_sio_interrupt_wiring() == wiring { return; }
-        self.running = false;
-        self.bus.configure_two_sio_interrupt_wiring(wiring);
-        self.bus.clear_transient_memory_guards();
-        if self.powered && self.bus.serial_board() == SerialBoard::TwoSio88 {
-            self.reset();
-        } else {
-            self.cpu.reset();
-        }
-    }
-    pub fn two_sio_interrupt_wiring(&self) -> TwoSioInterruptWiring {
-        self.bus.two_sio_interrupt_wiring()
     }
 }
 
@@ -1021,31 +972,31 @@ mod tests {
 
     #[test]
     fn two_sio_modem_pin_levels_are_card_state_not_host_endpoint_state() {
-        let mut machine = AltairMachine::default();
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        assert_eq!(machine.bus.serial_modem_lines(0), Some((false, false, false, false)));
-        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x51);
-        assert_eq!(machine.bus.serial_modem_lines(0), Some((true, false, false, false)));
-        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x71);
-        assert_eq!(machine.bus.serial_modem_lines(0), Some((false, true, false, false)));
-        assert!(machine.bus.set_serial_modem_inputs(0, true, false));
-        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_STATUS) & 0x08, 0x08);
+        let mut bus = AltairBus::default();
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(bus.serial_modem_lines(0), Some((false, false, false, false)));
+        bus.debugger_output_port(SIO2_PORT0_STATUS, 0x51);
+        assert_eq!(bus.serial_modem_lines(0), Some((true, false, false, false)));
+        bus.debugger_output_port(SIO2_PORT0_STATUS, 0x71);
+        assert_eq!(bus.serial_modem_lines(0), Some((false, true, false, false)));
+        assert!(bus.set_serial_modem_inputs(0, true, false));
+        assert_eq!(bus.peek_io_port(SIO2_PORT0_STATUS) & 0x08, 0x08);
     }
 
     #[test]
     fn dcd_transition_reaches_status_and_canonical_pint() {
-        let mut machine = AltairMachine::default();
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x91);
-        assert!(!machine.bus.cpu_control_lines().interrupt);
-        assert!(machine.bus.set_serial_modem_inputs(0, false, true));
-        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_STATUS) & 0x84, 0x84);
-        assert!(machine.bus.cpu_control_lines().interrupt);
-        assert!(machine.bus.set_serial_modem_inputs(0, false, false));
-        let _ = machine.bus.debugger_input_port(SIO2_PORT0_STATUS);
-        assert!(machine.bus.cpu_control_lines().interrupt);
-        let _ = machine.bus.debugger_input_port(SIO2_PORT0_DATA);
-        assert!(!machine.bus.cpu_control_lines().interrupt);
+        let mut bus = AltairBus::default();
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        bus.debugger_output_port(SIO2_PORT0_STATUS, 0x91);
+        assert!(!bus.cpu_control_lines().interrupt);
+        assert!(bus.set_serial_modem_inputs(0, false, true));
+        assert_eq!(bus.peek_io_port(SIO2_PORT0_STATUS) & 0x84, 0x84);
+        assert!(bus.cpu_control_lines().interrupt);
+        assert!(bus.set_serial_modem_inputs(0, false, false));
+        let _ = bus.debugger_input_port(SIO2_PORT0_STATUS);
+        assert!(bus.cpu_control_lines().interrupt);
+        let _ = bus.debugger_input_port(SIO2_PORT0_DATA);
+        assert!(!bus.cpu_control_lines().interrupt);
     }
 
     #[test]
@@ -1214,30 +1165,30 @@ mod tests {
 
     #[test]
     fn port1_card_timed_rx_irq_projects_to_canonical_pint() {
-        let mut machine = AltairMachine::default();
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        machine.bus.debugger_output_port(SIO2_PORT1_STATUS, 0x95);
-        assert!(!machine.bus.cpu_control_lines().interrupt);
-        machine.bus.serial_port1_receive(b'P');
-        assert!(!machine.bus.cpu_control_lines().interrupt);
-        machine.bus.advance_serial_hardware_time(2_084);
-        assert!(machine.bus.cpu_control_lines().interrupt);
-        assert_eq!(machine.bus.debugger_input_port(SIO2_PORT1_DATA), b'P');
-        assert!(!machine.bus.cpu_control_lines().interrupt);
+        let mut bus = AltairBus::default();
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        bus.debugger_output_port(SIO2_PORT1_STATUS, 0x95);
+        assert!(!bus.cpu_control_lines().interrupt);
+        bus.serial_port1_receive(b'P');
+        assert!(!bus.cpu_control_lines().interrupt);
+        bus.advance_serial_hardware_time(2_084);
+        assert!(bus.cpu_control_lines().interrupt);
+        assert_eq!(bus.debugger_input_port(SIO2_PORT1_DATA), b'P');
+        assert!(!bus.cpu_control_lines().interrupt);
     }
 
     #[test]
     fn debugger_rx_injection_is_immediate_but_still_obeys_mc6850_overrun() {
-        let mut machine = AltairMachine::default();
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        machine.bus.debugger_output_port(SIO2_PORT0_STATUS, 0x95);
-        assert!(machine.bus.debugger_inject_serial_rx(SIO2_PORT0_DATA, b'A'));
-        assert!(machine.bus.cpu_control_lines().interrupt);
-        assert!(machine.bus.debugger_inject_serial_rx(SIO2_PORT0_DATA, b'B'));
-        assert_eq!(machine.bus.debugger_input_port(SIO2_PORT0_DATA), b'A');
-        assert_eq!(machine.bus.peek_io_port(SIO2_PORT0_STATUS) & 0x21, 0x21);
-        assert!(machine.bus.debugger_clear_serial_rx(SIO2_PORT0_DATA));
-        assert!(!machine.bus.cpu_control_lines().interrupt);
+        let mut bus = AltairBus::default();
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        bus.debugger_output_port(SIO2_PORT0_STATUS, 0x95);
+        assert!(bus.debugger_inject_serial_rx(SIO2_PORT0_DATA, b'A'));
+        assert!(bus.cpu_control_lines().interrupt);
+        assert!(bus.debugger_inject_serial_rx(SIO2_PORT0_DATA, b'B'));
+        assert_eq!(bus.debugger_input_port(SIO2_PORT0_DATA), b'A');
+        assert_eq!(bus.peek_io_port(SIO2_PORT0_STATUS) & 0x21, 0x21);
+        assert!(bus.debugger_clear_serial_rx(SIO2_PORT0_DATA));
+        assert!(!bus.cpu_control_lines().interrupt);
     }
 
     #[test]
@@ -1258,20 +1209,20 @@ mod tests {
 
     #[test]
     fn changing_serial_board_preserves_ram() {
-        let mut machine = AltairMachine::default();
-        machine.bus.load(0x0200, &[0x5a]);
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        assert_eq!(machine.bus.read(0x0200), 0x5a);
+        let mut bus = AltairBus::default();
+        bus.load(0x0200, &[0x5a]);
+        bus.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(bus.peek_memory(0x0200), Some(0x5a));
     }
 
     #[test]
     fn peek_does_not_consume_88_sio_rx() {
-        let mut machine = AltairMachine::default();
-        machine.bus.serial_receive(b'Y');
-        machine.bus.advance_serial_hardware_time(200_000);
-        assert_eq!(machine.bus.peek_io_port(SIO_DATA_PORT), b'Y');
-        assert_eq!(machine.bus.serial_rx_len(), 1);
-        assert_eq!(machine.bus.input(SIO_DATA_PORT), b'Y');
-        assert_eq!(machine.bus.serial_rx_len(), 0);
+        let mut bus = AltairBus::default();
+        bus.serial_receive(b'Y');
+        bus.advance_serial_hardware_time(200_000);
+        assert_eq!(bus.peek_io_port(SIO_DATA_PORT), b'Y');
+        assert_eq!(bus.serial_rx_len(), 1);
+        assert_eq!(bus.debugger_input_port(SIO_DATA_PORT), b'Y');
+        assert_eq!(bus.serial_rx_len(), 0);
     }
 }
