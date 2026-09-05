@@ -56,6 +56,9 @@ impl<'a> FullInstructionBus<'a> {
             data_out: Some(value),
             sync: false,
             dbin: false,
+            // /WR is still low through T3 and returns high on the following
+            // PHI1. If the instruction completed at this write, dead time keeps
+            // that T3 package level until the next PHI1.
             wr_n: false,
             inte: self.inte,
             wait: false,
@@ -120,6 +123,14 @@ impl Bus for FullInstructionBus<'_> {
 }
 
 impl CycleAccurateMachineBackend {
+    /// First compiled chassis class: one MITS 8080 CPU plus non-overlapping
+    /// asynchronous/no-wait MITS static RAM boards. Every other real card keeps
+    /// the partial engine authoritative until it gets an explicit event model.
+    ///
+    /// This proof is evaluated once per host timeslice, not once per instruction.
+    /// That mirrors MAME's prepared address spaces: after POWER-OFF hardware has
+    /// been materialized, execution consumes a compact capability fact rather
+    /// than repeatedly rediscovering the topology on every opcode.
     fn compiled_full_chassis_available(&self) -> bool {
         let hardware = self.machine.bus.s100_hardware_memory();
         let mut saw_ram = false;
@@ -141,6 +152,8 @@ impl CycleAccurateMachineBackend {
                         .iter()
                         .any(|&(other_start, other_end)| start < other_end && other_start < end)
                     {
+                        // Overlap is legal physical S-100 hardware and must retain
+                        // the generic resolver so equal drives/contention remain visible.
                         return false;
                     }
                     ranges.push((start, end));
@@ -163,6 +176,11 @@ impl CycleAccurateMachineBackend {
             return None;
         }
 
+        // The chassis proof guarantees a unique static-RAM responder wherever
+        // memory is populated. `peek_memory` therefore uses the already-compiled
+        // S-100 RAM decode instead of the general inspection/resolution path.
+        // An unmapped fetch is open bus FFh and stays on Partial (RST 7 is not
+        // compiled yet), preserving exact floating-DI behavior.
         let opcode = self
             .machine
             .bus
@@ -187,6 +205,11 @@ impl CycleAccurateMachineBackend {
 
         debug_assert!(elapsed <= FULL_EXECUTION_MAX_T_STATES);
         self.cpu.set_full_boundary_pins(boundary_pins);
+
+        // Memory bytes and the UI-facing bus have advanced through AltairBus,
+        // but the expensive generic connector graph was intentionally left lazy.
+        // The first partial edge will force one real settle before any phase-only
+        // edge can be elided again.
         self.machine.bus.cycle_mark_full_execution_desynced();
         self.last_teaching_tick = None;
         Some(elapsed)
@@ -206,6 +229,11 @@ impl CycleAccurateMachineBackend {
             return self.fail_if_cpu_fault("service execution");
         }
 
+        // Host input cannot mutate the chassis concurrently inside this
+        // synchronous service call. With this first plan there are also no cards
+        // with an independent clock/IRQ source, so READY/HOLD/INTR are stable for
+        // the entire Full window. If any is already active we simply remain on
+        // Partial, where the exact sampling rules continue to apply.
         let full_window = self.compiled_full_chassis_available()
             && lines.ready
             && !lines.hold
@@ -215,6 +243,9 @@ impl CycleAccurateMachineBackend {
         while remaining != 0 && self.machine.running {
             if let Some(opcode) = self.compiled_full_opcode(remaining, full_window) {
                 if let Some(elapsed) = self.execute_compiled_full_instruction(opcode) {
+                    // Static no-wait eligibility plus the 18T reservation above
+                    // make this a proof, not a heuristic. Keep saturating_sub as
+                    // a release-build guard if future opcode coverage changes.
                     debug_assert!(elapsed <= remaining);
                     remaining = remaining.saturating_sub(elapsed);
                     continue;
@@ -236,6 +267,10 @@ impl CycleAccurateMachineBackend {
         self.fail_if_cpu_fault("service execution")
     }
 
+    /// Normal host execution enters the compiled dispatcher. This inherent
+    /// method intentionally shadows the `MachineBackend` trait method for direct
+    /// calls from `CycleHostBackend`; debugger/observer execution still calls the
+    /// separate partial observer path and therefore retains exact T-state stops.
     pub(crate) fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
         self.service_execution_compiled(t_state_budget)
     }
@@ -280,6 +315,8 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
+        // LHLD 0010h = 16T and exercises opcode/operand/data reads through the
+        // same physical RuntimeRamCard storage used by the partial fabric.
         backend
             .load_bytes(0, &[0x2a, 0x10, 0x00])
             .unwrap();
@@ -300,6 +337,8 @@ mod tests {
         assert_eq!(backend.cpu.t_state(), crate::cpu8080_cycle::TState::T1);
         assert!(backend.last_teaching_tick.is_none());
 
+        // The next partial edge must materialize the lazy connector graph and
+        // continue from the exact boundary without changing CPU time semantics.
         backend.service_execution_compiled(1).unwrap();
         assert_eq!(backend.cpu.total_t_states(), 17);
     }
