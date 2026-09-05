@@ -17,6 +17,7 @@ use super::super::BackendResult;
 /// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 const FULL_READ_CACHE_ENTRIES: usize = 64;
+const FULL_PROTECTION_CACHE_ENTRIES: usize = 64;
 const FULL_PANEL_HISTOGRAM_ENTRIES: usize = 256;
 
 #[derive(Clone, Copy)]
@@ -29,6 +30,19 @@ struct FullReadCacheEntry {
 const EMPTY_FULL_READ_CACHE_ENTRY: FullReadCacheEntry = FullReadCacheEntry {
     address: 0,
     value: 0,
+    valid: false,
+};
+
+#[derive(Clone, Copy)]
+struct FullProtectionCacheEntry {
+    address: u16,
+    protected: bool,
+    valid: bool,
+}
+
+const EMPTY_FULL_PROTECTION_CACHE_ENTRY: FullProtectionCacheEntry = FullProtectionCacheEntry {
+    address: 0,
+    protected: false,
     valid: false,
 };
 
@@ -214,6 +228,7 @@ impl FullPanelActivity {
         t_states: u32,
         reads_data: bool,
         writes_data: bool,
+        protected: bool,
         inte: bool,
     ) {
         debug_assert!(t_states >= 1);
@@ -223,7 +238,6 @@ impl FullPanelActivity {
         // longer be the final presentation boundary and is safe to coalesce.
         self.commit_pending(bus);
 
-        let protected = bus.is_protected(address);
         let first_key = Self::state_key(
             address,
             self.panel_data,
@@ -321,6 +335,7 @@ struct FullInstructionBus<'a> {
     last_projected_address: Option<u16>,
     panel: FullPanelActivity,
     read_cache: [FullReadCacheEntry; FULL_READ_CACHE_ENTRIES],
+    protection_cache: [FullProtectionCacheEntry; FULL_PROTECTION_CACHE_ENTRIES],
     prefetched_opcode: Option<(u16, u8)>,
 }
 
@@ -337,6 +352,7 @@ impl<'a> FullInstructionBus<'a> {
             last_projected_address: None,
             panel,
             read_cache: [EMPTY_FULL_READ_CACHE_ENTRY; FULL_READ_CACHE_ENTRIES],
+            protection_cache: [EMPTY_FULL_PROTECTION_CACHE_ENTRY; FULL_PROTECTION_CACHE_ENTRIES],
             prefetched_opcode: None,
         }
     }
@@ -372,6 +388,28 @@ impl<'a> FullInstructionBus<'a> {
     }
 
     #[inline]
+    fn protection_cache_index(address: u16) -> usize {
+        let address = address as usize;
+        (address ^ (address >> 6)) & (FULL_PROTECTION_CACHE_ENTRIES - 1)
+    }
+
+    #[inline]
+    fn protected(&mut self, address: u16) -> bool {
+        let index = Self::protection_cache_index(address);
+        let cached = self.protection_cache[index];
+        if cached.valid && cached.address == address {
+            return cached.protected;
+        }
+        let protected = self.bus.is_protected(address);
+        self.protection_cache[index] = FullProtectionCacheEntry {
+            address,
+            protected,
+            valid: true,
+        };
+        protected
+    }
+
+    #[inline]
     fn project_machine_cycle(
         &mut self,
         address: u16,
@@ -381,6 +419,7 @@ impl<'a> FullInstructionBus<'a> {
         reads_data: bool,
         writes_data: bool,
     ) {
+        let protected = self.protected(address);
         self.panel.project_machine_cycle(
             self.bus,
             address,
@@ -389,6 +428,7 @@ impl<'a> FullInstructionBus<'a> {
             t_states,
             reads_data,
             writes_data,
+            protected,
             self.inte,
         );
         self.projected_t_states = self.projected_t_states.saturating_add(t_states);
