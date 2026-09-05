@@ -1,5 +1,5 @@
 use crate::cpu8080_cycle::{MachineCycle, TState};
-use crate::machine::{AltairBus, AltairChassis, AltairMachine, PanelLampSnapshot};
+use crate::machine::{AltairBus, AltairChassis, PanelLampSnapshot};
 
 use super::{CpuState, EmulationEngine, FrontPanelState};
 
@@ -129,8 +129,8 @@ impl From<TState> for BusTState {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BusCpuPins {
-    /// Exact Intel 8080 PHI1 package input. Fast/reconstructed snapshots leave
-    /// this unknown rather than inventing a phase from elapsed instruction time.
+    /// Exact Intel 8080 PHI1 package input. Reconstructed snapshots leave this
+    /// unknown rather than inventing a phase from elapsed instruction time.
     pub phi1: Option<bool>,
     /// Exact Intel 8080 PHI2 package input.
     pub phi2: Option<bool>,
@@ -203,15 +203,6 @@ pub(crate) trait BusChassisSource {
     fn ext_clear_asserted(&self) -> bool;
     fn address_leds(&self) -> u16;
     fn panel_lamps(&self) -> PanelLampSnapshot;
-}
-
-impl BusChassisSource for AltairMachine {
-    fn powered(&self) -> bool { self.powered }
-    fn running(&self) -> bool { self.running }
-    fn bus(&self) -> &AltairBus { &self.bus }
-    fn ext_clear_asserted(&self) -> bool { self.ext_clear_asserted() }
-    fn address_leds(&self) -> u16 { self.address_leds() }
-    fn panel_lamps(&self) -> PanelLampSnapshot { self.panel_lamps() }
 }
 
 impl BusChassisSource for AltairChassis {
