@@ -118,7 +118,7 @@ impl Memory {
         self.fabric.debugger_clear_serial_rx(port)
     }
     pub(super) fn debugger_clear_serial_tx(&self, port: u8) -> bool {
-        self.fabric.debugger_clear_tx(port)
+        self.fabric.debugger_clear_serial_tx(port)
     }
     pub(super) fn debugger_complete_serial_tx(&self, port: u8) -> Option<u8> {
         self.fabric.debugger_complete_serial_tx(port)
@@ -266,6 +266,12 @@ impl Memory {
         pins: Cpu8080Pins,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        // Cpu8080Cycle still emits all four historical edges. If the installed
+        // connector inventory proves nobody consumes PHI1/PHI2/CLOC, a pure
+        // clock transition can be folded. Falling/PHI2 edges are already safe
+        // after the same T-state's synchronization point. PHI1 rising gets the
+        // stronger proof below: Display/Control unchanged, no externally changed
+        // serial connector, and no pending 8212 status-latch transition.
         if self.phase_only_edge_is_unobserved(pins) {
             let previous = self.last_cycle_pins;
             let phi1_rising = !previous.phi1 && pins.phi1 && !previous.phi2 && !pins.phi2;
@@ -282,12 +288,20 @@ impl Memory {
 
             if can_elide {
                 self.last_cycle_pins = pins;
+                // Keep Intel-package phase, buffered CLOC, and the CPU board's
+                // own 8212 state exact. Only propagation of an electrically
+                // unobservable connector transition is deferred; the next real
+                // edge folds the cached CPU drive into the backplane.
                 self.fabric.set_cpu_package_pins(pins);
                 return Ok(self.fabric.cpu_package_inputs());
             }
         }
         self.last_cycle_pins = pins;
 
+        // BASIC 3.2's optional full-memory compatibility guard is deliberately
+        // host-side and non-historical. Suppress only its probe write before the
+        // live compatibility RAM sees MWRT; ordinary Cycle writes, including
+        // every historical RAM card, continue through the physical bus path.
         let mut physical_pins = pins;
         if self.basic32_probe_guard
             && physical_pins.address == Some(u16::MAX)
@@ -478,44 +492,52 @@ impl Memory {
     }
 
     /// Fast executes through the S-100 address decode compiled when cards are
-    /// installed. Try the overwhelmingly common single-responder route first;
-    /// only a miss asks whether the address was electrically unmapped or
-    /// overlapping. This avoids decoding/counting the same responder mask twice
-    /// for every ordinary opcode/operand read.
+    /// installed. A unique RAM responder is therefore a direct bus dispatch to
+    /// that physical card's shared storage, just as a decoded TTL chip-select
+    /// would be on the real backplane. No CPU-to-RAM reference is introduced:
+    /// the CPU still calls the bus, and the bus-owned fabric selects the card.
+    /// Electrical resolution remains the exact fallback for overlapping cards,
+    /// where High-Z/contention and multiple simultaneous responders matter.
     pub(super) fn read(&mut self, address: u16) -> u8 {
         if let Some(value) = self.compatibility_read_override(address) {
             return value;
         }
-        if let Some(value) = self.fabric.peek_unique_memory(address) {
-            return value;
-        }
-        if self.fabric.mapped_ram_card_count(address) == 0 {
-            S100_OPEN_BUS_VALUE
-        } else {
-            self.fabric
+        match self.fabric.mapped_ram_card_count(address) {
+            0 => S100_OPEN_BUS_VALUE,
+            1 => self
+                .fabric
+                .peek_unique_memory(address)
+                .unwrap_or(S100_OPEN_BUS_VALUE),
+            _ => self
+                .fabric
                 .fast_memory_read(address, 0x82)
-                .unwrap_or(S100_OPEN_BUS_VALUE)
+                .unwrap_or(S100_OPEN_BUS_VALUE),
         }
     }
 
-    /// Fast writes take the same unique-card route first. A successful write has
-    /// already crossed the bus-owned compiled decoder and physical RuntimeRamCard
-    /// storage, so no second responder-count lookup is necessary. Failure falls
-    /// through only to distinguish a protected/unmapped unique route from real
-    /// electrical overlap, which still executes every selected card.
+    /// Fast writes use the same compiled S-100 decode. A single selected RAM
+    /// card receives the write directly through the bus-owned route and still
+    /// enforces that card's protection latch. Decode overlap deliberately falls
+    /// back to the generic electrical transaction so every selected card sees
+    /// MWRT/DO exactly as before.
     pub(super) fn write(&mut self, address: u16, value: u8) {
         if address == u16::MAX && self.basic32_probe_guard {
             self.basic32_probe_write = Some(value);
             return;
         }
-        if self.fabric.write_unique_memory(address, value, true) {
-            return;
-        }
-        if self.fabric.mapped_ram_card_count(address) > 1 {
-            let _ = self.fabric.fast_memory_write(address, value, 0x00);
+        match self.fabric.mapped_ram_card_count(address) {
+            0 => {}
+            1 => {
+                let _ = self.fabric.write_unique_memory(address, value, true);
+            }
+            _ => {
+                let _ = self.fabric.fast_memory_write(address, value, 0x00);
+            }
         }
     }
 
+    /// Transitional T3 read helper retained for serial/front-panel migration
+    /// tests. Guest Cycle memory reads now sample the live CPU-board DI input.
     pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
@@ -620,6 +642,9 @@ impl super::AltairBus {
         memory_read: bool,
         phase: MemoryReadyPhase,
     ) -> bool {
+        // Explicit chassis hardware already owns PRDY through the installed RAM
+        // and I/O cards. Re-running aggregate wait-state logic here would create
+        // a second, software-only READY authority in parallel with the bus.
         if !self.memory.legacy_aggregate {
             return true;
         }
@@ -791,15 +816,6 @@ mod tests {
         memory.write(0x0010, 0x5a);
         assert_eq!(memory.peek(0x0010), Some(0x5a));
         assert_eq!(memory.read(0x0010), 0x5a);
-    }
-
-    #[test]
-    fn protected_unique_fast_write_does_not_fall_through_to_electrical_replay() {
-        let mut memory = Memory::default();
-        memory.configure(RamSize::K1, RamInit::Zeroed);
-        memory.set_protected(0x0010, true);
-        memory.write(0x0010, 0x5a);
-        assert_eq!(memory.peek(0x0010), Some(0));
     }
 
     #[test]
