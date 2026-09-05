@@ -189,11 +189,11 @@ impl CycleAccurateMachineBackend {
     /// oscillators cannot change S-100 PRDY/PINT/VI or UART register state. The
     /// elapsed phase may therefore be folded in one exact batch immediately
     /// before re-entering Partial. A pending/completed endpoint TX byte is kept
-    /// conservative via `serial_*_tx_busy()` even though it has no future bit
+    /// conservative via the busy predicates even though it has no future bit
     /// edge of its own.
     fn compiled_serial_timing_is_quiet(&self) -> bool {
         self.machine.bus.serial_rx_line_idle()
-            && !self.machine.bus.serial_tx_busy()
+            && !self.machine.bus.tx_busy()
             && self.machine.bus.serial_port1_rx_line_idle()
             && !self.machine.bus.serial_port1_tx_busy()
     }
