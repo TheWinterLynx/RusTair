@@ -26,13 +26,24 @@ struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
     boundary_pins: Cpu8080Pins,
+    /// Opcode already inspected by the Full dispatcher. Static RAM reads have no
+    /// side effects, so the dispatcher may classify the byte once and let the
+    /// semantic core consume that same fetch without performing a second memory
+    /// lookup. This is still the guest opcode fetch: we publish the same package
+    /// boundary when `opcode_fetch` consumes the cached byte.
+    prefetched_opcode: Option<(u16, u8)>,
 }
 
 impl<'a> FullInstructionBus<'a> {
     fn new(bus: &'a mut AltairBus, inte: bool) -> Self {
         let mut boundary_pins = Cpu8080Pins::default();
         boundary_pins.inte = inte;
-        Self { bus, inte, boundary_pins }
+        Self {
+            bus,
+            inte,
+            boundary_pins,
+            prefetched_opcode: None,
+        }
     }
 
     #[inline]
@@ -70,6 +81,12 @@ impl<'a> FullInstructionBus<'a> {
         };
     }
 
+    #[inline]
+    fn prime_opcode_fetch(&mut self, address: u16, opcode: u8) {
+        debug_assert!(self.prefetched_opcode.is_none());
+        self.prefetched_opcode = Some((address, opcode));
+    }
+
     fn boundary_pins(&self) -> Cpu8080Pins { self.boundary_pins }
 }
 
@@ -101,6 +118,13 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn opcode_fetch(&mut self, address: u16) -> u8 {
+        if let Some((cached_address, opcode)) = self.prefetched_opcode.take() {
+            debug_assert_eq!(cached_address, address);
+            if cached_address == address {
+                self.remember_read_boundary(address);
+                return opcode;
+            }
+        }
         let value = self.bus.cycle_full_guest_read(address);
         self.remember_read_boundary(address);
         value
@@ -310,13 +334,20 @@ impl CycleAccurateMachineBackend {
             let mut full_bus = FullInstructionBus::new(bus, inte);
 
             while *remaining >= FULL_EXECUTION_MAX_T_STATES {
-                let opcode = full_bus.bus.peek_memory(full.pc).unwrap_or(0xff);
+                let opcode_address = full.pc;
+                let opcode = full_bus.bus.peek_memory(opcode_address).unwrap_or(0xff);
                 if !Cpu8080Cycle::full_opcode_class_supported(opcode) {
                     break;
                 }
 
-                last_address = full.pc;
+                // The classification load above is the byte the CPU would fetch
+                // from this proven side-effect-free static RAM chassis. Reuse it
+                // as the semantic opcode fetch instead of looking up the same
+                // address a second time inside Cpu8080::step().
+                full_bus.prime_opcode_fetch(opcode_address, opcode);
+                last_address = opcode_address;
                 let elapsed = full.step(&mut full_bus);
+                debug_assert!(full_bus.prefetched_opcode.is_none());
                 debug_assert!(elapsed <= FULL_EXECUTION_MAX_T_STATES);
                 debug_assert!(elapsed <= *remaining);
                 *remaining -= elapsed;
