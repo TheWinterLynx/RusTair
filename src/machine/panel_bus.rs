@@ -382,24 +382,22 @@ impl PanelLampIntegrator {
             return;
         }
 
-        self.add_weighted_mask(first_common_mask, 1);
-        if accepted > 1 {
-            self.add_weighted_mask(latched_common_mask, accepted - 1);
-        }
-
-        if data_changes_after_t1 {
-            self.add_weighted_mask(u64::from(first_panel_data) << PACKED_DATA_SHIFT, 1);
-            if accepted > 1 {
-                self.add_weighted_mask(
-                    u64::from(final_panel_data) << PACKED_DATA_SHIFT,
-                    accepted - 1,
-                );
-            }
+        let later_panel_data = if data_changes_after_t1 {
+            final_panel_data
         } else {
-            self.add_weighted_mask(
-                u64::from(first_panel_data) << PACKED_DATA_SHIFT,
-                accepted,
-            );
+            first_panel_data
+        };
+        let first_mask = first_common_mask
+            | (u64::from(first_panel_data) << PACKED_DATA_SHIFT);
+        let latched_mask = latched_common_mask
+            | (u64::from(later_panel_data) << PACKED_DATA_SHIFT);
+        if first_mask == latched_mask {
+            self.add_weighted_mask(first_mask, accepted);
+        } else {
+            self.add_weighted_mask(first_mask, 1);
+            if accepted > 1 {
+                self.add_weighted_mask(latched_mask, accepted - 1);
+            }
         }
         self.total_weight += accepted;
     }
@@ -1028,7 +1026,7 @@ impl super::AltairBus {
         inte: bool,
     ) {
         let protected = self.memory.is_protected(address);
-        let signals = self.s100.signals();
+        debug_assert!(self.s100.signals().ready, "Cycle Full requires READY high");
         self.s100.drive_cycle_full_reconstructed_cpu_cycle(
             address,
             data,
@@ -1038,19 +1036,19 @@ impl super::AltairBus {
             writes_data_to_s100,
             protected,
             inte,
-            signals.ready,
-            signals.wait,
+            true,
+            false,
         );
     }
 
     #[inline]
     pub(crate) fn cycle_full_project_internal_t_states(&mut self, t_states: u32, inte: bool) {
-        let signals = self.s100.signals();
+        debug_assert!(self.s100.signals().ready, "Cycle Full requires READY high");
         self.s100.drive_cycle_full_internal_t_states(
             t_states,
             inte,
-            signals.ready,
-            signals.wait,
+            true,
+            false,
         );
     }
 }
