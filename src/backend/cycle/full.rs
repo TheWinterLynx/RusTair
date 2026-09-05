@@ -247,6 +247,14 @@ impl CycleAccurateMachineBackend {
         }
         self.fail_if_cpu_fault("service execution")
     }
+
+    /// Normal host execution enters the compiled dispatcher. This inherent
+    /// method intentionally shadows the `MachineBackend` trait method for direct
+    /// calls from `CycleHostBackend`; debugger/observer execution still calls the
+    /// separate partial observer path and therefore retains exact T-state stops.
+    pub(crate) fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
+        self.service_execution_compiled(t_state_budget)
+    }
 }
 
 #[cfg(test)]
