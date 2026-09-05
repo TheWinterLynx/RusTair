@@ -89,6 +89,14 @@ impl super::AltairBus {
         self.memory.write(address, value);
     }
 
+    /// DI/EI are CPU-internal instructions, but INTE is a real processor-board
+    /// output visible on the S-100/front panel. Full updates that same canonical
+    /// bus state directly instead of routing through the removed semantic machine.
+    #[inline]
+    pub(crate) fn cycle_full_set_inte(&mut self, enabled: bool) {
+        self.s100.set_inte(enabled);
+    }
+
     /// Preserve optional CPU diagnostic metering without forcing an otherwise
     /// eligible Full instruction through the T-state-heavy Partial path.
     #[inline]
