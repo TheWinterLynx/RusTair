@@ -194,6 +194,35 @@ fn serial_timing_is_quiet(bus: &AltairBus) -> bool {
         && !bus.io.port1_tx_busy()
 }
 
+impl AltairBus {
+    /// Prepared Cycle-Full memory access. This is a normal guest transaction on
+    /// the bus-owned physical S-100 memory fabric, not a debugger/inspection
+    /// shortcut. The Cycle dispatcher may call it only after proving that the
+    /// installed RAM has one non-overlapping, no-wait responder for each mapped
+    /// byte. Skipping synthetic presentation samples here prevents a semantic
+    /// Full window from clocking the S-100/serial fabric a second time.
+    #[inline]
+    pub(crate) fn cycle_full_guest_read(&mut self, address: u16) -> u8 {
+        self.memory.read(address)
+    }
+
+    /// Guest write counterpart to `cycle_full_guest_read`. Protection and the
+    /// physical RuntimeRamCard storage remain authoritative inside Memory.
+    #[inline]
+    pub(crate) fn cycle_full_guest_write(&mut self, address: u16, value: u8) {
+        self.memory.write(address, value);
+    }
+
+    /// Preserve optional CPU diagnostic metering without routing an otherwise
+    /// prepared Cycle-Full instruction through the presentation-heavy Bus path.
+    #[inline]
+    pub(crate) fn cycle_full_instruction_complete(&mut self, address: u16, t_states: u32) {
+        if self.diagnostic_meter.is_some() {
+            self.record_cpu_diagnostic_instruction(address, t_states);
+        }
+    }
+}
+
 impl AltairMachine {
     /// Execute a host budget through the prepared Fast path when the chassis has
     /// no asynchronous event capable of changing CPU inputs inside the block.
