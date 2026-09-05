@@ -1,4 +1,6 @@
-use crate::cpu8080::{Bus, Cpu8080};
+use crate::cpu8080::Cpu8080;
+#[cfg(test)]
+use crate::cpu8080::Bus;
 
 use super::decode::{decode, Instruction};
 use super::{Cpu8080Cycle, Cpu8080Pins, MachineCycle, TState};
@@ -226,6 +228,7 @@ impl Cpu8080Cycle {
     /// production Full execution uses `begin_full_execution_window` and
     /// `commit_full_execution_window` so the register set is copied only at real
     /// synchronization boundaries rather than once per opcode.
+    #[cfg(test)]
     pub(crate) fn execute_full_instruction<B: Bus>(
         &mut self,
         bus: &mut B,
