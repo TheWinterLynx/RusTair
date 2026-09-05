@@ -145,6 +145,7 @@ impl Cpu8080Cycle {
     /// delayed interrupt-enable transitions and instruction families with extra
     /// non-bus cycles interleaved between external cycles stay on that path until
     /// their compiled schedules are added explicitly.
+    #[cfg(test)]
     pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
         self.full_execution_boundary_ready() && Self::full_opcode_class_supported(opcode)
     }
