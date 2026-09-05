@@ -1,4 +1,4 @@
-use rustair::backend::{BackendHost, BackendSerialPort, EmulationEngine};
+use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{RamInit, RamSize, SerialBoard};
 
 const BASIC32_IMAGE: &[u8; 4096] = include_bytes!("../assets/4kbas32.bin");
@@ -50,8 +50,8 @@ fn run_until_output(
     }
 }
 
-fn start_quick_basic(engine: EmulationEngine, ram: RamSize, trace: bool) -> BackendHost {
-    let mut machine = BackendHost::from_engine(engine).expect("built-in Rust backend");
+fn start_quick_basic(ram: RamSize, trace: bool) -> BackendHost {
+    let mut machine = BackendHost::default();
     machine.configure_memory(ram, RamInit::Zeroed);
     machine.configure_serial_board(SerialBoard::Sio88);
     machine.power(true);
@@ -73,14 +73,9 @@ fn start_quick_basic(engine: EmulationEngine, ram: RamSize, trace: bool) -> Back
     machine
 }
 
-fn exercise_memory_size_return(
-    engine: EmulationEngine,
-    ram: RamSize,
-    trace: bool,
-    max_after_cr_t_states: u64,
-) {
-    let context = format!("{engine:?} / {ram:?} / trace={trace}");
-    let mut machine = start_quick_basic(engine, ram, trace);
+fn exercise_memory_size_return(ram: RamSize, trace: bool, max_after_cr_t_states: u64) {
+    let context = format!("Adaptive Cycle / {ram:?} / trace={trace}");
+    let mut machine = start_quick_basic(ram, trace);
     let mut output = Vec::new();
 
     run_until_output(
@@ -108,31 +103,16 @@ fn exercise_memory_size_return(
 }
 
 #[test]
-fn bundled_basic_quick_load_accepts_memory_size_return_on_both_cores() {
-    for engine in [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ] {
-        exercise_memory_size_return(engine, RamSize::K8, false, 6_000_000);
-    }
+fn bundled_basic_quick_load_accepts_memory_size_return_on_adaptive_cycle() {
+    exercise_memory_size_return(RamSize::K8, false, 6_000_000);
 }
 
 #[test]
 fn bundled_basic_quick_load_still_works_while_instruction_trace_is_active() {
-    for engine in [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ] {
-        exercise_memory_size_return(engine, RamSize::K8, true, 6_000_000);
-    }
+    exercise_memory_size_return(RamSize::K8, true, 6_000_000);
 }
 
 #[test]
-fn bundled_basic_64k_probe_workaround_reaches_terminal_width_on_both_cores() {
-    for engine in [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ] {
-        exercise_memory_size_return(engine, RamSize::K64, false, 30_000_000);
-    }
+fn bundled_basic_64k_probe_workaround_reaches_terminal_width_on_adaptive_cycle() {
+    exercise_memory_size_return(RamSize::K64, false, 30_000_000);
 }
