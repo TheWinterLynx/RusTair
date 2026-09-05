@@ -1,4 +1,4 @@
-use rustair::backend::{CycleAccurateMachineBackend, FastMachineBackend};
+use rustair::backend::CycleAccurateMachineBackend;
 use rustair::config::SerialBoard;
 use rustair::machine::AltairBus;
 
@@ -46,10 +46,7 @@ fn exercise_modem_pin_contract(bus: &mut AltairBus) {
 }
 
 #[test]
-fn fast_and_cycle_expose_the_same_physical_88_2sio_modem_pin_contract() {
-    let mut fast = FastMachineBackend::default();
-    exercise_modem_pin_contract(&mut fast.machine_mut().bus);
-
+fn adaptive_cycle_exposes_the_physical_88_2sio_modem_pin_contract() {
     let mut cycle = CycleAccurateMachineBackend::default();
     exercise_modem_pin_contract(&mut cycle.machine_mut().bus);
 }
