@@ -505,12 +505,17 @@ impl Bus for FullInstructionBus<'_> {
         self.remember_write_boundary(address, value);
     }
 
-    fn input(&mut self, port: u8) -> u8 { Bus::input(self.bus, port) }
-    fn output(&mut self, port: u8, value: u8) { Bus::output(self.bus, port, value); }
+    fn input(&mut self, _port: u8) -> u8 {
+        unreachable!("IN is classified as a Full/Partial synchronization barrier")
+    }
+
+    fn output(&mut self, _port: u8, _value: u8) {
+        unreachable!("OUT is classified as a Full/Partial synchronization barrier")
+    }
 
     fn set_inte(&mut self, enabled: bool) {
         self.inte = enabled;
-        Bus::set_inte(self.bus, enabled);
+        self.bus.cycle_full_set_inte(enabled);
         self.boundary_pins.inte = enabled;
     }
 
@@ -546,12 +551,12 @@ impl Bus for FullInstructionBus<'_> {
         self.remember_write_boundary(address, value);
     }
 
-    fn halt_ack(&mut self, address: u16, opcode: u8) {
-        Bus::halt_ack(self.bus, address, opcode);
+    fn halt_ack(&mut self, _address: u16, _opcode: u8) {
+        unreachable!("HLT is classified as a Full/Partial synchronization barrier")
     }
 
-    fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
-        Bus::interrupt_ack(self.bus, address, opcode, while_halted);
+    fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {
+        unreachable!("interrupt acknowledge is a Full/Partial synchronization barrier")
     }
 
     #[inline]
