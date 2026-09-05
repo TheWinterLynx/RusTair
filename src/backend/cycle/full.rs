@@ -74,12 +74,9 @@ impl<'a> FullInstructionBus<'a> {
     }
 
     /// Project one whole external 8080 machine cycle into the canonical front
-    /// panel without replaying the physical S-100 connector graph. During T1 the
-    /// CPU already presents the next status byte on D/DO, but the MITS CPU-board
-    /// 8212 still exposes the *previous* latched S-100 status. The new status is
-    /// captured at the following PHI1 edge, before the T2 panel sample. Full must
-    /// preserve that one-T-state delay or mixed cycle classes produce subtly
-    /// different M1/MEMR/STACK/W-O duty from exact Partial execution.
+    /// panel in one weighted operation. The integrator itself preserves T1 with
+    /// the old 8212 status and T2..Tn with the newly latched status, plus the DI
+    /// transition after T1 on reads. No physical card or connector is replayed.
     #[inline]
     fn project_machine_cycle(
         &mut self,
@@ -93,73 +90,32 @@ impl<'a> FullInstructionBus<'a> {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
 
-        // T1 changes the address/protection selection. The remaining states of
-        // the same machine cycle keep those physical lines stable, so presenting
-        // `None` afterwards is exactly equivalent at the panel but avoids
-        // re-decoding the same RAM protection latch on every reconstructed T-state.
-        self.bus.cycle_drive_s100_t_state(
-            Some(address),
-            Some(status_word),
-            None,
-            Some(status_word),
-            None,
+        self.bus.cycle_full_project_panel_cycle(
+            address,
+            data,
+            status_word,
+            t_states,
+            reads_data,
+            writes_data,
             self.inte,
-            true,
-            false,
-            false,
         );
-
-        for t_state in 1..t_states {
-            let (cpu_data, data_in, data_out) = if reads_data {
-                (Some(data), Some(data), None)
-            } else if writes_data {
-                (Some(data), None, Some(data))
-            } else {
-                (None, None, None)
-            };
-            // The new 8212 status becomes visible at PHI1 immediately before T2
-            // is sampled; later states retain it without another latch event.
-            let latched_status = (t_state == 1).then_some(status_word);
-            self.bus.cycle_drive_s100_t_state(
-                None,
-                cpu_data,
-                data_in,
-                data_out,
-                latched_status,
-                self.inte,
-                true,
-                false,
-                false,
-            );
-        }
 
         self.projected_t_states = self.projected_t_states.saturating_add(t_states);
         self.last_projected_address = Some(address);
     }
 
     /// Register-only instructions may retain the final fetch/status/address for
-    /// one or more internal T-states after the last external bus transfer. Partial
-    /// still samples the front-panel lamps during those states, so Full must add
-    /// the same weight before closing the semantic instruction.
+    /// one or more internal T-states after the last external bus transfer. The
+    /// panel state is constant across that tail, so Full adds the whole interval
+    /// as one weighted contribution.
     #[inline]
     fn project_internal_tail(&mut self, t_states: u32) {
-        let Some(_address) = self.last_projected_address else {
+        if self.last_projected_address.is_none() {
             debug_assert_eq!(t_states, 0);
             return;
-        };
-        for _ in 0..t_states {
-            self.bus.cycle_drive_s100_t_state(
-                None,
-                None,
-                None,
-                None,
-                None,
-                self.inte,
-                true,
-                false,
-                false,
-            );
         }
+        self.bus
+            .cycle_full_project_internal_t_states(t_states, self.inte);
     }
 
     #[inline]
