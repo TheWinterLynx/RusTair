@@ -17,6 +17,7 @@ use super::super::BackendResult;
 /// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 const FULL_READ_CACHE_ENTRIES: usize = 64;
+const FULL_PANEL_HISTOGRAM_ENTRIES: usize = 256;
 
 #[derive(Clone, Copy)]
 struct FullReadCacheEntry {
@@ -30,6 +31,266 @@ const EMPTY_FULL_READ_CACHE_ENTRY: FullReadCacheEntry = FullReadCacheEntry {
     value: 0,
     valid: false,
 };
+
+#[derive(Clone, Copy)]
+struct FullPanelHistogramEntry {
+    key: u64,
+    weight: u32,
+}
+
+const EMPTY_FULL_PANEL_HISTOGRAM_ENTRY: FullPanelHistogramEntry = FullPanelHistogramEntry {
+    key: 0,
+    weight: 0,
+};
+
+#[derive(Clone, Copy)]
+struct PendingPanelCycle {
+    address: u16,
+    data: u8,
+    status_word: u8,
+    t_states: u32,
+    reads_data: bool,
+    writes_data: bool,
+    inte: bool,
+    first_key: u64,
+    later_key: u64,
+    internal_tail: u32,
+}
+
+/// Window-local exact front-panel accumulator. Full execution has already proven
+/// READY high, no waits/HOLD and no asynchronous hardware transition inside the
+/// block. The physical front panel is therefore a passive observer of ADDRESS,
+/// DI and the 8212 status latch. Raw duty depends only on the weighted population
+/// of those visible states, not on their host-side update order.
+///
+/// We retain the newest machine cycle separately and replay it in chronological
+/// order at the final boundary. That preserves both its one-T-state 8212 latch
+/// delay and the exact final S-100 presentation state, while all older states are
+/// coalesced by key and materialized only once per distinct state.
+struct FullPanelActivity {
+    entries: [FullPanelHistogramEntry; FULL_PANEL_HISTOGRAM_ENTRIES],
+    used: usize,
+    latched_status: u8,
+    panel_data: u8,
+    latest_committed_key: Option<u64>,
+    pending: Option<PendingPanelCycle>,
+}
+
+impl FullPanelActivity {
+    fn new(bus: &AltairBus) -> Self {
+        Self {
+            entries: [EMPTY_FULL_PANEL_HISTOGRAM_ENTRY; FULL_PANEL_HISTOGRAM_ENTRIES],
+            used: 0,
+            latched_status: bus.raw_s100_status_word(),
+            panel_data: bus.raw_panel_data(),
+            latest_committed_key: None,
+            pending: None,
+        }
+    }
+
+    #[inline]
+    fn state_key(
+        address: u16,
+        panel_data: u8,
+        status_word: u8,
+        protected: bool,
+        inte: bool,
+    ) -> u64 {
+        u64::from(address)
+            | (u64::from(panel_data) << 16)
+            | (u64::from(status_word) << 24)
+            | (u64::from(protected) << 32)
+            | (u64::from(inte) << 33)
+    }
+
+    #[inline]
+    fn key_index(key: u64) -> usize {
+        let mixed = key ^ (key >> 17) ^ (key >> 37);
+        (mixed as usize).wrapping_mul(0x9e37_79b1) & (FULL_PANEL_HISTOGRAM_ENTRIES - 1)
+    }
+
+    fn replay_entry(bus: &mut AltairBus, entry: FullPanelHistogramEntry) {
+        if entry.weight == 0 {
+            return;
+        }
+        let address = entry.key as u16;
+        let panel_data = (entry.key >> 16) as u8;
+        let status_word = (entry.key >> 24) as u8;
+        let expected_protected = entry.key & (1u64 << 32) != 0;
+        let inte = entry.key & (1u64 << 33) != 0;
+
+        // This is presentation-only replay into the canonical duty integrator.
+        // It does not enter the physical connector resolver or clock a card.
+        bus.cycle_drive_s100_t_state(
+            Some(address),
+            Some(panel_data),
+            Some(panel_data),
+            None,
+            Some(status_word),
+            inte,
+            true,
+            false,
+            false,
+        );
+        debug_assert_eq!(bus.raw_s100_prot(), expected_protected);
+        if entry.weight > 1 {
+            bus.cycle_full_project_internal_t_states(entry.weight - 1, inte);
+        }
+    }
+
+    fn flush_histogram(&mut self, bus: &mut AltairBus, preferred_last: Option<u64>) {
+        if self.used == 0 {
+            return;
+        }
+
+        let mut preferred = None;
+        for entry in &mut self.entries {
+            if entry.weight == 0 {
+                continue;
+            }
+            let current = *entry;
+            *entry = EMPTY_FULL_PANEL_HISTOGRAM_ENTRY;
+            if Some(current.key) == preferred_last {
+                preferred = Some(current);
+            } else {
+                Self::replay_entry(bus, current);
+            }
+        }
+        if let Some(entry) = preferred {
+            Self::replay_entry(bus, entry);
+        }
+        self.used = 0;
+    }
+
+    fn add_histogram(&mut self, bus: &mut AltairBus, key: u64, weight: u32) {
+        if weight == 0 {
+            return;
+        }
+
+        loop {
+            let start = Self::key_index(key);
+            for probe in 0..FULL_PANEL_HISTOGRAM_ENTRIES {
+                let index = (start + probe) & (FULL_PANEL_HISTOGRAM_ENTRIES - 1);
+                let entry = &mut self.entries[index];
+                if entry.weight == 0 {
+                    *entry = FullPanelHistogramEntry { key, weight };
+                    self.used += 1;
+                    self.latest_committed_key = Some(key);
+                    return;
+                }
+                if entry.key == key {
+                    entry.weight = entry.weight.saturating_add(weight);
+                    self.latest_committed_key = Some(key);
+                    return;
+                }
+            }
+
+            // The table contains only completed chronological activity. Flush it
+            // with the latest state last so the canonical S-100 presentation is
+            // still a valid predecessor for whatever Full records next.
+            self.flush_histogram(bus, self.latest_committed_key);
+        }
+    }
+
+    fn commit_pending(&mut self, bus: &mut AltairBus) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        self.add_histogram(bus, pending.first_key, 1);
+        if pending.t_states > 1 {
+            self.add_histogram(bus, pending.later_key, pending.t_states - 1);
+        }
+        if pending.internal_tail != 0 {
+            self.add_histogram(bus, pending.later_key, pending.internal_tail);
+        }
+    }
+
+    fn project_machine_cycle(
+        &mut self,
+        bus: &mut AltairBus,
+        address: u16,
+        data: u8,
+        status_word: u8,
+        t_states: u32,
+        reads_data: bool,
+        writes_data: bool,
+        inte: bool,
+    ) {
+        debug_assert!(t_states >= 1);
+        debug_assert!(!(reads_data && writes_data));
+
+        // Once another external machine cycle starts, the previous one can no
+        // longer be the final presentation boundary and is safe to coalesce.
+        self.commit_pending(bus);
+
+        let protected = bus.is_protected(address);
+        let first_key = Self::state_key(
+            address,
+            self.panel_data,
+            self.latched_status,
+            protected,
+            inte,
+        );
+        self.latched_status = status_word;
+        if reads_data {
+            self.panel_data = data;
+        }
+        let later_key = Self::state_key(
+            address,
+            self.panel_data,
+            self.latched_status,
+            protected,
+            inte,
+        );
+        self.pending = Some(PendingPanelCycle {
+            address,
+            data,
+            status_word,
+            t_states,
+            reads_data,
+            writes_data,
+            inte,
+            first_key,
+            later_key,
+            internal_tail: 0,
+        });
+    }
+
+    fn project_internal_tail(&mut self, t_states: u32) {
+        if t_states == 0 {
+            return;
+        }
+        let pending = self
+            .pending
+            .as_mut()
+            .expect("internal Full T-states require a preceding machine cycle");
+        pending.internal_tail = pending.internal_tail.saturating_add(t_states);
+    }
+
+    fn finish(&mut self, bus: &mut AltairBus) {
+        let Some(pending) = self.pending.take() else {
+            self.flush_histogram(bus, self.latest_committed_key);
+            return;
+        };
+
+        // Every state before the final machine cycle may be replayed in any order
+        // for raw duty, but end with the true predecessor so the canonical helper
+        // sees exactly the 8212/panel DATA state that existed before final T1.
+        self.flush_histogram(bus, self.latest_committed_key);
+        bus.cycle_full_project_panel_cycle(
+            pending.address,
+            pending.data,
+            pending.status_word,
+            pending.t_states,
+            pending.reads_data,
+            pending.writes_data,
+            pending.inte,
+        );
+        if pending.internal_tail != 0 {
+            bus.cycle_full_project_internal_t_states(pending.internal_tail, pending.inte);
+        }
+    }
+}
 
 /// Compile the Cycle core's authoritative Full/Partial opcode classifier once.
 /// The exact same predicate still defines eligibility; hot execution only turns
@@ -50,33 +311,16 @@ fn full_opcode_table() -> &'static [bool; 256] {
 /// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
 /// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
 /// expensive connector graph remains lazy until an actual synchronization
-/// boundary. Front-panel duty is nevertheless part of the externally observable
-/// machine, so every semantic machine cycle is projected into the canonical lamp
-/// integrator with the exact number of 8080 T-states it represents. This updates
-/// presentation only: it never clocks RAM/UART cards or resolves the backplane a
-/// second time.
+/// boundary. Front-panel duty is accumulated locally across the semantic window
+/// and folded into the canonical integrator only at synchronization boundaries.
 struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
     boundary_pins: Cpu8080Pins,
-    /// Number of visible T-states already reconstructed for the instruction that
-    /// is currently executing. Some register-only 8080 instructions have a T4/T5
-    /// internal tail after their external fetch cycle; `instruction_complete`
-    /// adds those residual states while the last S-100 address/status remain held.
     projected_t_states: u32,
     last_projected_address: Option<u16>,
-    /// Tiny read-through cache scoped to this synchronous Full window. The
-    /// admitted chassis contains only non-overlapping static RAM, every guest
-    /// write crosses this same bus and invalidates its exact address, and no host
-    /// mutation can interleave inside the call. It therefore removes repeated
-    /// decoder/RefCell reads without changing S-100 ownership or self-modifying
-    /// code semantics.
+    panel: FullPanelActivity,
     read_cache: [FullReadCacheEntry; FULL_READ_CACHE_ENTRIES],
-    /// Opcode already inspected by the Full dispatcher. Static RAM reads have no
-    /// side effects, so the dispatcher may classify the byte once and let the
-    /// semantic core consume that same fetch without performing a second memory
-    /// lookup. This is still the guest opcode fetch: we publish the same package
-    /// boundary when `opcode_fetch` consumes the cached byte.
     prefetched_opcode: Option<(u16, u8)>,
 }
 
@@ -84,12 +328,14 @@ impl<'a> FullInstructionBus<'a> {
     fn new(bus: &'a mut AltairBus, inte: bool) -> Self {
         let mut boundary_pins = Cpu8080Pins::default();
         boundary_pins.inte = inte;
+        let panel = FullPanelActivity::new(bus);
         Self {
             bus,
             inte,
             boundary_pins,
             projected_t_states: 0,
             last_projected_address: None,
+            panel,
             read_cache: [EMPTY_FULL_READ_CACHE_ENTRY; FULL_READ_CACHE_ENTRIES],
             prefetched_opcode: None,
         }
@@ -125,10 +371,6 @@ impl<'a> FullInstructionBus<'a> {
         }
     }
 
-    /// Project one whole external 8080 machine cycle into the canonical front
-    /// panel in one weighted operation. The integrator itself preserves T1 with
-    /// the old 8212 status and T2..Tn with the newly latched status, plus the DI
-    /// transition after T1 on reads. No physical card or connector is replayed.
     #[inline]
     fn project_machine_cycle(
         &mut self,
@@ -139,10 +381,8 @@ impl<'a> FullInstructionBus<'a> {
         reads_data: bool,
         writes_data: bool,
     ) {
-        debug_assert!(t_states >= 1);
-        debug_assert!(!(reads_data && writes_data));
-
-        self.bus.cycle_full_project_panel_cycle(
+        self.panel.project_machine_cycle(
+            self.bus,
             address,
             data,
             status_word,
@@ -151,23 +391,17 @@ impl<'a> FullInstructionBus<'a> {
             writes_data,
             self.inte,
         );
-
         self.projected_t_states = self.projected_t_states.saturating_add(t_states);
         self.last_projected_address = Some(address);
     }
 
-    /// Register-only instructions may retain the final fetch/status/address for
-    /// one or more internal T-states after the last external bus transfer. The
-    /// panel state is constant across that tail, so Full adds the whole interval
-    /// as one weighted contribution.
     #[inline]
     fn project_internal_tail(&mut self, t_states: u32) {
         if self.last_projected_address.is_none() {
             debug_assert_eq!(t_states, 0);
             return;
         }
-        self.bus
-            .cycle_full_project_internal_t_states(t_states, self.inte);
+        self.panel.project_internal_tail(t_states);
     }
 
     #[inline]
@@ -195,9 +429,6 @@ impl<'a> FullInstructionBus<'a> {
             data_out: Some(value),
             sync: false,
             dbin: false,
-            // /WR is still low through T3 and returns high on the following
-            // PHI1. If the instruction completed at this write, dead time keeps
-            // that T3 package level until the next PHI1.
             wr_n: false,
             inte: self.inte,
             wait: false,
@@ -211,7 +442,10 @@ impl<'a> FullInstructionBus<'a> {
         self.prefetched_opcode = Some((address, opcode));
     }
 
-    fn boundary_pins(&self) -> Cpu8080Pins { self.boundary_pins }
+    fn finish(mut self) -> Cpu8080Pins {
+        self.panel.finish(self.bus);
+        self.boundary_pins
+    }
 }
 
 impl Bus for FullInstructionBus<'_> {
@@ -231,9 +465,6 @@ impl Bus for FullInstructionBus<'_> {
         self.remember_write_boundary(address, value);
     }
 
-    // These are defensive fallbacks only. Opcode eligibility prevents every
-    // currently compiled Full window from reaching an I/O or INTE-changing
-    // instruction; such an opcode is a synchronization barrier and runs Partial.
     fn input(&mut self, port: u8) -> u8 { Bus::input(self.bus, port) }
     fn output(&mut self, port: u8, value: u8) { Bus::output(self.bus, port, value); }
 
@@ -284,12 +515,7 @@ impl Bus for FullInstructionBus<'_> {
     }
 
     #[inline]
-    fn take_wait_states(&mut self) -> u32 {
-        // Full chassis eligibility admits only asynchronous/no-wait static RAM,
-        // and IN/OUT are synchronization barriers. A non-zero wait here would be
-        // a proof bug, not a dynamic condition to poll.
-        0
-    }
+    fn take_wait_states(&mut self) -> u32 { 0 }
 
     #[inline]
     fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
@@ -303,16 +529,6 @@ impl Bus for FullInstructionBus<'_> {
 }
 
 impl CycleAccurateMachineBackend {
-    /// Compiled chassis class: one MITS 8080 CPU plus non-overlapping,
-    /// asynchronous/no-wait MITS static RAM boards. 88-SIO/88-2SIO cards may be
-    /// installed because the compiled opcode set cannot perform I/O and the host
-    /// window separately proves that their UARTs have no timed transition in
-    /// flight. Other real cards stay on Partial until they get an event model.
-    ///
-    /// This proof is evaluated once per host timeslice, not once per instruction.
-    /// That mirrors MAME's prepared address spaces: after POWER-OFF hardware has
-    /// been materialized, execution consumes a compact capability fact rather
-    /// than repeatedly rediscovering the topology on every opcode.
     fn compiled_full_chassis_available(&self) -> bool {
         let hardware = self.machine.bus.s100_hardware_memory();
         let mut saw_ram = false;
@@ -334,8 +550,6 @@ impl CycleAccurateMachineBackend {
                         .iter()
                         .any(|&(other_start, other_end)| start < other_end && other_start < end)
                     {
-                        // Overlap is legal physical S-100 hardware and must retain
-                        // the generic resolver so equal drives/contention remain visible.
                         return false;
                     }
                     ranges.push((start, end));
@@ -363,12 +577,6 @@ impl CycleAccurateMachineBackend {
             })
     }
 
-    /// While all physical serial shift paths are idle, advancing their baud
-    /// oscillators cannot change S-100 PRDY/PINT/VI or UART register state. The
-    /// elapsed phase may therefore be folded in one exact batch immediately
-    /// before re-entering Partial. A pending/completed endpoint TX byte is kept
-    /// conservative via the busy predicates even though it has no future bit
-    /// edge of its own.
     fn compiled_serial_timing_is_quiet(&self) -> bool {
         self.machine.bus.serial_rx_line_idle()
             && !self.machine.bus.tx_busy()
@@ -403,9 +611,6 @@ impl CycleAccurateMachineBackend {
             .then_some(opcode)
     }
 
-    /// Focused one-instruction bridge retained for exact unit tests. Production
-    /// execution below uses a semantic window so this expensive state transfer is
-    /// not repeated once per opcode.
     #[cfg(test)]
     fn execute_compiled_full_instruction(&mut self, opcode: u8) -> Option<u32> {
         self.instruction_address = self.cpu.registers().pc;
@@ -416,7 +621,8 @@ impl CycleAccurateMachineBackend {
             let bus = &mut self.machine.bus;
             let mut full_bus = FullInstructionBus::new(bus, inte);
             let elapsed = cpu.execute_full_instruction(&mut full_bus, opcode)?;
-            (elapsed, full_bus.boundary_pins())
+            let boundary_pins = full_bus.finish();
+            (elapsed, boundary_pins)
         };
 
         debug_assert!(elapsed <= FULL_EXECUTION_MAX_T_STATES);
@@ -426,11 +632,6 @@ impl CycleAccurateMachineBackend {
         Some(elapsed)
     }
 
-    /// Execute as many consecutive compiled instructions as the remaining exact
-    /// host budget permits, keeping one instruction-level semantic core live for
-    /// the entire block. Cycle state is exported once at entry and imported once
-    /// at the final clean fetch boundary; memory still uses the bus-owned S-100
-    /// decoder on every guest access.
     fn execute_compiled_full_window(
         &mut self,
         remaining: &mut u32,
@@ -478,10 +679,6 @@ impl CycleAccurateMachineBackend {
                     break;
                 }
 
-                // The classification load above is the byte the CPU would fetch
-                // from this proven side-effect-free static RAM chassis. Reuse it
-                // as the semantic opcode fetch instead of looking up the same
-                // address a second time inside Cpu8080::step().
                 full_bus.prime_opcode_fetch(opcode_address, opcode);
                 last_address = opcode_address;
                 let elapsed = full.step(&mut full_bus);
@@ -493,7 +690,7 @@ impl CycleAccurateMachineBackend {
                 last_elapsed = elapsed;
             }
 
-            full_bus.boundary_pins()
+            full_bus.finish()
         };
 
         if completed == 0 {
@@ -505,10 +702,6 @@ impl CycleAccurateMachineBackend {
         self.cpu
             .commit_full_execution_window(&full, completed, last_elapsed);
         self.cpu.set_full_boundary_pins(boundary_pins);
-
-        // Materialize the expensive generic connector graph only when Partial or
-        // an external observer actually needs it. A whole Full window therefore
-        // creates one lazy-desync marker instead of one per instruction.
         self.machine.bus.cycle_mark_full_execution_desynced();
         self.last_teaching_tick = None;
         Some(elapsed_total)
@@ -528,12 +721,6 @@ impl CycleAccurateMachineBackend {
             return self.fail_if_cpu_fault("service execution");
         }
 
-        // Host input cannot mutate the chassis concurrently inside this
-        // synchronous service call. Static RAM has no asynchronous source. A
-        // serial card is also safe for Full while both UART shift paths are idle:
-        // only its free-running baud phase advances, which is folded below before
-        // the first Partial edge. Active RX/TX/BREAK immediately keeps the entire
-        // window on Partial where exact edge timing remains authoritative.
         let serial_clocked = self.compiled_full_chassis_has_serial();
         let full_window = self.compiled_full_chassis_available()
             && (!serial_clocked || self.compiled_serial_timing_is_quiet())
@@ -551,10 +738,6 @@ impl CycleAccurateMachineBackend {
                 continue;
             }
 
-            // No serial state transition could occur while the quiet Full block
-            // ran, but its independent baud oscillator never stopped. Materialize
-            // the exact accumulated phase before any Partial T-state can observe
-            // or mutate the serial card (especially an IN/OUT instruction).
             if deferred_serial_t_states != 0 {
                 self.machine
                     .bus
@@ -583,10 +766,6 @@ impl CycleAccurateMachineBackend {
         self.fail_if_cpu_fault("service execution")
     }
 
-    /// Normal host execution enters the compiled dispatcher. This inherent
-    /// method intentionally shadows the `MachineBackend` trait method for direct
-    /// calls from `CycleHostBackend`; debugger/observer execution still calls the
-    /// separate partial observer path and therefore retains exact T-state stops.
     pub(crate) fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
         self.service_execution_compiled(t_state_budget)
     }
@@ -677,6 +856,7 @@ mod tests {
         assert_eq!(full_bus.guest_read(0x0020), 0x11);
         full_bus.write(0x0020, 0x5a);
         assert_eq!(full_bus.guest_read(0x0020), 0x5a);
+        let _ = full_bus.finish();
     }
 
     #[test]
@@ -702,11 +882,6 @@ mod tests {
 
     #[test]
     fn compiled_full_front_panel_duty_matches_forced_partial_including_internal_t5() {
-        // MOV B,C is a five-T-state register-only instruction: the external fetch
-        // ends after four T-states and the exact core still exposes one internal
-        // T5 with the fetch address/status held. JMP then exercises two ordinary
-        // memory-read cycles. Repeating the pair forces a long Full window while
-        // covering both reconstruction forms.
         const BUDGET: u32 = 1_500;
         let program = [0x41, 0xc3, 0x00, 0x00];
         let mut compiled = prepare_static_backend(&program);
@@ -751,9 +926,6 @@ mod tests {
         assert_eq!(compiled.cpu.total_t_states(), 14_000);
         reference.machine.bus.advance_serial_hardware_time(14_000);
 
-        // Port 1 is strapped to 9600 baud by the historical starter. Programming
-        // the same /16 mode after the elapsed idle interval turns its first TX
-        // completion into a precise probe of baud-generator phase.
         for backend in [&mut compiled, &mut reference] {
             backend.machine.bus.debugger_output_port(0x12, 0x15);
             backend.machine.bus.debugger_output_port(0x13, b'P');
