@@ -1,31 +1,23 @@
 //! MAME-style prepared execution path for the instruction-level 8080.
 //!
-//! Fast mode is not cycle-exact, so rebuilding synthetic S-100 samples for every
-//! opcode/operand byte is presentation work, not guest-visible hardware work.
-//! This adapter keeps the real bus-owned S-100 decode and the same physical RAM
-//! card storage, but defers front-panel projection until the end of a quiet
-//! execution block. I/O, interrupt-enable changes, HALT, active serial timing,
-//! HOLD/RESET and accepted PINT force an immediate return to the existing fully
-//! synchronized Fast path.
+//! Fast mode is not cycle-exact, so rebuilding synthetic S-100 fabric activity
+//! for every opcode/operand byte is presentation work, not guest-visible hardware
+//! work. This adapter keeps the real bus-owned S-100 decode and the same physical
+//! RAM card storage, while replaying only the cheap reconstructed front-panel
+//! samples needed for ADDRESS/DATA/status duty. I/O, interrupt-enable changes,
+//! HALT, active serial timing, HOLD/RESET and accepted PINT force an immediate
+//! return to the existing fully synchronized Fast path.
 
 use crate::config::S100InstalledCardConfig;
 use crate::cpu8080::Bus;
 use crate::s100_memory::S100RamBoardModel;
 
-use super::super::cpu_board::S100Cycle;
+use super::super::cpu_board::{Fast8080S100Adapter, S100Cycle};
 use super::super::{AltairBus, AltairMachine};
-
-#[derive(Clone, Copy)]
-struct FastVisibleCycle {
-    address: u16,
-    data: u8,
-    cycle: S100Cycle,
-}
 
 struct FastExecutionBus<'a> {
     bus: &'a mut AltairBus,
     no_wait_memory: bool,
-    last_visible: Option<FastVisibleCycle>,
     synchronization_requested: bool,
     /// Chassis-clock quanta already consumed by completed memory-only
     /// instructions in this prepared block but not yet applied to the UART baud
@@ -40,7 +32,6 @@ impl<'a> FastExecutionBus<'a> {
         Self {
             bus,
             no_wait_memory,
-            last_visible: None,
             synchronization_requested: false,
             deferred_serial_t_states: 0,
         }
@@ -53,6 +44,39 @@ impl<'a> FastExecutionBus<'a> {
         }
     }
 
+    /// Preserve Fast's documented reconstructed panel duty without re-entering
+    /// the physical S-100 fabric. The same adapter produces the same 3/4
+    /// instruction-level samples as legacy Fast, but they are consumed only by
+    /// the secondary Display/Control lamp integrator: no RAM card, UART, resolver
+    /// or independent chassis clock is executed here.
+    #[inline]
+    fn project_panel_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
+        let signals = self.bus.s100.signals();
+        let protected = self.bus.memory.is_protected(address);
+        Fast8080S100Adapter::for_each_sample(
+            address,
+            data,
+            cycle,
+            signals.inte,
+            signals.ready,
+            signals.wait,
+            |sample| {
+                self.bus.s100.drive_cpu_t_state(
+                    sample.address,
+                    sample.cpu_data,
+                    sample.data_in,
+                    sample.data_out,
+                    sample.status_word,
+                    protected,
+                    sample.inte,
+                    sample.ready,
+                    sample.wait,
+                    sample.hlda,
+                );
+            },
+        );
+    }
+
     #[inline]
     fn read_memory(&mut self, address: u16, cycle: S100Cycle) -> u8 {
         self.account_read_wait(address);
@@ -60,14 +84,17 @@ impl<'a> FastExecutionBus<'a> {
         // debugger/peek shortcut. Unique responders use the compiled card decode;
         // overlap still falls back to the generic electrical transaction.
         let value = self.bus.memory.read(address);
-        self.last_visible = Some(FastVisibleCycle { address, data: value, cycle });
+        self.project_panel_cycle(address, value, cycle);
         value
     }
 
     #[inline]
     fn write_memory(&mut self, address: u16, value: u8, cycle: S100Cycle) {
+        // Presentation observes the same CPU cycle as legacy Fast, while the
+        // actual guest write still goes exactly once through the physical RAM
+        // storage below.
+        self.project_panel_cycle(address, value, cycle);
         self.bus.memory.write(address, value);
-        self.last_visible = Some(FastVisibleCycle { address, data: value, cycle });
     }
 
     #[inline]
@@ -86,7 +113,6 @@ impl<'a> FastExecutionBus<'a> {
 
     fn request_external_sync(&mut self) {
         self.synchronization_requested = true;
-        self.last_visible = None;
     }
 }
 
@@ -252,7 +278,6 @@ impl AltairMachine {
         let mut used = 0u32;
         let mut sync_elapsed = 0u32;
         let mut synchronization_requested = false;
-        let mut last_visible = None;
 
         {
             let cpu = &mut self.cpu;
@@ -262,7 +287,6 @@ impl AltairMachine {
             while used < cycles {
                 let elapsed = cpu.step(&mut fast_bus);
                 used = used.saturating_add(elapsed);
-                last_visible = fast_bus.last_visible;
 
                 if fast_bus.synchronization_requested || cpu.halted {
                     synchronization_requested = fast_bus.synchronization_requested;
@@ -278,12 +302,9 @@ impl AltairMachine {
             fast_bus.flush_deferred_serial_time();
         }
 
-        // Fast mode advertises reconstructed, not exact, bus activity. Publish
-        // one representative final memory cycle for panel/address/data state
-        // instead of replaying every synthetic T-state that just got skipped.
-        if let Some(last) = last_visible {
-            self.bus.drive_cpu_cycle(last.address, last.data, last.cycle);
-        }
+        // Memory activity has already been projected directly into the panel's
+        // reconstructed duty integrator. No physical S-100/card transaction is
+        // replayed here merely to obtain a representative final lamp state.
         self.bus.sync_cpu_inte(self.cpu.inte);
 
         if synchronization_requested {
