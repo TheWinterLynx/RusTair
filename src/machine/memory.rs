@@ -474,23 +474,49 @@ impl Memory {
         None
     }
 
-    /// Fast guest read: CPU board -> S-100 -> installed RAM card(s) -> DI.
+    /// Fast executes through the S-100 address decode compiled when cards are
+    /// installed. A unique RAM responder is therefore a direct bus dispatch to
+    /// that physical card's shared storage, just as a decoded TTL chip-select
+    /// would be on the real backplane. No CPU-to-RAM reference is introduced:
+    /// the CPU still calls the bus, and the bus-owned fabric selects the card.
+    /// Electrical resolution remains the exact fallback for overlapping cards,
+    /// where High-Z/contention and multiple simultaneous responders matter.
     pub(super) fn read(&mut self, address: u16) -> u8 {
         if let Some(value) = self.compatibility_read_override(address) {
             return value;
         }
-        self.fabric
-            .fast_memory_read(address, 0x82)
-            .unwrap_or(S100_OPEN_BUS_VALUE)
+        match self.fabric.mapped_ram_card_count(address) {
+            0 => S100_OPEN_BUS_VALUE,
+            1 => self
+                .fabric
+                .peek_unique_memory(address)
+                .unwrap_or(S100_OPEN_BUS_VALUE),
+            _ => self
+                .fabric
+                .fast_memory_read(address, 0x82)
+                .unwrap_or(S100_OPEN_BUS_VALUE),
+        }
     }
 
-    /// Fast guest write: CPU board pWR/DO -> Display/Control MWRT -> RAM card.
+    /// Fast writes use the same compiled S-100 decode. A single selected RAM
+    /// card receives the write directly through the bus-owned route and still
+    /// enforces that card's protection latch. Decode overlap deliberately falls
+    /// back to the generic electrical transaction so every selected card sees
+    /// MWRT/DO exactly as before.
     pub(super) fn write(&mut self, address: u16, value: u8) {
         if address == u16::MAX && self.basic32_probe_guard {
             self.basic32_probe_write = Some(value);
             return;
         }
-        let _ = self.fabric.fast_memory_write(address, value, 0x00);
+        match self.fabric.mapped_ram_card_count(address) {
+            0 => {}
+            1 => {
+                let _ = self.fabric.write_unique_memory(address, value, true);
+            }
+            _ => {
+                let _ = self.fabric.fast_memory_write(address, value, 0x00);
+            }
+        }
     }
 
     /// Transitional T3 read helper retained for serial/front-panel migration
