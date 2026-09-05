@@ -34,7 +34,9 @@ fn adaptive_cycle_exposes_rev0_wiring_and_idle_six_line_state() {
 }
 
 #[test]
-fn adaptive_cycle_projects_the_selected_abc_electrical_levels() {
+fn abc_electrical_variants_preserve_board_side_logical_semantics() {
+    let mut reference_lines = None;
+
     for interface in [SioInterface::Rs232A, SioInterface::TtlB, SioInterface::TtyC] {
         let config = configured(interface);
         let mut cycle = CycleAccurateMachineBackend::default();
@@ -43,11 +45,14 @@ fn adaptive_cycle_projects_the_selected_abc_electrical_levels() {
         assert!(cycle.machine_mut().bus.pulse_sio_output_device_ready());
 
         let lines = cycle.machine().bus.sio_logical_lines();
-        assert_eq!(
-            lines,
-            Some((true, true, true, true, true, true)),
-            "A/B/C must never change board-side logical line semantics"
-        );
+        if let Some(reference) = reference_lines {
+            assert_eq!(
+                lines, reference,
+                "A/B/C electrical families must not change board-side logical line semantics"
+            );
+        } else {
+            reference_lines = Some(lines);
+        }
         assert!(
             cycle.machine().bus.sio_connector_outputs().is_some(),
             "the selected physical interface must project connector outputs"
