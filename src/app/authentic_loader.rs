@@ -1215,62 +1215,52 @@ mod tests {
     }
 
     #[test]
-    fn assisted_bootstrap_really_uses_front_panel_on_both_rust_engines() {
-        for engine in [
-            EmulationEngine::RustFast8080,
-            EmulationEngine::RustCycleAccurate8080,
-        ] {
-            for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
-                let mut machine = BackendHost::from_engine(engine).unwrap();
-                machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-                machine.configure_serial_board(board);
-                machine.power(true);
-                machine.set_running(false);
+    fn assisted_bootstrap_really_uses_front_panel_on_adaptive_cycle() {
+        for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
+            let mut machine = BackendHost::default();
+            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+            machine.configure_serial_board(board);
+            machine.power(true);
+            machine.set_running(false);
 
-                let definition = BootstrapDefinition::for_board(board);
-                let log = install_via_front_panel(&mut machine, definition).unwrap();
-                assert_eq!(log.len(), definition.bytes.len());
-                assert!(bootstrap_matches(&mut machine, definition));
-                assert_eq!(
-                    machine.front_panel_state().address,
-                    definition.last_address()
-                );
-                assert_eq!(machine.switch_register() & 0x00FF, 0x00);
-            }
+            let definition = BootstrapDefinition::for_board(board);
+            let log = install_via_front_panel(&mut machine, definition).unwrap();
+            assert_eq!(log.len(), definition.bytes.len());
+            assert!(bootstrap_matches(&mut machine, definition));
+            assert_eq!(
+                machine.front_panel_state().address,
+                definition.last_address()
+            );
+            assert_eq!(machine.switch_register() & 0x00FF, 0x00);
         }
     }
 
     #[test]
-    fn assisted_readdressed_bootstrap_deposits_actual_44h_45h_operands_on_both_engines() {
+    fn assisted_readdressed_bootstrap_deposits_actual_44h_45h_operands_on_adaptive_cycle() {
         let straps = TwoSioStraps {
             address: TwoSioAddressBlock::try_new(0x44).unwrap(),
             ..TwoSioStraps::default()
         };
         let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
-        for engine in [
-            EmulationEngine::RustFast8080,
-            EmulationEngine::RustCycleAccurate8080,
-        ] {
-            let mut machine = BackendHost::from_engine(engine).unwrap();
-            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-            machine.configure_serial_board(SerialBoard::TwoSio88);
-            machine.configure_two_sio_straps(straps);
-            machine.power(true);
-            machine.set_running(false);
+        let mut machine = BackendHost::default();
+        machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.configure_two_sio_straps(straps);
+        machine.power(true);
+        machine.set_running(false);
 
-            install_via_front_panel(&mut machine, definition).unwrap();
-            assert!(bootstrap_matches(&mut machine, definition));
-            assert_eq!(machine.peek_memory(0x0003), Some(0x44));
-            assert_eq!(machine.peek_memory(0x0007), Some(0x44));
-            assert_eq!(machine.peek_memory(0x000F), Some(0x44));
-            assert_eq!(machine.peek_memory(0x0013), Some(0x45));
-        }
+        install_via_front_panel(&mut machine, definition).unwrap();
+        assert!(bootstrap_matches(&mut machine, definition));
+        assert_eq!(machine.peek_memory(0x0003), Some(0x44));
+        assert_eq!(machine.peek_memory(0x0007), Some(0x44));
+        assert_eq!(machine.peek_memory(0x000F), Some(0x44));
+        assert_eq!(machine.peek_memory(0x0013), Some(0x45));
     }
 
     #[test]
     fn assisted_bootstrap_rejects_unsafe_machine_states_and_noncontiguous_low_4k() {
         let definition = BootstrapDefinition::for_board(SerialBoard::Sio88);
-        let mut machine = BackendHost::rust_fast();
+        let mut machine = BackendHost::default();
         machine.configure_memory(RamSize::K4, RamInit::Zeroed);
 
         let error = install_via_front_panel(&mut machine, definition).unwrap_err();
@@ -1291,81 +1281,76 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_consumes_reader_bytes_with_real_guest_in_on_both_rust_engines() {
-        for engine in [
-            EmulationEngine::RustFast8080,
-            EmulationEngine::RustCycleAccurate8080,
-        ] {
-            for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
-                let mut machine = BackendHost::from_engine(engine).unwrap();
-                machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-                machine.configure_serial_board(board);
-                machine.power(true);
-                machine.set_running(false);
+    fn bootstrap_consumes_reader_bytes_with_real_guest_in_on_adaptive_cycle() {
+        for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
+            let mut machine = BackendHost::default();
+            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+            machine.configure_serial_board(board);
+            machine.power(true);
+            machine.set_running(false);
 
-                let definition = BootstrapDefinition::for_board(board);
-                install_via_front_panel(&mut machine, definition).unwrap();
+            let definition = BootstrapDefinition::for_board(board);
+            install_via_front_panel(&mut machine, definition).unwrap();
 
-                machine.set_switch_register(0x0000);
-                machine.examine(false);
-                machine.set_switch_register(u16::from(definition.required_sense) << 8);
-                assert_eq!(machine.intel8080_state().pc, 0x0000);
-                machine.set_running(true);
+            machine.set_switch_register(0x0000);
+            machine.examine(false);
+            machine.set_switch_register(u16::from(definition.required_sense) << 8);
+            assert_eq!(machine.intel8080_state().pc, 0x0000);
+            machine.set_running(true);
 
-                for _ in 0..400 {
-                    machine.run_cycles(32);
-                    if definition.pc_is_polling(machine.intel8080_state().pc) {
-                        break;
-                    }
+            for _ in 0..400 {
+                machine.run_cycles(32);
+                if definition.pc_is_polling(machine.intel8080_state().pc) {
+                    break;
                 }
-                assert!(definition.pc_is_polling(machine.intel8080_state().pc));
-
-                machine.set_io_trace_enabled(true);
-                let (_, _, leader_reads_before, _) =
-                    machine.io_port_activity(definition.data_port);
-                machine.serial_receive(BackendSerialPort::Port0, 0xAE);
-                if board == SerialBoard::TwoSio88 {
-                    assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
-                    assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
-                }
-                for _ in 0..4_096 {
-                    machine.run_cycles(64);
-                    let (_, _, data_reads, _) =
-                        machine.io_port_activity(definition.data_port);
-                    if data_reads > leader_reads_before {
-                        break;
-                    }
-                }
-                let (_, _, leader_reads_after, _) =
-                    machine.io_port_activity(definition.data_port);
-                assert!(
-                    leader_reads_after > leader_reads_before,
-                    "{engine:?} / {board:?} never consumed the AEh leader through guest IN"
-                );
-                assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
-                assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x00));
-
-                let payload_reads_before = leader_reads_after;
-                machine.serial_receive(BackendSerialPort::Port0, 0x42);
-                if board == SerialBoard::TwoSio88 {
-                    assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
-                    assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
-                }
-                for _ in 0..4_096 {
-                    machine.run_cycles(64);
-                    if machine.peek_memory(CHECKSUM_LOADER_END) == Some(0x42) {
-                        break;
-                    }
-                }
-                assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x42));
-                let (_, _, payload_reads_after, _) =
-                    machine.io_port_activity(definition.data_port);
-                assert!(
-                    payload_reads_after > payload_reads_before,
-                    "{engine:?} / {board:?} stored the payload without a guest DATA-port IN"
-                );
-                assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
             }
+            assert!(definition.pc_is_polling(machine.intel8080_state().pc));
+
+            machine.set_io_trace_enabled(true);
+            let (_, _, leader_reads_before, _) =
+                machine.io_port_activity(definition.data_port);
+            machine.serial_receive(BackendSerialPort::Port0, 0xAE);
+            if board == SerialBoard::TwoSio88 {
+                assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
+                assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
+            }
+            for _ in 0..4_096 {
+                machine.run_cycles(64);
+                let (_, _, data_reads, _) =
+                    machine.io_port_activity(definition.data_port);
+                if data_reads > leader_reads_before {
+                    break;
+                }
+            }
+            let (_, _, leader_reads_after, _) =
+                machine.io_port_activity(definition.data_port);
+            assert!(
+                leader_reads_after > leader_reads_before,
+                "{board:?} never consumed the AEh leader through guest IN"
+            );
+            assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
+            assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x00));
+
+            let payload_reads_before = leader_reads_after;
+            machine.serial_receive(BackendSerialPort::Port0, 0x42);
+            if board == SerialBoard::TwoSio88 {
+                assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
+                assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
+            }
+            for _ in 0..4_096 {
+                machine.run_cycles(64);
+                if machine.peek_memory(CHECKSUM_LOADER_END) == Some(0x42) {
+                    break;
+                }
+            }
+            assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x42));
+            let (_, _, payload_reads_after, _) =
+                machine.io_port_activity(definition.data_port);
+            assert!(
+                payload_reads_after > payload_reads_before,
+                "{board:?} stored the payload without a guest DATA-port IN"
+            );
+            assert!(machine.serial_rx_empty(BackendSerialPort::Port0));
         }
     }
 
@@ -1376,62 +1361,45 @@ mod tests {
             ..TwoSioStraps::default()
         };
         let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
-        for engine in [
-            EmulationEngine::RustFast8080,
-            EmulationEngine::RustCycleAccurate8080,
-        ] {
-            let mut machine = BackendHost::from_engine(engine).unwrap();
-            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-            machine.configure_serial_board(SerialBoard::TwoSio88);
-            machine.configure_two_sio_straps(straps);
-            machine.power(true);
-            machine.set_running(false);
-            install_via_front_panel(&mut machine, definition).unwrap();
+        let mut machine = BackendHost::default();
+        machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+        machine.configure_serial_board(SerialBoard::TwoSio88);
+        machine.configure_two_sio_straps(straps);
+        machine.power(true);
+        machine.set_running(false);
+        install_via_front_panel(&mut machine, definition).unwrap();
 
-            machine.set_switch_register(0x0000);
-            machine.examine(false);
-            machine.set_switch_register(u16::from(definition.required_sense) << 8);
-            machine.set_io_trace_enabled(true);
-            machine.set_running(true);
+        machine.set_switch_register(0x0000);
+        machine.examine(false);
+        machine.set_switch_register(u16::from(definition.required_sense) << 8);
+        machine.set_io_trace_enabled(true);
+        machine.set_running(true);
 
-            for _ in 0..400 {
-                machine.run_cycles(32);
-                if definition.pc_is_polling(machine.intel8080_state().pc) {
-                    break;
-                }
+        for _ in 0..400 {
+            machine.run_cycles(32);
+            if definition.pc_is_polling(machine.intel8080_state().pc) {
+                break;
             }
-            assert!(definition.pc_is_polling(machine.intel8080_state().pc));
-            let (_, _, legacy_status_reads, _) = machine.io_port_activity(0x10);
-            let (_, _, status_reads, _) = machine.io_port_activity(0x44);
-            assert!(
-                status_reads > 0,
-                "readdressed bootstrap never polled 44h on {engine:?}"
-            );
-            assert_eq!(
-                legacy_status_reads, 0,
-                "readdressed bootstrap still touched legacy 10h on {engine:?}"
-            );
-
-            let (_, _, data_reads_before, _) = machine.io_port_activity(0x45);
-            machine.serial_receive(BackendSerialPort::Port0, 0xAE);
-            for _ in 0..4_096 {
-                machine.run_cycles(64);
-                let (_, _, data_reads, _) = machine.io_port_activity(0x45);
-                if data_reads > data_reads_before {
-                    break;
-                }
-            }
-            let (_, _, data_reads_after, _) = machine.io_port_activity(0x45);
-            let (_, _, legacy_data_reads, _) = machine.io_port_activity(0x11);
-            assert!(
-                data_reads_after > data_reads_before,
-                "readdressed bootstrap never read 45h on {engine:?}"
-            );
-            assert_eq!(
-                legacy_data_reads, 0,
-                "readdressed bootstrap still touched legacy 11h on {engine:?}"
-            );
         }
+        assert!(definition.pc_is_polling(machine.intel8080_state().pc));
+        let (_, _, legacy_status_reads, _) = machine.io_port_activity(0x10);
+        let (_, _, status_reads, _) = machine.io_port_activity(0x44);
+        assert!(status_reads > 0, "readdressed bootstrap never polled 44h");
+        assert_eq!(legacy_status_reads, 0, "readdressed bootstrap still touched legacy 10h");
+
+        let (_, _, data_reads_before, _) = machine.io_port_activity(0x45);
+        machine.serial_receive(BackendSerialPort::Port0, 0xAE);
+        for _ in 0..4_096 {
+            machine.run_cycles(64);
+            let (_, _, data_reads, _) = machine.io_port_activity(0x45);
+            if data_reads > data_reads_before {
+                break;
+            }
+        }
+        let (_, _, data_reads_after, _) = machine.io_port_activity(0x45);
+        let (_, _, legacy_data_reads, _) = machine.io_port_activity(0x11);
+        assert!(data_reads_after > data_reads_before, "readdressed bootstrap never read 45h");
+        assert_eq!(legacy_data_reads, 0, "readdressed bootstrap still touched legacy 11h");
     }
 
     #[test]
