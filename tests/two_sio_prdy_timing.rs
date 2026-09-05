@@ -1,10 +1,8 @@
-use rustair::backend::{
-    BackendHost, BusMachineCycle, BusTState, EmulationEngine,
-};
+use rustair::backend::{BackendHost, BusMachineCycle, BusTState};
 use rustair::config::{RamInit, RamSize, SerialBoard};
 
-fn prepared_host(engine: EmulationEngine, program: &[u8]) -> BackendHost {
-    let mut host = BackendHost::from_engine(engine).expect("built-in Rust backend");
+fn prepared_host(program: &[u8]) -> BackendHost {
+    let mut host = BackendHost::default();
     host.configure_memory(RamSize::K1, RamInit::Zeroed);
     host.configure_serial_board(SerialBoard::TwoSio88);
     host.power(true);
@@ -15,65 +13,49 @@ fn prepared_host(engine: EmulationEngine, program: &[u8]) -> BackendHost {
 }
 
 #[test]
-fn two_sio_input_adds_one_t_state_in_both_rust_engines() {
-    for engine in [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ] {
-        let mut host = prepared_host(engine, &[0xdb, 0x10]); // IN 10h
-        let before = host.intel8080_state().total_t_states.unwrap_or(0);
-        host.run_cycles(11);
-        let after = host.intel8080_state();
+fn two_sio_input_adds_one_t_state_on_adaptive_cycle() {
+    let mut host = prepared_host(&[0xdb, 0x10]); // IN 10h
+    let before = host.intel8080_state().total_t_states.unwrap_or(0);
+    host.run_cycles(11);
+    let after = host.intel8080_state();
 
-        assert_eq!(after.pc, 0x0002, "{} must complete exactly one IN", engine.label());
-        assert_eq!(
-            after.total_t_states.unwrap_or(0) - before,
-            11,
-            "{}: 88-2SIO IN must be base 10T + one documented 500 ns TW",
-            engine.label()
-        );
-    }
+    assert_eq!(after.pc, 0x0002, "Adaptive Cycle must complete exactly one IN");
+    assert_eq!(
+        after.total_t_states.unwrap_or(0) - before,
+        11,
+        "88-2SIO IN must be base 10T + one documented 500 ns TW",
+    );
 }
 
 #[test]
 fn two_sio_output_and_unmapped_input_do_not_inherit_the_input_wait() {
-    for engine in [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ] {
-        let mut output = prepared_host(engine, &[0xd3, 0x10]); // OUT 10h
-        let before = output.intel8080_state().total_t_states.unwrap_or(0);
-        output.run_cycles(10);
-        let after = output.intel8080_state();
-        assert_eq!(after.pc, 0x0002);
-        assert_eq!(
-            after.total_t_states.unwrap_or(0) - before,
-            10,
-            "{}: MITS documents the 88-2SIO wait only for input",
-            engine.label()
-        );
+    let mut output = prepared_host(&[0xd3, 0x10]); // OUT 10h
+    let before = output.intel8080_state().total_t_states.unwrap_or(0);
+    output.run_cycles(10);
+    let after = output.intel8080_state();
+    assert_eq!(after.pc, 0x0002);
+    assert_eq!(
+        after.total_t_states.unwrap_or(0) - before,
+        10,
+        "MITS documents the 88-2SIO wait only for input",
+    );
 
-        let mut unmapped = prepared_host(engine, &[0xdb, 0x14]); // outside 10h..13h
-        let before = unmapped.intel8080_state().total_t_states.unwrap_or(0);
-        unmapped.run_cycles(10);
-        let after = unmapped.intel8080_state();
-        assert_eq!(after.pc, 0x0002);
-        assert_eq!(
-            after.total_t_states.unwrap_or(0) - before,
-            10,
-            "{}: an unselected 88-2SIO must not pull PRDY low",
-            engine.label()
-        );
-        assert_eq!(after.a, 0xff, "unmapped IN still observes S-100 open bus");
-    }
+    let mut unmapped = prepared_host(&[0xdb, 0x14]); // outside 10h..13h
+    let before = unmapped.intel8080_state().total_t_states.unwrap_or(0);
+    unmapped.run_cycles(10);
+    let after = unmapped.intel8080_state();
+    assert_eq!(after.pc, 0x0002);
+    assert_eq!(
+        after.total_t_states.unwrap_or(0) - before,
+        10,
+        "an unselected 88-2SIO must not pull PRDY low",
+    );
+    assert_eq!(after.a, 0xff, "unmapped IN still observes S-100 open bus");
 }
 
 #[test]
 fn cycle_88_2sio_input_exposes_one_real_tw_and_releases_prdy_in_tw() {
-    let mut host = prepared_host(
-        EmulationEngine::RustCycleAccurate8080,
-        &[0xdb, 0x10], // IN 10h (ACIA 0 status)
-    );
+    let mut host = prepared_host(&[0xdb, 0x10]); // IN 10h (ACIA 0 status)
 
     let mut input_samples = Vec::new();
     for _ in 0..11 {
