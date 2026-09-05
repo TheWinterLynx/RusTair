@@ -19,21 +19,14 @@ impl DifferentialBus {
                 ^ 0x5a;
         }
 
-        // Instruction and immediate operands.
         memory[0x2000] = opcode;
         memory[0x2001] = 0x34;
         memory[0x2002] = 0x12;
-
-        // Deterministic data for HL/DE/BC addressed operations.
         memory[0x3000] = 0xa6;
         memory[0x3100] = 0x5c;
         memory[0x3200] = 0xc3;
-
-        // Stack data used by POP/RET/XTHL.
         memory[0x4000] = 0x78;
         memory[0x4001] = 0x56;
-
-        // Direct-address data used by LDA/LHLD and overwritten by stores.
         memory[0x1234] = 0x9b;
         memory[0x1235] = 0xcd;
 
@@ -49,24 +42,13 @@ impl DifferentialBus {
 }
 
 impl Bus for DifferentialBus {
-    fn read(&mut self, address: u16) -> u8 {
-        self.memory[address as usize]
-    }
-
-    fn write(&mut self, address: u16, value: u8) {
-        self.memory[address as usize] = value;
-    }
-
-    fn input(&mut self, port: u8) -> u8 {
-        Self::input_value(port)
-    }
-
-    fn output(&mut self, port: u8, value: u8) {
-        self.outputs.push((port, value));
-    }
+    fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
+    fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
+    fn input(&mut self, port: u8) -> u8 { Self::input_value(port) }
+    fn output(&mut self, port: u8, value: u8) { self.outputs.push((port, value)); }
 }
 
-fn seed_fast(a: u8, flags: u8) -> Cpu8080 {
+fn seed_semantic(a: u8, flags: u8) -> Cpu8080 {
     let mut cpu = Cpu8080::new();
     cpu.a = a;
     cpu.b = 0x32;
@@ -101,9 +83,7 @@ fn seed_cycle(a: u8, flags: u8) -> Cpu8080Cycle {
 }
 
 fn cycle_data_in(cpu: &Cpu8080Cycle, bus: &DifferentialBus) -> u8 {
-    if cpu.t_state() != TState::T3 {
-        return 0;
-    }
+    if cpu.t_state() != TState::T3 { return 0; }
 
     match cpu.machine_cycle() {
         MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
@@ -128,9 +108,7 @@ fn cycle_data_in(cpu: &Cpu8080Cycle, bus: &DifferentialBus) -> u8 {
 }
 
 fn apply_cycle_write(trace: &rustair::cpu8080_cycle::TickTrace, bus: &mut DifferentialBus) {
-    if trace.t_state != TState::T3 {
-        return;
-    }
+    if trace.t_state != TState::T3 { return; }
 
     match trace.machine_cycle {
         MachineCycle::MemoryWrite | MachineCycle::StackWrite => {
@@ -171,32 +149,30 @@ fn run_cycle_instruction(cpu: &mut Cpu8080Cycle, bus: &mut DifferentialBus) -> u
         });
         apply_cycle_write(&trace, bus);
         assert_eq!(trace.fault, None, "cycle core faulted on opcode {:?}", trace.opcode);
-        if trace.instruction_complete {
-            return trace.instruction_t_states;
-        }
+        if trace.instruction_complete { return trace.instruction_t_states; }
     }
 
     panic!("cycle core did not complete one instruction within 64 T-states");
 }
 
-fn assert_same_registers(opcode: u8, seed: usize, fast: &Cpu8080, cycle: &Cpu8080Cycle) {
+fn assert_same_registers(opcode: u8, seed: usize, semantic: &Cpu8080, cycle: &Cpu8080Cycle) {
     let r = cycle.registers();
-    assert_eq!(r.a, fast.a, "opcode {opcode:02x} seed {seed}: A");
-    assert_eq!(r.b, fast.b, "opcode {opcode:02x} seed {seed}: B");
-    assert_eq!(r.c, fast.c, "opcode {opcode:02x} seed {seed}: C");
-    assert_eq!(r.d, fast.d, "opcode {opcode:02x} seed {seed}: D");
-    assert_eq!(r.e, fast.e, "opcode {opcode:02x} seed {seed}: E");
-    assert_eq!(r.h, fast.h, "opcode {opcode:02x} seed {seed}: H");
-    assert_eq!(r.l, fast.l, "opcode {opcode:02x} seed {seed}: L");
-    assert_eq!(r.f, fast.f, "opcode {opcode:02x} seed {seed}: F");
-    assert_eq!(r.pc, fast.pc, "opcode {opcode:02x} seed {seed}: PC");
-    assert_eq!(r.sp, fast.sp, "opcode {opcode:02x} seed {seed}: SP");
-    assert_eq!(cycle.interrupts_enabled(), fast.inte, "opcode {opcode:02x} seed {seed}: INTE");
-    assert_eq!(cycle.is_halted(), fast.halted, "opcode {opcode:02x} seed {seed}: HALT");
+    assert_eq!(r.a, semantic.a, "opcode {opcode:02x} seed {seed}: A");
+    assert_eq!(r.b, semantic.b, "opcode {opcode:02x} seed {seed}: B");
+    assert_eq!(r.c, semantic.c, "opcode {opcode:02x} seed {seed}: C");
+    assert_eq!(r.d, semantic.d, "opcode {opcode:02x} seed {seed}: D");
+    assert_eq!(r.e, semantic.e, "opcode {opcode:02x} seed {seed}: E");
+    assert_eq!(r.h, semantic.h, "opcode {opcode:02x} seed {seed}: H");
+    assert_eq!(r.l, semantic.l, "opcode {opcode:02x} seed {seed}: L");
+    assert_eq!(r.f, semantic.f, "opcode {opcode:02x} seed {seed}: F");
+    assert_eq!(r.pc, semantic.pc, "opcode {opcode:02x} seed {seed}: PC");
+    assert_eq!(r.sp, semantic.sp, "opcode {opcode:02x} seed {seed}: SP");
+    assert_eq!(cycle.interrupts_enabled(), semantic.inte, "opcode {opcode:02x} seed {seed}: INTE");
+    assert_eq!(cycle.is_halted(), semantic.halted, "opcode {opcode:02x} seed {seed}: HALT");
 }
 
-fn assert_same_memory(opcode: u8, seed: usize, fast: &DifferentialBus, cycle: &DifferentialBus) {
-    if let Some((address, (fast_value, cycle_value))) = fast
+fn assert_same_memory(opcode: u8, seed: usize, semantic: &DifferentialBus, cycle: &DifferentialBus) {
+    if let Some((address, (semantic_value, cycle_value))) = semantic
         .memory
         .iter()
         .zip(&cycle.memory)
@@ -204,37 +180,38 @@ fn assert_same_memory(opcode: u8, seed: usize, fast: &DifferentialBus, cycle: &D
         .find(|(_, (a, b))| a != b)
     {
         panic!(
-            "opcode {opcode:02x} seed {seed}: memory mismatch at {address:04x}: fast={fast_value:02x} cycle={cycle_value:02x}"
+            "opcode {opcode:02x} seed {seed}: memory mismatch at {address:04x}: semantic={semantic_value:02x} cycle={cycle_value:02x}"
         );
     }
 }
 
 #[test]
-fn all_256_8080_opcodes_match_the_validated_fast_core() {
-    // Two complementary flag/accumulator states exercise both polarities of
-    // every conditional family and carry-sensitive arithmetic paths.
+fn all_256_8080_opcodes_match_between_semantic_full_core_and_exact_cycle_core() {
+    // `Cpu8080` is the semantic executor used by Adaptive Cycle Full windows;
+    // `Cpu8080Cycle` is the exact Partial/T-state oracle. This differential is
+    // therefore an internal equivalence proof, not a comparison of two machines.
     let seeds = [(0x96, 0x02), (0x0f, 0xd7)];
 
     for opcode in 0u16..=0xff {
         let opcode = opcode as u8;
         for (seed_index, (a, flags)) in seeds.into_iter().enumerate() {
             let initial_bus = DifferentialBus::seeded(opcode);
-            let mut fast_bus = initial_bus.clone();
+            let mut semantic_bus = initial_bus.clone();
             let mut cycle_bus = initial_bus;
-            let mut fast = seed_fast(a, flags);
+            let mut semantic = seed_semantic(a, flags);
             let mut cycle = seed_cycle(a, flags);
 
-            let fast_t_states = fast.step(&mut fast_bus);
+            let semantic_t_states = semantic.step(&mut semantic_bus);
             let cycle_t_states = run_cycle_instruction(&mut cycle, &mut cycle_bus);
 
             assert_eq!(
-                cycle_t_states, fast_t_states,
+                cycle_t_states, semantic_t_states,
                 "opcode {opcode:02x} seed {seed_index}: T-state count"
             );
-            assert_same_registers(opcode, seed_index, &fast, &cycle);
-            assert_same_memory(opcode, seed_index, &fast_bus, &cycle_bus);
+            assert_same_registers(opcode, seed_index, &semantic, &cycle);
+            assert_same_memory(opcode, seed_index, &semantic_bus, &cycle_bus);
             assert_eq!(
-                cycle_bus.outputs, fast_bus.outputs,
+                cycle_bus.outputs, semantic_bus.outputs,
                 "opcode {opcode:02x} seed {seed_index}: output events"
             );
         }
