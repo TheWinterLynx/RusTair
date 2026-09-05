@@ -75,7 +75,7 @@ impl ClassicDiagnostic {
 #[derive(Clone, Debug)]
 struct ControlCheck { name: &'static str, passed: bool, detail: String }
 #[derive(Clone, Debug)]
-struct ControlLineReport { engine: EmulationEngine, checks: Vec<ControlCheck> }
+struct ControlLineReport { checks: Vec<ControlCheck> }
 impl ControlLineReport { fn passed(&self) -> bool { self.checks.iter().all(|check| check.passed) } }
 
 #[derive(Clone, Debug)]
@@ -248,30 +248,20 @@ fn baseline_hardware() -> S100HardwareConfig {
     hardware.validate().unwrap()
 }
 
-fn baseline_machine(engine: EmulationEngine, program: &[u8]) -> Result<BackendHost, String> {
-    let mut machine = BackendHost::from_engine(engine).map_err(|error| error.to_string())?;
+fn baseline_machine(program: &[u8]) -> BackendHost {
+    let mut machine = BackendHost::default();
     machine.configure_s100_hardware(baseline_hardware(), RamInit::Zeroed);
     machine.power(true);
     machine.set_running(false);
     machine.reset();
     machine.load_bytes(0, program);
-    Ok(machine)
+    machine
 }
 
-fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
+fn run_control_line_baseline() -> ControlLineReport {
     let mut checks = Vec::new();
 
-    let mut machine = match baseline_machine(engine, &[0xfb, 0x00, 0xf3]) {
-        Ok(machine) => machine,
-        Err(error) => {
-            checks.push(ControlCheck {
-                name: "Selected backend available",
-                passed: false,
-                detail: error,
-            });
-            return ControlLineReport { engine, checks };
-        }
-    };
+    let mut machine = baseline_machine(&[0xfb, 0x00, 0xf3]);
     machine.set_running(true);
     let before = machine.intel8080_state().total_t_states.unwrap_or(0);
     machine.run_cycles(4); // EI
@@ -285,12 +275,12 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
         name: "EI delay / DI",
         passed: !after_ei.inte && after_nop.inte && !after_di.inte && after.saturating_sub(before) == 12,
         detail: format!(
-            "engine={} · INTE after EI={} · after NOP={} · after DI={} · T-states={}",
-            engine.label(), after_ei.inte, after_nop.inte, after_di.inte, after.saturating_sub(before)
+            "Adaptive Cycle · INTE after EI={} · after NOP={} · after DI={} · T-states={}",
+            after_ei.inte, after_nop.inte, after_di.inte, after.saturating_sub(before)
         ),
     });
 
-    let mut machine = baseline_machine(engine, &[0xfb, 0xf3]).expect("selected Rust backend already created above");
+    let mut machine = baseline_machine(&[0xfb, 0xf3]);
     machine.set_running(true);
     machine.run_cycles(4); // EI
     let after_ei = machine.intel8080_state();
@@ -299,10 +289,10 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
     checks.push(ControlCheck {
         name: "EI immediately followed by DI",
         passed: !after_ei.inte && !after_di.inte,
-        detail: format!("engine={} · INTE after EI={} · after DI={}", engine.label(), after_ei.inte, after_di.inte),
+        detail: format!("Adaptive Cycle · INTE after EI={} · after DI={}", after_ei.inte, after_di.inte),
     });
 
-    let mut machine = baseline_machine(engine, &[0x76]).expect("selected Rust backend already created above");
+    let mut machine = baseline_machine(&[0x76]);
     machine.set_running(true);
     machine.run_cycles(7); // HLT
     let halted = machine.intel8080_state();
@@ -310,13 +300,12 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
         name: "HLT entry / RUN latch",
         passed: halted.halted == Some(true) && halted.pc == 1 && machine.front_panel_state().running,
         detail: format!(
-            "engine={} · HALT={:?} · PC={:04X} · RUN latch={}",
-            engine.label(), halted.halted, halted.pc, machine.front_panel_state().running
+            "Adaptive Cycle · HALT={:?} · PC={:04X} · RUN latch={}",
+            halted.halted, halted.pc, machine.front_panel_state().running
         ),
     });
 
-    let mut machine = baseline_machine(engine, &[0xdb, 0xff, 0xd3, 0x01, 0x76])
-        .expect("selected Rust backend already created above");
+    let mut machine = baseline_machine(&[0xdb, 0xff, 0xd3, 0x01, 0x76]);
     machine.set_switch_register(0xa500);
     machine.set_io_trace_enabled(true);
     machine.set_running(true);
@@ -327,72 +316,59 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
         name: "IN / OUT guest bus contract",
         passed: io_cpu.a == 0xa5 && io_cpu.halted == Some(true) && last_out == Some(0xa5) && out_count == 1,
         detail: format!(
-            "engine={} · IN FFh -> A={:02X} · OUT 01h={:?} · OUT count={} · HALT={:?}",
-            engine.label(), io_cpu.a, last_out, out_count, io_cpu.halted
+            "Adaptive Cycle · IN FFh -> A={:02X} · OUT 01h={:?} · OUT count={} · HALT={:?}",
+            io_cpu.a, last_out, out_count, io_cpu.halted
         ),
     });
 
-    let mut machine = baseline_machine(engine, &[0x00; 32]).expect("selected Rust backend already created above");
+    let mut machine = baseline_machine(&[0x00; 32]);
     let wait_when_stopped = machine.front_panel_state().lamps.wait > 0.5;
     machine.set_running(true);
-    let wait_before_run_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
-        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.wait).unwrap_or(false)
-    } else {
-        machine.front_panel_state().lamps.wait > 0.5
-    };
+    let wait_before_run_clock = machine
+        .bus_teaching_snapshot()
+        .and_then(|snapshot| snapshot.status.wait)
+        .unwrap_or(false);
     machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let wait_after_run_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
-        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.wait).unwrap_or(false)
-    } else {
-        machine.front_panel_state().lamps.wait > 0.5
-    };
-    let run_wait_transition_ok = match engine {
-        EmulationEngine::RustCycleAccurate8080 => wait_before_run_clock && !wait_after_run_clock,
-        _ => !wait_after_run_clock,
-    };
+    let wait_after_run_clock = machine
+        .bus_teaching_snapshot()
+        .and_then(|snapshot| snapshot.status.wait)
+        .unwrap_or(false);
+    let run_wait_transition_ok = wait_before_run_clock && !wait_after_run_clock;
 
     machine.request_hold(true);
     machine.run_cycles(16);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let hlda_asserted = if engine == EmulationEngine::RustCycleAccurate8080 {
-        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
-    } else {
-        machine.front_panel_state().lamps.hlda > 0.5
-    };
+    let hlda_asserted = machine
+        .bus_teaching_snapshot()
+        .and_then(|snapshot| snapshot.status.hlda)
+        .unwrap_or(false);
     let pc_at_hlda = machine.intel8080_state().pc;
     machine.run_cycles(16);
     let cpu_frozen = machine.intel8080_state().pc == pc_at_hlda;
 
     machine.request_hold(false);
-    let hlda_before_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
-        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
-    } else {
-        machine.front_panel_state().lamps.hlda > 0.5
-    };
+    let hlda_before_release_clock = machine
+        .bus_teaching_snapshot()
+        .and_then(|snapshot| snapshot.status.hlda)
+        .unwrap_or(false);
     machine.run_cycles(1);
     machine.commit_panel_activity(Duration::from_secs(1));
-    let hlda_after_first_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
-        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
-    } else {
-        machine.front_panel_state().lamps.hlda > 0.5
-    };
-    let hlda_after_release_clock = if engine == EmulationEngine::RustCycleAccurate8080 {
-        // MITS synchronizes PHOLD at PHI2. Intel clears its HOLD latch there,
-        // but HLDA remains asserted until the following PHI1, so one additional
-        // Cycle T-state is required before the package/backplane output drops.
-        machine.run_cycles(1);
-        machine.commit_panel_activity(Duration::from_secs(1));
-        machine.bus_teaching_snapshot().and_then(|snapshot| snapshot.status.hlda).unwrap_or(false)
-    } else {
-        hlda_after_first_release_clock
-    };
-    let hold_release_transition_ok = match engine {
-        EmulationEngine::RustCycleAccurate8080 => {
-            hlda_before_release_clock && hlda_after_first_release_clock && !hlda_after_release_clock
-        }
-        _ => !hlda_after_release_clock,
-    };
+    let hlda_after_first_release_clock = machine
+        .bus_teaching_snapshot()
+        .and_then(|snapshot| snapshot.status.hlda)
+        .unwrap_or(false);
+    // MITS synchronizes PHOLD at PHI2. Intel clears its HOLD latch there,
+    // but HLDA remains asserted until the following PHI1, so one additional
+    // Cycle T-state is required before the package/backplane output drops.
+    machine.run_cycles(1);
+    machine.commit_panel_activity(Duration::from_secs(1));
+    let hlda_after_release_clock = machine
+        .bus_teaching_snapshot()
+        .and_then(|snapshot| snapshot.status.hlda)
+        .unwrap_or(false);
+    let hold_release_transition_ok =
+        hlda_before_release_clock && hlda_after_first_release_clock && !hlda_after_release_clock;
     machine.set_running(false);
 
     checks.push(ControlCheck {
@@ -403,8 +379,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
             && cpu_frozen
             && hold_release_transition_ok,
         detail: format!(
-            "engine={} · WAIT@STOP={} · WAIT before RUN clock={} · WAIT after RUN clock={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA before release clock={} · HLDA after first release clock={} · HLDA after following clock={}",
-            engine.label(),
+            "Adaptive Cycle · WAIT@STOP={} · WAIT before RUN clock={} · WAIT after RUN clock={} · HLDA={} · PC@HLDA={:04X} · CPU frozen after HLDA={} · HLDA before release clock={} · HLDA after first release clock={} · HLDA after following clock={}",
             wait_when_stopped,
             wait_before_run_clock,
             wait_after_run_clock,
@@ -417,7 +392,7 @@ fn run_control_line_baseline(engine: EmulationEngine) -> ControlLineReport {
         ),
     });
 
-    ControlLineReport { engine, checks }
+    ControlLineReport { checks }
 }
 
 impl RusTairApp {
@@ -437,7 +412,7 @@ impl RusTairApp {
         let speed_locked = running || self.embedded_diagnostics.individual_result.is_some() || self.embedded_diagnostics.suite_report.is_some();
         let busy = picker_open || running;
         let cpu_board = configured_cpu_board(self.config.machine.s100_hardware);
-        ui.small("Embedded Intel 8080 tests execute as real guest code through the selected backend. The RusTair baseline also runs through the currently selected Rust engine and covers EI/DI, HALT, I/O and bus-arbitration behaviour.");
+        ui.small("Embedded Intel 8080 tests execute as real guest code through the Adaptive Cycle backend. The RusTair baseline covers EI/DI, HALT, I/O and bus-arbitration behaviour.");
         ui.separator();
 
         ui.menu_button("Test speed", |ui| {
@@ -461,12 +436,12 @@ impl RusTairApp {
 
         ui.separator();
         if ui.add_enabled(!busy, egui::Button::new("Run full CPU diagnostic suite")).clicked() { self.start_embedded_cpu_suite(); ui.close(); }
-        ui.small("Suite: selected-engine RusTair baseline → 8080PRE → TST8080 → CPUTEST → 8080EXM. Requires at least 32 KiB of uniquely mapped RAM from 0000h.");
+        ui.small("Suite: Adaptive Cycle RusTair baseline → 8080PRE → TST8080 → CPUTEST → 8080EXM. Requires at least 32 KiB of uniquely mapped RAM from 0000h.");
 
         ui.menu_button("Run individual test", |ui| {
             let enabled = !busy;
             if ui.add_enabled(enabled, egui::Button::new("RusTair control-line baseline")).clicked() {
-                let report = run_control_line_baseline(self.machine.engine());
+                let report = run_control_line_baseline();
                 let passed = report.passed();
                 self.embedded_diagnostics.control_report = Some(report);
                 self.status = if passed { "RusTair control-line baseline: PASS".into() } else { "RusTair control-line baseline: FAIL — inspect report".into() };
@@ -506,7 +481,7 @@ impl RusTairApp {
             self.report_load_error(format!("The full embedded CPU diagnostic suite includes CPUTEST.COM and requires at least 32 KiB of uniquely mapped RAM from 0000h. The current S-100 chassis provides {} contiguous bytes from 0000h ({} bytes installed across RAM cards).", usable, hardware.installed_ram_bytes()));
             return;
         }
-        let control = run_control_line_baseline(self.machine.engine());
+        let control = run_control_line_baseline();
         let speed = self.embedded_diagnostics.speed;
         let cpu_board = configured_cpu_board(hardware);
         self.embedded_diagnostics.individual_result = None;
@@ -677,8 +652,8 @@ impl RusTairApp {
         egui::Window::new("RusTair 8080 control-line baseline").id(egui::Id::new("rustair-control-line-baseline"))
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).resizable(true).default_width(700.0)
             .show(ctx, |ui| {
-                ui.heading(report.engine.label());
-                if passed { ui.strong("PASS — all selected-engine baseline checks succeeded."); } else { ui.strong("FAIL — at least one selected-engine baseline check failed."); }
+                ui.heading("RusTair Adaptive Cycle 8080");
+                if passed { ui.strong("PASS — all Adaptive Cycle baseline checks succeeded."); } else { ui.strong("FAIL — at least one Adaptive Cycle baseline check failed."); }
                 ui.add_space(8.0);
                 for check in &report.checks {
                     let line = format!("{}  {} - {}", if check.passed { "PASS" } else { "FAIL" }, check.name, check.detail)
@@ -686,7 +661,7 @@ impl RusTairApp {
                     ui.label(egui::RichText::new(line).monospace());
                 }
                 ui.add_space(8.0);
-                ui.small("The baseline is executed through BackendHost using the engine shown above; it no longer substitutes the Fast backend when Cycle Accurate is selected.");
+                ui.small("The baseline is executed through the single Adaptive Cycle BackendHost; Full and Partial are internal execution regimes of the same physical machine.");
                 if ui.button("OK").clicked() { dismiss = true; }
             });
         if dismiss { self.embedded_diagnostics.control_report = None; }
@@ -704,7 +679,7 @@ impl RusTairApp {
                 else { ui.heading("SUITE FAILURE"); ui.strong("Inspect the failing row or control-line check below."); }
                 ui.add_space(8.0);
                 ui.label(format!("Test speed: {speed_label}"));
-                ui.label(format!("RusTair control-line baseline ({}): {}", report.control.engine.label(), if report.control.passed() { "PASS" } else { "FAIL" }));
+                ui.label(format!("RusTair Adaptive Cycle control-line baseline: {}", if report.control.passed() { "PASS" } else { "FAIL" }));
                 for check in &report.control.checks {
                     ui.small(format!("{}  {} — {}", if check.passed { "PASS" } else { "FAIL" }, check.name, check.detail));
                 }
@@ -759,11 +734,9 @@ mod tests {
     }
 
     #[test]
-    fn rustair_control_line_baseline_passes_on_both_rust_engines() {
-        for engine in [EmulationEngine::RustFast8080, EmulationEngine::RustCycleAccurate8080] {
-            let report = run_control_line_baseline(engine);
-            assert!(report.passed(), "{}: {:#?}", engine.label(), report.checks);
-        }
+    fn rustair_control_line_baseline_passes_on_adaptive_cycle() {
+        let report = run_control_line_baseline();
+        assert!(report.passed(), "{:#?}", report.checks);
     }
 
     #[test]
