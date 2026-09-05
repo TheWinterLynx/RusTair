@@ -1,5 +1,6 @@
 const CYCLE_HOST_SOURCE: &str = include_str!("../src/backend/cycle_host.rs");
 const CYCLE_SOURCE: &str = include_str!("../src/backend/cycle.rs");
+const CYCLE_PARTIAL_SOURCE: &str = include_str!("../src/backend/cycle/partial_impl.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const UI_MOD_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
 const BUS_TEACHER_SOURCE: &str = include_str!("../src/app/ui/bus_teacher.rs");
@@ -11,13 +12,18 @@ const LOOP_INSPECTOR_SOURCE: &str = include_str!("../src/app/ui/loop_inspector.r
 
 #[test]
 fn cycle_debugger_keeps_the_t_state_loop_inside_the_cycle_backend() {
+    // `cycle.rs` is the dispatcher root and includes `cycle/partial_impl.rs`,
+    // which owns the exact debugger-aware T-state loop. Treat both files as one
+    // Cycle backend module for this architectural source guard; the invariant is
+    // ownership by the backend rather than spelling everything in the root file.
     assert!(
-        CYCLE_SOURCE.contains("service_execution_with_observer"),
+        CYCLE_SOURCE.contains("include!(\"cycle/partial_impl.rs\")")
+            && CYCLE_PARTIAL_SOURCE.contains("service_execution_with_observer"),
         "cycle backend must own debugger-aware T-state iteration",
     );
     assert!(
-        CYCLE_SOURCE.contains("CycleExecutionEvent::BeforeInstruction")
-            && CYCLE_SOURCE.contains("CycleExecutionEvent::InstructionComplete"),
+        CYCLE_PARTIAL_SOURCE.contains("CycleExecutionEvent::BeforeInstruction")
+            && CYCLE_PARTIAL_SOURCE.contains("CycleExecutionEvent::InstructionComplete"),
         "cycle observer must expose semantic instruction boundaries",
     );
     assert!(
