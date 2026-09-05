@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use rustair::backend::{BackendHost, EmulationEngine};
+use rustair::backend::BackendHost;
 use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -13,15 +13,16 @@ const BENCH_ROUNDS: usize = 3;
 
 // NOP ; JMP 0000h
 //
-// This deliberately keeps the CPU fetching real opcodes and operands from the
-// installed S-100 RAM instead of benchmarking a host-side empty loop.
+// Deliberately a ceiling microbenchmark: it keeps the adaptive backend in a
+// tiny, side-effect-free static-RAM loop so Full execution can show its best
+// possible dispatch/presentation throughput. Classic diagnostics are measured
+// separately through the same BackendHost as representative workloads.
 const BENCH_PROGRAM: [u8; 4] = [0x00, 0xc3, 0x00, 0x00];
 
 type HardwareFactory = fn() -> S100HardwareConfig;
 
 #[derive(Clone, Copy)]
 struct ResultRow {
-    engine: EmulationEngine,
     scenario: &'static str,
     t_states: u64,
     elapsed: Duration,
@@ -55,10 +56,6 @@ fn historical_starter_hardware() -> S100HardwareConfig {
         .unwrap()
 }
 
-/// Exact 8800b starter comparison assembly with the 88-2SIO physically removed.
-/// Keeping chassis, CPU board and 88-16MCS RAM identical means the adjacent
-/// benchmark row isolates the cost of installing only the serial card instead
-/// of conflating it with a different RAM board/chassis configuration.
 fn historical_starter_without_two_sio() -> S100HardwareConfig {
     let mut hardware = historical_starter_hardware();
     hardware.set_slot(3, None).unwrap();
@@ -79,12 +76,8 @@ fn run_t_states(machine: &mut BackendHost, target: u64) -> u64 {
     }
 }
 
-fn benchmark_one(
-    engine: EmulationEngine,
-    scenario: &'static str,
-    hardware: S100HardwareConfig,
-) -> ResultRow {
-    let mut machine = BackendHost::from_engine(engine).expect("built-in Rust backend");
+fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> ResultRow {
+    let mut machine = BackendHost::default();
     machine.configure_s100_hardware(hardware, RamInit::Zeroed);
     machine.power(true);
     machine.set_running(false);
@@ -93,7 +86,6 @@ fn benchmark_one(
     machine.load_bytes(0x0000, &BENCH_PROGRAM);
     machine.set_running(true);
 
-    // Warm caches and backend bookkeeping, but exclude this work from the result.
     let _ = run_t_states(&mut machine, WARMUP_T_STATES);
 
     let before = machine.intel8080_state().total_t_states.unwrap_or(0);
@@ -103,10 +95,8 @@ fn benchmark_one(
     let after = machine.intel8080_state().total_t_states.unwrap_or(before);
     let t_states = after.saturating_sub(before);
 
-    let seconds = elapsed.as_secs_f64();
-    let hz = t_states as f64 / seconds;
+    let hz = t_states as f64 / elapsed.as_secs_f64();
     ResultRow {
-        engine,
         scenario,
         t_states,
         elapsed,
@@ -123,10 +113,7 @@ fn median_row(rows: &[ResultRow]) -> ResultRow {
 
 fn print_rows(rows: &[ResultRow]) {
     let row = median_row(rows);
-    let min_mhz = rows
-        .iter()
-        .map(|sample| sample.mhz)
-        .fold(f64::INFINITY, f64::min);
+    let min_mhz = rows.iter().map(|sample| sample.mhz).fold(f64::INFINITY, f64::min);
     let max_mhz = rows
         .iter()
         .map(|sample| sample.mhz)
@@ -138,7 +125,7 @@ fn print_rows(rows: &[ResultRow]) {
     };
     println!(
         "{:<28} | {:<30} | {:>10} T | {:>8.3} s | {:>8.3} MHz | {:>7.2}x Altair 2 MHz | range {:>6.3}-{:>6.3} ({:>4.1}%)",
-        row.engine.label(),
+        "RusTair — Adaptive Cycle",
         row.scenario,
         row.t_states,
         row.elapsed.as_secs_f64(),
@@ -150,19 +137,15 @@ fn print_rows(rows: &[ResultRow]) {
     );
 }
 
-/// Explicit performance meter, intentionally excluded from ordinary `cargo test`.
-///
-/// Run with:
-/// `cargo test --release --test emulation_speed_benchmark -- --ignored --nocapture`
 #[test]
-#[ignore = "manual performance benchmark"]
-fn measure_fast_and_cycle_effective_mhz() {
+#[ignore = "manual Adaptive Cycle ceiling benchmark"]
+fn measure_adaptive_cycle_effective_mhz() {
     println!();
-    println!("RusTair effective 8080 throughput");
+    println!("RusTair Adaptive Cycle ceiling throughput");
     println!(
         "Measurement: median of {BENCH_ROUNDS} rounds × {MEASURE_T_STATES} emulated T-states after {WARMUP_T_STATES}T warm-up"
     );
-    println!("Odd rounds reverse scenario/engine order to expose thermal/order drift");
+    println!("This NOP/JMP loop is a ceiling microbenchmark, not a representative workload.");
     println!("Reference: MITS Altair 8800 nominal CPU clock = 2.000 MHz");
     println!();
 
@@ -171,11 +154,7 @@ fn measure_fast_and_cycle_effective_mhz() {
         ("8800b + 16K Static", historical_starter_without_two_sio),
         ("8800b + 16K Static + 88-2SIO", historical_starter_hardware),
     ];
-    let engines = [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ];
-    let mut samples = vec![Vec::<ResultRow>::new(); cases.len() * engines.len()];
+    let mut samples = vec![Vec::<ResultRow>::new(); cases.len()];
 
     for round in 0..BENCH_ROUNDS {
         let reverse = round & 1 != 0;
@@ -185,25 +164,12 @@ fn measure_fast_and_cycle_effective_mhz() {
             } else {
                 scenario_step
             };
-            for engine_step in 0..engines.len() {
-                let engine_index = if reverse {
-                    engines.len() - 1 - engine_step
-                } else {
-                    engine_step
-                };
-                let (scenario, factory) = cases[scenario_index];
-                samples[scenario_index * engines.len() + engine_index].push(benchmark_one(
-                    engines[engine_index],
-                    scenario,
-                    factory(),
-                ));
-            }
+            let (scenario, factory) = cases[scenario_index];
+            samples[scenario_index].push(benchmark_one(scenario, factory()));
         }
     }
 
-    for scenario_index in 0..cases.len() {
-        for engine_index in 0..engines.len() {
-            print_rows(&samples[scenario_index * engines.len() + engine_index]);
-        }
+    for rows in &samples {
+        print_rows(rows);
     }
 }
