@@ -16,8 +16,14 @@ fn ldax_d_exposes_de_on_front_panel_address_bus() {
     let panel = machine.front_panel_state();
     assert_eq!(panel.address, 0x8000);
     assert_eq!(panel.lamps.address[15], 1.0);
-    assert_eq!(panel.lamps.memr, 1.0);
-    assert_eq!(panel.lamps.m1, 0.0);
+
+    // `front_panel_state().lamps` is the human-visible duty integrator, not an
+    // alias for the last electrical T-state. Teaching retains the exact final
+    // memory-read sample even when no presentation interval has been committed.
+    let exact = machine.bus_teaching_snapshot().expect("LDAX must retain an exact Cycle sample");
+    assert_eq!(exact.address, Some(0x8000));
+    assert_eq!(exact.status.memr, Some(true));
+    assert_eq!(exact.status.m1, Some(false));
 }
 
 #[test]
@@ -34,6 +40,9 @@ fn in_ff_exposes_ffff_on_address_bus_and_reads_sense_switches() {
     assert_eq!(machine.intel8080_state().a, 0x80);
     let panel = machine.front_panel_state();
     assert_eq!(panel.address, 0xffff);
-    assert_eq!(panel.lamps.inp, 1.0);
-    assert_eq!(panel.lamps.memr, 0.0);
+
+    let exact = machine.bus_teaching_snapshot().expect("IN FFh must retain an exact Cycle sample");
+    assert_eq!(exact.address, Some(0xffff));
+    assert_eq!(exact.status.inp, Some(true));
+    assert_eq!(exact.status.memr, Some(false));
 }
