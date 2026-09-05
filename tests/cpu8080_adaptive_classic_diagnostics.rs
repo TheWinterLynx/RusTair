@@ -68,36 +68,36 @@ fn build_bdos() -> Vec<u8> {
     let poll_addr = BDOS_BASE.wrapping_add(POLL_OFFSET);
 
     let mut bdos = Vec::with_capacity(BDOS_LEN);
-    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]);
-    bdos.push(0x79);
-    bdos.extend_from_slice(&[0xfe, 0x02]);
-    append_abs(&mut bdos, 0xca, char_addr);
-    bdos.extend_from_slice(&[0xfe, 0x09]);
-    append_abs(&mut bdos, 0xca, string_addr);
-    append_abs(&mut bdos, 0xc3, done_addr);
+    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]); // PUSH PSW/B/D/H
+    bdos.push(0x79); // MOV A,C
+    bdos.extend_from_slice(&[0xfe, 0x02]); // CPI 2
+    append_abs(&mut bdos, 0xca, char_addr); // JZ char
+    bdos.extend_from_slice(&[0xfe, 0x09]); // CPI 9
+    append_abs(&mut bdos, 0xca, string_addr); // JZ string
+    append_abs(&mut bdos, 0xc3, done_addr); // JMP done
 
     assert_eq!(bdos.len(), CHAR_OFFSET as usize);
-    bdos.push(0x7b);
+    bdos.push(0x7b); // MOV A,E
     append_abs(&mut bdos, 0xcd, putc_addr);
     append_abs(&mut bdos, 0xc3, done_addr);
 
     assert_eq!(bdos.len(), STRING_OFFSET as usize);
-    bdos.push(0x1a);
-    bdos.extend_from_slice(&[0xfe, 0x24]);
+    bdos.push(0x1a); // LDAX D
+    bdos.extend_from_slice(&[0xfe, 0x24]); // CPI '$'
     append_abs(&mut bdos, 0xca, done_addr);
     append_abs(&mut bdos, 0xcd, putc_addr);
-    bdos.push(0x13);
+    bdos.push(0x13); // INX D
     append_abs(&mut bdos, 0xc3, string_addr);
 
     assert_eq!(bdos.len(), DONE_OFFSET as usize);
-    bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]);
+    bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]); // POP H/D/B/PSW; RET
 
     assert_eq!(bdos.len(), PUTC_OFFSET as usize);
-    bdos.push(0x47);
-    bdos.extend_from_slice(&[0xdb, 0x10]);
-    bdos.extend_from_slice(&[0xe6, 0x02]);
-    append_abs(&mut bdos, 0xca, poll_addr);
-    bdos.extend_from_slice(&[0x78, 0xd3, 0x11, 0xc9]);
+    bdos.push(0x47); // MOV B,A
+    bdos.extend_from_slice(&[0xdb, 0x10]); // IN 88-2SIO Port 0 status
+    bdos.extend_from_slice(&[0xe6, 0x02]); // ANI TDRE
+    append_abs(&mut bdos, 0xca, poll_addr); // JZ while not ready
+    bdos.extend_from_slice(&[0x78, 0xd3, 0x11, 0xc9]); // MOV A,B; OUT data; RET
 
     assert_eq!(bdos.len(), BDOS_LEN);
     bdos
@@ -117,10 +117,10 @@ fn prepare_machine(image: &[u8], reference: Reference, name: &str) -> BackendHos
     let [bdos_lo, bdos_hi] = BDOS_BASE.to_le_bytes();
     page_zero[0x0005..0x0008].copy_from_slice(&[0xc3, bdos_lo, bdos_hi]);
     let boot = [
-        0x31, bdos_lo, bdos_hi,
-        0x3e, 0x76,
-        0x32, 0x00, 0x00,
-        0xc3, 0x00, 0x01,
+        0x31, bdos_lo, bdos_hi, // LXI SP,BDOS_BASE
+        0x3e, 0x76,             // MVI A,HLT
+        0x32, 0x00, 0x00,       // STA 0000h
+        0xc3, 0x00, 0x01,       // JMP 0100h
     ];
     page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
 
