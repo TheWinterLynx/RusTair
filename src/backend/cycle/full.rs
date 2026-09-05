@@ -33,17 +33,24 @@ fn full_opcode_table() -> &'static [bool; 256] {
     })
 }
 
-/// Prepared guest-bus recorder for Cycle Full. Memory traffic uses the same
-/// bus-owned S-100 decode and RuntimeRamCard storage as the electrical fabric,
-/// but deliberately skips AltairBus's synthetic Fast presentation cycles. Those
-/// reconstructed samples are not real Cycle clocks and would both waste work and
-/// advance independent card oscillators a second time. We retain only the CPU
-/// package outputs that physically remain after the final external machine cycle
-/// so Partial can resume from the exact dead-time boundary.
+/// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
+/// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
+/// expensive connector graph remains lazy until an actual synchronization
+/// boundary. Front-panel duty is nevertheless part of the externally observable
+/// machine, so every semantic machine cycle is projected into the canonical lamp
+/// integrator with the exact number of 8080 T-states it represents. This updates
+/// presentation only: it never clocks RAM/UART cards or resolves the backplane a
+/// second time.
 struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
     boundary_pins: Cpu8080Pins,
+    /// Number of visible T-states already reconstructed for the instruction that
+    /// is currently executing. Some register-only 8080 instructions have a T4/T5
+    /// internal tail after their external fetch cycle; `instruction_complete`
+    /// adds those residual states while the last S-100 address/status remain held.
+    projected_t_states: u32,
+    last_projected_address: Option<u16>,
     /// Opcode already inspected by the Full dispatcher. Static RAM reads have no
     /// side effects, so the dispatcher may classify the byte once and let the
     /// semantic core consume that same fetch without performing a second memory
@@ -60,7 +67,89 @@ impl<'a> FullInstructionBus<'a> {
             bus,
             inte,
             boundary_pins,
+            projected_t_states: 0,
+            last_projected_address: None,
             prefetched_opcode: None,
+        }
+    }
+
+    /// Project one whole external 8080 machine cycle into the canonical front
+    /// panel without replaying the physical S-100 connector graph. T1 carries the
+    /// processor status byte; the remaining states carry the read/write data
+    /// phase. This is the same electrical-duty abstraction already validated for
+    /// instruction-level reconstruction, but it is now owned by Cycle Full.
+    #[inline]
+    fn project_machine_cycle(
+        &mut self,
+        address: u16,
+        data: u8,
+        status_word: u8,
+        t_states: u32,
+        reads_data: bool,
+        writes_data: bool,
+    ) {
+        debug_assert!(t_states >= 1);
+        debug_assert!(!(reads_data && writes_data));
+
+        self.bus.cycle_drive_s100_t_state(
+            Some(address),
+            Some(status_word),
+            None,
+            Some(status_word),
+            Some(status_word),
+            self.inte,
+            true,
+            false,
+            false,
+        );
+
+        for _ in 1..t_states {
+            let (cpu_data, data_in, data_out) = if reads_data {
+                (Some(data), Some(data), None)
+            } else if writes_data {
+                (Some(data), None, Some(data))
+            } else {
+                (None, None, None)
+            };
+            self.bus.cycle_drive_s100_t_state(
+                Some(address),
+                cpu_data,
+                data_in,
+                data_out,
+                None,
+                self.inte,
+                true,
+                false,
+                false,
+            );
+        }
+
+        self.projected_t_states = self.projected_t_states.saturating_add(t_states);
+        self.last_projected_address = Some(address);
+    }
+
+    /// Register-only instructions may retain the final fetch/status/address for
+    /// one or more internal T-states after the last external bus transfer. Partial
+    /// still samples the front-panel lamps during those states, so Full must add
+    /// the same weight before closing the semantic instruction.
+    #[inline]
+    fn project_internal_tail(&mut self, t_states: u32) {
+        let Some(address) = self.last_projected_address else {
+            debug_assert_eq!(t_states, 0);
+            return;
+        };
+        for _ in 0..t_states {
+            self.bus.cycle_drive_s100_t_state(
+                Some(address),
+                None,
+                None,
+                None,
+                None,
+                self.inte,
+                true,
+                false,
+                false,
+            );
         }
     }
 
@@ -112,6 +201,7 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn read(&mut self, address: u16) -> u8 {
         let value = self.bus.cycle_full_guest_read(address);
+        self.project_machine_cycle(address, value, 0x82, 3, true, false);
         self.remember_read_boundary(address);
         value
     }
@@ -119,6 +209,7 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn write(&mut self, address: u16, value: u8) {
         self.bus.cycle_full_guest_write(address, value);
+        self.project_machine_cycle(address, value, 0x00, 3, false, true);
         self.remember_write_boundary(address, value);
     }
 
@@ -139,11 +230,13 @@ impl Bus for FullInstructionBus<'_> {
         if let Some((cached_address, opcode)) = self.prefetched_opcode.take() {
             debug_assert_eq!(cached_address, address);
             if cached_address == address {
+                self.project_machine_cycle(address, opcode, 0xa2, 4, true, false);
                 self.remember_read_boundary(address);
                 return opcode;
             }
         }
         let value = self.bus.cycle_full_guest_read(address);
+        self.project_machine_cycle(address, value, 0xa2, 4, true, false);
         self.remember_read_boundary(address);
         value
     }
@@ -151,6 +244,7 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn stack_read(&mut self, address: u16) -> u8 {
         let value = self.bus.cycle_full_guest_read(address);
+        self.project_machine_cycle(address, value, 0x86, 3, true, false);
         self.remember_read_boundary(address);
         value
     }
@@ -158,6 +252,7 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
         self.bus.cycle_full_guest_write(address, value);
+        self.project_machine_cycle(address, value, 0x04, 3, false, true);
         self.remember_write_boundary(address, value);
     }
 
@@ -179,6 +274,11 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        debug_assert!(self.projected_t_states <= t_states);
+        let residual = t_states.saturating_sub(self.projected_t_states);
+        self.project_internal_tail(residual);
+        self.projected_t_states = 0;
+        self.last_projected_address = None;
         self.bus.cycle_full_instruction_complete(address, t_states);
     }
 }
@@ -501,6 +601,21 @@ mod tests {
         hardware.validate().unwrap()
     }
 
+    fn prepare_static_backend(program: &[u8]) -> CycleAccurateMachineBackend {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend
+            .machine
+            .bus
+            .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
+            .unwrap();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.load_bytes(0, program).unwrap();
+        backend.release_reset().unwrap();
+        backend.run().unwrap();
+        backend
+    }
+
     #[test]
     fn compiled_full_static_ram_executes_whole_instruction_and_rejoins_partial_boundary() {
         let mut backend = CycleAccurateMachineBackend::default();
@@ -517,7 +632,6 @@ mod tests {
             .unwrap();
         backend.load_bytes(0x0010, &[0x5a, 0xa5]).unwrap();
         backend.run().unwrap();
-
         assert!(backend.compiled_full_chassis_available());
         let opcode = backend
             .compiled_full_opcode(FULL_EXECUTION_MAX_T_STATES, true)
@@ -555,6 +669,34 @@ mod tests {
         assert_eq!(backend.cpu.total_t_states(), 14_000);
         assert!(backend.cpu.completed_instructions().saturating_sub(before) > 1_000);
         assert_eq!(backend.cpu.machine_cycle(), crate::cpu8080_cycle::MachineCycle::InstructionFetch);
+    }
+
+    #[test]
+    fn compiled_full_front_panel_duty_matches_forced_partial_including_internal_t5() {
+        // MOV B,C is a five-T-state register-only instruction: the external fetch
+        // ends after four T-states and the exact core still exposes one internal
+        // T5 with the fetch address/status held. JMP then exercises two ordinary
+        // memory-read cycles. Repeating the pair forces a long Full window while
+        // covering both reconstruction forms.
+        const BUDGET: u32 = 1_500;
+        let program = [0x41, 0xc3, 0x00, 0x00];
+        let mut compiled = prepare_static_backend(&program);
+        let mut partial = prepare_static_backend(&program);
+
+        compiled.service_execution_compiled(BUDGET).unwrap();
+        for _ in 0..BUDGET {
+            let ready = partial.machine.bus.cycle_front_panel_ready_input();
+            let trace = partial.tick_once(ready);
+            assert!(trace.fault.is_none());
+        }
+
+        assert_eq!(compiled.cpu.total_t_states(), partial.cpu.total_t_states());
+        assert_eq!(compiled.cpu.registers().pc, partial.cpu.registers().pc);
+        assert_eq!(
+            compiled.machine.bus.raw_panel_lamp_duty(),
+            partial.machine.bus.raw_panel_lamp_duty(),
+            "Cycle Full must preserve the exact raw front-panel duty of Partial"
+        );
     }
 
     #[test]
