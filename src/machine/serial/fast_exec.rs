@@ -56,6 +56,9 @@ impl<'a> FastExecutionBus<'a> {
     #[inline]
     fn read_memory(&mut self, address: u16, cycle: S100Cycle) -> u8 {
         self.account_read_wait(address);
+        // This is the normal guest path owned by Memory/S100RuntimeFabric, not a
+        // debugger/peek shortcut. Unique responders use the compiled card decode;
+        // overlap still falls back to the generic electrical transaction.
         let value = self.bus.memory.read(address);
         self.last_visible = Some(FastVisibleCycle { address, data: value, cycle });
         value
@@ -99,6 +102,9 @@ impl Bus for FastExecutionBus<'_> {
     }
 
     fn input(&mut self, port: u8) -> u8 {
+        // Legacy Fast advances serial hardware after each whole instruction. At
+        // this point the current IN has not completed yet, so flush only time
+        // belonging to earlier instructions before touching the UART registers.
         self.flush_deferred_serial_time();
         self.request_external_sync();
         <AltairBus as Bus>::input(self.bus, port)
@@ -111,6 +117,9 @@ impl Bus for FastExecutionBus<'_> {
     }
 
     fn set_inte(&mut self, enabled: bool) {
+        // INTE can expose an already asserted PINT at the next instruction
+        // boundary. Synchronize there instead of polling PINT on every ordinary
+        // memory-only instruction.
         <AltairBus as Bus>::set_inte(self.bus, enabled);
         self.synchronization_requested = true;
     }
@@ -149,6 +158,8 @@ impl Bus for FastExecutionBus<'_> {
 
     #[inline]
     fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        // Diagnostic metering is normally disabled. Keep its exact per-instruction
+        // semantics when armed without paying an extra delegation layer otherwise.
         if self.bus.diagnostic_meter.is_some() {
             self.bus.record_cpu_diagnostic_instruction(address, t_states);
         }
@@ -171,6 +182,9 @@ fn all_memory_reads_are_no_wait(bus: &AltairBus) -> bool {
         })
 }
 
+/// Conservative proof that no UART state transition can occur while CPU time is
+/// batched. The baud oscillator itself still advances: its phase is accumulated
+/// and flushed in one operation at a block/I/O boundary.
 fn serial_timing_is_quiet(bus: &AltairBus) -> bool {
     bus.io.serial_rx_len() == 0
         && bus.io.serial_rx_line_idle()
@@ -181,6 +195,12 @@ fn serial_timing_is_quiet(bus: &AltairBus) -> bool {
 }
 
 impl AltairMachine {
+    /// Execute a host budget through the prepared Fast path when the chassis has
+    /// no asynchronous event capable of changing CPU inputs inside the block.
+    ///
+    /// The loop remains instruction-level (Fast mode's advertised contract), but
+    /// the CPU sees a monomorphized memory accessor rather than AltairBus's
+    /// presentation-heavy synthetic S-100 cycle adapter on every byte access.
     pub(crate) fn run_cycles_compiled_fast(&mut self, cycles: u32) {
         if cycles == 0 || !self.powered || !self.running {
             return;
@@ -223,15 +243,26 @@ impl AltairMachine {
                 fast_bus.add_elapsed_serial_time(elapsed);
             }
 
+            // No serial event was possible while the quiet proof held, but the
+            // independent baud generator did continue running. Fold the elapsed
+            // oscillator phase now instead of once per CPU instruction.
             fast_bus.flush_deferred_serial_time();
         }
 
+        // Fast mode advertises reconstructed, not exact, bus activity. Publish
+        // one representative final memory cycle for panel/address/data state
+        // instead of replaying every synthetic T-state that just got skipped.
         if let Some(last) = last_visible {
             self.bus.drive_cpu_cycle(last.address, last.data, last.cycle);
         }
         self.bus.sync_cpu_inte(self.cpu.inte);
 
         if synchronization_requested {
+            // The current instruction was deliberately not included in the
+            // deferred batch because its register/INTE/HALT side effect is a
+            // synchronization boundary. Legacy Fast still advances the UART by
+            // that instruction's elapsed T-states after the instruction, so do
+            // exactly that for every sync cause, not only IN/OUT.
             self.bus
                 .advance_serial_hardware_time(u64::from(sync_elapsed));
             let remaining = cycles.saturating_sub(used);
@@ -289,6 +320,10 @@ mod tests {
             machine.set_running(true);
         }
 
+        // POWER ON intentionally randomizes the undefined 8080 register state.
+        // Differential execution therefore has to start from one identical CPU
+        // sample; otherwise SP/flags/general registers are unrelated even when
+        // both engines execute the same NOP/JMP stream correctly.
         legacy.cpu = compiled.cpu.clone();
         legacy.bus.sync_cpu_inte(legacy.cpu.inte);
 
@@ -322,6 +357,9 @@ mod tests {
         compiled.run_cycles_compiled_fast(14_003);
         legacy.run_cycles(14_003);
 
+        // Program both ACIAs identically after the long idle interval. If the
+        // compiled path had frozen the baud oscillator, the first TX completion
+        // would occur at a different later CPU-clock quantum.
         for machine in [&mut compiled, &mut legacy] {
             machine.bus.debugger_output_port(0x10, 0x15);
             machine.bus.debugger_output_port(0x11, b'P');
