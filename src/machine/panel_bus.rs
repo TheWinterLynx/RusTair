@@ -348,6 +348,31 @@ impl PanelLampIntegrator {
         t_states: u32,
         data_changes_after_t1: bool,
     ) {
+        self.sample_reconstructed_cycle_with_latched_status(
+            common_mask,
+            common_mask,
+            first_panel_data,
+            final_panel_data,
+            t_states,
+            data_changes_after_t1,
+        );
+    }
+
+    /// Cycle Full variant of the packed reconstruction. The MITS 8212 exposes
+    /// the previous S-100 status during T1 and latches the new status at the PHI1
+    /// edge before T2. ADDRESS/PROT and DATA timing are otherwise identical to
+    /// the reconstructed machine-cycle path, so two weighted masks exactly
+    /// replace the old per-T-state replay without touching the physical fabric.
+    #[inline]
+    fn sample_reconstructed_cycle_with_latched_status(
+        &mut self,
+        first_common_mask: u64,
+        latched_common_mask: u64,
+        first_panel_data: u8,
+        final_panel_data: u8,
+        t_states: u32,
+        data_changes_after_t1: bool,
+    ) {
         let requested = u64::from(t_states);
         if requested == 0 {
             return;
@@ -357,7 +382,11 @@ impl PanelLampIntegrator {
             return;
         }
 
-        self.add_weighted_mask(common_mask, accepted);
+        self.add_weighted_mask(first_common_mask, 1);
+        if accepted > 1 {
+            self.add_weighted_mask(latched_common_mask, accepted - 1);
+        }
+
         if data_changes_after_t1 {
             self.add_weighted_mask(u64::from(first_panel_data) << PACKED_DATA_SHIFT, 1);
             if accepted > 1 {
@@ -673,6 +702,107 @@ impl S100BusState {
         }
     }
 
+    /// Cycle Full counterpart of `drive_cpu_t_state`. It preserves the exact
+    /// one-T-state 8212 status-latch delay while folding the entire external
+    /// machine cycle into two weighted bit masks. This is presentation only;
+    /// guest memory/device state has already been advanced through the physical
+    /// bus-owned execution path.
+    #[inline]
+    pub(super) fn drive_cycle_full_reconstructed_cpu_cycle(
+        &mut self,
+        address: u16,
+        data: u8,
+        status_word: u8,
+        t_states: u32,
+        reads_data_from_s100: bool,
+        writes_data_to_s100: bool,
+        protected: bool,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+    ) {
+        debug_assert!(t_states >= 1);
+        debug_assert!(!(reads_data_from_s100 && writes_data_to_s100));
+
+        let first_panel_data = self.signals.panel_data;
+        self.signals.reset = false;
+        self.signals.inte = inte;
+        self.signals.ready = ready;
+        self.signals.wait = wait;
+        self.signals.hlda = false;
+        self.signals.owner = BusOwner::Cpu;
+        self.signals.address = address;
+        self.signals.prot = protected;
+
+        let first_common_mask = u64::from(address)
+            | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
+        self.signals.apply_status_word(status_word);
+        let latched_common_mask = u64::from(address)
+            | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
+        let final_panel_data = if reads_data_from_s100 {
+            data
+        } else {
+            first_panel_data
+        };
+        self.lamps.sample_reconstructed_cycle_with_latched_status(
+            first_common_mask,
+            latched_common_mask,
+            first_panel_data,
+            final_panel_data,
+            t_states,
+            reads_data_from_s100,
+        );
+
+        if reads_data_from_s100 {
+            self.signals.panel_data = data;
+            if t_states == 3 {
+                self.signals.cpu_data = Some(data);
+                self.signals.data_in = Some(data);
+            } else {
+                // Instruction fetch T4 has already released package D/S-100 DI;
+                // DATA lamps retain the byte they saw during T2/T3.
+                self.signals.cpu_data = None;
+                self.signals.data_in = None;
+            }
+            self.signals.data_out = None;
+        } else if writes_data_to_s100 {
+            self.signals.cpu_data = Some(data);
+            self.signals.data_in = None;
+            self.signals.data_out = Some(data);
+        } else {
+            self.signals.cpu_data = None;
+            self.signals.data_in = None;
+            self.signals.data_out = None;
+        }
+    }
+
+    /// Add internal T4/T5-style processor states after the last external bus
+    /// transfer. ADDRESS, PROT and the latched 8212 status remain electrically
+    /// stable; only CPU D/DI/DO are released. A weighted sample is therefore
+    /// exactly equivalent to replaying each internal T-state individually.
+    #[inline]
+    pub(super) fn drive_cycle_full_internal_t_states(
+        &mut self,
+        t_states: u32,
+        inte: bool,
+        ready: bool,
+        wait: bool,
+    ) {
+        if t_states == 0 {
+            return;
+        }
+        self.signals.reset = false;
+        self.signals.inte = inte;
+        self.signals.ready = ready;
+        self.signals.wait = wait;
+        self.signals.hlda = false;
+        self.signals.owner = BusOwner::Cpu;
+        self.signals.cpu_data = None;
+        self.signals.data_in = None;
+        self.signals.data_out = None;
+        self.lamps.sample(&self.signals, t_states);
+    }
+
     /// Drive exactly one CPU T-state into the S-100/front-panel model.
     ///
     /// `cpu_data` is the Intel 8080 package D0-D7 level. `data_in` and
@@ -882,6 +1012,47 @@ impl super::AltairBus {
     pub fn raw_panel_lamp_duty(&self) -> PanelLampSnapshot {
         self.s100.raw_duty_snapshot()
     }
+
+    /// Presentation-only projection used by the proven Cycle Full path. Guest
+    /// memory has already crossed the bus-owned physical decoder; this method
+    /// only integrates what the original front panel would have displayed.
+    #[inline]
+    pub(crate) fn cycle_full_project_panel_cycle(
+        &mut self,
+        address: u16,
+        data: u8,
+        status_word: u8,
+        t_states: u32,
+        reads_data_from_s100: bool,
+        writes_data_to_s100: bool,
+        inte: bool,
+    ) {
+        let protected = self.memory.is_protected(address);
+        let signals = self.s100.signals();
+        self.s100.drive_cycle_full_reconstructed_cpu_cycle(
+            address,
+            data,
+            status_word,
+            t_states,
+            reads_data_from_s100,
+            writes_data_to_s100,
+            protected,
+            inte,
+            signals.ready,
+            signals.wait,
+        );
+    }
+
+    #[inline]
+    pub(crate) fn cycle_full_project_internal_t_states(&mut self, t_states: u32, inte: bool) {
+        let signals = self.s100.signals();
+        self.s100.drive_cycle_full_internal_t_states(
+            t_states,
+            inte,
+            signals.ready,
+            signals.wait,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -991,6 +1162,41 @@ mod tests {
         assert_eq!(packed.signals().panel_data, expanded.signals().panel_data);
         assert_eq!(packed.signals().data_in, expanded.signals().data_in);
         assert_eq!(packed.signals().data_out, expanded.signals().data_out);
+        assert_eq!(packed.signals().lamp_mask(), expanded.signals().lamp_mask());
+    }
+
+    #[test]
+    fn cycle_full_weighted_cycle_matches_expanded_8212_latch_delay() {
+        let mut expanded = S100BusState::default();
+        let mut packed = S100BusState::default();
+        for bus in [&mut expanded, &mut packed] {
+            bus.release_front_panel_reset(0, 0x5a, false, false, true);
+            bus.lamps.clear_activity();
+        }
+
+        // Exact MemoryRead after a fetch: T1 still displays M1 status, T2 latches
+        // 82h and starts showing the new DI byte, T3 retains both.
+        expanded.drive_cpu_t_state(
+            Some(0x1234), Some(0x82), None, Some(0x82), None, false, false,
+            true, false, false,
+        );
+        expanded.drive_cpu_t_state(
+            None, Some(0x33), Some(0x33), None, Some(0x82), false, false,
+            true, false, false,
+        );
+        expanded.drive_cpu_t_state(
+            None, Some(0x33), Some(0x33), None, None, false, false,
+            true, false, false,
+        );
+
+        packed.drive_cycle_full_reconstructed_cpu_cycle(
+            0x1234, 0x33, 0x82, 3, true, false, false, false, true, false,
+        );
+
+        assert_eq!(packed.lamps.total_weight, expanded.lamps.total_weight);
+        assert_eq!(packed.lamps.raw_duty_snapshot(), expanded.lamps.raw_duty_snapshot());
+        assert_eq!(packed.signals().address, expanded.signals().address);
+        assert_eq!(packed.signals().panel_data, expanded.signals().panel_data);
         assert_eq!(packed.signals().lamp_mask(), expanded.signals().lamp_mask());
     }
 
