@@ -59,15 +59,15 @@ fn cycle_backend_physically_owns_cpu_free_altair_chassis() {
     backend.power(true).unwrap();
     backend.assert_reset().unwrap();
     backend.release_reset().unwrap();
-    backend.load_bytes(0, &[0x3e, 0x5a]).unwrap(); // MVI A,5Ah
+    backend.load_bytes(0, &[0x3e, 0x5a]).unwrap();
 
     let authoritative_a = backend.cpu().registers().a;
-    cycle_step_machine_cycle(&mut backend); // M1 fetch only.
+    cycle_step_machine_cycle(&mut backend);
     assert_eq!(backend.cpu().registers().pc, 1);
     assert_eq!(backend.cpu().registers().a, authoritative_a);
     assert_eq!(backend.cpu().total_t_states(), 4);
 
-    cycle_step_machine_cycle(&mut backend); // M2 operand read completes MVI.
+    cycle_step_machine_cycle(&mut backend);
     assert_eq!(backend.cpu().registers().pc, 2);
     assert_eq!(backend.cpu().registers().a, 0x5a);
     assert_eq!(backend.cpu().total_t_states(), 7);
@@ -127,23 +127,20 @@ fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
 
 #[test]
 fn adaptive_cycle_matches_forced_partial_oracle_for_same_t_state_budget() {
-    // The prefix deterministically initializes every RESET-undefined register and
-    // flags before entering a stable memory/ALU/branch loop. Both machines own
-    // independent physical S-100 RAM cards; only the execution strategy differs.
     let program = [
-        0x31, 0x00, 0x03, // LXI SP,0300h
-        0x01, 0x00, 0x00, // LXI B,0000h
-        0x11, 0x00, 0x00, // LXI D,0000h
-        0x21, 0x00, 0x02, // LXI H,0200h
-        0xaf,             // XRA A
-        0x3e, 0x12,       // MVI A,12h
-        0x06, 0x34,       // MVI B,34h
-        0x80,             // ADD B
-        0x77,             // MOV M,A
-        0x4e,             // MOV C,M
-        0x0c,             // INR C
-        0x79,             // MOV A,C
-        0xc3, 0x13, 0x00, // JMP 0013h (MOV C,M)
+        0x31, 0x00, 0x03,
+        0x01, 0x00, 0x00,
+        0x11, 0x00, 0x00,
+        0x21, 0x00, 0x02,
+        0xaf,
+        0x3e, 0x12,
+        0x06, 0x34,
+        0x80,
+        0x77,
+        0x4e,
+        0x0c,
+        0x79,
+        0xc3, 0x13, 0x00,
     ];
     const BUDGET: u32 = 14_000;
 
@@ -151,9 +148,7 @@ fn adaptive_cycle_matches_forced_partial_oracle_for_same_t_state_budget() {
     let mut partial = CycleAccurateMachineBackend::default();
     for backend in [&mut adaptive, &mut partial] {
         backend
-            .machine_mut()
-            .bus
-            .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
+            .configure_s100_hardware(static_4k_hardware(), RamInit::Zeroed)
             .unwrap();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
