@@ -32,6 +32,8 @@ fn removed_fast_backend_and_semantic_machine_cannot_reenter_product_or_tests() {
         "fast_front_panel_",
         "service_fast_interrupt",
         "fast_wait_t_states",
+        "impl crate::cpu8080::Bus for super::AltairBus",
+        "impl Bus for AltairBus",
     ];
 
     for path in files {
