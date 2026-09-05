@@ -9,6 +9,9 @@ use crate::config::{SerialBoard, SioConnectorOutputs, SioElectricalLevel};
 
 impl super::AltairBus {
     /// Physical revision and interrupt-pad destinations installed on the 88-SIO.
+    ///
+    /// Keeping these as hardware types (rather than strings/UI state) also makes
+    /// every execution strategy observe the exact same card configuration.
     pub fn sio_physical_wiring(
         &self,
     ) -> Option<(
@@ -66,6 +69,33 @@ impl super::AltairBus {
     pub fn sio_decode_connector_input(&self, level: SioElectricalLevel) -> Option<bool> {
         if self.io.serial_board() != SerialBoard::Sio88 { return None; }
         sio_interface::decode_input(self.io.sio_hardware().interface, level)
+    }
+
+    /// Prepared Adaptive-Cycle Full memory access. This is a normal guest
+    /// transaction on the bus-owned physical S-100 memory fabric, never a
+    /// debugger/inspection shortcut. The Full dispatcher may call it only after
+    /// proving a unique non-overlapping responder and no wait-state/event barrier.
+    /// No connector/presentation replay occurs here; Full projects observable bus
+    /// duty separately and materializes the exact fabric before returning Partial.
+    #[inline]
+    pub(crate) fn cycle_full_guest_read(&mut self, address: u16) -> u8 {
+        self.memory.read(address)
+    }
+
+    /// Guest write counterpart to `cycle_full_guest_read`. RuntimeRamCard storage,
+    /// S-100 decode and the physical protection latch remain authoritative.
+    #[inline]
+    pub(crate) fn cycle_full_guest_write(&mut self, address: u16, value: u8) {
+        self.memory.write(address, value);
+    }
+
+    /// Preserve optional CPU diagnostic metering without forcing an otherwise
+    /// eligible Full instruction through the T-state-heavy Partial path.
+    #[inline]
+    pub(crate) fn cycle_full_instruction_complete(&mut self, address: u16, t_states: u32) {
+        if self.diagnostic_meter.is_some() {
+            self.record_cpu_diagnostic_instruction(address, t_states);
+        }
     }
 }
 
