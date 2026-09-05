@@ -12,7 +12,7 @@ const TODO: &str = include_str!("../TODO.md");
 
 #[test]
 fn product_exposes_only_adaptive_cycle_8080() {
-    assert_eq!(EmulationEngine::ALL, &[EmulationEngine::RustCycleAccurate8080]);
+    assert_eq!(EmulationEngine::ALL, [EmulationEngine::RustCycleAccurate8080]);
 }
 
 #[test]
