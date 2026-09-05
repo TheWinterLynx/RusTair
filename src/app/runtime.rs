@@ -7,8 +7,8 @@ impl eframe::App for RusTairApp {
 
         // `machine.s100_hardware` is the physical authority. Persistence parses
         // old aggregate RAM keys only long enough to migrate pre-v5 files; no
-        // guest execution is allowed before the selected backend has the exact
-        // persisted slot topology mounted.
+        // guest execution is allowed before the Adaptive Cycle backend has the
+        // exact persisted slot topology mounted.
         if !self.machine.powered()
             && self.machine.s100_hardware() != self.config.machine.s100_hardware
         {
@@ -140,31 +140,16 @@ impl eframe::App for RusTairApp {
                     ui.separator();
 
                     ui.menu_button("CPU", |ui| {
-                        let active_engine = self.machine.engine();
-                        ui.label(format!("Emulation engine: {}", active_engine.label()));
-                        ui.small("Engine changes require POWER OFF. Runtime CPU/RAM/UART state is intentionally not migrated between engines.");
-                        ui.separator();
-                        for engine in [
-                            EmulationEngine::RustFast8080,
-                            EmulationEngine::RustCycleAccurate8080,
-                        ] {
-                            if ui.selectable_label(active_engine == engine, engine.label()).clicked() {
-                                self.select_emulation_engine(engine);
-                                ui.close();
-                            }
-                        }
+                        ui.label(format!("Execution engine: {}", self.machine.engine().label()));
+                        ui.small("RusTair has one Altair machine. Full semantic windows and exact Partial T-state execution are internal strategies over the same CPU, S-100 chassis, cards and front panel.");
+                        ui.small("Full is used only while the chassis proves that no intermediate hardware event can distinguish it from T-state execution; Partial remains the exact electrical oracle at observable boundaries.");
 
                         let capabilities = self.machine.capabilities();
                         ui.separator();
-                        if capabilities.exact_t_state_timing {
-                            ui.small("Timing: exact 8080 T-state core; front-panel SINGLE STEP advances one machine cycle.");
-                        } else {
-                            ui.small("Timing: fast instruction-level 8080; front-panel SINGLE STEP is an instruction-level approximation.");
-                        }
-                        ui.small(format!(
-                            "S-100 activity: {}",
-                            if capabilities.exact_bus_activity { "exact T-state samples" } else { "machine-cycle samples synthesized by the fast CPU-board adapter" }
-                        ));
+                        debug_assert!(capabilities.exact_t_state_timing);
+                        debug_assert!(capabilities.exact_bus_activity);
+                        ui.small("Timing: exact Intel 8080 T-state accounting; front-panel SINGLE STEP uses the exact Partial path.");
+                        ui.small("S-100 activity: exact physical samples in Partial and analytically equivalent timing/panel duty in proven Full windows.");
 
                         let board = self
                             .config
@@ -199,7 +184,7 @@ impl eframe::App for RusTairApp {
                         if let Some(speed) = self.cpu_diagnostic_run_speed_label.as_deref() {
                             ui.small(format!("Speed locked while external CPU diagnostic runs: {speed}"));
                         }
-                        ui.small("Acceleration changes host execution rate only; it does not alter the installed CPU board hardware clock.");
+                        ui.small("Acceleration changes host execution rate only; it does not alter the installed CPU board hardware clock or S-100 timing model.");
                     });
 
                     if ui.button("LED visuals…").clicked() {
