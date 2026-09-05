@@ -1,9 +1,8 @@
-//! Machine-level abstraction for RusTair's selectable emulator engines.
+//! Machine-level abstraction for RusTair's single Adaptive Cycle engine.
 
 mod bus_teaching;
 mod cycle;
 mod cycle_host;
-mod native;
 
 use std::fmt;
 use std::time::Duration;
@@ -23,41 +22,29 @@ pub use bus_teaching::{
 pub use crate::debugger_control::{DebugStopReason, MemoryWatchAccess};
 pub use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
 pub use cycle::CycleAccurateMachineBackend;
-pub use native::NativeMachineBackend;
-pub type FastMachineBackend = NativeMachineBackend;
 pub type InstructionTraceSnapshot = Vec<InstructionTraceEntry>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendFamily { Rustair }
 
+/// Public identity of the one RusTair execution engine.
+///
+/// Full semantic windows and exact Partial T-state execution are implementation
+/// strategies inside this same machine; they are deliberately not selectable
+/// backends and never own independent CPU/RAM/UART state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmulationEngine {
-    RustFast8080,
     RustCycleAccurate8080,
 }
 
 impl EmulationEngine {
-    pub const ALL: [Self; 2] = [
-        Self::RustFast8080,
-        Self::RustCycleAccurate8080,
-    ];
-    pub const fn family(self) -> BackendFamily {
-        match self {
-            Self::RustFast8080 | Self::RustCycleAccurate8080 => BackendFamily::Rustair,
-        }
-    }
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::RustFast8080 => "RusTair — Fast 8080",
-            Self::RustCycleAccurate8080 => "RusTair — Cycle Accurate 8080",
-        }
-    }
-    pub const fn is_available(self) -> bool {
-        matches!(self, Self::RustFast8080 | Self::RustCycleAccurate8080)
-    }
+    pub const ALL: [Self; 1] = [Self::RustCycleAccurate8080];
+    pub const fn family(self) -> BackendFamily { BackendFamily::Rustair }
+    pub const fn label(self) -> &'static str { "RusTair — Adaptive Cycle 8080" }
+    pub const fn is_available(self) -> bool { true }
 }
 
-impl Default for EmulationEngine { fn default() -> Self { Self::RustFast8080 } }
+impl Default for EmulationEngine { fn default() -> Self { Self::RustCycleAccurate8080 } }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendExecutionModel { HostDriven, ExternalProcess }
@@ -71,11 +58,6 @@ impl BackendSerialPort {
     }
 }
 
-/// Physical logic levels at one MC6850 serial channel boundary.
-///
-/// These are deliberately electrical levels, not host-terminal policy. In
-/// particular `rts_high` means the MC6850 RTS pin is physically HIGH; MITS'
-/// 88-TYA ReaderRun+ circuit uses that exact level to energize its reader relay.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SerialModemLines {
     pub rts_high: bool,
@@ -90,13 +72,6 @@ impl From<(bool, bool, bool, bool)> for SerialModemLines {
     }
 }
 
-/// Logical states at the original MITS 88-SIO board/interface boundary.
-///
-/// This is intentionally separate from `SerialModemLines`: the 88-SIO does not
-/// have an MC6850 and its RIN/ROT/BIN/BOT wiring must never be renamed to
-/// RTS/CTS/DCD. `input_device_ready_latched` and
-/// `output_device_ready_latched` are the stable flip-flop states set by the
-/// external RIN/ROT pulses; the pulse itself is an event, not a level.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SioLogicalLines {
     pub rsi_high: bool,
@@ -228,22 +203,12 @@ pub trait MachineBackend {
     fn configure_memory_board_profile(&mut self, _profile: RamBoardProfile) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "configure memory board profile", engine: self.engine() })
     }
-    /// Mount one validated physical S-100 chassis assembly. Implementations must
-    /// build their execution-time CPU/RAM topology from this inventory rather
-    /// than translating it back into aggregate contiguous-memory settings.
-    fn configure_s100_hardware(
-        &mut self,
-        _hardware: S100HardwareConfig,
-        _init: RamInit,
-    ) -> BackendResult<()> {
+    fn configure_s100_hardware(&mut self, _hardware: S100HardwareConfig, _init: RamInit) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "configure S-100 hardware", engine: self.engine() })
     }
     fn s100_hardware(&mut self) -> BackendResult<S100HardwareConfig> {
         Err(BackendError::Unsupported { operation: "query S-100 hardware", engine: self.engine() })
     }
-    /// Host-side instrumentation only. This reports the physical RAM cards that
-    /// currently decode an address; guest execution never reaches memory through
-    /// this API.
     fn inspect_memory_mapping(&mut self, _address: u16) -> BackendResult<RuntimeMemoryInspection> {
         Err(BackendError::Unsupported { operation: "inspect S-100 memory mapping", engine: self.engine() })
     }
@@ -280,10 +245,7 @@ pub trait MachineBackend {
     fn sio_connector_outputs(&mut self) -> BackendResult<Option<SioConnectorOutputs>> {
         Err(BackendError::Unsupported { operation: "read 88-SIO connector outputs", engine: self.engine() })
     }
-    fn sio_decode_connector_input(
-        &mut self,
-        _level: SioElectricalLevel,
-    ) -> BackendResult<Option<bool>> {
+    fn sio_decode_connector_input(&mut self, _level: SioElectricalLevel) -> BackendResult<Option<bool>> {
         Err(BackendError::Unsupported { operation: "decode 88-SIO connector input", engine: self.engine() })
     }
     fn sio_pulse_input_device_ready(&mut self) -> BackendResult<bool> {
@@ -313,11 +275,7 @@ pub trait MachineBackend {
     fn serial_rx_line_idle(&mut self, _port: BackendSerialPort) -> BackendResult<bool> {
         Err(BackendError::Unsupported { operation: "query serial RX line", engine: self.engine() })
     }
-    fn serial_set_receive_break(
-        &mut self,
-        _port: BackendSerialPort,
-        _active: bool,
-    ) -> BackendResult<bool> {
+    fn serial_set_receive_break(&mut self, _port: BackendSerialPort, _active: bool) -> BackendResult<bool> {
         Err(BackendError::Unsupported { operation: "drive serial RX BREAK", engine: self.engine() })
     }
     fn serial_tx_busy(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
@@ -326,12 +284,7 @@ pub trait MachineBackend {
     fn serial_modem_lines(&mut self, _port: BackendSerialPort) -> BackendResult<Option<SerialModemLines>> {
         Err(BackendError::Unsupported { operation: "read serial modem pins", engine: self.engine() })
     }
-    fn serial_set_modem_inputs(
-        &mut self,
-        _port: BackendSerialPort,
-        _cts_high: bool,
-        _dcd_high: bool,
-    ) -> BackendResult<bool> {
+    fn serial_set_modem_inputs(&mut self, _port: BackendSerialPort, _cts_high: bool, _dcd_high: bool) -> BackendResult<bool> {
         Err(BackendError::Unsupported { operation: "drive serial modem inputs", engine: self.engine() })
     }
     fn clear_serial(&mut self) -> BackendResult<()>;
@@ -429,11 +382,7 @@ pub trait MachineBackend {
     fn debugger_watchpoints(&mut self) -> BackendResult<Vec<(u16, MemoryWatchAccess)>> {
         Err(BackendError::Unsupported { operation: "read debugger watchpoints", engine: self.engine() })
     }
-    fn debugger_set_watchpoint(
-        &mut self,
-        _address: u16,
-        _access: Option<MemoryWatchAccess>,
-    ) -> BackendResult<()> {
+    fn debugger_set_watchpoint(&mut self, _address: u16, _access: Option<MemoryWatchAccess>) -> BackendResult<()> {
         Err(BackendError::Unsupported { operation: "set debugger watchpoint", engine: self.engine() })
     }
     fn debugger_clear_watchpoints(&mut self) -> BackendResult<()> {
@@ -487,71 +436,56 @@ impl std::error::Error for BackendCreateError {}
 
 pub fn create_backend(engine: EmulationEngine) -> Result<Box<dyn MachineBackend>, BackendCreateError> {
     match engine {
-        EmulationEngine::RustFast8080 => Ok(Box::new(NativeMachineBackend::default())),
         EmulationEngine::RustCycleAccurate8080 => Ok(Box::new(CycleHostBackend::default())),
     }
 }
 
 pub struct BackendHost { backend: Box<dyn MachineBackend> }
-impl Default for BackendHost { fn default() -> Self { Self::rust_fast() } }
+impl Default for BackendHost {
+    fn default() -> Self {
+        Self::from_engine(EmulationEngine::RustCycleAccurate8080)
+            .expect("built-in Adaptive Cycle backend")
+    }
+}
 impl BackendHost {
     pub fn new(backend: Box<dyn MachineBackend>) -> Self { Self { backend } }
     pub fn from_engine(engine: EmulationEngine) -> Result<Self, BackendCreateError> { create_backend(engine).map(Self::new) }
-    pub fn rust_fast() -> Self { Self::from_engine(EmulationEngine::RustFast8080).expect("built-in fast backend") }
-    pub fn native() -> Self { Self::rust_fast() }
-    pub fn replace_engine(&mut self, engine: EmulationEngine) -> Result<(), BackendCreateError> {
-        self.backend = create_backend(engine)?;
-        Ok(())
-    }
+    pub fn adaptive_cycle() -> Self { Self::default() }
     pub fn engine(&self) -> EmulationEngine { self.backend.engine() }
     pub fn family(&self) -> BackendFamily { self.backend.family() }
     pub fn capabilities(&self) -> BackendCapabilities { self.backend.capabilities() }
     pub fn execution_model(&self) -> BackendExecutionModel { self.backend.execution_model() }
 
     fn call<T>(result: BackendResult<T>) -> T {
-        result.unwrap_or_else(|error| panic!("selected backend operation failed: {error}"))
+        result.unwrap_or_else(|error| panic!("Adaptive Cycle backend operation failed: {error}"))
     }
 
     pub fn cpu_state(&mut self) -> CpuState { Self::call(self.backend.cpu_state()) }
     pub fn intel8080_state(&mut self) -> Intel8080State {
-        match self.cpu_state() {
-            CpuState::Intel8080(state) => state,
-        }
+        match self.cpu_state() { CpuState::Intel8080(state) => state }
     }
     pub fn front_panel_state(&mut self) -> FrontPanelState { Self::call(self.backend.front_panel_state()) }
     pub fn powered(&mut self) -> bool { self.front_panel_state().powered }
     pub fn running(&mut self) -> bool { self.front_panel_state().running }
     pub fn configure_memory(&mut self, size: RamSize, init: RamInit) { Self::call(self.backend.configure_memory(size, init)); }
     pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) { Self::call(self.backend.configure_memory_board_profile(profile)); }
-    pub fn configure_s100_hardware(&mut self, hardware: S100HardwareConfig, init: RamInit) {
-        Self::call(self.backend.configure_s100_hardware(hardware, init));
-    }
+    pub fn configure_s100_hardware(&mut self, hardware: S100HardwareConfig, init: RamInit) { Self::call(self.backend.configure_s100_hardware(hardware, init)); }
     pub fn s100_hardware(&mut self) -> S100HardwareConfig { Self::call(self.backend.s100_hardware()) }
-    pub fn inspect_memory_mapping(&mut self, address: u16) -> RuntimeMemoryInspection {
-        Self::call(self.backend.inspect_memory_mapping(address))
-    }
+    pub fn inspect_memory_mapping(&mut self, address: u16) -> RuntimeMemoryInspection { Self::call(self.backend.inspect_memory_mapping(address)) }
     pub fn configure_serial_board(&mut self, board: SerialBoard) { Self::call(self.backend.configure_serial_board(board)); }
     pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
     pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) { Self::call(self.backend.configure_sio_hardware(config)); }
     pub fn sio_hardware(&mut self) -> SioHardwareConfig { Self::call(self.backend.sio_hardware()) }
     pub fn sio_logical_lines(&mut self) -> Option<SioLogicalLines> { Self::call(self.backend.sio_logical_lines()) }
     pub fn sio_connector_outputs(&mut self) -> Option<SioConnectorOutputs> { Self::call(self.backend.sio_connector_outputs()) }
-    pub fn sio_decode_connector_input(&mut self, level: SioElectricalLevel) -> Option<bool> {
-        Self::call(self.backend.sio_decode_connector_input(level))
-    }
+    pub fn sio_decode_connector_input(&mut self, level: SioElectricalLevel) -> Option<bool> { Self::call(self.backend.sio_decode_connector_input(level)) }
     pub fn sio_pulse_input_device_ready(&mut self) -> bool { Self::call(self.backend.sio_pulse_input_device_ready()) }
     pub fn sio_pulse_output_device_ready(&mut self) -> bool { Self::call(self.backend.sio_pulse_output_device_ready()) }
     pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) { Self::call(self.backend.configure_two_sio_straps(straps)); }
     pub fn two_sio_straps(&mut self) -> TwoSioStraps { Self::call(self.backend.two_sio_straps()) }
-    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
-        Self::call(self.backend.configure_two_sio_interrupt_wiring(wiring));
-    }
-    pub fn two_sio_interrupt_wiring(&mut self) -> TwoSioInterruptWiring {
-        Self::call(self.backend.two_sio_interrupt_wiring())
-    }
-    pub fn two_sio_vector_interrupt_requests(&mut self) -> u8 {
-        Self::call(self.backend.two_sio_vector_interrupt_requests())
-    }
+    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) { Self::call(self.backend.configure_two_sio_interrupt_wiring(wiring)); }
+    pub fn two_sio_interrupt_wiring(&mut self) -> TwoSioInterruptWiring { Self::call(self.backend.two_sio_interrupt_wiring()) }
+    pub fn two_sio_vector_interrupt_requests(&mut self) -> u8 { Self::call(self.backend.two_sio_vector_interrupt_requests()) }
     pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) { Self::call(self.backend.power_with_historical_run_latch(on, historical)); }
     pub fn set_running(&mut self, run: bool) { if run { Self::call(self.backend.run()); } else { Self::call(self.backend.halt()); } }
@@ -581,16 +515,12 @@ impl BackendHost {
     pub fn serial_rx_empty(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_empty(port)) }
     pub fn serial_rx_len(&mut self, port: BackendSerialPort) -> usize { Self::call(self.backend.serial_rx_len(port)) }
     pub fn serial_rx_line_idle(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_rx_line_idle(port)) }
-    pub fn serial_set_receive_break(&mut self, port: BackendSerialPort, active: bool) -> bool {
-        Self::call(self.backend.serial_set_receive_break(port, active))
-    }
+    pub fn serial_set_receive_break(&mut self, port: BackendSerialPort, active: bool) -> bool { Self::call(self.backend.serial_set_receive_break(port, active)) }
     pub fn serial_tx_busy(&mut self, port: BackendSerialPort) -> bool { Self::call(self.backend.serial_tx_busy(port)) }
     pub fn serial_tx_front(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_front(port)) }
     pub fn serial_tx_complete(&mut self, port: BackendSerialPort) -> Option<u8> { Self::call(self.backend.serial_tx_complete(port)) }
     pub fn serial_modem_lines(&mut self, port: BackendSerialPort) -> Option<SerialModemLines> { Self::call(self.backend.serial_modem_lines(port)) }
-    pub fn serial_set_modem_inputs(&mut self, port: BackendSerialPort, cts_high: bool, dcd_high: bool) -> bool {
-        Self::call(self.backend.serial_set_modem_inputs(port, cts_high, dcd_high))
-    }
+    pub fn serial_set_modem_inputs(&mut self, port: BackendSerialPort, cts_high: bool, dcd_high: bool) -> bool { Self::call(self.backend.serial_set_modem_inputs(port, cts_high, dcd_high)) }
     pub fn clear_serial(&mut self) { Self::call(self.backend.clear_serial()); }
     pub fn installed_ram_bytes(&mut self) -> usize { Self::call(self.backend.installed_ram_bytes()) }
     pub fn peek_memory(&mut self, address: u16) -> Option<u8> { Self::call(self.backend.peek_memory(address)) }
@@ -600,14 +530,7 @@ impl BackendHost {
     pub fn clear_memory_protection(&mut self) { Self::call(self.backend.clear_memory_protection()); }
     pub fn clear_transient_memory_guards(&mut self) { Self::call(self.backend.clear_transient_memory_guards()); }
     pub fn arm_basic32_full_memory_probe_guard(&mut self) -> bool { Self::call(self.backend.arm_basic32_full_memory_probe_guard()) }
-    pub fn begin_cpu_diagnostic_meter(
-        &mut self,
-        name: String,
-        bdos_start: u16,
-        bdos_len: usize,
-        expected_instructions: Option<u64>,
-        expected_t_states: Option<u64>,
-    ) {
+    pub fn begin_cpu_diagnostic_meter(&mut self, name: String, bdos_start: u16, bdos_len: usize, expected_instructions: Option<u64>, expected_t_states: Option<u64>) {
         Self::call(self.backend.begin_cpu_diagnostic_meter(name, bdos_start, bdos_len, expected_instructions, expected_t_states));
     }
     pub fn cancel_cpu_diagnostic_meter(&mut self) { Self::call(self.backend.cancel_cpu_diagnostic_meter()); }
@@ -655,23 +578,17 @@ mod tests {
     };
 
     #[test]
-    fn both_builtin_rust_8080_engines_are_available() {
-        assert_eq!(EmulationEngine::ALL.len(), 2);
-        assert!(EmulationEngine::RustFast8080.is_available());
+    fn adaptive_cycle_is_the_only_builtin_engine() {
+        assert_eq!(EmulationEngine::ALL, [EmulationEngine::RustCycleAccurate8080]);
         assert!(EmulationEngine::RustCycleAccurate8080.is_available());
-        assert!(BackendHost::from_engine(EmulationEngine::RustFast8080).is_ok());
-        assert!(BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).is_ok());
-    }
-
-    #[test]
-    fn both_engines_belong_to_rustair_family() {
-        assert_eq!(EmulationEngine::RustFast8080.family(), BackendFamily::Rustair);
         assert_eq!(EmulationEngine::RustCycleAccurate8080.family(), BackendFamily::Rustair);
+        assert!(BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).is_ok());
+        assert_eq!(BackendHost::default().engine(), EmulationEngine::RustCycleAccurate8080);
     }
 
     #[test]
-    fn host_dispatches_step_without_altair_machine_escape_hatch() {
-        let mut host = BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080).unwrap();
+    fn host_dispatches_step_without_machine_escape_hatch() {
+        let mut host = BackendHost::default();
         host.configure_memory(RamSize::K1, RamInit::Zeroed);
         host.power(true);
         host.front_panel_reset();
@@ -685,95 +602,83 @@ mod tests {
     }
 
     #[test]
-    fn both_backends_project_the_same_physical_sio_hardware() {
+    fn adaptive_backend_projects_physical_sio_hardware() {
         let mut hardware = SioHardwareConfig::default();
         hardware.revision = SioRevision::Rev0;
         hardware.address = SioAddressPair::try_new(0x06).unwrap();
         hardware.baud = SioBaudRate::try_new(9_600).unwrap();
-        for engine in EmulationEngine::ALL {
-            let mut host = BackendHost::from_engine(engine).unwrap();
-            host.configure_serial_board(SerialBoard::Sio88);
-            host.configure_sio_hardware(hardware);
-            assert_eq!(host.sio_hardware(), hardware);
-            assert_eq!(host.peek_io_port(0x06), 0x83, "Rev0 idle status includes external input/output-not-ready latches on D0/D7 plus COM2502 TBMT on D1");
-            assert_eq!(host.peek_io_port(0x00), 0xff);
-        }
+        let mut host = BackendHost::default();
+        host.configure_serial_board(SerialBoard::Sio88);
+        host.configure_sio_hardware(hardware);
+        assert_eq!(host.sio_hardware(), hardware);
+        assert_eq!(host.peek_io_port(0x06), 0x83);
+        assert_eq!(host.peek_io_port(0x00), 0xff);
     }
 
     #[test]
-    fn both_backends_expose_same_sio_lines_through_backend_contract() {
+    fn adaptive_backend_exposes_sio_lines_through_backend_contract() {
         let mut hardware = SioHardwareConfig::default();
         hardware.revision = SioRevision::Rev0;
         hardware.interface = SioInterface::TtyC;
-        for engine in EmulationEngine::ALL {
-            let mut host = BackendHost::from_engine(engine).unwrap();
-            host.configure_serial_board(SerialBoard::Sio88);
-            host.configure_sio_hardware(hardware);
-
-            assert_eq!(
-                host.sio_logical_lines(),
-                Some(SioLogicalLines {
-                    rsi_high: true,
-                    input_device_ready_latched: false,
-                    output_device_ready_latched: false,
-                    tso_high: true,
-                    bin_high: false,
-                    bot_high: false,
-                })
-            );
-            assert!(host.sio_pulse_input_device_ready());
-            assert!(host.sio_pulse_output_device_ready());
-            let lines = host.sio_logical_lines().unwrap();
-            assert!(lines.input_device_ready_latched && lines.output_device_ready_latched);
-            assert!(lines.bin_high && lines.bot_high);
-            assert_eq!(
-                host.sio_connector_outputs(),
-                Some(SioConnectorOutputs {
-                    stso: SioElectricalLevel::CurrentLoopConducting,
-                    sbin: SioElectricalLevel::CurrentLoopConducting,
-                    sbot: SioElectricalLevel::CurrentLoopConducting,
-                })
-            );
-            assert_eq!(
-                host.sio_decode_connector_input(SioElectricalLevel::CurrentLoopConducting),
-                Some(true)
-            );
-            assert_eq!(host.sio_decode_connector_input(SioElectricalLevel::TtlHigh), None);
-        }
+        let mut host = BackendHost::default();
+        host.configure_serial_board(SerialBoard::Sio88);
+        host.configure_sio_hardware(hardware);
+        assert_eq!(
+            host.sio_logical_lines(),
+            Some(SioLogicalLines {
+                rsi_high: true,
+                input_device_ready_latched: false,
+                output_device_ready_latched: false,
+                tso_high: true,
+                bin_high: false,
+                bot_high: false,
+            })
+        );
+        assert!(host.sio_pulse_input_device_ready());
+        assert!(host.sio_pulse_output_device_ready());
+        let lines = host.sio_logical_lines().unwrap();
+        assert!(lines.input_device_ready_latched && lines.output_device_ready_latched);
+        assert!(lines.bin_high && lines.bot_high);
+        assert_eq!(
+            host.sio_connector_outputs(),
+            Some(SioConnectorOutputs {
+                stso: SioElectricalLevel::CurrentLoopConducting,
+                sbin: SioElectricalLevel::CurrentLoopConducting,
+                sbot: SioElectricalLevel::CurrentLoopConducting,
+            })
+        );
+        assert_eq!(host.sio_decode_connector_input(SioElectricalLevel::CurrentLoopConducting), Some(true));
+        assert_eq!(host.sio_decode_connector_input(SioElectricalLevel::TtlHigh), None);
     }
 
     #[test]
-    fn both_backends_project_the_same_physical_two_sio_straps() {
+    fn adaptive_backend_projects_physical_two_sio_straps() {
         let straps = TwoSioStraps {
             address: TwoSioAddressBlock::try_new(0x44).unwrap(),
             port0_baud: TwoSioBaudTap::Baud300,
             port1_baud: TwoSioBaudTap::Baud9600,
             ..TwoSioStraps::default()
         };
-        for engine in EmulationEngine::ALL {
-            let mut host = BackendHost::from_engine(engine).unwrap();
-            host.configure_serial_board(SerialBoard::TwoSio88);
-            host.configure_two_sio_straps(straps);
-            assert_eq!(host.two_sio_straps(), straps);
-            assert_eq!(host.peek_io_port(0x44) & 0x02, 0x02);
-            assert_eq!(host.peek_io_port(0x10), 0xff);
-        }
+        let mut host = BackendHost::default();
+        host.configure_serial_board(SerialBoard::TwoSio88);
+        host.configure_two_sio_straps(straps);
+        assert_eq!(host.two_sio_straps(), straps);
+        assert_eq!(host.peek_io_port(0x44) & 0x02, 0x02);
+        assert_eq!(host.peek_io_port(0x10), 0xff);
     }
 
     #[test]
-    fn both_backends_preserve_interrupt_wiring_and_expose_vi_boundary() {
+    fn adaptive_backend_preserves_interrupt_wiring_and_vi_boundary() {
         let wiring = TwoSioInterruptWiring {
             port0: TwoSioInterruptTarget::Vi3,
             port1: TwoSioInterruptTarget::Disconnected,
         };
-        for engine in EmulationEngine::ALL {
-            let mut host = BackendHost::from_engine(engine).unwrap();
-            host.configure_serial_board(SerialBoard::TwoSio88);
-            host.configure_two_sio_interrupt_wiring(wiring);
-            assert_eq!(host.two_sio_interrupt_wiring(), wiring);
-            host.debugger_output_port(0x10, 0x95); // /16 8N1 + receive IRQ enable
-            assert!(host.debugger_inject_serial_rx(0x11, b'I'));
-            assert_eq!(host.two_sio_vector_interrupt_requests(), 1 << 3);
-        }
+        let mut host = BackendHost::default();
+        host.configure_serial_board(SerialBoard::TwoSio88);
+        host.configure_two_sio_interrupt_wiring(wiring);
+        assert_eq!(host.two_sio_interrupt_wiring(), wiring);
+        host.debugger_output_port(0x10, 0x95);
+        assert!(host.debugger_inject_serial_rx(0x11, b'I'));
+        assert_eq!(host.two_sio_vector_interrupt_requests(), 1 << 3);
     }
 }
