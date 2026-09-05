@@ -189,10 +189,8 @@ fn exercise_hold_blocks_debugger_step(engine: EmulationEngine) {
     assert_eq!(held.total_t_states, before.total_t_states, "{engine:?}: stopped debugger step must not consume T-states during HOLD");
     assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: HOLD must not fabricate a completed instruction");
 
-    // Runtime HOLD itself is machine-cycle based: Cycle Accurate may finish the
-    // currently granted machine cycle before HLDA, while Fast grants immediately.
-    // The debugger-level contract tested here starts from an already asserted
-    // HOLD and therefore must be identical across both engines.
+    // Runtime HOLD is machine-cycle based; the debugger-level contract starts
+    // from an already asserted HOLD and must preserve exact execution state.
     host.request_hold(false);
     host.debugger_step_instruction();
     let resumed = host.intel8080_state();
@@ -357,11 +355,6 @@ fn exercise_debugger_suite(engine: EmulationEngine) {
 }
 
 #[test]
-fn fast_debugger_execution_control() {
-    exercise_debugger_suite(EmulationEngine::RustFast8080);
-}
-
-#[test]
-fn cycle_debugger_execution_control() {
+fn adaptive_cycle_debugger_execution_control() {
     exercise_debugger_suite(EmulationEngine::RustCycleAccurate8080);
 }
