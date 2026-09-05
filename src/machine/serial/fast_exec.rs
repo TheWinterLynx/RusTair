@@ -3,16 +3,16 @@
 //! Fast mode is not cycle-exact, so rebuilding synthetic S-100 fabric activity
 //! for every opcode/operand byte is presentation work, not guest-visible hardware
 //! work. This adapter keeps the real bus-owned S-100 decode and the same physical
-//! RAM card storage, while replaying only the cheap reconstructed front-panel
-//! samples needed for ADDRESS/DATA/status duty. I/O, interrupt-enable changes,
-//! HALT, active serial timing, HOLD/RESET and accepted PINT force an immediate
-//! return to the existing fully synchronized Fast path.
+//! RAM card storage, while accumulating only the reconstructed front-panel duty
+//! needed for ADDRESS/DATA/status display. I/O, interrupt-enable changes, HALT,
+//! active serial timing, HOLD/RESET and accepted PINT force an immediate return
+//! to the existing fully synchronized Fast path.
 
 use crate::config::S100InstalledCardConfig;
 use crate::cpu8080::Bus;
 use crate::s100_memory::S100RamBoardModel;
 
-use super::super::cpu_board::{Fast8080S100Adapter, S100Cycle};
+use super::super::cpu_board::S100Cycle;
 use super::super::{AltairBus, AltairMachine};
 
 struct FastExecutionBus<'a> {
@@ -45,35 +45,32 @@ impl<'a> FastExecutionBus<'a> {
     }
 
     /// Preserve Fast's documented reconstructed panel duty without re-entering
-    /// the physical S-100 fabric. The same adapter produces the same 3/4
-    /// instruction-level samples as legacy Fast, but they are consumed only by
-    /// the secondary Display/Control lamp integrator: no RAM card, UART, resolver
-    /// or independent chassis clock is executed here.
+    /// the physical S-100 fabric. The old adapter emitted one status sample plus
+    /// two/three identical data-phase samples for every machine cycle. The panel
+    /// integrator now folds those phases directly with weights, preserving the
+    /// same ADDRESS/DATA/status duty and final reconstructed bus state without
+    /// executing RAM cards, UARTs or the electrical resolver for presentation.
     #[inline]
     fn project_panel_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
         let signals = self.bus.s100.signals();
         let protected = self.bus.memory.is_protected(address);
-        Fast8080S100Adapter::for_each_sample(
+        let (t_states, reads_data, writes_data) = match cycle {
+            S100Cycle::InstructionFetch => (4, true, false),
+            S100Cycle::MemoryRead | S100Cycle::StackRead => (3, true, false),
+            S100Cycle::MemoryWrite | S100Cycle::StackWrite => (3, false, true),
+            _ => unreachable!("prepared Fast memory path received non-memory cycle {cycle:?}"),
+        };
+        self.bus.s100.drive_reconstructed_cpu_cycle(
             address,
             data,
-            cycle,
+            cycle.status_word(),
+            t_states,
+            reads_data,
+            writes_data,
+            protected,
             signals.inte,
             signals.ready,
             signals.wait,
-            |sample| {
-                self.bus.s100.drive_cpu_t_state(
-                    sample.address,
-                    sample.cpu_data,
-                    sample.data_in,
-                    sample.data_out,
-                    sample.status_word,
-                    protected,
-                    sample.inte,
-                    sample.ready,
-                    sample.wait,
-                    sample.hlda,
-                );
-            },
         );
     }
 
