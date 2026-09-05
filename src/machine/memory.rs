@@ -202,20 +202,12 @@ impl Memory {
             return false;
         }
 
+        let phi1_rising = !previous.phi1 && pins.phi1 && !previous.phi2 && !pins.phi2;
         let phi1_falling = previous.phi1 && !pins.phi1 && !previous.phi2 && !pins.phi2;
+        let phi2_rising = !previous.phi1 && !pins.phi1 && !previous.phi2 && pins.phi2;
         let phi2_falling = previous.phi2 && !pins.phi2 && !previous.phi1 && !pins.phi1;
 
-        // PHI1 rising is deliberately *not* elided here. It is the earliest edge
-        // of every T-state and therefore materializes any asynchronous
-        // Display/Control or serial-card change before the processor's PHI2
-        // sample. This is exactly the safety boundary that the old broad rising-
-        // edge optimization violated. PHI2 rising, by contrast, is safe to omit
-        // when the semantic 8080 outputs did not change: PHI1 of this same
-        // T-state has already settled every non-clock source, and no installed
-        // card consumes PHI2/CLOC.
-        let phi2_rising = !previous.phi1 && !pins.phi1 && !previous.phi2 && pins.phi2;
-
-        phi1_falling || phi2_falling || phi2_rising
+        phi1_rising || phi1_falling || phi2_rising || phi2_falling
     }
 
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
@@ -258,19 +250,35 @@ impl Memory {
         pins: Cpu8080Pins,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
-        // Cpu8080Cycle still emits all four historical edges. Falling edges and
-        // PHI2 rising edges whose *only* electrical consequence is PHI1/PHI2/CLOC
-        // can be folded when the installed connector inventory proves nobody
-        // consumes those nets. PHI1 rising always settles: it remains the hard
-        // synchronization point for asynchronous RUN/RESET/READY/serial changes.
+        // Cpu8080Cycle still emits all four historical edges. If the installed
+        // connector inventory proves nobody consumes PHI1/PHI2/CLOC, a pure
+        // clock transition can be folded. Falling/PHI2 edges are already safe
+        // after the same T-state's synchronization point. PHI1 rising gets the
+        // stronger proof below: Display/Control unchanged, no externally changed
+        // serial connector, and no pending 8212 status-latch transition.
         if self.phase_only_edge_is_unobserved(pins) {
-            self.last_cycle_pins = pins;
-            // Keep the physical CPU board's package-side phase/CLOC state exact
-            // even though resolving those unobserved connector outputs would be
-            // zero-information work. The next meaningful edge folds the cached
-            // drive back into the backplane before any card can observe it.
-            self.fabric.set_cpu_package_pins(pins);
-            return Ok(self.fabric.cpu_package_inputs());
+            let previous = self.last_cycle_pins;
+            let phi1_rising = !previous.phi1 && pins.phi1 && !previous.phi2 && !pins.phi2;
+            let status_latch_changes = phi1_rising
+                && pins.sync
+                && pins
+                    .data_out
+                    .is_some_and(|word| word != self.fabric.cpu_latched_status_word());
+            let can_elide = if phi1_rising {
+                !status_latch_changes && self.fabric.can_elide_phase_only_rising(display)?
+            } else {
+                true
+            };
+
+            if can_elide {
+                self.last_cycle_pins = pins;
+                // Keep Intel-package phase, buffered CLOC, and the CPU board's
+                // own 8212 state exact. Only propagation of an electrically
+                // unobservable connector transition is deferred; the next real
+                // edge folds the cached CPU drive into the backplane.
+                self.fabric.set_cpu_package_pins(pins);
+                return Ok(self.fabric.cpu_package_inputs());
+            }
         }
         self.last_cycle_pins = pins;
 
