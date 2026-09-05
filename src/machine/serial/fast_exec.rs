@@ -28,6 +28,12 @@ struct FastExecutionBus<'a> {
     last_visible: Option<FastVisibleCycle>,
     synchronization_requested: bool,
     io_touched: bool,
+    /// Chassis-clock quanta already consumed by completed memory-only
+    /// instructions in this prepared block but not yet applied to the UART baud
+    /// generators. Batching them is exact while serial_timing_is_quiet() holds:
+    /// no receiver/transmitter event can occur, but oscillator phase must still
+    /// advance so a later OUT starts from the same physical phase as legacy Fast.
+    deferred_serial_t_states: u64,
 }
 
 impl<'a> FastExecutionBus<'a> {
@@ -38,6 +44,7 @@ impl<'a> FastExecutionBus<'a> {
             last_visible: None,
             synchronization_requested: false,
             io_touched: false,
+            deferred_serial_t_states: 0,
         }
     }
 
@@ -65,6 +72,20 @@ impl<'a> FastExecutionBus<'a> {
         self.last_visible = Some(FastVisibleCycle { address, data: value, cycle });
     }
 
+    #[inline]
+    fn add_elapsed_serial_time(&mut self, elapsed: u32) {
+        self.deferred_serial_t_states = self
+            .deferred_serial_t_states
+            .saturating_add(u64::from(elapsed));
+    }
+
+    fn flush_deferred_serial_time(&mut self) {
+        let elapsed = std::mem::take(&mut self.deferred_serial_t_states);
+        if elapsed != 0 {
+            self.bus.advance_serial_hardware_time(elapsed);
+        }
+    }
+
     fn request_external_sync(&mut self) {
         self.synchronization_requested = true;
         self.last_visible = None;
@@ -83,12 +104,17 @@ impl Bus for FastExecutionBus<'_> {
     }
 
     fn input(&mut self, port: u8) -> u8 {
+        // Legacy Fast advances serial hardware after each whole instruction. At
+        // this point the current IN has not completed yet, so flush only time
+        // belonging to earlier instructions before touching the UART registers.
+        self.flush_deferred_serial_time();
         self.io_touched = true;
         self.request_external_sync();
         <AltairBus as Bus>::input(self.bus, port)
     }
 
     fn output(&mut self, port: u8, value: u8) {
+        self.flush_deferred_serial_time();
         self.io_touched = true;
         self.request_external_sync();
         <AltairBus as Bus>::output(self.bus, port, value);
@@ -118,11 +144,13 @@ impl Bus for FastExecutionBus<'_> {
     }
 
     fn halt_ack(&mut self, address: u16, opcode: u8) {
+        self.flush_deferred_serial_time();
         self.request_external_sync();
         <AltairBus as Bus>::halt_ack(self.bus, address, opcode);
     }
 
     fn interrupt_ack(&mut self, address: u16, opcode: u8, while_halted: bool) {
+        self.flush_deferred_serial_time();
         self.request_external_sync();
         <AltairBus as Bus>::interrupt_ack(self.bus, address, opcode, while_halted);
     }
@@ -133,8 +161,12 @@ impl Bus for FastExecutionBus<'_> {
     }
 
     #[inline]
-    fn instruction_complete(&mut self, address: u16, opcode: u8, t_states: u32) {
-        <AltairBus as Bus>::instruction_complete(self.bus, address, opcode, t_states);
+    fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        // Diagnostic metering is normally disabled. Keep its exact per-instruction
+        // semantics when armed without paying an extra delegation layer otherwise.
+        if self.bus.diagnostic_meter.is_some() {
+            self.bus.record_cpu_diagnostic_instruction(address, t_states);
+        }
     }
 }
 
@@ -154,10 +186,9 @@ fn all_memory_reads_are_no_wait(bus: &AltairBus) -> bool {
         })
 }
 
-/// Conservative proof that advancing chassis time cannot change the legacy Fast
-/// UART state. A completed-but-unread RX byte intentionally keeps us out of this
-/// path even though its shift clock is idle; this first version prefers a false
-/// negative over delaying a possible guest-visible serial transition.
+/// Conservative proof that no UART state transition can occur while CPU time is
+/// batched. The baud oscillator itself still advances: its phase is accumulated
+/// and flushed in one operation at a block/I/O boundary.
 fn serial_timing_is_quiet(bus: &AltairBus) -> bool {
     bus.io.serial_rx_len() == 0
         && bus.io.serial_rx_line_idle()
@@ -215,7 +246,13 @@ impl AltairMachine {
                     sync_elapsed = elapsed;
                     break;
                 }
+                fast_bus.add_elapsed_serial_time(elapsed);
             }
+
+            // No serial event was possible while the quiet proof held, but the
+            // independent baud generator did continue running. Fold the elapsed
+            // oscillator phase now instead of once per CPU instruction.
+            fast_bus.flush_deferred_serial_time();
         }
 
         // Fast mode advertises reconstructed, not exact, bus activity. Publish
@@ -298,5 +335,50 @@ mod tests {
         assert_eq!(compiled.cpu.cycles, legacy.cpu.cycles);
         assert_eq!(compiled.cpu.inte, legacy.cpu.inte);
         assert_eq!(compiled.cpu.halted, legacy.cpu.halted);
+    }
+
+    #[test]
+    fn compiled_fast_batches_idle_uart_clock_without_losing_phase() {
+        let mut compiled = AltairMachine::default();
+        let mut legacy = AltairMachine::default();
+        for machine in [&mut compiled, &mut legacy] {
+            machine
+                .bus
+                .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
+                .unwrap();
+            machine.power(true);
+            machine.front_panel_reset();
+            machine.bus.configure_serial_board(crate::config::SerialBoard::TwoSio88);
+            machine.bus.load(0, &[0x00, 0xc3, 0x00, 0x00]);
+            machine.set_running(true);
+        }
+
+        compiled.run_cycles_compiled_fast(14_003);
+        legacy.run_cycles(14_003);
+
+        // Program both ACIAs identically after the long idle interval. If the
+        // compiled path had frozen the baud oscillator, the first TX completion
+        // would occur at a different later CPU-clock quantum.
+        for machine in [&mut compiled, &mut legacy] {
+            machine.bus.debugger_output_port(0x10, 0x15);
+            machine.bus.debugger_output_port(0x11, b'P');
+        }
+        let mut compiled_done = None;
+        let mut legacy_done = None;
+        for elapsed in 1..=50_000u64 {
+            compiled.bus.advance_serial_hardware_time(1);
+            legacy.bus.advance_serial_hardware_time(1);
+            if compiled_done.is_none() && compiled.bus.serial_tx_front().is_some() {
+                compiled_done = Some(elapsed);
+            }
+            if legacy_done.is_none() && legacy.bus.serial_tx_front().is_some() {
+                legacy_done = Some(elapsed);
+            }
+            if compiled_done.is_some() && legacy_done.is_some() {
+                break;
+            }
+        }
+        assert_eq!(compiled_done, legacy_done);
+        assert!(compiled_done.is_some());
     }
 }
