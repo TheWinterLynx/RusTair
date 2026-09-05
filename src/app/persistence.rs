@@ -21,7 +21,6 @@ const SAVE_RETRY_DELAY: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SavedSettings {
     pub(super) config: AppConfig,
-    pub(super) engine: EmulationEngine,
     pub(super) asr_connection: SerialConnection,
     pub(super) terminal_connection: SerialConnection,
     pub(super) external_tcp_connection: SerialConnection,
@@ -44,7 +43,6 @@ impl Default for SavedSettings {
     fn default() -> Self {
         Self {
             config: AppConfig::default(),
-            engine: EmulationEngine::RustFast8080,
             asr_connection: SerialConnection::Port0,
             terminal_connection: SerialConnection::Disconnected,
             external_tcp_connection: SerialConnection::Disconnected,
@@ -168,7 +166,10 @@ impl SavedSettings {
                 "compatibility.historical_undefined_run_latch_power_on" => if let Ok(v) = value.parse() { saved.config.compatibility.historical_undefined_run_latch_power_on = v; },
                 "preferences.auto_open_basic_console" => if let Ok(v) = value.parse() { saved.config.preferences.auto_open_basic_console = v; },
                 "preferences.emulation_speed" => if let Some(v) = parse_emulation_speed(value) { saved.config.preferences.emulation_speed = v; },
-                "engine" => if let Some(v) = parse_engine(value) { saved.engine = v; },
+                // Pre-unified files persisted an execution-engine selector. It is
+                // intentionally ignored now: one physical Altair has one adaptive
+                // Cycle execution engine, so this key can no longer influence state.
+                "engine" => { let _ = value; }
                 "wiring.asr33" => if let Some(v) = parse_connection(value) { saved.asr_connection = v; },
                 "wiring.terminal" => if let Some(v) = parse_connection(value) { saved.terminal_connection = v; },
                 "wiring.external_tcp" => if let Some(v) = parse_connection(value) { saved.external_tcp_connection = v; },
@@ -240,7 +241,6 @@ impl SavedSettings {
         let _ = writeln!(out, "compatibility.historical_undefined_run_latch_power_on={}", self.config.compatibility.historical_undefined_run_latch_power_on);
         let _ = writeln!(out, "preferences.auto_open_basic_console={}", self.config.preferences.auto_open_basic_console);
         let _ = writeln!(out, "preferences.emulation_speed={}", emulation_speed_key(self.config.preferences.emulation_speed));
-        let _ = writeln!(out, "engine={}", engine_key(self.engine));
         let _ = writeln!(out, "wiring.asr33={}", connection_key(self.asr_connection));
         let _ = writeln!(out, "wiring.terminal={}", connection_key(self.terminal_connection));
         let _ = writeln!(out, "wiring.external_tcp={}", connection_key(self.external_tcp_connection));
@@ -345,10 +345,6 @@ impl RusTairApp {
 
     fn apply_persisted_settings(&mut self, saved: &SavedSettings) {
         self.config = saved.config;
-        let engine = if saved.engine.is_available() { saved.engine } else { EmulationEngine::RustFast8080 };
-        if self.machine.engine() != engine {
-            let _ = self.machine.replace_engine(engine);
-        }
 
         self.machine.configure_s100_hardware(
             self.config.machine.s100_hardware,
@@ -405,7 +401,6 @@ impl RusTairApp {
     ) -> SavedSettings {
         SavedSettings {
             config: self.config,
-            engine: self.machine.engine(),
             asr_connection: self.serial_router.connection(SerialDevice::InternalAsr33),
             terminal_connection: self.serial_router.connection(SerialDevice::TextTerminal),
             external_tcp_connection: self.serial_router.connection(SerialDevice::ExternalTcp),
@@ -540,8 +535,6 @@ fn terminal_speed_key(v: TerminalSpeed) -> &'static str { match v { TerminalSpee
 fn parse_terminal_speed(v: &str) -> Option<TerminalSpeed> { Some(match v { "instant" => TerminalSpeed::Instant, "300" => TerminalSpeed::Baud300, "1200" => TerminalSpeed::Baud1200, "2400" => TerminalSpeed::Baud2400, "9600" => TerminalSpeed::Baud9600, _ => return None }) }
 fn emulation_speed_key(v: EmulationSpeed) -> &'static str { match v { EmulationSpeed::Authentic => "authentic", EmulationSpeed::X2 => "2x", EmulationSpeed::X5 => "5x", EmulationSpeed::X10 => "10x", EmulationSpeed::Unlimited => "unlimited" } }
 fn parse_emulation_speed(v: &str) -> Option<EmulationSpeed> { Some(match v { "authentic" => EmulationSpeed::Authentic, "2x" => EmulationSpeed::X2, "5x" => EmulationSpeed::X5, "10x" => EmulationSpeed::X10, "unlimited" => EmulationSpeed::Unlimited, _ => return None }) }
-fn engine_key(v: EmulationEngine) -> &'static str { match v { EmulationEngine::RustFast8080 => "rust-fast-8080", EmulationEngine::RustCycleAccurate8080 => "rust-cycle-8080" } }
-fn parse_engine(v: &str) -> Option<EmulationEngine> { Some(match v { "rust-fast-8080" => EmulationEngine::RustFast8080, "rust-cycle-8080" => EmulationEngine::RustCycleAccurate8080, _ => return None }) }
 fn connection_key(v: SerialConnection) -> &'static str { match v { SerialConnection::Disconnected => "disconnected", SerialConnection::Port0 => "port0", SerialConnection::Port1 => "port1" } }
 fn parse_connection(v: &str) -> Option<SerialConnection> { Some(match v { "disconnected" => SerialConnection::Disconnected, "port0" => SerialConnection::Port0, "port1" => SerialConnection::Port1, _ => return None }) }
 fn listen_scope_key(v: TcpListenScope) -> &'static str { match v { TcpListenScope::Loopback => "loopback", TcpListenScope::AllInterfaces => "all" } }
@@ -574,7 +567,6 @@ mod tests {
     #[test]
     fn persistent_text_round_trip_preserves_all_tunable_groups() {
         let mut saved = SavedSettings::default();
-        saved.engine = EmulationEngine::RustCycleAccurate8080;
         saved.config.machine.s100_hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         saved.config.machine.sio_hardware = SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1").unwrap();
         saved.config.machine.serial_board = SerialBoard::TwoSio88;
@@ -608,6 +600,13 @@ mod tests {
     }
 
     #[test]
+    fn obsolete_engine_key_is_ignored_and_not_rewritten() {
+        let decoded = SavedSettings::from_text("engine=anything\npreferences.emulation_speed=5x\n");
+        assert_eq!(decoded.config.preferences.emulation_speed, EmulationSpeed::X5);
+        assert!(!decoded.to_text().lines().any(|line| line.starts_with("engine=")));
+    }
+
+    #[test]
     fn legacy_config_without_slot_inventory_is_migrated_from_old_globals() {
         let decoded = SavedSettings::from_text(
             "machine.cpu_model=intel8080\nmachine.ram_size=48k\nmachine.ram_board_profile=mits-1k-static-1975\nmachine.serial_board=88-2sio\n",
@@ -622,6 +621,7 @@ mod tests {
         assert!(!rewritten.contains("machine.cpu_model="));
         assert!(!rewritten.contains("machine.ram_size="));
         assert!(!rewritten.contains("machine.ram_board_profile="));
+        assert!(!rewritten.contains("engine="));
         assert!(rewritten.contains("machine.s100_hardware="));
     }
 
@@ -705,6 +705,7 @@ mod tests {
         assert!(!text.contains("machine.cpu_model="));
         assert!(!text.contains("machine.ram_size="));
         assert!(!text.contains("machine.ram_board_profile="));
+        assert!(!text.contains("engine="));
         assert!(text.contains("machine.sio_hardware=rev1,c-tty,00,110,8,none,2"));
         assert!(text.contains("machine.two_sio_base=10"));
         assert!(text.contains("machine.two_sio_port0_baud=110"));
