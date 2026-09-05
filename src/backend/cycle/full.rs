@@ -166,13 +166,23 @@ impl CycleAccurateMachineBackend {
     }
 
     #[inline]
-    fn compiled_full_opcode(&self, remaining: u32, full_window: bool) -> Option<u8> {
+    fn compiled_full_opcode(&mut self, remaining: u32, full_window: bool) -> Option<u8> {
         if !full_window
             || remaining < FULL_EXECUTION_MAX_T_STATES
             || !self.at_instruction_boundary()
             || self.stop_wait_park_pending
             || self.cpu_fault.is_some()
+            || self.machine.bus.cpu_control_lines().reset
         {
+            return None;
+        }
+
+        // Partial clears its internal `reset_asserted` latch at the top of the
+        // first T1 after physical RESET is released, before consuming any time.
+        // Full has no per-T-state preamble, so perform exactly that zero-time
+        // transition here before asking whether this opcode can use the compiled
+        // executor. The external RESET line was checked released above.
+        if !self.cpu.prepare_full_boundary_after_reset_release() {
             return None;
         }
 
