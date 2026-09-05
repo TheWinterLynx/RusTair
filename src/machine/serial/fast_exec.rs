@@ -326,6 +326,13 @@ mod tests {
             machine.set_running(true);
         }
 
+        // POWER ON intentionally randomizes the undefined 8080 register state.
+        // Differential execution therefore has to start from one identical CPU
+        // sample; otherwise SP/flags/general registers are unrelated even when
+        // both engines execute the same NOP/JMP stream correctly.
+        legacy.cpu = compiled.cpu.clone();
+        legacy.bus.sync_cpu_inte(legacy.cpu.inte);
+
         compiled.run_cycles_compiled_fast(14_000);
         legacy.run_cycles(14_000);
 
