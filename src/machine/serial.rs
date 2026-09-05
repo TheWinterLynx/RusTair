@@ -4,6 +4,7 @@
 pub(super) mod sio_interface;
 #[path = "sio.rs"]
 pub(super) mod sio;
+mod fast_exec;
 
 use crate::config::{SerialBoard, SioConnectorOutputs, SioElectricalLevel};
 
