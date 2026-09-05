@@ -40,6 +40,11 @@ pub(super) struct Memory {
     /// prove that a callback changed only clock phase and therefore carries no
     /// new information to the installed card inventory.
     last_cycle_pins: Cpu8080Pins,
+    /// MAME-style full execution may advance the same physical RAM storage and
+    /// the presentation bus without replaying every intermediate connector
+    /// delta. The first return to partial/T-state execution must therefore force
+    /// one real fabric settle before phase-only edge elision is legal again.
+    full_execution_desynced: bool,
     read_wait_active: bool,
     read_wait_remaining: u8,
     basic32_probe_guard: bool,
@@ -61,6 +66,7 @@ impl Default for Memory {
             // there; phase-elision is enabled only for explicit physical chassis.
             phase_edge_requires_settle: true,
             last_cycle_pins: Cpu8080Pins::default(),
+            full_execution_desynced: false,
             read_wait_active: false,
             read_wait_remaining: 0,
             basic32_probe_guard: false,
@@ -186,7 +192,7 @@ impl Memory {
     }
 
     fn phase_only_edge_is_unobserved(&self, pins: Cpu8080Pins) -> bool {
-        if self.legacy_aggregate || self.phase_edge_requires_settle {
+        if self.legacy_aggregate || self.phase_edge_requires_settle || self.full_execution_desynced {
             return false;
         }
         let previous = self.last_cycle_pins;
@@ -217,6 +223,7 @@ impl Memory {
         self.fabric = Self::legacy_fabric(size, self.board_profile, init_mode);
         self.phase_edge_requires_settle = true;
         self.last_cycle_pins = Cpu8080Pins::default();
+        self.full_execution_desynced = false;
         self.clear_transient_guards();
         self.reset_timing();
     }
@@ -232,6 +239,7 @@ impl Memory {
         self.init_mode = init_mode;
         self.legacy_aggregate = false;
         self.last_cycle_pins = Cpu8080Pins::default();
+        self.full_execution_desynced = false;
         self.clear_transient_guards();
         self.reset_timing();
         Ok(())
@@ -243,6 +251,14 @@ impl Memory {
 
     pub(super) fn inspect(&self, address: u16) -> RuntimeMemoryInspection {
         self.fabric.inspect_memory(address)
+    }
+
+    /// Mark the connector resolver as intentionally lazy after one or more full
+    /// instructions. Guest bytes and the presentation bus have already advanced;
+    /// the next partial edge materializes that state back into the live S-100
+    /// fabric before any edge-sensitive card is allowed to observe it.
+    pub(super) fn mark_full_execution_desynced(&mut self) {
+        self.full_execution_desynced = true;
     }
 
     pub(super) fn cycle_drive_cpu_edge(
@@ -298,6 +314,7 @@ impl Memory {
         }
         self.fabric.set_cpu_package_pins(physical_pins);
         self.fabric.settle(display, &[])?;
+        self.full_execution_desynced = false;
         Ok(self.fabric.cpu_package_inputs())
     }
 
@@ -574,6 +591,10 @@ impl super::AltairBus {
         self.memory.cycle_latched_status_word()
     }
 
+    pub(crate) fn cycle_mark_full_execution_desynced(&mut self) {
+        self.memory.mark_full_execution_desynced();
+    }
+
     fn cycle_display_control_lines(&self) -> DisplayControlLines {
         let signals = self.s100.signals();
         DisplayControlLines {
@@ -837,6 +858,32 @@ mod tests {
         assert_eq!(inputs.data_in, 0x5a);
         assert_eq!(memory.peek(0x0010), Some(0x5a));
         assert_eq!(memory.cycle_live_sample().data_in(), Some(0x5a));
+    }
+
+    #[test]
+    fn lazy_full_execution_forces_first_partial_edge_back_through_real_fabric() {
+        let mut memory = Memory::default();
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        };
+        memory.mark_full_execution_desynced();
+        assert!(memory.full_execution_desynced);
+        memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi1: true,
+                    address: Some(0x0020),
+                    data_out: Some(0x82),
+                    sync: true,
+                    wr_n: true,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
+        assert!(!memory.full_execution_desynced);
     }
 
     #[test]
