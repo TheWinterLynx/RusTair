@@ -1,5 +1,6 @@
 const FRONT_PANEL: &str = include_str!("../src/app/ui/front_panel.rs");
 const TEACHER_BACKEND: &str = include_str!("../src/backend/cycle.rs");
+const TEACHER_PARTIAL_BACKEND: &str = include_str!("../src/backend/cycle/partial_impl.rs");
 const TEACHER_UI: &str = include_str!("../src/app/ui/bus_teacher.rs");
 
 #[test]
@@ -22,13 +23,17 @@ fn main_front_panel_never_bypasses_backend_panel_operations_with_flat_memory_acc
 
 #[test]
 fn exact_cycle_teacher_uses_live_s100_sample_for_cpu_memory_cycles() {
-    assert!(TEACHER_BACKEND.contains("cycle_live_s100_sample()"));
-    assert!(TEACHER_BACKEND.contains("cycle_live_s100_status_word()"));
-    assert!(TEACHER_BACKEND.contains("InstructionFetch"));
-    assert!(TEACHER_BACKEND.contains("MemoryRead"));
-    assert!(TEACHER_BACKEND.contains("MemoryWrite"));
-    assert!(TEACHER_BACKEND.contains("StackRead"));
-    assert!(TEACHER_BACKEND.contains("StackWrite"));
+    // `cycle.rs` is the dispatcher root and includes the exact Partial backend.
+    // The Teacher invariant is ownership by the Cycle backend as a module, not
+    // that every exact-sample implementation detail remains in the root file.
+    assert!(TEACHER_BACKEND.contains("include!(\"cycle/partial_impl.rs\")"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("cycle_live_s100_sample()"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("cycle_live_s100_status_word()"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("InstructionFetch"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("MemoryRead"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("MemoryWrite"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("StackRead"));
+    assert!(TEACHER_PARTIAL_BACKEND.contains("StackWrite"));
 }
 
 #[test]
