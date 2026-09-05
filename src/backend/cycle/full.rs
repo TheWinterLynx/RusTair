@@ -1,6 +1,6 @@
 use crate::config::S100InstalledCardConfig;
 use crate::cpu8080::Bus;
-use crate::cpu8080_cycle::Cpu8080Pins;
+use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Pins};
 use crate::machine::AltairBus;
 use crate::s100_memory::S100RamBoardModel;
 
@@ -210,20 +210,10 @@ impl CycleAccurateMachineBackend {
             return None;
         }
 
-        // Partial clears its internal `reset_asserted` latch at the top of the
-        // first T1 after physical RESET is released, before consuming any time.
-        // Full has no per-T-state preamble, so perform exactly that zero-time
-        // transition here before asking whether this opcode can use the compiled
-        // executor. The external RESET line was checked released above.
         if !self.cpu.prepare_full_boundary_after_reset_release() {
             return None;
         }
 
-        // The chassis proof guarantees a unique static-RAM responder wherever
-        // memory is populated. `peek_memory` therefore uses the already-compiled
-        // S-100 RAM decode instead of the general inspection/resolution path.
-        // An unmapped fetch is open bus FFh and stays on Partial (RST 7 is not
-        // compiled yet), preserving exact floating-DI behavior.
         let opcode = self
             .machine
             .bus
@@ -234,6 +224,9 @@ impl CycleAccurateMachineBackend {
             .then_some(opcode)
     }
 
+    /// Focused one-instruction bridge retained for exact unit tests. Production
+    /// execution below uses a semantic window so this expensive state transfer is
+    /// not repeated once per opcode.
     fn execute_compiled_full_instruction(&mut self, opcode: u8) -> Option<u32> {
         self.instruction_address = self.cpu.registers().pc;
         let inte = self.cpu.interrupts_enabled();
@@ -248,14 +241,90 @@ impl CycleAccurateMachineBackend {
 
         debug_assert!(elapsed <= FULL_EXECUTION_MAX_T_STATES);
         self.cpu.set_full_boundary_pins(boundary_pins);
-
-        // Memory bytes and the UI-facing bus have advanced through AltairBus,
-        // but the expensive generic connector graph was intentionally left lazy.
-        // The first partial edge will force one real settle before any phase-only
-        // edge can be elided again.
         self.machine.bus.cycle_mark_full_execution_desynced();
         self.last_teaching_tick = None;
         Some(elapsed)
+    }
+
+    /// Execute as many consecutive compiled instructions as the remaining exact
+    /// host budget permits, keeping one instruction-level semantic core live for
+    /// the entire block. Cycle state is exported once at entry and imported once
+    /// at the final clean fetch boundary; memory still uses the bus-owned S-100
+    /// decoder on every guest access.
+    fn execute_compiled_full_window(
+        &mut self,
+        remaining: &mut u32,
+        full_window: bool,
+    ) -> Option<u64> {
+        if !full_window
+            || *remaining < FULL_EXECUTION_MAX_T_STATES
+            || !self.at_instruction_boundary()
+            || self.stop_wait_park_pending
+            || self.cpu_fault.is_some()
+            || self.machine.bus.cpu_control_lines().reset
+        {
+            return None;
+        }
+
+        if !self.cpu.prepare_full_boundary_after_reset_release() {
+            return None;
+        }
+
+        let first_opcode = self
+            .machine
+            .bus
+            .peek_memory(self.cpu.registers().pc)
+            .unwrap_or(0xff);
+        if !self.cpu.full_execution_opcode_supported(first_opcode) {
+            return None;
+        }
+
+        let mut full = self.cpu.begin_full_execution_window()?;
+        let inte = full.inte;
+        let start_cycles = full.cycles;
+        let mut completed = 0u64;
+        let mut last_elapsed = 0u32;
+        let mut last_address = full.pc;
+
+        let boundary_pins = {
+            let bus = &mut self.machine.bus;
+            let mut full_bus = FullInstructionBus::new(bus, inte);
+
+            while *remaining >= FULL_EXECUTION_MAX_T_STATES {
+                let opcode = full_bus.bus.peek_memory(full.pc).unwrap_or(0xff);
+                if !Cpu8080Cycle::full_opcode_class_supported(opcode) {
+                    break;
+                }
+
+                last_address = full.pc;
+                let elapsed = full.step(&mut full_bus);
+                debug_assert!(elapsed <= FULL_EXECUTION_MAX_T_STATES);
+                debug_assert!(elapsed <= *remaining);
+                *remaining -= elapsed;
+                completed = completed.saturating_add(1);
+                last_elapsed = elapsed;
+            }
+
+            full_bus.boundary_pins()
+        };
+
+        if completed == 0 {
+            return None;
+        }
+
+        let elapsed_total = full.cycles.saturating_sub(start_cycles);
+        debug_assert_eq!(elapsed_total, u64::from(last_elapsed).min(elapsed_total).saturating_add(elapsed_total.saturating_sub(u64::from(last_elapsed))));
+        self.instruction_address = last_address;
+        self.cpu
+            .commit_full_execution_window(&full, completed, last_elapsed);
+        self.cpu.set_full_boundary_pins(boundary_pins);
+
+        // Materialize the expensive generic connector graph only when Partial or
+        // an external observer actually needs it. A whole Full window therefore
+        // creates one lazy-desync marker instead of one per instruction.
+        self.machine.bus.cycle_mark_full_execution_desynced();
+        self.last_teaching_tick = None;
+        Some(elapsed_total)
     }
 
     pub(super) fn service_execution_compiled(
@@ -288,19 +357,11 @@ impl CycleAccurateMachineBackend {
         let mut remaining = t_state_budget;
         let mut deferred_serial_t_states = 0u64;
         while remaining != 0 && self.machine.running {
-            if let Some(opcode) = self.compiled_full_opcode(remaining, full_window) {
-                if let Some(elapsed) = self.execute_compiled_full_instruction(opcode) {
-                    // Static no-wait eligibility plus the 18T reservation above
-                    // make this a proof, not a heuristic. Keep saturating_sub as
-                    // a release-build guard if future opcode coverage changes.
-                    debug_assert!(elapsed <= remaining);
-                    remaining = remaining.saturating_sub(elapsed);
-                    if serial_clocked {
-                        deferred_serial_t_states = deferred_serial_t_states
-                            .saturating_add(u64::from(elapsed));
-                    }
-                    continue;
+            if let Some(elapsed) = self.execute_compiled_full_window(&mut remaining, full_window) {
+                if serial_clocked {
+                    deferred_serial_t_states = deferred_serial_t_states.saturating_add(elapsed);
                 }
+                continue;
             }
 
             // No serial state transition could occur while the quiet Full block
@@ -383,8 +444,6 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        // LHLD 0010h = 16T and exercises opcode/operand/data reads through the
-        // same physical RuntimeRamCard storage used by the partial fabric.
         backend
             .load_bytes(0, &[0x2a, 0x10, 0x00])
             .unwrap();
@@ -405,10 +464,29 @@ mod tests {
         assert_eq!(backend.cpu.t_state(), crate::cpu8080_cycle::TState::T1);
         assert!(backend.last_teaching_tick.is_none());
 
-        // The next partial edge must materialize the lazy connector graph and
-        // continue from the exact boundary without changing CPU time semantics.
         backend.service_execution_compiled(1).unwrap();
         assert_eq!(backend.cpu.total_t_states(), 17);
+    }
+
+    #[test]
+    fn compiled_full_window_executes_many_instructions_before_rejoining_partial() {
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend
+            .machine
+            .bus
+            .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
+            .unwrap();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        backend.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]).unwrap();
+        backend.run().unwrap();
+
+        let before = backend.cpu.completed_instructions();
+        backend.service_execution_compiled(14_000).unwrap();
+        assert_eq!(backend.cpu.total_t_states(), 14_000);
+        assert!(backend.cpu.completed_instructions().saturating_sub(before) > 1_000);
+        assert_eq!(backend.cpu.machine_cycle(), crate::cpu8080_cycle::MachineCycle::InstructionFetch);
     }
 
     #[test]
