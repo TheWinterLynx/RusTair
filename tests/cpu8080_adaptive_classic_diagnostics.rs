@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use rustair::adaptive_metrics;
 use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring, TwoSioStraps};
 use rustair::s100_chassis::S100ChassisConfig;
@@ -67,36 +68,36 @@ fn build_bdos() -> Vec<u8> {
     let poll_addr = BDOS_BASE.wrapping_add(POLL_OFFSET);
 
     let mut bdos = Vec::with_capacity(BDOS_LEN);
-    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]); // PUSH PSW/B/D/H
-    bdos.push(0x79); // MOV A,C
-    bdos.extend_from_slice(&[0xfe, 0x02]); // CPI 2
-    append_abs(&mut bdos, 0xca, char_addr); // JZ char
-    bdos.extend_from_slice(&[0xfe, 0x09]); // CPI 9
-    append_abs(&mut bdos, 0xca, string_addr); // JZ string
-    append_abs(&mut bdos, 0xc3, done_addr); // JMP done
+    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]);
+    bdos.push(0x79);
+    bdos.extend_from_slice(&[0xfe, 0x02]);
+    append_abs(&mut bdos, 0xca, char_addr);
+    bdos.extend_from_slice(&[0xfe, 0x09]);
+    append_abs(&mut bdos, 0xca, string_addr);
+    append_abs(&mut bdos, 0xc3, done_addr);
 
     assert_eq!(bdos.len(), CHAR_OFFSET as usize);
-    bdos.push(0x7b); // MOV A,E
+    bdos.push(0x7b);
     append_abs(&mut bdos, 0xcd, putc_addr);
     append_abs(&mut bdos, 0xc3, done_addr);
 
     assert_eq!(bdos.len(), STRING_OFFSET as usize);
-    bdos.push(0x1a); // LDAX D
-    bdos.extend_from_slice(&[0xfe, 0x24]); // CPI '$'
+    bdos.push(0x1a);
+    bdos.extend_from_slice(&[0xfe, 0x24]);
     append_abs(&mut bdos, 0xca, done_addr);
     append_abs(&mut bdos, 0xcd, putc_addr);
-    bdos.push(0x13); // INX D
+    bdos.push(0x13);
     append_abs(&mut bdos, 0xc3, string_addr);
 
     assert_eq!(bdos.len(), DONE_OFFSET as usize);
-    bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]); // POP H/D/B/PSW; RET
+    bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]);
 
     assert_eq!(bdos.len(), PUTC_OFFSET as usize);
-    bdos.push(0x47); // MOV B,A
-    bdos.extend_from_slice(&[0xdb, 0x10]); // IN 88-2SIO Port 0 status
-    bdos.extend_from_slice(&[0xe6, 0x02]); // ANI TDRE
-    append_abs(&mut bdos, 0xca, poll_addr); // JZ while not ready
-    bdos.extend_from_slice(&[0x78, 0xd3, 0x11, 0xc9]); // MOV A,B; OUT data; RET
+    bdos.push(0x47);
+    bdos.extend_from_slice(&[0xdb, 0x10]);
+    bdos.extend_from_slice(&[0xe6, 0x02]);
+    append_abs(&mut bdos, 0xca, poll_addr);
+    bdos.extend_from_slice(&[0x78, 0xd3, 0x11, 0xc9]);
 
     assert_eq!(bdos.len(), BDOS_LEN);
     bdos
@@ -116,10 +117,10 @@ fn prepare_machine(image: &[u8], reference: Reference, name: &str) -> BackendHos
     let [bdos_lo, bdos_hi] = BDOS_BASE.to_le_bytes();
     page_zero[0x0005..0x0008].copy_from_slice(&[0xc3, bdos_lo, bdos_hi]);
     let boot = [
-        0x31, bdos_lo, bdos_hi, // LXI SP,BDOS_BASE
-        0x3e, 0x76,             // MVI A,HLT
-        0x32, 0x00, 0x00,       // STA 0000h
-        0xc3, 0x00, 0x01,       // JMP 0100h
+        0x31, bdos_lo, bdos_hi,
+        0x3e, 0x76,
+        0x32, 0x00, 0x00,
+        0xc3, 0x00, 0x01,
     ];
     page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
 
@@ -145,6 +146,38 @@ fn drain_console(machine: &mut BackendHost, output: &mut Vec<u8>) {
     }
 }
 
+fn print_strategy_metrics(name: &str, stats: adaptive_metrics::AdaptiveCycleStats) {
+    eprintln!(
+        "{name} strategy: Full={} T ({:.2}%), Partial={} T ({:.2}%), Full instructions={}, Full windows={}, F->P={}, P->F={}, Partial entries={}",
+        stats.full_t_states,
+        stats.full_percent(),
+        stats.partial_t_states,
+        stats.partial_percent(),
+        stats.full_instructions,
+        stats.full_windows,
+        stats.full_to_partial,
+        stats.partial_to_full,
+        stats.partial_entries,
+    );
+    let f = stats.fallbacks;
+    eprintln!(
+        "{name} Partial-entry reasons: chassis={} serial={} ready={} hold={} irq={} budget={} mid_instruction={} stop={} fault={} reset={} opcode_barrier={} full_window_unavailable={} total={}",
+        f.chassis_unsupported,
+        f.serial_active,
+        f.ready_low,
+        f.hold,
+        f.interrupt_pending,
+        f.budget_tail,
+        f.not_instruction_boundary,
+        f.stop_wait_pending,
+        f.cpu_fault,
+        f.reset,
+        f.opcode_barrier,
+        f.full_window_unavailable,
+        f.total(),
+    );
+}
+
 fn run_diagnostic(
     name: &str,
     image: &[u8],
@@ -153,6 +186,7 @@ fn run_diagnostic(
 ) -> (f64, u64, Vec<u8>) {
     let mut machine = prepare_machine(image, reference, name);
     let start_t = machine.intel8080_state().total_t_states.unwrap_or(0);
+    adaptive_metrics::begin_measurement();
     let started = Instant::now();
     let mut output = Vec::new();
 
@@ -170,15 +204,23 @@ fn run_diagnostic(
             assert_eq!(result.t_states, reference.t_states, "{name}: normalized reference T-state count");
             let final_t = machine.intel8080_state().total_t_states.unwrap_or(now_t);
             let actual_t = final_t.saturating_sub(start_t);
-            let mhz = actual_t as f64 / started.elapsed().as_secs_f64() / 1_000_000.0;
+            let stats = adaptive_metrics::end_measurement();
+            assert_eq!(
+                stats.total_t_states(),
+                actual_t,
+                "{name}: Full + Partial metrics must account for every executed CPU T-state",
+            );
+            let elapsed = started.elapsed();
+            let mhz = actual_t as f64 / elapsed.as_secs_f64() / 1_000_000.0;
             assert!(!output.is_empty(), "{name}: diagnostic produced no 88-2SIO console output");
             eprintln!(
                 "{name} adaptive-cycle: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz",
                 result.instructions,
                 result.t_states,
                 actual_t,
-                started.elapsed(),
+                elapsed,
             );
+            print_strategy_metrics(name, stats);
             return (mhz, actual_t, output);
         }
 
