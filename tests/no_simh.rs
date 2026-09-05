@@ -11,10 +11,8 @@ const BACKEND_README: &str = include_str!("../src/backend/README.md");
 const TODO: &str = include_str!("../TODO.md");
 
 #[test]
-fn product_exposes_only_the_two_rust_8080_engines() {
-    assert_eq!(EmulationEngine::ALL.len(), 2);
-    assert_eq!(EmulationEngine::ALL[0], EmulationEngine::RustFast8080);
-    assert_eq!(EmulationEngine::ALL[1], EmulationEngine::RustCycleAccurate8080);
+fn product_exposes_only_adaptive_cycle_8080() {
+    assert_eq!(EmulationEngine::ALL, &[EmulationEngine::RustCycleAccurate8080]);
 }
 
 #[test]
