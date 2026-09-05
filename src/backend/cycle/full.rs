@@ -15,11 +15,13 @@ use super::super::BackendResult;
 /// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 
-/// Thin recorder around the existing AltairBus. Guest reads/writes still use
-/// the bus-owned compiled S-100 decode and the same RuntimeRamCard storage as the
-/// electrical fabric. We retain only the package outputs that physically remain
-/// after the instruction's final external machine cycle so the partial core can
-/// resume from the exact dead-time boundary later.
+/// Prepared guest-bus recorder for Cycle Full. Memory traffic uses the same
+/// bus-owned S-100 decode and RuntimeRamCard storage as the electrical fabric,
+/// but deliberately skips AltairBus's synthetic Fast presentation cycles. Those
+/// reconstructed samples are not real Cycle clocks and would both waste work and
+/// advance independent card oscillators a second time. We retain only the CPU
+/// package outputs that physically remain after the final external machine cycle
+/// so Partial can resume from the exact dead-time boundary.
 struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
@@ -72,17 +74,22 @@ impl<'a> FullInstructionBus<'a> {
 }
 
 impl Bus for FullInstructionBus<'_> {
+    #[inline]
     fn read(&mut self, address: u16) -> u8 {
-        let value = Bus::read(self.bus, address);
+        let value = self.bus.cycle_full_guest_read(address);
         self.remember_read_boundary(address);
         value
     }
 
+    #[inline]
     fn write(&mut self, address: u16, value: u8) {
-        Bus::write(self.bus, address, value);
+        self.bus.cycle_full_guest_write(address, value);
         self.remember_write_boundary(address, value);
     }
 
+    // These are defensive fallbacks only. Opcode eligibility prevents every
+    // currently compiled Full window from reaching an I/O or INTE-changing
+    // instruction; such an opcode is a synchronization barrier and runs Partial.
     fn input(&mut self, port: u8) -> u8 { Bus::input(self.bus, port) }
     fn output(&mut self, port: u8, value: u8) { Bus::output(self.bus, port, value); }
 
@@ -92,20 +99,23 @@ impl Bus for FullInstructionBus<'_> {
         self.boundary_pins.inte = enabled;
     }
 
+    #[inline]
     fn opcode_fetch(&mut self, address: u16) -> u8 {
-        let value = Bus::opcode_fetch(self.bus, address);
+        let value = self.bus.cycle_full_guest_read(address);
         self.remember_read_boundary(address);
         value
     }
 
+    #[inline]
     fn stack_read(&mut self, address: u16) -> u8 {
-        let value = Bus::stack_read(self.bus, address);
+        let value = self.bus.cycle_full_guest_read(address);
         self.remember_read_boundary(address);
         value
     }
 
+    #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
-        Bus::stack_write(self.bus, address, value);
+        self.bus.cycle_full_guest_write(address, value);
         self.remember_write_boundary(address, value);
     }
 
@@ -117,10 +127,17 @@ impl Bus for FullInstructionBus<'_> {
         Bus::interrupt_ack(self.bus, address, opcode, while_halted);
     }
 
-    fn take_wait_states(&mut self) -> u32 { Bus::take_wait_states(self.bus) }
+    #[inline]
+    fn take_wait_states(&mut self) -> u32 {
+        // Full chassis eligibility admits only asynchronous/no-wait static RAM,
+        // and IN/OUT are synchronization barriers. A non-zero wait here would be
+        // a proof bug, not a dynamic condition to poll.
+        0
+    }
 
-    fn instruction_complete(&mut self, address: u16, opcode: u8, t_states: u32) {
-        Bus::instruction_complete(self.bus, address, opcode, t_states);
+    #[inline]
+    fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
+        self.bus.cycle_full_instruction_complete(address, t_states);
     }
 }
 
@@ -198,6 +215,7 @@ impl CycleAccurateMachineBackend {
             && !self.machine.bus.serial_port1_tx_busy()
     }
 
+    #[cfg(test)]
     #[inline]
     fn compiled_full_opcode(&mut self, remaining: u32, full_window: bool) -> Option<u8> {
         if !full_window
@@ -227,6 +245,7 @@ impl CycleAccurateMachineBackend {
     /// Focused one-instruction bridge retained for exact unit tests. Production
     /// execution below uses a semantic window so this expensive state transfer is
     /// not repeated once per opcode.
+    #[cfg(test)]
     fn execute_compiled_full_instruction(&mut self, opcode: u8) -> Option<u32> {
         self.instruction_address = self.cpu.registers().pc;
         let inte = self.cpu.interrupts_enabled();
@@ -313,7 +332,6 @@ impl CycleAccurateMachineBackend {
         }
 
         let elapsed_total = full.cycles.saturating_sub(start_cycles);
-        debug_assert_eq!(elapsed_total, u64::from(last_elapsed).min(elapsed_total).saturating_add(elapsed_total.saturating_sub(u64::from(last_elapsed))));
         self.instruction_address = last_address;
         self.cpu
             .commit_full_execution_window(&full, completed, last_elapsed);
@@ -487,6 +505,57 @@ mod tests {
         assert_eq!(backend.cpu.total_t_states(), 14_000);
         assert!(backend.cpu.completed_instructions().saturating_sub(before) > 1_000);
         assert_eq!(backend.cpu.machine_cycle(), crate::cpu8080_cycle::MachineCycle::InstructionFetch);
+    }
+
+    #[test]
+    fn compiled_full_clocks_idle_two_sio_exactly_once() {
+        let hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
+        let mut compiled = CycleAccurateMachineBackend::default();
+        let mut reference = CycleAccurateMachineBackend::default();
+
+        for backend in [&mut compiled, &mut reference] {
+            backend
+                .machine
+                .bus
+                .configure_s100_hardware_memory(hardware, RamInit::Zeroed)
+                .unwrap();
+            backend.power(true).unwrap();
+            backend.assert_reset().unwrap();
+            backend.release_reset().unwrap();
+            backend.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]).unwrap();
+            backend.run().unwrap();
+        }
+
+        compiled.service_execution_compiled(14_000).unwrap();
+        assert_eq!(compiled.cpu.total_t_states(), 14_000);
+        reference.machine.bus.advance_serial_hardware_time(14_000);
+
+        // Port 1 is strapped to 9600 baud by the historical starter. Programming
+        // the same /16 mode after the elapsed idle interval turns its first TX
+        // completion into a precise probe of baud-generator phase.
+        for backend in [&mut compiled, &mut reference] {
+            backend.machine.bus.debugger_output_port(0x12, 0x15);
+            backend.machine.bus.debugger_output_port(0x13, b'P');
+        }
+
+        let mut compiled_done = None;
+        let mut reference_done = None;
+        for elapsed in 1..=5_000u64 {
+            compiled.machine.bus.advance_serial_hardware_time(1);
+            reference.machine.bus.advance_serial_hardware_time(1);
+            if compiled_done.is_none() && compiled.machine.bus.serial_port1_tx_front().is_some() {
+                compiled_done = Some(elapsed);
+            }
+            if reference_done.is_none() && reference.machine.bus.serial_port1_tx_front().is_some() {
+                reference_done = Some(elapsed);
+            }
+            if compiled_done.is_some() && reference_done.is_some() {
+                break;
+            }
+        }
+
+        assert_eq!(compiled_done, reference_done);
+        assert!(compiled_done.is_some());
     }
 
     #[test]
