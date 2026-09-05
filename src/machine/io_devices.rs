@@ -696,9 +696,6 @@ impl AltairBus {
         self.io.advance_t_states(t_states);
         self.refresh_interrupt_request_line();
     }
-    pub(crate) fn cycle_io_ready(&self, port: u8, input_read: bool, phase: MemoryReadyPhase) -> bool {
-        self.io.ready_for_input_t_state(port, input_read, phase)
-    }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
         if self.cycle_uses_physical_serial() { let _ = self.memory.serial_receive(1, byte); }
