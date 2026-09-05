@@ -4,15 +4,11 @@
 pub(super) mod sio_interface;
 #[path = "sio.rs"]
 pub(super) mod sio;
-mod fast_exec;
 
 use crate::config::{SerialBoard, SioConnectorOutputs, SioElectricalLevel};
 
 impl super::AltairBus {
     /// Physical revision and interrupt-pad destinations installed on the 88-SIO.
-    ///
-    /// Keeping these as hardware types (rather than strings/UI state) also makes
-    /// the Fast and Cycle machines observe the exact same card configuration.
     pub fn sio_physical_wiring(
         &self,
     ) -> Option<(
