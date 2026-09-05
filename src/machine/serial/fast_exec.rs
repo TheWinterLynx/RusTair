@@ -27,7 +27,6 @@ struct FastExecutionBus<'a> {
     no_wait_memory: bool,
     last_visible: Option<FastVisibleCycle>,
     synchronization_requested: bool,
-    io_touched: bool,
     /// Chassis-clock quanta already consumed by completed memory-only
     /// instructions in this prepared block but not yet applied to the UART baud
     /// generators. Batching them is exact while serial_timing_is_quiet() holds:
@@ -43,7 +42,6 @@ impl<'a> FastExecutionBus<'a> {
             no_wait_memory,
             last_visible: None,
             synchronization_requested: false,
-            io_touched: false,
             deferred_serial_t_states: 0,
         }
     }
@@ -108,14 +106,12 @@ impl Bus for FastExecutionBus<'_> {
         // this point the current IN has not completed yet, so flush only time
         // belonging to earlier instructions before touching the UART registers.
         self.flush_deferred_serial_time();
-        self.io_touched = true;
         self.request_external_sync();
         <AltairBus as Bus>::input(self.bus, port)
     }
 
     fn output(&mut self, port: u8, value: u8) {
         self.flush_deferred_serial_time();
-        self.io_touched = true;
         self.request_external_sync();
         <AltairBus as Bus>::output(self.bus, port, value);
     }
@@ -227,7 +223,6 @@ impl AltairMachine {
         let mut used = 0u32;
         let mut sync_elapsed = 0u32;
         let mut synchronization_requested = false;
-        let mut io_touched = false;
         let mut last_visible = None;
 
         {
@@ -242,7 +237,6 @@ impl AltairMachine {
 
                 if fast_bus.synchronization_requested || cpu.halted {
                     synchronization_requested = fast_bus.synchronization_requested;
-                    io_touched = fast_bus.io_touched;
                     sync_elapsed = elapsed;
                     break;
                 }
@@ -264,13 +258,13 @@ impl AltairMachine {
         self.bus.sync_cpu_inte(self.cpu.inte);
 
         if synchronization_requested {
-            // An IN/OUT instruction may have started a timed UART operation. The
-            // legacy Fast engine advances the UART by that instruction's elapsed
-            // time before testing PINT again, so preserve exactly that boundary.
-            if io_touched {
-                self.bus
-                    .advance_serial_hardware_time(u64::from(sync_elapsed));
-            }
+            // The current instruction was deliberately not included in the
+            // deferred batch because its register/INTE/HALT side effect is a
+            // synchronization boundary. Legacy Fast still advances the UART by
+            // that instruction's elapsed T-states after the instruction, so do
+            // exactly that for every sync cause, not only IN/OUT.
+            self.bus
+                .advance_serial_hardware_time(u64::from(sync_elapsed));
             let remaining = cycles.saturating_sub(used);
             if remaining != 0 {
                 self.run_cycles(remaining);
