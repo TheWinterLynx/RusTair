@@ -12,10 +12,8 @@ pub struct AdaptiveCycleFallbackStats {
     pub stop_wait_pending: u64,
     pub cpu_fault: u64,
     pub reset: u64,
-    pub boundary_not_prepared: u64,
     pub opcode_barrier: u64,
     pub full_window_unavailable: u64,
-    pub observer_active: u64,
 }
 
 impl AdaptiveCycleFallbackStats {
@@ -30,10 +28,8 @@ impl AdaptiveCycleFallbackStats {
             + self.stop_wait_pending
             + self.cpu_fault
             + self.reset
-            + self.boundary_not_prepared
             + self.opcode_barrier
             + self.full_window_unavailable
-            + self.observer_active
     }
 }
 
@@ -59,7 +55,10 @@ impl AdaptiveCycleStats {
         if total == 0 { 0.0 } else { self.full_t_states as f64 * 100.0 / total as f64 }
     }
 
-    pub fn partial_percent(self) -> f64 { 100.0 - self.full_percent() }
+    pub fn partial_percent(self) -> f64 {
+        let total = self.total_t_states();
+        if total == 0 { 0.0 } else { self.partial_t_states as f64 * 100.0 / total as f64 }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,10 +79,8 @@ pub(crate) enum AdaptiveFallbackReason {
     StopWaitPending,
     CpuFault,
     Reset,
-    BoundaryNotPrepared,
     OpcodeBarrier,
     FullWindowUnavailable,
-    ObserverActive,
 }
 
 #[derive(Default)]
@@ -180,17 +177,11 @@ pub(crate) fn record_partial_span(t_states: u64, reason: AdaptiveFallbackReason)
             AdaptiveFallbackReason::Reset => {
                 metrics.stats.fallbacks.reset = metrics.stats.fallbacks.reset.saturating_add(1)
             }
-            AdaptiveFallbackReason::BoundaryNotPrepared => {
-                metrics.stats.fallbacks.boundary_not_prepared = metrics.stats.fallbacks.boundary_not_prepared.saturating_add(1)
-            }
             AdaptiveFallbackReason::OpcodeBarrier => {
                 metrics.stats.fallbacks.opcode_barrier = metrics.stats.fallbacks.opcode_barrier.saturating_add(1)
             }
             AdaptiveFallbackReason::FullWindowUnavailable => {
                 metrics.stats.fallbacks.full_window_unavailable = metrics.stats.fallbacks.full_window_unavailable.saturating_add(1)
-            }
-            AdaptiveFallbackReason::ObserverActive => {
-                metrics.stats.fallbacks.observer_active = metrics.stats.fallbacks.observer_active.saturating_add(1)
             }
         }
         metrics.last_path = Some(ExecutionPath::Partial);
