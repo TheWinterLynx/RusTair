@@ -4,7 +4,7 @@
 //! media. The ignored end-to-end test reads an operator-supplied external tape
 //! from `RUSTAIR_BASIC32_TAP`; the tape is never committed to RusTair.
 
-use rustair::backend::{BackendHost, BackendSerialPort, EmulationEngine};
+use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{RamInit, RamSize, SerialBoard};
 use std::path::{Path, PathBuf};
 
@@ -382,7 +382,7 @@ fn wrong_board_bootstrap_does_not_consume_selected_uart_data() {
         (SerialBoard::Sio88, bootstrap_for(SerialBoard::TwoSio88)),
         (SerialBoard::TwoSio88, bootstrap_for(SerialBoard::Sio88)),
     ] {
-        let mut machine = BackendHost::rust_fast();
+        let mut machine = BackendHost::default();
         machine.configure_memory(RamSize::K4, RamInit::Zeroed);
         machine.configure_serial_board(board);
         machine.power(true);
@@ -401,7 +401,7 @@ fn wrong_board_bootstrap_does_not_consume_selected_uart_data() {
 
 #[test]
 fn two_sio_port1_cannot_feed_port0_basic_bootstrap() {
-    let mut machine = BackendHost::rust_fast();
+    let mut machine = BackendHost::default();
     machine.configure_memory(RamSize::K4, RamInit::Zeroed);
     machine.configure_serial_board(SerialBoard::TwoSio88);
     machine.power(true);
@@ -426,7 +426,7 @@ fn bundled_quick_image_is_a_full_nonempty_4k_image() {
 
 #[test]
 #[ignore = "requires external 4K BASIC Ver 3-2.tap via RUSTAIR_BASIC32_TAP"]
-fn authentic_basic32_real_tape_matches_bundled_program_on_both_engines_and_boards() {
+fn authentic_basic32_real_tape_matches_bundled_program_on_adaptive_cycle_and_both_boards() {
     let path = validate_external_tape_path();
     let tape = read_external_tape(&path);
     let parsed = parse_basic32_tape(&tape).unwrap_or_else(|error| {
@@ -456,55 +456,50 @@ fn authentic_basic32_real_tape_matches_bundled_program_on_both_engines_and_board
         }
     }
 
-    for engine in [
-        EmulationEngine::RustFast8080,
-        EmulationEngine::RustCycleAccurate8080,
-    ] {
-        for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
-            let mut machine = BackendHost::from_engine(engine).unwrap();
-            machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-            machine.configure_serial_board(board);
-            machine.power(true);
-            machine.set_running(false);
+    for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
+        let mut machine = BackendHost::default();
+        machine.configure_memory(RamSize::K4, RamInit::Zeroed);
+        machine.configure_serial_board(board);
+        machine.power(true);
+        machine.set_running(false);
 
-            let bootstrap = bootstrap_for(board);
-            install_bootstrap_through_panel(&mut machine, bootstrap);
-            start_bootstrap(&mut machine, bootstrap);
+        let bootstrap = bootstrap_for(board);
+        install_bootstrap_through_panel(&mut machine, bootstrap);
+        start_bootstrap(&mut machine, bootstrap);
 
-            let pre_go = &tape[parsed.reader_start..parsed.go_offset];
-            feed_guest_paced(
-                &mut machine,
-                BackendSerialPort::Port0,
-                pre_go,
-                parsed.reader_start,
-            );
-            machine.run_cycles(512);
-            assert_program_records_match_memory(&mut machine, &parsed);
+        let pre_go = &tape[parsed.reader_start..parsed.go_offset];
+        feed_guest_paced(
+            &mut machine,
+            BackendSerialPort::Port0,
+            pre_go,
+            parsed.reader_start,
+        );
+        machine.run_cycles(512);
+        assert_program_records_match_memory(&mut machine, &parsed);
 
-            // Feed the Go Record only after RAM is verified. The checksum
-            // loader must consume all three bytes and transfer execution away
-            // from its temporary 0Fxx page to the 0000h BASIC entry path.
-            feed_guest_paced(
-                &mut machine,
-                BackendSerialPort::Port0,
-                &tape[parsed.go_offset..parsed.go_offset + 3],
-                parsed.go_offset,
-            );
-            let mut entered_basic = false;
-            for _ in 0..20_000 {
-                machine.run_cycles(16);
-                let pc = machine.intel8080_state().pc;
-                if pc < 0x0F00 {
-                    entered_basic = true;
-                    break;
-                }
+        // Feed the Go Record only after RAM is verified. The checksum
+        // loader must consume all three bytes and transfer execution away
+        // from its temporary 0Fxx page to the 0000h BASIC entry path.
+        feed_guest_paced(
+            &mut machine,
+            BackendSerialPort::Port0,
+            &tape[parsed.go_offset..parsed.go_offset + 3],
+            parsed.go_offset,
+        );
+        let mut entered_basic = false;
+        for _ in 0..20_000 {
+            machine.run_cycles(16);
+            let pc = machine.intel8080_state().pc;
+            if pc < 0x0F00 {
+                entered_basic = true;
+                break;
             }
-            assert!(
-                entered_basic,
-                "{engine:?} / {board:?} did not leave checksum-loader page after Go Record; PC={:04X}h",
-                machine.intel8080_state().pc
-            );
         }
+        assert!(
+            entered_basic,
+            "Adaptive Cycle / {board:?} did not leave checksum-loader page after Go Record; PC={:04X}h",
+            machine.intel8080_state().pc
+        );
     }
 
     eprintln!(
