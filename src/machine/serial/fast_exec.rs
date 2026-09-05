@@ -18,6 +18,7 @@ use super::super::{AltairBus, AltairMachine};
 struct FastExecutionBus<'a> {
     bus: &'a mut AltairBus,
     no_wait_memory: bool,
+    protection_checks_required: bool,
     synchronization_requested: bool,
     /// Chassis-clock quanta already consumed by completed memory-only
     /// instructions in this prepared block but not yet applied to the UART baud
@@ -28,10 +29,15 @@ struct FastExecutionBus<'a> {
 }
 
 impl<'a> FastExecutionBus<'a> {
-    fn new(bus: &'a mut AltairBus, no_wait_memory: bool) -> Self {
+    fn new(
+        bus: &'a mut AltairBus,
+        no_wait_memory: bool,
+        protection_checks_required: bool,
+    ) -> Self {
         Self {
             bus,
             no_wait_memory,
+            protection_checks_required,
             synchronization_requested: false,
             deferred_serial_t_states: 0,
         }
@@ -53,7 +59,11 @@ impl<'a> FastExecutionBus<'a> {
     #[inline]
     fn project_panel_cycle(&mut self, address: u16, data: u8, cycle: S100Cycle) {
         let signals = self.bus.s100.signals();
-        let protected = self.bus.memory.is_protected(address);
+        let protected = if self.protection_checks_required {
+            self.bus.memory.is_protected(address)
+        } else {
+            false
+        };
         let (t_states, reads_data, writes_data) = match cycle {
             S100Cycle::InstructionFetch => (4, true, false),
             S100Cycle::MemoryRead | S100Cycle::StackRead => (3, true, false),
@@ -205,6 +215,63 @@ fn all_memory_reads_are_no_wait(bus: &AltairBus) -> bool {
         })
 }
 
+/// Prove once per synchronous prepared block that no selected physical RAM
+/// protection latch is asserted. The guest cannot toggle Display/Control PROTECT
+/// while this CPU-only call is running, so a successful proof makes every
+/// per-access `is_protected(address)` query redundant. Overlap deliberately
+/// rejects the proof because multiple cards may contribute PROT electrically.
+fn ram_protection_checks_required(bus: &AltairBus) -> bool {
+    let hardware = bus.s100_hardware_memory();
+    let mut ranges: Vec<(u32, u32)> = Vec::new();
+
+    for (_, card) in hardware.installed_cards() {
+        match card {
+            S100InstalledCardConfig::Ram(config) => {
+                let start = u32::from(config.base_address);
+                let end = start + config.populated_bytes as u32;
+                if ranges
+                    .iter()
+                    .any(|&(other_start, other_end)| start < other_end && other_start < end)
+                {
+                    return true;
+                }
+                ranges.push((start, end));
+
+                if config.model.supports_front_panel_protect()
+                    && bus.memory.is_protected(config.base_address)
+                {
+                    return true;
+                }
+            }
+            S100InstalledCardConfig::FastRamCompatibility(config) => {
+                let start = u32::from(config.base_address);
+                let end = start + config.populated_bytes as u32;
+                if ranges
+                    .iter()
+                    .any(|&(other_start, other_end)| start < other_end && other_start < end)
+                {
+                    return true;
+                }
+                ranges.push((start, end));
+
+                // Compatibility RAM preserves the old 1 KiB protection blocks.
+                // Query one address per physical protection unit, not per guest
+                // byte access during the execution block.
+                let mut offset = 0usize;
+                while offset < config.populated_bytes {
+                    let address = (u32::from(config.base_address) + offset as u32) as u16;
+                    if bus.memory.is_protected(address) {
+                        return true;
+                    }
+                    offset += 1024;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Conservative proof that no UART state transition can occur while CPU time is
 /// batched. The baud oscillator itself still advances: its phase is accumulated
 /// and flushed in one operation at a block/I/O boundary.
@@ -272,6 +339,7 @@ impl AltairMachine {
         }
 
         let no_wait_memory = all_memory_reads_are_no_wait(&self.bus);
+        let protection_checks_required = ram_protection_checks_required(&self.bus);
         let mut used = 0u32;
         let mut sync_elapsed = 0u32;
         let mut synchronization_requested = false;
@@ -279,7 +347,11 @@ impl AltairMachine {
         {
             let cpu = &mut self.cpu;
             let bus = &mut self.bus;
-            let mut fast_bus = FastExecutionBus::new(bus, no_wait_memory);
+            let mut fast_bus = FastExecutionBus::new(
+                bus,
+                no_wait_memory,
+                protection_checks_required,
+            );
 
             while used < cycles {
                 let elapsed = cpu.step(&mut fast_bus);
@@ -383,6 +455,21 @@ mod tests {
         assert_eq!(compiled.cpu.cycles, legacy.cpu.cycles);
         assert_eq!(compiled.cpu.inte, legacy.cpu.inte);
         assert_eq!(compiled.cpu.halted, legacy.cpu.halted);
+    }
+
+    #[test]
+    fn compiled_fast_proves_unprotected_ram_once_per_block() {
+        let mut machine = AltairMachine::default();
+        machine
+            .bus
+            .configure_s100_hardware_memory(static_4k_hardware(), RamInit::Zeroed)
+            .unwrap();
+        assert!(!ram_protection_checks_required(&machine.bus));
+
+        machine.bus.memory.set_protected(0x0100, true);
+        assert!(ram_protection_checks_required(&machine.bus));
+        machine.bus.memory.set_protected(0x0100, false);
+        assert!(!ram_protection_checks_required(&machine.bus));
     }
 
     #[test]
