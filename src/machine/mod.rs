@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, SerialBoard, SioHardwareConfig, SioInterruptTarget,
+    RamInit, RamSize, SerialBoard, SioHardwareConfig, SioInterruptTarget,
     SioInterruptWiring, SioRevision, TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::s100::S100Signal;
@@ -621,8 +621,6 @@ impl AltairBus {
 
     fn sync_cpu_inte(&mut self, enabled: bool) { self.s100.set_inte(enabled); }
     fn set_run(&mut self, run: bool) { self.s100.set_run(run); }
-    fn set_ready(&mut self, ready: bool) { self.s100.set_ready(ready); }
-    fn set_hold(&mut self, hold: bool) { self.s100.set_hold(hold); }
     fn hold_requested(&self) -> bool { self.s100.signals().hold }
     fn set_hlda(&mut self, hlda: bool) { self.s100.set_hlda(hlda); }
     fn hlda(&self) -> bool { self.s100.signals().hlda }
