@@ -995,6 +995,8 @@ mod tests {
         let mut on = off;
         on.memr = true;
 
+        // This deliberately exceeds the old 32,000-sample presentation cap in
+        // the first OFF half. The correct electrical duty is still exactly 50%.
         integrator.sample(&off, 40_000);
         integrator.sample(&on, 40_000);
         integrator.commit(&on, Duration::from_millis(16), true);
@@ -1046,6 +1048,8 @@ mod tests {
             bus.lamps.clear_activity();
         }
 
+        // Exact MemoryRead after a fetch: T1 still displays M1 status, T2 latches
+        // 82h and starts showing the new DI byte, T3 retains both.
         expanded.drive_cpu_t_state(
             Some(0x1234), Some(0x82), None, Some(0x82), None, false, false,
             true, false, false,
@@ -1082,6 +1086,8 @@ mod tests {
         assert!(!phi1.pdbin);
         assert!(phi1.pwr_n);
 
+        // CLOC is a separate oscillator net: it retains its level through the
+        // non-overlap dead time instead of becoming unknown when PHI1/PHI2 are 0.
         bus.drive_cpu_board_edge(false, false, false, false, true);
         let dead_after_phi1 = bus.signals();
         assert_eq!(dead_after_phi1.phi1, Some(false));
@@ -1314,18 +1320,21 @@ mod tests {
         bus.drive_power_on_state(0x0000, 0x3c, false, false, false);
         assert_eq!(bus.signals().panel_data, 0x3c);
 
+        // Status byte leaves the CPU through DO and must not change DATA LEDs.
         bus.drive_cpu_t_state(
             Some(0x0000), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
             true, false, false,
         );
         assert_eq!(bus.signals().panel_data, 0x3c);
 
+        // Memory data on DI is the source that updates the physical DATA LEDs.
         bus.drive_cpu_t_state(
             Some(0x0000), Some(0x7e), Some(0x7e), None, None, false, false,
             true, false, false,
         );
         assert_eq!(bus.signals().panel_data, 0x7e);
 
+        // A CPU write on DO must leave the last DI-derived lamp value alone.
         bus.drive_cpu_t_state(
             Some(0x0001), Some(0x00), None, Some(0x00), Some(0x00), false, false,
             true, false, false,
