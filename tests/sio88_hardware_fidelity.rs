@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rustair::backend::{MachineBackend, NativeMachineBackend};
+use rustair::backend::{CycleAccurateMachineBackend, MachineBackend};
 use rustair::config::{
     SioAddressPair, SioHardwareConfig, SioInterruptTarget, SioInterruptWiring, SioRevision,
 };
@@ -8,7 +8,7 @@ use rustair::machine::AltairMachine;
 
 #[test]
 fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
-    let mut backend = NativeMachineBackend::default();
+    let mut backend = CycleAccurateMachineBackend::default();
     backend.power(true).unwrap();
     backend.halt().unwrap();
     assert_eq!(backend.machine().bus.peek_io_port(0x00), 0x01, "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7");
