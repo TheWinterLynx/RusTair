@@ -58,12 +58,14 @@ fn s100_remount_uses_the_single_live_cycle_backend() {
         .find("fn apply_ram_initialization")
         .expect("RAM initialization helper after S-100 remount boundary");
     let function = &tail[..end];
+    let compact: String = function.split_whitespace().collect();
 
-    assert!(function.contains("self.machine.configure_s100_hardware"));
-    assert!(function.contains("self.config.machine.s100_hardware = hardware"));
-    assert!(function.contains("self.config.machine.ram_init"));
+    assert!(compact.contains(
+        "self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init);"
+    ));
+    assert!(compact.contains("self.config.machine.s100_hardware=hardware;"));
     assert!(!function.contains("replace_engine"));
-    assert!(!function.contains("self.machine.configure_memory("));
+    assert!(!compact.contains("self.machine.configure_memory("));
 }
 
 #[test]
