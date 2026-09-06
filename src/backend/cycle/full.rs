@@ -445,6 +445,19 @@ impl<'a> FullInstructionBus<'a> {
         self.panel.project_internal_tail(t_states);
     }
 
+    /// Some 8080 families have internal T-states interleaved between external
+    /// machine cycles. These must be placed at the exact boundary rather than
+    /// left for `instruction_complete`, whose residual belongs after the final
+    /// external transfer. PUSH has one such T5 immediately after M1.
+    #[inline]
+    fn project_interleaved_internal_t_states(&mut self, t_states: u32) {
+        if t_states == 0 {
+            return;
+        }
+        self.project_internal_tail(t_states);
+        self.projected_t_states = self.projected_t_states.saturating_add(t_states);
+    }
+
     #[inline]
     fn remember_read_boundary(&mut self, address: u16) {
         self.boundary_pins = Cpu8080Pins {
@@ -481,6 +494,18 @@ impl<'a> FullInstructionBus<'a> {
     fn prime_opcode_fetch(&mut self, address: u16, opcode: u8) {
         debug_assert!(self.prefetched_opcode.is_none());
         self.prefetched_opcode = Some((address, opcode));
+    }
+
+    #[inline]
+    fn project_opcode_fetch(&mut self, address: u16, opcode: u8) {
+        self.project_machine_cycle(address, opcode, 0xa2, 4, true, false);
+        // Intel 8080 PUSH is M1(T1-T4), internal T5, then two 3T stack writes.
+        // The instruction-level semantic core exposes only the two writes, so
+        // Full must place that T5 here before either StackWrite is projected.
+        if opcode & 0xcf == 0xc5 {
+            self.project_interleaved_internal_t_states(1);
+        }
+        self.remember_read_boundary(address);
     }
 
     fn finish(mut self) -> Cpu8080Pins {
@@ -525,14 +550,12 @@ impl Bus for FullInstructionBus<'_> {
         if let Some((cached_address, opcode)) = self.prefetched_opcode.take() {
             debug_assert_eq!(cached_address, address);
             if cached_address == address {
-                self.project_machine_cycle(address, opcode, 0xa2, 4, true, false);
-                self.remember_read_boundary(address);
+                self.project_opcode_fetch(address, opcode);
                 return opcode;
             }
         }
         let value = self.guest_read(address);
-        self.project_machine_cycle(address, value, 0xa2, 4, true, false);
-        self.remember_read_boundary(address);
+        self.project_opcode_fetch(address, value);
         value
     }
 
@@ -923,6 +946,7 @@ mod tests {
     use crate::adaptive_metrics;
     use crate::backend::MachineBackend;
     use crate::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
+    use crate::cpu8080_cycle::Registers;
     use crate::s100_chassis::S100ChassisConfig;
     use crate::s100_memory::S100RamCardConfig;
 
@@ -1048,6 +1072,56 @@ mod tests {
             partial.machine.bus.raw_panel_lamp_duty(),
             "Cycle Full must preserve the exact raw front-panel duty of Partial"
         );
+    }
+
+    #[test]
+    fn compiled_full_push_family_matches_forced_partial_exactly() {
+        const BUDGET: u32 = 18;
+        const STACK_LO: u16 = 0x07fe;
+        const STACK_HI: u16 = 0x07ff;
+        let registers = Registers {
+            a: 0xde,
+            b: 0x12,
+            c: 0x34,
+            d: 0x56,
+            e: 0x78,
+            h: 0x9a,
+            l: 0xbc,
+            f: 0xd7,
+            sp: 0x0800,
+            pc: 0,
+        };
+
+        for opcode in [0xc5, 0xd5, 0xe5, 0xf5] {
+            let program = [opcode, 0x00, 0x00, 0x00];
+            let mut compiled = prepare_static_backend(&program);
+            let mut partial = prepare_static_backend(&program);
+            compiled.cpu.set_registers(registers);
+            partial.cpu.set_registers(registers);
+
+            adaptive_metrics::begin_measurement();
+            compiled.service_execution_compiled(BUDGET).unwrap();
+            let stats = adaptive_metrics::end_measurement();
+            assert_eq!(stats.full_t_states, 11, "PUSH {opcode:02x} must be exactly one 11T Full instruction");
+            assert_eq!(stats.partial_t_states, 7, "remaining budget must rejoin exact Partial");
+            assert_eq!(stats.fallbacks.opcode_barrier, 0, "PUSH {opcode:02x} must not be a Full barrier");
+
+            for _ in 0..BUDGET {
+                let ready = partial.machine.bus.cycle_front_panel_ready_input();
+                let trace = partial.tick_once(ready);
+                assert!(trace.fault.is_none(), "PUSH {opcode:02x} Partial oracle faulted");
+            }
+
+            assert_eq!(compiled.cpu.total_t_states(), partial.cpu.total_t_states(), "PUSH {opcode:02x} T-states");
+            assert_eq!(compiled.cpu.registers(), partial.cpu.registers(), "PUSH {opcode:02x} registers");
+            assert_eq!(compiled.machine.bus.peek_memory(STACK_LO), partial.machine.bus.peek_memory(STACK_LO), "PUSH {opcode:02x} stack low byte");
+            assert_eq!(compiled.machine.bus.peek_memory(STACK_HI), partial.machine.bus.peek_memory(STACK_HI), "PUSH {opcode:02x} stack high byte");
+            assert_eq!(
+                compiled.machine.bus.raw_panel_lamp_duty(),
+                partial.machine.bus.raw_panel_lamp_duty(),
+                "PUSH {opcode:02x} Full must preserve exact front-panel duty"
+            );
+        }
     }
 
     #[test]
