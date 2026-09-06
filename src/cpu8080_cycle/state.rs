@@ -106,6 +106,7 @@ impl Cpu8080Cycle {
         matches!(
             decode(opcode),
             Instruction::Nop
+                | Instruction::Di
                 | Instruction::MviImmediate(_)
                 | Instruction::MviMemory
                 | Instruction::MovRegister { .. }
@@ -114,6 +115,7 @@ impl Cpu8080Cycle {
                 | Instruction::Lxi(_)
                 | Instruction::Inx(_)
                 | Instruction::Dcx(_)
+                | Instruction::Dad(_)
                 | Instruction::Ldax(_)
                 | Instruction::Stax(_)
                 | Instruction::LdaDirect
@@ -129,22 +131,43 @@ impl Cpu8080Cycle {
                 | Instruction::AluImmediate { .. }
                 | Instruction::Jump
                 | Instruction::JumpConditional(_)
+                | Instruction::Call
+                | Instruction::CallConditional(_)
                 | Instruction::Ret
+                | Instruction::RetConditional(_)
+                | Instruction::Rst(_)
+                | Instruction::Push(_)
                 | Instruction::Pop(_)
                 | Instruction::Pchl
                 | Instruction::Xchg
+                | Instruction::Xthl
                 | Instruction::Sphl
         )
     }
 
+    /// Some CPU-only instructions contain one internal T5 after opcode fetch and
+    /// then continue with externally visible operand/stack cycles. Full executes
+    /// their semantics instruction-at-a-time, so the bridge must explicitly put
+    /// that T5 between M1 and the later bus cycles rather than incorrectly
+    /// accumulating it after the final transfer.
+    pub(crate) fn full_post_fetch_internal_t_states(opcode: u8) -> u32 {
+        match decode(opcode) {
+            Instruction::Call
+            | Instruction::CallConditional(_)
+            | Instruction::RetConditional(_)
+            | Instruction::Rst(_)
+            | Instruction::Push(_) => 1,
+            _ => 0,
+        }
+    }
+
     /// MAME-style `full` execution is legal only at a clean instruction
     /// boundary and only for instruction families whose external machine-cycle
-    /// schedule can currently be reconstructed without a mid-instruction event.
+    /// schedule can currently be reconstructed without an unmodelled event.
     ///
-    /// The stateful T-state engine remains the `partial` oracle. I/O, HLT,
-    /// delayed interrupt-enable transitions and instruction families with extra
-    /// non-bus cycles interleaved between external cycles stay on that path until
-    /// their compiled schedules are added explicitly.
+    /// The stateful T-state engine remains the `partial` oracle. I/O, HLT and
+    /// delayed EI transitions stay on that path; CPU-only internal gaps that Full
+    /// knows how to place are allowed without creating a second state authority.
     #[cfg(test)]
     pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
         self.full_execution_boundary_ready() && Self::full_opcode_class_supported(opcode)
@@ -286,9 +309,9 @@ mod tests {
 
         assert_eq!(cpu.registers(), registers);
         assert!(cpu.interrupts_enabled());
-        assert!(cpu.pins().inte);
-        assert_eq!(cpu.total_t_states(), 0);
-        assert_eq!(cpu.completed_instructions(), 0);
+        assert!(cpu.pins.inte);
+        assert_eq!(cpu.total_t_states, 0);
+        assert_eq!(cpu.completed_instructions, 0);
         assert!(!cpu.is_halted());
     }
 
@@ -310,10 +333,10 @@ mod tests {
         assert_eq!(cpu.execute_full_instruction(&mut bus, 0x3e), Some(7));
         assert_eq!(cpu.registers().a, 0x5a);
         assert_eq!(cpu.registers().pc, 2);
-        assert_eq!(cpu.total_t_states(), 7);
-        assert_eq!(cpu.completed_instructions(), 1);
-        assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch);
-        assert_eq!(cpu.t_state(), TState::T1);
+        assert_eq!(cpu.total_t_states, 7);
+        assert_eq!(cpu.completed_instructions, 1);
+        assert_eq!(cpu.machine_cycle, MachineCycle::InstructionFetch);
+        assert_eq!(cpu.t_state, TState::T1);
     }
 
     #[test]
@@ -340,10 +363,24 @@ mod tests {
 
         assert_eq!(cpu.registers().b, 1);
         assert_eq!(cpu.registers().pc, 4);
-        assert_eq!(cpu.total_t_states(), 19);
-        assert_eq!(cpu.completed_instructions(), 4);
-        assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch);
-        assert_eq!(cpu.t_state(), TState::T1);
+        assert_eq!(cpu.total_t_states, 19);
+        assert_eq!(cpu.completed_instructions, 4);
+        assert_eq!(cpu.machine_cycle, MachineCycle::InstructionFetch);
+        assert_eq!(cpu.t_state, TState::T1);
+    }
+
+    #[test]
+    fn cpu_only_stack_control_and_internal_families_are_full_capable() {
+        for opcode in [0xf3, 0x09, 0xcd, 0xc4, 0xc0, 0xc5, 0xc7, 0xe3] {
+            assert!(Cpu8080Cycle::full_opcode_class_supported(opcode), "opcode {opcode:02x}");
+        }
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0xcd), 1);
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0xc4), 1);
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0xc0), 1);
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0xc5), 1);
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0xc7), 1);
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0x09), 0);
+        assert_eq!(Cpu8080Cycle::full_post_fetch_internal_t_states(0xe3), 0);
     }
 
     #[test]
@@ -354,12 +391,12 @@ mod tests {
             fn write(&mut self, _address: u16, _value: u8) { self.0 += 1; }
         }
 
-        for opcode in [0xdb, 0xd3, 0x76, 0xfb, 0xf3] {
+        for opcode in [0xdb, 0xd3, 0x76, 0xfb] {
             let mut cpu = Cpu8080Cycle::new();
             let mut bus = CountingBus(0);
             assert_eq!(cpu.execute_full_instruction(&mut bus, opcode), None);
             assert_eq!(bus.0, 0);
-            assert_eq!(cpu.total_t_states(), 0);
+            assert_eq!(cpu.total_t_states, 0);
         }
     }
 }
