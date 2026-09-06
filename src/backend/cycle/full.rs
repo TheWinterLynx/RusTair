@@ -569,6 +569,19 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
+        // During T1 the package has already moved ADDRESS to the new stack
+        // location, but the MITS 8212 does not latch the StackWrite status until
+        // the following PHI1. If the previous latched status still asserts
+        // sMEMR (PUSH follows its M1 fetch), mapped RAM therefore drives the old
+        // byte at the new stack address onto S-100 DI for this one T-state. The
+        // front-panel DATA lamps capture that DI before the write occurs. High-Z
+        // on an unmapped address must retain the previous panel byte rather than
+        // fabricate the CPU's FFh open-bus value.
+        if self.panel.latched_status & 0x80 != 0 {
+            if let Some(previous) = self.bus.peek_memory(address) {
+                self.panel.panel_data = previous;
+            }
+        }
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x04, 3, false, true);
