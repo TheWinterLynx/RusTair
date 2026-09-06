@@ -1,81 +1,131 @@
 # Emulator backend boundary
 
-RusTair has two selectable Intel 8080 engines:
+RusTair has one Intel 8080 execution engine: **Adaptive Cycle**.
 
-1. `RustFast8080` — instruction-level Rust 8080/Altair implementation.
-2. `RustCycleAccurate8080` — T-state/pin-accurate Rust 8080 implementation.
+`EmulationEngine::RustCycleAccurate8080` is the only public engine identity. The
+engine may execute a proven whole-instruction **Full** window or fall back to the
+edge-by-edge **Partial** electrical oracle, but those are internal strategies over
+the same processor, chassis, RAM and serial-card state. They are not selectable
+backends and no state is copied between them.
 
-Changing engines creates a fresh machine. Live state transfer between engines is intentionally outside the selector contract.
+## Runtime ownership
 
-## Active-backend authority
-
-Multiple CPU implementations are deliberate. The invariant is **exactly one CPU authority for the active backend**.
-
-| State | Fast authority | Cycle authority |
-| --- | --- | --- |
-| Registers / flags / PC / SP | `AltairMachine.cpu: Cpu8080` | `CycleAccurateMachineBackend.cpu: Cpu8080Cycle` |
-| INTE / HALT | `AltairMachine.cpu` | `Cpu8080Cycle` |
-| CPU T-state total | `AltairMachine.cpu.cycles` | `Cpu8080Cycle::total_t_states()` |
-| Exact machine cycle / T-state / package pins | not available | `Cpu8080Cycle` |
-| RAM / I/O / S-100 state | `AltairMachine.bus` | `AltairChassis.bus` |
-| Visible lamp persistence | presentation integrator only | presentation integrator only |
-| RUN/STOP physical state | `AltairMachine` | `AltairChassis` |
-
-### Fast
-
-Fast owns an `AltairMachine`, which contains its real `Cpu8080`, `AltairBus` and physical machine state. Execution, debugger state and `MachineBackend::cpu_state()` read that CPU directly.
-
-### Cycle Accurate
-
-Cycle owns two separate physical components:
+The active machine has one processor authority and one CPU-free physical chassis:
 
 ```text
-CycleAccurateMachineBackend
-├── Cpu8080Cycle          CPU execution authority
-└── AltairChassis         CPU-free physical chassis
-    ├── AltairBus
-    ├── powered
-    ├── running
-    └── RUN/STOP switch latches
+CycleHostBackend                    host scheduling/debugger facade
+└── CycleAccurateMachineBackend     Adaptive Full/Partial dispatcher
+    ├── Cpu8080Cycle                sole 8080 architectural-state authority
+    └── AltairChassis               CPU-free physical machine container
+        └── AltairBus
+            └── live S-100 runtime fabric
+                ├── MITS 8080 CPU-board electrical boundary
+                ├── RAM cards
+                ├── 88-SIO / 88-2SIO cards
+                └── front-panel / bus-visible state
 ```
 
-`AltairChassis` deliberately contains no `Cpu8080`. There is no passive Fast CPU mirror, no alias that disguises the chassis as `AltairMachine`, and no `sync_machine_cpu()` path. CPU transitions remain inside `Cpu8080Cycle`; the chassis and S-100 bus observe or drive the physical signals required by those transitions.
+| State | Authority |
+| --- | --- |
+| Registers / flags / PC / SP | `CycleAccurateMachineBackend::cpu` (`Cpu8080Cycle`) |
+| INTE / HALT / exact T-state count | `Cpu8080Cycle` |
+| Exact machine cycle / T-state / package pins | `Cpu8080Cycle` |
+| Physical chassis power and RUN/STOP state | `AltairChassis` |
+| RAM / installed S-100 cards | live `S100RuntimeFabric` reached through `AltairBus` |
+| UART state | installed/live serial-card instance; aggregate compatibility routing never owns a second guest-visible UART |
+| Raw S-100 electrical/status state | canonical `S100BusState` |
+| Visible LED persistence | presentation integrator only |
 
-RESET is a real cross-boundary operation: the chassis asserts the S-100 reset line and the Cycle backend clocks that line into `Cpu8080Cycle`. EXAMINE, DEPOSIT, RUN/STOP, HOLD/HLDA and memory protection likewise use the Cycle core plus the CPU-free chassis rather than a hidden Fast CPU.
+`AltairChassis` deliberately contains no processor implementation or register
+mirror. There is no `AltairMachine`, Fast CPU mirror, `sync_machine_cpu()` path,
+or engine-recreation boundary.
 
-Serial-board replacement is split by ownership. The chassis performs the physical board change and drops RUN/READY as required; the backend resets the Cycle CPU when a powered machine changes board. Selecting the already installed board is a no-op.
+## Adaptive Full and Partial
 
-The current Cycle memory configuration path mutates RAM on the existing chassis/bus rather than constructing a replacement `CycleAccurateMachineBackend`. When powered, it stops execution and resets the existing Cycle core after the storage change.
+Partial is the exact electrical oracle. Every real T-state drives the MITS CPU
+board and live S-100 fabric. READY, HOLD/HLDA, RESET, interrupts, serial timing,
+front-panel activity and card-visible bus edges are resolved there.
 
-## Chassis and observation
+Full is permitted only when the dispatcher proves that no installed hardware can
+distinguish the omitted intermediate host-side work from the corresponding exact
+T-state sequence. It uses the semantic 8080 executor internally, commits into the
+same `Cpu8080Cycle` architectural state and the same live S-100 storage, preserves
+exact T-state totals and projects equivalent observable front-panel/card timing.
+Any barrier returns execution to Partial.
 
-S-100 state is the electrical authority seen by the front panel. CPU INTE originates in the active CPU: Fast projects its instruction-level value through its CPU-board path; Cycle projects the exact value produced by `Cpu8080Cycle`. The Teacher observes those results and must never feed presentation state back into CPU state.
-
-Teacher is view-only. Exact mode consumes Cycle CPU samples plus canonical RAW S-100 state. Fast-mode cycle/T-state teaching remains explicitly approximate. LED persistence is presentation-only in both modes.
-
-### Temporal semantics of exact Teacher samples
-
-`BusTeachingAccuracy::Exact` means **an exact captured T-state sample**, not a promise that every field still describes the chassis at the later instant when the UI renders it.
-
-For an exact sample, machine-cycle, T-state, CPU output pins, S-100 status and READY/HOLD/RESET inputs describe the electrical levels associated with that CPU tick. Host/debugger controls may subsequently change chassis state without clocking another 8080 T-state. A debugger `Step T`, for example, must retain the READY level the CPU actually saw rather than retroactively rewriting that historical sample.
+The critical invariant is:
 
 ```text
-captured CPU sample: immutable historical truth for one real T-state
-current chassis state: mutable RUN/STOP / READY / HOLD / RESET control state
+Full or Partial -> same CPU state + same physical S-100 state + same elapsed T-states
 ```
 
-A physical STOP is different from a debugger pause. Cycle clocks the real next PSYNC, T2 and first TW before freezing execution, so the resulting exact sample genuinely contains READY low and CPU-generated WAIT high. Merely changing READY outside a CPU tick must never fabricate WAIT.
+## Independent card clocks
 
-RESET is also different from a passive host pause: it changes the CPU itself, so asserting RESET invalidates a retained exact T-state sample and the Teacher falls back to an explicit control-state observation until another real CPU T-state is clocked.
+Serial-board baud generators are physical clocks independent of whether useful
+8080 instructions are executing.
 
-## Error handling debt
+- During normal RUN, exact Partial T-states clock the installed card once per real
+  CPU-board quantum; Full advances the equivalent elapsed card time at its
+  synchronization boundary.
+- When CPU execution cannot cover elapsed wall time because the machine is STOPped,
+  RESET is held, or HLDA parks useful execution, `CycleHostBackend` bridges the
+  uncovered host duration to equivalent hardware quanta.
+- That host bridge subtracts CPU T-states already executed since the previous
+  panel commit, preventing double counting across state transitions.
+- `AltairChassis::cycle_commit_panel_activity` remains presentation-only; it must
+  not become a second wall-clock source for UARTs.
 
-`MachineBackend` operations are fallible, but several `BackendHost` convenience methods still convert a returned `BackendError` into `panic!`. With the two built-in Rust engines this is mostly dormant, but operations that can legitimately fail should eventually expose an explicit application error boundary rather than relying on panic-based transport.
+The UART/ACIA state itself still lives only in the physical serial-card instance.
+The host scheduler supplies elapsed time; it does not own or duplicate card state.
+
+## Chassis controls and observation
+
+RESET is a real cross-boundary operation: the chassis asserts the S-100 reset
+line and the Cycle backend clocks that condition into the authoritative
+`Cpu8080Cycle`. EXAMINE, DEPOSIT, RUN/STOP, HOLD/HLDA and memory protection likewise
+combine the exact CPU core with the CPU-free chassis rather than consulting a
+second processor implementation.
+
+S-100 state is the electrical authority seen by the front panel. CPU INTE originates
+in `Cpu8080Cycle` and is projected through the CPU-board path. The Bus Teacher is
+view-only and must never feed presentation state back into the machine.
+
+`BusTeachingAccuracy::Exact` means an exact captured T-state sample. A later host
+control action may change current chassis state without rewriting that historical
+sample. Optical lamp persistence is likewise derived presentation state and cannot
+reconstruct RAW bus levels.
+
+## Configuration boundaries
+
+Physical S-100 reconfiguration remounts the live slot inventory. It does not
+replace an execution engine or create another CPU object. Moving cards requires
+POWER OFF at the public S-100 configuration boundary.
+
+Legacy aggregate RAM/configuration fields exist only as migration or compatibility
+inputs. Runtime guest execution must use the mounted S-100 inventory, not recreate
+an alternate topology from those fields.
+
+## Remaining structural debt
+
+- `AltairChassis::running` and the S-100 RUN signal are still synchronized storage;
+  eventually the physical bus latch should be the sole canonical value.
+- `CycleHostBackend` still contains debugger/scheduling policy around the concrete
+  Adaptive Cycle backend. That facade must remain policy-only and must not acquire
+  duplicate CPU, RAM or UART state.
+- Some aggregate configuration helpers remain for migration/tests. They must never
+  become alternate guest-visible hardware authorities.
+
+See `docs/STATE_SOURCES.md` for the broader state-source inventory.
 
 ## Regression guards
 
-- `tests/backend_authority.rs` verifies Fast ownership, Cycle ownership of a CPU-free `AltairChassis`, exact chassis controls and Fast/Cycle architectural agreement on deterministic guest programs.
-- `tests/chassis_architecture.rs` prevents a CPU, `Deref` or `DerefMut` wrapper from being reintroduced into `AltairChassis`.
-- `tests/state_source_architecture.rs` guards explicit Cycle chassis naming and the documented state-source architecture.
-- `tests/cpu8080_cycle_differential.rs` compares all 256 Intel 8080 opcode byte values between the two Rust CPU cores.
-- `tests/no_simh.rs` ensures the product remains limited to the two Rust 8080 engines and that retired external-backend artifacts do not reappear.
+- `tests/unified_cycle_architecture.rs` prevents removed Fast/semantic-machine
+  architecture from re-entering source or tests.
+- `tests/state_source_architecture.rs` guards one `Cpu8080Cycle` authority plus the
+  CPU-free `AltairChassis`.
+- `tests/backend_authority.rs` compares Adaptive dispatch against a forced Partial
+  oracle for the same exact T-state budget and physical state.
+- `tests/two_sio_idle_chassis_clock.rs` guards STOP/RESET/HLDA/RUN serial-clock
+  semantics and prevents panel presentation from becoming a second idle clock.
+- `tests/s100_physical_serial_authority.rs` verifies that CPU I/O reaches the same
+  installed serial-card instance used by endpoints/debugger access.
