@@ -49,22 +49,20 @@ fn sio_hardware_is_persisted_as_one_atomic_card_configuration() {
 }
 
 #[test]
-fn engine_recreation_reapplies_physical_sio_hardware() {
+fn s100_remount_uses_the_single_live_cycle_backend() {
     let start = APP_SOURCE
-        .find("fn select_emulation_engine")
-        .expect("app must own the engine-recreation boundary");
+        .find("fn apply_s100_hardware_configuration")
+        .expect("app must own the physical S-100 remount boundary");
     let tail = &APP_SOURCE[start..];
     let end = tail
-        .find("fn apply_s100_hardware_configuration")
-        .expect("slot-native S-100 helper after engine-recreation boundary");
+        .find("fn apply_ram_initialization")
+        .expect("RAM initialization helper after S-100 remount boundary");
     let function = &tail[..end];
 
-    assert!(function.contains("self.machine.replace_engine(engine)"));
     assert!(function.contains("self.machine.configure_s100_hardware"));
-    assert!(function.contains("self.config.machine.s100_hardware"));
-    assert!(function.contains("self.machine.configure_sio_hardware"));
-    assert!(function.contains("self.config.machine.sio_hardware"));
-    assert!(function.contains("self.machine.configure_serial_board"));
+    assert!(function.contains("self.config.machine.s100_hardware = hardware"));
+    assert!(function.contains("self.config.machine.ram_init"));
+    assert!(!function.contains("replace_engine"));
     assert!(!function.contains("self.machine.configure_memory("));
 }
 
