@@ -20,7 +20,7 @@ fn profile_opcode(name: &str, opcode: u8) {
     let mut completed = 0u64;
     for _ in 0..T_STATES_PER_CASE {
         let trace = cpu.tick(inputs);
-        completed += u64::from(trace.instruction_complete);
+        completed += trace.instruction_complete as u64;
         black_box(trace);
     }
     let elapsed = started.elapsed();
