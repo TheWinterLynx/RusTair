@@ -3,10 +3,21 @@ const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
 const S100_UI_SOURCE: &str = include_str!("../src/app/ui/s100_hardware.rs");
 
+fn compact(source: &str) -> String {
+    source.split_whitespace().collect()
+}
+
 #[test]
 fn app_mounts_slot_native_s100_hardware_at_every_runtime_configuration_boundary() {
-    assert!(APP_SOURCE.contains("self.machine.configure_s100_hardware("));
-    assert!(PERSISTENCE_SOURCE.contains("self.machine.configure_s100_hardware("));
+    let app = compact(APP_SOURCE);
+    let persistence = compact(PERSISTENCE_SOURCE);
+
+    assert!(app.contains(
+        "self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init);"
+    ));
+    assert!(persistence.contains(
+        "self.machine.configure_s100_hardware(self.config.machine.s100_hardware,self.config.machine.ram_init);"
+    ));
     assert!(S100_UI_SOURCE.contains("app.apply_s100_hardware_configuration(valid, action)"));
     assert!(RUNTIME_SOURCE.contains("self.machine.s100_hardware() != self.config.machine.s100_hardware"));
 }
