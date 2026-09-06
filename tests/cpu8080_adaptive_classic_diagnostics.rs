@@ -10,7 +10,8 @@ const CPM_COM_LOAD_ADDRESS: u16 = 0x0100;
 const BOOT_ADDRESS: usize = 0x0080;
 const BDOS_BASE: u16 = 0xff00;
 const BDOS_LEN: usize = 0x37;
-const SERVICE_CHUNK_T_STATES: u32 = 100_000;
+const SHORT_SERVICE_CHUNK_T_STATES: u32 = 1_000;
+const LONG_SERVICE_CHUNK_T_STATES: u32 = 100_000;
 const SHORT_MAX_T_STATES: u64 = 5_000_000;
 const CPUTEST_MAX_T_STATES: u64 = 400_000_000;
 const EXM_MAX_T_STATES: u64 = 30_000_000_000;
@@ -94,10 +95,10 @@ fn build_bdos() -> Vec<u8> {
 
     assert_eq!(bdos.len(), PUTC_OFFSET as usize);
     bdos.push(0x47); // MOV B,A
-    bdos.extend_from_slice(&[0xdb, 0x10]); // IN 88-2SIO Port 0 status
+    bdos.extend_from_slice(&[0xdb, 0x12]); // IN 88-2SIO Port 1 status
     bdos.extend_from_slice(&[0xe6, 0x02]); // ANI TDRE
     append_abs(&mut bdos, 0xca, poll_addr); // JZ while not ready
-    bdos.extend_from_slice(&[0x78, 0xd3, 0x11, 0xc9]); // MOV A,B; OUT data; RET
+    bdos.extend_from_slice(&[0x78, 0xd3, 0x13, 0xc9]); // MOV A,B; OUT Port 1 data; RET
 
     assert_eq!(bdos.len(), BDOS_LEN);
     bdos
@@ -118,6 +119,11 @@ fn prepare_machine(image: &[u8], reference: Reference, name: &str) -> BackendHos
     page_zero[0x0005..0x0008].copy_from_slice(&[0xc3, bdos_lo, bdos_hi]);
     let boot = [
         0x31, bdos_lo, bdos_hi, // LXI SP,BDOS_BASE
+        // Port 1's physical strap is 9600. Program the MC6850 exactly as guest
+        // software would: /16, 8N1. This setup runs before the diagnostic meter
+        // begins at 0100h, so it does not alter the classic reference totals.
+        0x3e, 0x15,             // MVI A,15h
+        0xd3, 0x12,             // OUT 12h (88-2SIO Port 1 control)
         0x3e, 0x76,             // MVI A,HLT
         0x32, 0x00, 0x00,       // STA 0000h
         0xc3, 0x00, 0x01,       // JMP 0100h
@@ -141,7 +147,7 @@ fn prepare_machine(image: &[u8], reference: Reference, name: &str) -> BackendHos
 }
 
 fn drain_console(machine: &mut BackendHost, output: &mut Vec<u8>) {
-    while let Some(byte) = machine.serial_tx_complete(BackendSerialPort::Port0) {
+    while let Some(byte) = machine.serial_tx_complete(BackendSerialPort::Port1) {
         output.push(byte);
     }
 }
@@ -161,7 +167,7 @@ fn print_strategy_metrics(name: &str, stats: adaptive_metrics::AdaptiveCycleStat
     );
     let f = stats.fallbacks;
     eprintln!(
-        "{name} Partial-entry reasons: chassis={} serial={} ready={} hold={} irq={} budget={} mid_instruction={} stop={} fault={} reset={} opcode_barrier={} full_window_unavailable={} total={}",
+        "{name} Partial path-entry transition reasons (sustained blockers remain in the current Partial span): chassis={} serial={} ready={} hold={} irq={} budget={} mid_instruction={} stop={} fault={} reset={} opcode_barrier={} full_window_unavailable={} total={}",
         f.chassis_unsupported,
         f.serial_active,
         f.ready_low,
@@ -189,13 +195,18 @@ fn run_diagnostic(
     adaptive_metrics::begin_measurement();
     let started = Instant::now();
     let mut output = Vec::new();
+    let service_chunk = if reference.t_states <= SHORT_MAX_T_STATES {
+        SHORT_SERVICE_CHUNK_T_STATES
+    } else {
+        LONG_SERVICE_CHUNK_T_STATES
+    };
 
     loop {
         let now_t = machine.intel8080_state().total_t_states.unwrap_or(start_t);
         let executed = now_t.saturating_sub(start_t);
         assert!(executed <= max_t_states, "{name}: exceeded {max_t_states} actual Adaptive Cycle T-states");
 
-        machine.run_cycles(SERVICE_CHUNK_T_STATES);
+        machine.run_cycles(service_chunk);
         drain_console(&mut machine, &mut output);
 
         if let Some(result) = machine.take_cpu_diagnostic_result() {
@@ -214,7 +225,7 @@ fn run_diagnostic(
             let mhz = actual_t as f64 / elapsed.as_secs_f64() / 1_000_000.0;
             assert!(!output.is_empty(), "{name}: diagnostic produced no 88-2SIO console output");
             eprintln!(
-                "{name} adaptive-cycle: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz",
+                "{name} adaptive-cycle: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz [physical 88-2SIO Port 1 @ 9600 baud, 8N1]",
                 result.instructions,
                 result.t_states,
                 actual_t,
