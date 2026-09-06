@@ -919,16 +919,6 @@ impl super::AltairBus {
         self.s100.raw_duty_snapshot()
     }
 
-    /// Restore the exact retained DATA-lamp source immediately before the final
-    /// weighted Full machine cycle is materialized. The local Full recorder has
-    /// already observed the real DI value for that T1 (including stale previous
-    /// sMEMR at a newly presented address). This mutates only the retained panel
-    /// source and deliberately does not add an electrical-duty sample.
-    #[inline]
-    pub(crate) fn cycle_full_seed_panel_data(&mut self, data: u8) {
-        self.s100.signals.panel_data = data;
-    }
-
     /// Presentation-only projection used by the proven Cycle Full path. Guest
     /// memory has already crossed the bus-owned physical decoder; this method
     /// only integrates what the original front panel would have displayed.
