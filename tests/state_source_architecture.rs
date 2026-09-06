@@ -52,18 +52,14 @@ fn panel_lamp_integrator_remains_presentation_only() {
 }
 
 #[test]
-fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
+fn cycle_has_no_cpu_mirror_or_architectural_state_sync_path() {
     assert!(
         !cycle_module_contains("sync_machine_cpu"),
-        "Cycle must never restore the legacy Cpu8080 mirror synchronization path"
+        "Cycle must never restore a parallel CPU mirror synchronization path"
     );
     assert!(
         !cycle_module_contains("machine.cpu"),
-        "Cycle backend must not read or write AltairMachine.cpu"
-    );
-    assert!(
-        !cycle_module_contains("cycle_registers_from_fast"),
-        "Cycle power-on state must not be seeded through the Fast CPU"
+        "Cycle backend must keep architectural CPU state in its one Cpu8080Cycle core"
     );
     assert!(
         CYCLE_PARTIAL.contains("random_power_on_cpu_state"),
@@ -72,10 +68,10 @@ fn cycle_has_no_fast_cpu_mirror_or_sync_path() {
 }
 
 #[test]
-fn cycle_physically_owns_cpu_free_chassis_while_fast_keeps_its_cpu() {
+fn cycle_physically_owns_cpu_free_chassis_with_one_cpu_authority() {
     assert!(CHASSIS.contains("pub struct AltairChassis"));
     assert!(CHASSIS.contains("pub bus: AltairBus"));
-    assert!(!CHASSIS.contains("Cpu8080"), "physical chassis must not contain a Fast CPU");
+    assert!(!CHASSIS.contains("Cpu8080Cycle"), "physical chassis must not embed the CPU core");
     assert!(!CHASSIS.contains("Deref"), "chassis ownership must remain explicit");
     assert!(!CHASSIS.contains("DerefMut"), "chassis ownership must remain explicit");
 
@@ -88,36 +84,32 @@ fn cycle_physically_owns_cpu_free_chassis_while_fast_keeps_its_cpu() {
         "Cycle's physical container must be AltairChassis"
     );
     assert!(
-        !cycle_module_contains("AltairChassis as AltairMachine"),
-        "Cycle must not hide its CPU-free chassis behind the Fast machine name"
-    );
-    assert!(
-        !cycle_module_contains("machine: AltairMachine"),
-        "Cycle must not own the Fast AltairMachine as its physical container"
+        CYCLE_PARTIAL.contains("cpu: Cpu8080Cycle"),
+        "CycleAccurateMachineBackend must own the single architectural CPU core"
     );
 
-    assert!(MACHINE.contains("pub struct AltairMachine"));
-    assert!(MACHINE.contains("pub cpu: Cpu8080"));
     assert!(MACHINE.contains("pub use chassis::AltairChassis"));
+    assert!(!MACHINE.contains("pub cpu:"), "machine module must not expose a second CPU owner");
 }
 
 #[test]
-fn cycle_memory_configuration_bypasses_fast_machine_cpu_helper() {
+fn cycle_memory_configuration_uses_the_live_chassis_bus() {
     assert!(CYCLE_HOST.contains("machine_mut().bus.configure_memory(size, init)"));
     assert!(!CYCLE_HOST.contains("machine_mut().configure_memory(size, init)"));
 }
 
 #[test]
-fn state_source_documentation_matches_resolved_chassis_architecture() {
+fn state_source_documentation_matches_unified_cycle_architecture() {
     let doc = include_str!("../docs/STATE_SOURCES.md");
-    assert!(doc.contains("CPU/chassis type composition is resolved"));
-    assert!(doc.contains("Cycle physically owns a CPU-free"));
+    assert!(doc.contains("single Adaptive Cycle execution engine"));
+    assert!(doc.contains("CycleAccurateMachineBackend::cpu"));
+    assert!(doc.contains("CPU-free `AltairChassis`"));
     assert!(doc.contains("RUN latch duplication"));
     assert!(doc.contains("Backend encapsulation"));
     assert!(doc.contains("There is no `sync_machine_cpu()` path"));
     assert!(doc.contains("previous `AltairBus::cpu_inte` duplicate has already been removed"));
     assert!(
-        !doc.contains("Cycle backend carries an unused `Cpu8080`"),
-        "documentation must not resurrect the removed dormant Fast CPU"
+        !doc.contains("two Rust engines"),
+        "documentation must not resurrect the removed multi-engine architecture"
     );
 }
