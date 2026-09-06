@@ -154,7 +154,7 @@ fn drain_console(machine: &mut BackendHost, output: &mut Vec<u8>) {
 
 fn print_strategy_metrics(name: &str, stats: adaptive_metrics::AdaptiveCycleStats) {
     eprintln!(
-        "{name} strategy: Full={} T ({:.2}%), Partial={} T ({:.2}%), Full instructions={}, Full windows={}, F->P={}, P->F={}, Partial entries={}",
+        "[FULL SYSTEM] {name} strategy: Full={} T ({:.2}%), Partial={} T ({:.2}%), Full instructions={}, Full windows={}, F->P={}, P->F={}, Partial entries={}",
         stats.full_t_states,
         stats.full_percent(),
         stats.partial_t_states,
@@ -167,7 +167,7 @@ fn print_strategy_metrics(name: &str, stats: adaptive_metrics::AdaptiveCycleStat
     );
     let f = stats.fallbacks;
     eprintln!(
-        "{name} Partial path-entry transition reasons (sustained blockers remain in the current Partial span): chassis={} serial={} ready={} hold={} irq={} budget={} mid_instruction={} stop={} fault={} reset={} opcode_barrier={} full_window_unavailable={} total={}",
+        "[FULL SYSTEM] {name} Partial path-entry transition reasons (sustained blockers remain in the current Partial span): chassis={} serial={} ready={} hold={} irq={} budget={} mid_instruction={} stop={} fault={} reset={} opcode_barrier={} full_window_unavailable={} total={}",
         f.chassis_unsupported,
         f.serial_active,
         f.ready_low,
@@ -224,7 +224,7 @@ fn run_diagnostic(
             let progress_pct = actual_t as f64 * 100.0 / reference.t_states as f64;
             let f = stats.fallbacks;
             eprintln!(
-                "{name} progress: {actual_t}/{} machine T ({progress_pct:.1}%), {:.1?}, {cumulative_mhz:.2} MHz avg / {interval_mhz:.2} MHz recent, Full {:.2}% / Partial {:.2}%, opcode barriers={}, serial entries={}, budget tails={}, output={} bytes",
+                "[FULL SYSTEM] {name} progress: {actual_t}/{} machine T ({progress_pct:.1}%), {:.1?}, {cumulative_mhz:.2} MHz avg / {interval_mhz:.2} MHz recent, Full {:.2}% / Partial {:.2}%, opcode barriers={}, serial entries={}, budget tails={}, output={} bytes",
                 reference.t_states,
                 progress_at.duration_since(started),
                 stats.full_percent(),
@@ -254,7 +254,7 @@ fn run_diagnostic(
             let mhz = actual_t as f64 / elapsed.as_secs_f64() / 1_000_000.0;
             assert!(!output.is_empty(), "{name}: diagnostic produced no 88-2SIO console output");
             eprintln!(
-                "{name} adaptive-cycle: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz [physical 88-2SIO Port 1 @ 9600 baud, 8N1]",
+                "[FULL SYSTEM] {name}: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz [Adaptive backend + MITS CPU board + S-100 + 64K static RAM + physical 88-2SIO Port 1 @ 9600 baud, 8N1 + front panel]",
                 result.instructions,
                 result.t_states,
                 actual_t,
@@ -269,7 +269,7 @@ fn run_diagnostic(
 }
 
 #[test]
-fn adaptive_cycle_runs_8080pre_with_reference_totals() {
+fn full_system_runs_8080pre_with_reference_totals() {
     let _ = run_diagnostic(
         "8080PRE.COM",
         include_bytes!("../assets/cpu-tests/8080PRE.COM"),
@@ -279,7 +279,7 @@ fn adaptive_cycle_runs_8080pre_with_reference_totals() {
 }
 
 #[test]
-fn adaptive_cycle_runs_tst8080_with_reference_totals() {
+fn full_system_runs_tst8080_with_reference_totals() {
     let _ = run_diagnostic(
         "TST8080.COM",
         include_bytes!("../assets/cpu-tests/TST8080.COM"),
@@ -289,8 +289,8 @@ fn adaptive_cycle_runs_tst8080_with_reference_totals() {
 }
 
 #[test]
-#[ignore = "long-running Adaptive Cycle diagnostic/performance measurement"]
-fn adaptive_cycle_runs_cputest_with_reference_totals() {
+#[ignore = "long-running full-system Adaptive diagnostic/performance measurement"]
+fn full_system_runs_cputest_with_reference_totals() {
     let _ = run_diagnostic(
         "CPUTEST.COM",
         include_bytes!("../assets/cpu-tests/CPUTEST.COM"),
@@ -300,8 +300,8 @@ fn adaptive_cycle_runs_cputest_with_reference_totals() {
 }
 
 #[test]
-#[ignore = "very long Adaptive Cycle exerciser/performance measurement"]
-fn adaptive_cycle_runs_8080exm_with_reference_totals() {
+#[ignore = "very long full-system Adaptive exerciser/performance measurement"]
+fn full_system_runs_8080exm_with_reference_totals() {
     let _ = run_diagnostic(
         "8080EXM.COM",
         include_bytes!("../assets/cpu-tests/8080EXM.COM"),
