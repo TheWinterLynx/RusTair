@@ -753,6 +753,30 @@ impl CycleAccurateMachineBackend {
         Some(elapsed_total)
     }
 
+    fn compiled_full_window_blocker(
+        &self,
+        serial_clocked: bool,
+        chassis_available: bool,
+    ) -> Option<AdaptiveFallbackReason> {
+        if !chassis_available {
+            return Some(AdaptiveFallbackReason::ChassisUnsupported);
+        }
+        if serial_clocked && !self.compiled_serial_timing_is_quiet() {
+            return Some(AdaptiveFallbackReason::SerialActive);
+        }
+        let lines = self.machine.bus.cpu_control_lines();
+        if !lines.ready {
+            return Some(AdaptiveFallbackReason::ReadyLow);
+        }
+        if lines.hold {
+            return Some(AdaptiveFallbackReason::Hold);
+        }
+        if lines.interrupt && self.cpu.interrupts_enabled() {
+            return Some(AdaptiveFallbackReason::InterruptPending);
+        }
+        None
+    }
+
     fn compiled_full_fallback_reason(
         &self,
         remaining: u32,
@@ -806,31 +830,24 @@ impl CycleAccurateMachineBackend {
 
         let serial_clocked = self.compiled_full_chassis_has_serial();
         let chassis_available = self.compiled_full_chassis_available();
-        let serial_quiet = !serial_clocked || self.compiled_serial_timing_is_quiet();
-        let full_window = chassis_available
-            && serial_quiet
-            && lines.ready
-            && !lines.hold
-            && !(lines.interrupt && self.cpu.interrupts_enabled());
-        let full_window_blocker = if !chassis_available {
-            Some(AdaptiveFallbackReason::ChassisUnsupported)
-        } else if !serial_quiet {
-            Some(AdaptiveFallbackReason::SerialActive)
-        } else if !lines.ready {
-            Some(AdaptiveFallbackReason::ReadyLow)
-        } else if lines.hold {
-            Some(AdaptiveFallbackReason::Hold)
-        } else if lines.interrupt && self.cpu.interrupts_enabled() {
-            Some(AdaptiveFallbackReason::InterruptPending)
-        } else {
-            None
-        };
-
         let mut remaining = t_state_budget;
         let mut deferred_serial_t_states = 0u64;
         let mut partial_start_t = None;
         let mut partial_reason = None;
         while remaining != 0 && self.machine.running {
+            // Full may only start at an instruction boundary, and all dynamic
+            // electrical blockers are re-evaluated at that boundary. In
+            // particular an exact Partial OUT can make a UART active inside this
+            // same service call; a stale entry-time `serial_quiet` decision must
+            // never let Full skip over that card timing.
+            let at_boundary = self.at_instruction_boundary();
+            let full_window_blocker = if at_boundary {
+                self.compiled_full_window_blocker(serial_clocked, chassis_available)
+            } else {
+                None
+            };
+            let full_window = at_boundary && full_window_blocker.is_none();
+
             let before_completed = self.cpu.completed_instructions();
             if let Some(elapsed) = self.execute_compiled_full_window(&mut remaining, full_window) {
                 self.record_partial_metrics_span(&mut partial_start_t, &mut partial_reason);
@@ -885,6 +902,7 @@ impl CycleAccurateMachineBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adaptive_metrics;
     use crate::backend::MachineBackend;
     use crate::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
     use crate::s100_chassis::S100ChassisConfig;
@@ -1060,6 +1078,37 @@ mod tests {
 
         assert_eq!(compiled_done, reference_done);
         assert!(compiled_done.is_some());
+    }
+
+    #[test]
+    fn compiled_rechecks_serial_activity_after_partial_out_inside_same_service_call() {
+        const BUDGET: u32 = 1_000;
+        let hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend
+            .machine
+            .bus
+            .configure_s100_hardware_memory(hardware, RamInit::Zeroed)
+            .unwrap();
+        backend.power(true).unwrap();
+        backend.assert_reset().unwrap();
+        backend.release_reset().unwrap();
+        // MVI A,'X' is Full-capable. OUT 11h must execute through exact Partial
+        // and makes the 110-baud 88-2SIO transmitter active. The following
+        // NOP/JMP loop must therefore stay Partial for the rest of this call.
+        backend
+            .load_bytes(0, &[0x3e, b'X', 0xd3, 0x11, 0x00, 0xc3, 0x04, 0x00])
+            .unwrap();
+        backend.run().unwrap();
+
+        adaptive_metrics::begin_measurement();
+        backend.service_execution_compiled(BUDGET).unwrap();
+        let stats = adaptive_metrics::end_measurement();
+
+        assert_eq!(stats.total_t_states(), u64::from(BUDGET));
+        assert_eq!(stats.full_t_states, 7, "only MVI may execute in Full before OUT activates the UART");
+        assert_eq!(stats.partial_t_states, u64::from(BUDGET - 7));
+        assert!(backend.machine.bus.tx_busy(), "110-baud transmitter must still be active after only 1000 T-states");
     }
 
     #[test]
