@@ -124,6 +124,15 @@ impl FullPanelActivity {
         (mixed as usize).wrapping_mul(0x9e37_79b1) & (FULL_PANEL_HISTOGRAM_ENTRIES - 1)
     }
 
+    #[inline]
+    fn t1_memory_read_active(&self) -> bool {
+        // The MITS CPU board's 8212 retains the previous status through T1 of
+        // the next machine cycle. Bit 7 is sMEMR for InstructionFetch,
+        // MemoryRead and StackRead, so a RAM card can already drive DI at the
+        // new T1 address before PHI1 latches the new status word.
+        self.latched_status & 0x80 != 0
+    }
+
     fn replay_entry(bus: &mut AltairBus, entry: FullPanelHistogramEntry) {
         if entry.weight == 0 {
             return;
@@ -231,6 +240,7 @@ impl FullPanelActivity {
         writes_data: bool,
         protected: bool,
         inte: bool,
+        t1_data_from_s100: Option<u8>,
     ) {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
@@ -238,6 +248,15 @@ impl FullPanelActivity {
         // Once another external machine cycle starts, the previous one can no
         // longer be the final presentation boundary and is safe to coalesce.
         self.commit_pending(bus);
+
+        // ADDRESS changes for T1 before PHI1 clocks the 8212. If the previous
+        // latched status still asserts sMEMR, a mapped RAM card immediately
+        // presents the byte at this *new* address on DI. The front-panel DATA
+        // lamps therefore see that value during T1 even when the new cycle will
+        // become a write at PHI1. High-Z leaves the previous DATA value intact.
+        if let Some(t1_data) = t1_data_from_s100 {
+            self.panel_data = t1_data;
+        }
 
         let first_key = Self::state_key(
             address,
@@ -421,6 +440,11 @@ impl<'a> FullInstructionBus<'a> {
         writes_data: bool,
     ) {
         let protected = self.protected(address);
+        let t1_data_from_s100 = if self.panel.t1_memory_read_active() {
+            self.bus.peek_memory(address)
+        } else {
+            None
+        };
         self.panel.project_machine_cycle(
             self.bus,
             address,
@@ -431,6 +455,7 @@ impl<'a> FullInstructionBus<'a> {
             writes_data,
             protected,
             self.inte,
+            t1_data_from_s100,
         );
         self.projected_t_states = self.projected_t_states.saturating_add(t_states);
         self.last_projected_address = Some(address);
@@ -540,9 +565,12 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn write(&mut self, address: u16, value: u8) {
+        // Project T1 before mutating RAM: if the previous 8212 status still has
+        // sMEMR asserted, the real card exposes the *pre-write* byte at the new
+        // address during that first T-state.
+        self.project_machine_cycle(address, value, 0x00, 3, false, true);
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
-        self.project_machine_cycle(address, value, 0x00, 3, false, true);
         self.remember_write_boundary(address, value);
     }
 
@@ -582,9 +610,12 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
+        // Same stale-sMEMR T1 rule as ordinary writes: project before the stack
+        // byte changes so DATA lamps see the old target byte if RAM is still
+        // enabled by the previous status latch.
+        self.project_machine_cycle(address, value, 0x04, 3, false, true);
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
-        self.project_machine_cycle(address, value, 0x04, 3, false, true);
         self.remember_write_boundary(address, value);
     }
 
