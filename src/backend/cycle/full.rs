@@ -1093,6 +1093,11 @@ mod tests {
 
         let mut compiled = prepare_static_backend(&program);
         let mut partial = prepare_static_backend(&program);
+        // POWER ON intentionally leaves programmer-visible 8080 registers
+        // undefined. Differential execution must therefore start both engines
+        // from the same sampled physical CPU state instead of comparing two
+        // independent random power-on samples. RESET already aligned PC/INTE.
+        partial.cpu.set_registers(compiled.cpu.registers());
 
         compiled.service_execution_compiled(BUDGET).unwrap();
         for _ in 0..BUDGET {
