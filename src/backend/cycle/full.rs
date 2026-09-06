@@ -311,6 +311,8 @@ impl FullPanelActivity {
         // for raw duty, but end with the true predecessor so the canonical helper
         // sees exactly the 8212/panel DATA state that existed before final T1.
         self.flush_histogram(bus, self.latest_committed_key);
+        let first_panel_data = (pending.first_key >> 16) as u8;
+        bus.cycle_full_seed_panel_data(first_panel_data);
         bus.cycle_full_project_panel_cycle(
             pending.address,
             pending.data,
