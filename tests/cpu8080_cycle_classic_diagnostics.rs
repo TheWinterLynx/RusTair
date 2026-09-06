@@ -229,6 +229,7 @@ impl ReferenceMeter {
 struct DiagnosticResult {
     instructions: u64,
     t_states: u64,
+    actual_t_states: u64,
     output: Vec<u8>,
     halted: bool,
 }
@@ -266,6 +267,7 @@ fn run_diagnostic(image: &[u8], max_ticks: u64) -> DiagnosticResult {
             return DiagnosticResult {
                 instructions: meter.instructions,
                 t_states: meter.t_states,
+                actual_t_states: cpu.total_t_states(),
                 output: bus.output,
                 halted: cpu.is_halted(),
             };
@@ -299,9 +301,35 @@ fn assert_reference(
     result
 }
 
+fn benchmark_reference(
+    name: &str,
+    image: &[u8],
+    expected_instructions: u64,
+    expected_t_states: u64,
+    max_ticks: u64,
+) {
+    let started = Instant::now();
+    let result = assert_reference(
+        name,
+        image,
+        expected_instructions,
+        expected_t_states,
+        max_ticks,
+    );
+    let elapsed = started.elapsed();
+    let mhz = result.actual_t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    eprintln!(
+        "[CPU CORE ONLY] {name}: {} reference instructions, {} reference T-states, {} actual core T-states, {:.3?}, {mhz:.2} MHz [Cpu8080Cycle + minimal diagnostic bus; no chassis/S-100/front panel/UART]",
+        result.instructions,
+        result.t_states,
+        result.actual_t_states,
+        elapsed,
+    );
+}
+
 #[test]
-fn cycle_core_runs_8080pre_with_reference_totals() {
-    assert_reference(
+fn cpu_core_runs_8080pre_with_reference_totals() {
+    benchmark_reference(
         "8080PRE.COM",
         include_bytes!("../assets/cpu-tests/8080PRE.COM"),
         1_061,
@@ -311,8 +339,8 @@ fn cycle_core_runs_8080pre_with_reference_totals() {
 }
 
 #[test]
-fn cycle_core_runs_tst8080_with_reference_totals() {
-    assert_reference(
+fn cpu_core_runs_tst8080_with_reference_totals() {
+    benchmark_reference(
         "TST8080.COM",
         include_bytes!("../assets/cpu-tests/TST8080.COM"),
         651,
@@ -322,39 +350,25 @@ fn cycle_core_runs_tst8080_with_reference_totals() {
 }
 
 #[test]
-#[ignore = "long-running cycle-accurate diagnostic; run explicitly in --release mode"]
-fn cycle_core_runs_cputest_with_reference_totals() {
-    let started = Instant::now();
-    let result = assert_reference(
+#[ignore = "long-running CPU-core diagnostic/performance measurement"]
+fn cpu_core_runs_cputest_with_reference_totals() {
+    benchmark_reference(
         "CPUTEST.COM",
         include_bytes!("../assets/cpu-tests/CPUTEST.COM"),
         33_971_311,
         255_653_383,
         CPUTEST_MAX_TICKS,
     );
-    let elapsed = started.elapsed();
-    let emulated_mhz = result.t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
-    eprintln!(
-        "CPUTEST cycle-core: {} instructions, {} T-states in {:.3?} ({emulated_mhz:.2} MHz host throughput)",
-        result.instructions, result.t_states, elapsed
-    );
 }
 
 #[test]
-#[ignore = "very long cycle-accurate exerciser; run explicitly in --release mode"]
-fn cycle_core_runs_8080exm_with_reference_totals() {
-    let started = Instant::now();
-    let result = assert_reference(
+#[ignore = "very long CPU-core exerciser/performance measurement"]
+fn cpu_core_runs_8080exm_with_reference_totals() {
+    benchmark_reference(
         "8080EXM.COM",
         include_bytes!("../assets/cpu-tests/8080EXM.COM"),
         2_919_050_698,
         23_803_381_171,
         EXM_MAX_TICKS,
-    );
-    let elapsed = started.elapsed();
-    let emulated_mhz = result.t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
-    eprintln!(
-        "8080EXM cycle-core: {} instructions, {} T-states in {:.3?} ({emulated_mhz:.2} MHz host throughput)",
-        result.instructions, result.t_states, elapsed
     );
 }
