@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::config::{RamBoardProfile, SerialBoard, SioHardwareConfig, TwoSioStraps};
 
-use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot, CLOCK_HZ};
+use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 
 /// CPU-independent physical state of the Altair 8800 chassis.
 ///
@@ -17,10 +17,6 @@ pub struct AltairChassis {
     pub running: bool,
     stop_switch_asserted: bool,
     run_switch_asserted: bool,
-    /// Fractional host-time to 2 MHz clock conversion retained while the CPU is
-    /// physically STOPped. Independent card oscillators continue to run even
-    /// when the processor is not producing bus T-states.
-    stopped_card_clock_remainder: u64,
 }
 
 impl Default for AltairChassis {
@@ -37,7 +33,6 @@ impl Default for AltairChassis {
             running: false,
             stop_switch_asserted: false,
             run_switch_asserted: false,
-            stopped_card_clock_remainder: 0,
         }
     }
 }
@@ -205,7 +200,6 @@ impl AltairChassis {
         self.powered = on;
         self.stop_switch_asserted = false;
         self.run_switch_asserted = false;
-        self.stopped_card_clock_remainder = 0;
 
         if on {
             self.bus.clear_protection();
@@ -251,38 +245,9 @@ impl AltairChassis {
         self.bus.release_front_panel_reset_bus(address, self.running);
     }
 
-    /// Advance independent card clocks during a physical CPU STOP interval.
-    ///
-    /// While RUN is active, Partial advances card oscillators exactly once per
-    /// CPU T-state and Full advances the equivalent elapsed T-states at its
-    /// synchronization boundary. STOP removes those CPU bus clocks, but it does
-    /// not stop the 88-SIO/88-2SIO baud generator. Convert elapsed chassis time
-    /// to equivalent 2 MHz quanta only in that state so serial time is neither
-    /// frozen nor double-counted.
-    fn advance_stopped_card_clocks(&mut self, dt: Duration) {
-        if !self.powered || self.running || dt.is_zero() {
-            return;
-        }
-
-        const NANOS_PER_SECOND: u128 = 1_000_000_000;
-        let numerator = dt
-            .as_nanos()
-            .saturating_mul(u128::from(CLOCK_HZ))
-            .saturating_add(u128::from(self.stopped_card_clock_remainder));
-        let t_states = numerator / NANOS_PER_SECOND;
-        self.stopped_card_clock_remainder = (numerator % NANOS_PER_SECOND) as u64;
-
-        if t_states != 0 {
-            self.bus
-                .advance_serial_hardware_time(u64::try_from(t_states).unwrap_or(u64::MAX));
-        }
-    }
-
     /// Integrate optical lamp persistence from chassis state plus the exact
-    /// core's externally supplied HALT truth. Independent S-100 card clocks keep
-    /// running while the CPU is physically STOPped.
+    /// core's externally supplied HALT truth.
     pub(crate) fn cycle_commit_panel_activity(&mut self, dt: Duration, cpu_halted: bool) {
-        self.advance_stopped_card_clocks(dt);
         let dynamic = self.powered
             && self.running
             && !cpu_halted
