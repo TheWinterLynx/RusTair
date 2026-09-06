@@ -3,20 +3,22 @@ const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
 
 #[test]
-fn engine_recreation_reapplies_physical_interrupt_wiring() {
+fn selecting_two_sio_reapplies_dormant_physical_interrupt_wiring() {
     let start = APP_SOURCE
-        .find("fn select_emulation_engine")
-        .expect("app must own the engine-recreation boundary");
+        .find("fn apply_serial_board_configuration")
+        .expect("app must own the serial-board selection boundary");
     let tail = &APP_SOURCE[start..];
     let end = tail
-        .find("fn apply_s100_hardware_configuration")
-        .expect("S-100 hardware helper after engine-recreation boundary");
+        .find("fn apply_two_sio_straps")
+        .expect("88-2SIO strap helper after serial-board selection boundary");
     let function = &tail[..end];
 
-    assert!(function.contains("self.machine.replace_engine(engine)"));
+    assert!(function.contains("SerialBoard::TwoSio88"));
     assert!(function.contains("self.machine.configure_two_sio_straps"));
+    assert!(function.contains("self.config.machine.two_sio_straps"));
     assert!(function.contains("self.machine.configure_two_sio_interrupt_wiring"));
     assert!(function.contains("self.config.machine.two_sio_interrupt_wiring"));
+    assert!(!function.contains("replace_engine"));
 }
 
 #[test]
