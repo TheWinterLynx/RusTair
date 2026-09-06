@@ -4,64 +4,62 @@ This document distinguishes authoritative emulated state from derived observatio
 presentation caches and remaining architectural duplication. A UI snapshot is allowed
 to cache history, but it must never become an input that drives the emulated machine.
 
+RusTair now has a single Adaptive Cycle execution engine. Full semantic windows and
+exact Partial T-state execution are two execution strategies inside that one engine;
+they do not own separate CPU, RAM, serial or chassis state.
+
 ## Authoritative runtime state
 
 | Domain | Authority | Consumers |
 | --- | --- | --- |
-| Fast 8080 architectural state | `AltairMachine::cpu` (`Cpu8080`) | Fast backend snapshots, Fast execution |
-| Cycle Accurate 8080 architectural state | `CycleAccurateMachineBackend::cpu` (`Cpu8080Cycle`) | Cycle execution, debugger CPU snapshots, exact pin samples |
-| Fast physical machine container | `AltairMachine` | Fast CPU, shared `AltairBus`, power/RUN/front-panel state |
-| Cycle physical chassis container | `AltairChassis` | shared `AltairBus`, power/RUN/front-panel state; contains no CPU core |
-| Physical RAM contents / installed size / protection latches | `machine::memory::Memory` | Fast and Cycle guest access, debugger peek/write, RAM Viewer |
+| Intel 8080 architectural state | `CycleAccurateMachineBackend::cpu` (`Cpu8080Cycle`) | Adaptive Cycle execution, debugger CPU snapshots, exact pin samples, Full semantic windows |
+| Physical machine container | CPU-free `AltairChassis` | live `AltairBus`, power/RUN/front-panel state |
+| Physical S-100 card inventory and RAM contents | `S100RuntimeFabric` and its installed runtime card instances, reached through `machine::memory::Memory` | CPU-board bus cycles, debugger peek/write, RAM Viewer, Full and Partial execution |
 | Raw S-100 electrical/status state | `machine::panel_bus::S100BusState::signals` | front panel, CPU control inputs, Bus Teacher RAW state |
 | Front-panel switch register/address-control state | `FrontPanelController` plus the live S-100 bus where appropriate | physical panel controls and CPU-board injection paths |
-| UART / serial board runtime state | `IoDevices` / installed serial device model | guest I/O, ASR/terminal/TCP/COM endpoints, I/O Inspector |
+| UART / serial-board runtime state | installed serial card instance in the live S-100 runtime fabric | guest I/O, ASR/terminal/TCP/COM endpoints, I/O Inspector |
 
 ## CPU ownership and chassis composition
 
-The two Rust engines now have physically separate processor ownership as well as
-separate processor types:
+The unified runtime has one processor authority and one physical chassis:
 
 ```text
-Fast backend
-└── AltairMachine
-    ├── Cpu8080
-    ├── AltairBus
-    └── Fast physical state
-
-Cycle backend
-├── Cpu8080Cycle
-└── AltairChassis
-    ├── AltairBus
-    ├── powered
-    ├── running
-    └── run/stop switch latches
+Adaptive Cycle backend
+├── Cpu8080Cycle                 authoritative 8080 architectural state
+└── AltairChassis                CPU-free physical machine container
+    └── AltairBus
+        └── live S-100 runtime fabric
+            ├── CPU-board electrical boundary
+            ├── RAM cards
+            ├── serial cards
+            └── front-panel / bus-visible state
 ```
 
 `AltairChassis` is intentionally CPU-free. It owns only physical chassis/S-100 state;
-operations that require processor state receive that information from the backend or
-are completed by the backend-owned CPU core.
+operations that require processor state are completed by the backend-owned
+`Cpu8080Cycle` core.
 
-- Cycle power-on creates the undefined register/INTE sample directly for
-  `Cpu8080Cycle` and supplies only bus-visible values to `AltairChassis`.
-- Cycle RESET asserts the physical chassis/S-100 reset path and clocks the same reset
-  into the authoritative `Cpu8080Cycle` core.
+- Power-on creates the undefined register/INTE sample directly for `Cpu8080Cycle` and
+  supplies only bus-visible values to `AltairChassis`.
+- RESET asserts the physical chassis/S-100 reset path and clocks the same reset into
+  the authoritative `Cpu8080Cycle` core.
 - RUN/STOP, HOLD/HLDA, EXAMINE, DEPOSIT and PROTECT use the CPU-free chassis plus the
-  exact Cycle core. No Fast CPU object participates.
-- Serial-card replacement is a chassis reconfiguration: the chassis drops RUN/READY,
-  while the backend that owns the CPU performs the processor reset semantics.
-- Cycle memory reconfiguration accesses the shared RAM/bus path directly instead of
-  invoking Fast-oriented `AltairMachine` CPU helpers.
-- There is no `sync_machine_cpu()` path and no architectural-state copy from
-  `Cpu8080Cycle` into `Cpu8080`.
-- Cycle imports and owns `AltairChassis` explicitly; it does not alias it to
-  `AltairMachine` and does not carry an unused Fast CPU in its object graph.
+  exact Cycle core.
+- Physical S-100 reconfiguration remounts the live card inventory; it does not replace
+  an execution engine or create a second processor object.
+- Memory configuration reaches the live chassis bus/runtime fabric rather than a
+  processor-owning machine helper.
+- There is no `sync_machine_cpu()` path and no architectural-state copy between
+  separate CPU implementations.
+- Full execution uses the semantic facilities of the same 8080 core as an internal
+  acceleration strategy and commits back into that same authoritative core. It is not
+  a second backend.
 
-Therefore the CPU authorities are both logically and physically unambiguous:
+Therefore processor ownership is unambiguous:
 
 ```text
-Fast  -> AltairMachine::cpu (Cpu8080)
-Cycle -> CycleAccurateMachineBackend::cpu (Cpu8080Cycle)
+8080 architectural state -> CycleAccurateMachineBackend::cpu (Cpu8080Cycle)
+physical machine state   -> AltairChassis -> AltairBus -> live S-100 runtime fabric
 ```
 
 ## Deliberately derived state
@@ -78,6 +76,8 @@ raw electrical behaviour:
 - egui viewport state, including Freeze: presentation state only.
 - persisted application configuration: desired/restored configuration, not a second
   live hardware register file.
+- Adaptive Full/Partial metrics: execution observations only. They may report which
+  strategy handled T-states but cannot drive CPU or hardware state.
 
 ## Rules enforced by the didactic debugger
 
@@ -85,28 +85,36 @@ raw electrical behaviour:
 2. `PanelLampSnapshot` may be displayed as `VISIBLE LED`, but cannot reconstruct RAW.
 3. Exact Cycle teaching status is read back after the CPU-board sample updates the
    canonical S-100 bus; the backend owns no parallel teaching status latch.
-4. RAM Viewer/debugger access the same physical `Memory` object as both CPU engines.
+4. RAM Viewer/debugger access the same physical RAM/card storage used by guest
+   execution.
 5. App UI consumes backend contracts rather than concrete CPU/bus implementations.
 6. Historical snapshots may be stale by design and must be labelled as history or a
    frozen sample; they cannot drive execution.
-7. Cycle must own `AltairChassis` plus `Cpu8080Cycle`; it must not import or embed the
-   Fast `AltairMachine` as its physical container.
+7. The backend must own exactly one `Cpu8080Cycle` plus one CPU-free `AltairChassis`;
+   no second architectural processor state may be introduced.
+8. Full and Partial may differ in execution granularity, but every transition between
+   them must preserve the same CPU T-state count and the same physical hardware state.
 
 ## Resolved structural debt
 
-- **CPU/chassis type composition is resolved.** Cycle physically owns a CPU-free
-  `AltairChassis`; Fast alone retains `AltairMachine::cpu` as its real `Cpu8080`.
-  Architectural regression tests guard against reintroducing the old alias, dormant
-  Fast CPU, `Deref` wrapper or mirror synchronization path.
+- **CPU/chassis type composition is resolved.** Adaptive Cycle owns one
+  `Cpu8080Cycle` and one CPU-free `AltairChassis`. Architectural regression tests
+  guard against reintroducing a second backend, processor-owning machine container,
+  dormant CPU, implicit chassis wrapper or mirror synchronization path.
+- **Execution-engine duplication is resolved.** Full semantic execution is internal to
+  Adaptive Cycle and cannot be selected as a separate engine. Exact Partial remains
+  the synchronization path for electrically sensitive instructions and boundaries.
 - The previous `AltairBus::cpu_inte` duplicate has already been removed: canonical
   INTE is stored in `S100BusState::signals.inte`.
 
 ## Remaining source-of-truth / structural debt
 
-1. **RUN latch duplication.** `AltairMachine::running` / `AltairChassis::running` and
-   `S100Signals::run` are kept synchronized. The physical S-100 RUN latch should
-   ultimately be the canonical storage location, with host-facing `running` derived
-   from it.
+1. **RUN latch duplication.** `AltairChassis::running` and `S100Signals::run` are kept
+   synchronized. The physical S-100 RUN latch should ultimately be the canonical
+   storage location, with host-facing `running` derived from it.
 2. **Backend encapsulation.** Concrete backend/chassis escape hatches still exist in
    parts of the codebase. The application should increasingly depend on common
    backend contracts and capabilities rather than concrete machine/CPU/bus types.
+3. **Compatibility facades.** Some aggregate memory/configuration helpers remain for
+   historical configuration and tests. They must not become alternate guest-visible
+   RAM, UART or CPU state authorities.
