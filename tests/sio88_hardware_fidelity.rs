@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rustair::backend::{CycleAccurateMachineBackend, MachineBackend};
+use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{
     SioAddressPair, SioHardwareConfig, SioInterruptTarget, SioInterruptWiring, SioRevision,
 };
@@ -8,25 +8,29 @@ use rustair::machine::AltairBus;
 
 #[test]
 fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
-    let mut backend = CycleAccurateMachineBackend::default();
-    backend.power(true).unwrap();
-    backend.halt().unwrap();
-    assert_eq!(backend.machine().bus.peek_io_port(0x00), 0x01, "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7");
+    // Wall-clock-to-card-clock bridging is a host scheduling responsibility.
+    // Exercise the same public machine boundary as the application rather than
+    // asking the lower-level Cycle core's panel-presentation hook to synthesize
+    // independent oscillator time.
+    let mut backend = BackendHost::default();
+    backend.power(true);
+    backend.set_running(false);
+    assert_eq!(backend.peek_io_port(0x00), 0x01, "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7");
 
-    backend.machine_mut().bus.serial_receive(b'R');
-    assert_eq!(backend.machine().bus.peek_io_port(0x00) & 0x01, 0x01, "RDA must not change until the serial frame completes");
-    assert_eq!(backend.machine().bus.peek_io_port(0x01), 0x00);
+    backend.serial_receive(BackendSerialPort::Port0, b'R');
+    assert_eq!(backend.peek_io_port(0x00) & 0x01, 0x01, "RDA must not change until the serial frame completes");
+    assert_eq!(backend.peek_io_port(0x01), 0x00);
 
-    backend.commit_panel_activity(Duration::from_millis(100)).unwrap();
-    assert_eq!(backend.machine().bus.peek_io_port(0x00) & 0xc1, 0x00, "completed Rev1 RX drives D0 low and must never fabricate D6");
-    assert_eq!(backend.machine().bus.peek_io_port(0x01), b'R');
-    assert_eq!(backend.machine_mut().bus.debugger_input_port(0x01), b'R');
-    assert_eq!(backend.machine().bus.peek_io_port(0x00) & 0x01, 0x01);
+    backend.commit_panel_activity(Duration::from_millis(100));
+    assert_eq!(backend.peek_io_port(0x00) & 0xc1, 0x00, "completed Rev1 RX drives D0 low and must never fabricate D6");
+    assert_eq!(backend.peek_io_port(0x01), b'R');
+    assert_eq!(backend.debugger_input_port(0x01), b'R');
+    assert_eq!(backend.peek_io_port(0x00) & 0x01, 0x01);
 
-    backend.machine_mut().bus.debugger_output_port(0x01, b'T');
-    assert_eq!(backend.machine().bus.serial_tx_front(), None, "TX byte must cross the COM2502 shift register before reaching the endpoint");
-    backend.commit_panel_activity(Duration::from_millis(100)).unwrap();
-    assert_eq!(backend.machine().bus.serial_tx_front(), Some(b'T'));
+    backend.debugger_output_port(0x01, b'T');
+    assert_eq!(backend.serial_tx_front(BackendSerialPort::Port0), None, "TX byte must cross the COM2502 shift register before reaching the endpoint");
+    backend.commit_panel_activity(Duration::from_millis(100));
+    assert_eq!(backend.serial_tx_front(BackendSerialPort::Port0), Some(b'T'));
 }
 
 #[test]
