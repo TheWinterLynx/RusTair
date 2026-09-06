@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustair::adaptive_metrics;
 use rustair::backend::{BackendHost, BackendSerialPort};
@@ -194,6 +194,8 @@ fn run_diagnostic(
     let start_t = machine.intel8080_state().total_t_states.unwrap_or(0);
     adaptive_metrics::begin_measurement();
     let started = Instant::now();
+    let mut last_progress_at = started;
+    let mut last_progress_t = start_t;
     let mut output = Vec::new();
     let service_chunk = if reference.t_states <= SHORT_MAX_T_STATES {
         SHORT_SERVICE_CHUNK_T_STATES
@@ -208,6 +210,33 @@ fn run_diagnostic(
 
         machine.run_cycles(service_chunk);
         drain_console(&mut machine, &mut output);
+
+        let progress_at = Instant::now();
+        if progress_at.duration_since(last_progress_at) >= Duration::from_secs(2) {
+            let progress_t = machine.intel8080_state().total_t_states.unwrap_or(now_t);
+            let actual_t = progress_t.saturating_sub(start_t);
+            let interval_t = progress_t.saturating_sub(last_progress_t);
+            let interval_s = progress_at.duration_since(last_progress_at).as_secs_f64();
+            let elapsed_s = progress_at.duration_since(started).as_secs_f64();
+            let interval_mhz = interval_t as f64 / interval_s / 1_000_000.0;
+            let cumulative_mhz = actual_t as f64 / elapsed_s / 1_000_000.0;
+            let stats = adaptive_metrics::snapshot();
+            let progress_pct = actual_t as f64 * 100.0 / reference.t_states as f64;
+            let f = stats.fallbacks;
+            eprintln!(
+                "{name} progress: {actual_t}/{} machine T ({progress_pct:.1}%), {:.1?}, {cumulative_mhz:.2} MHz avg / {interval_mhz:.2} MHz recent, Full {:.2}% / Partial {:.2}%, opcode barriers={}, serial entries={}, budget tails={}, output={} bytes",
+                reference.t_states,
+                progress_at.duration_since(started),
+                stats.full_percent(),
+                stats.partial_percent(),
+                f.opcode_barrier,
+                f.serial_active,
+                f.budget_tail,
+                output.len(),
+            );
+            last_progress_at = progress_at;
+            last_progress_t = progress_t;
+        }
 
         if let Some(result) = machine.take_cpu_diagnostic_result() {
             drain_console(&mut machine, &mut output);
