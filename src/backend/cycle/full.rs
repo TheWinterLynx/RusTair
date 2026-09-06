@@ -801,17 +801,27 @@ impl CycleAccurateMachineBackend {
         }
     }
 
+    fn record_partial_metrics_span_until(
+        &self,
+        partial_start_t: &mut Option<u64>,
+        partial_reason: &mut Option<AdaptiveFallbackReason>,
+        end_t: u64,
+    ) {
+        let Some(start_t) = partial_start_t.take() else { return; };
+        let elapsed = end_t.saturating_sub(start_t);
+        adaptive_metrics::record_partial_span(
+            elapsed,
+            partial_reason.take().unwrap_or(AdaptiveFallbackReason::FullWindowUnavailable),
+        );
+    }
+
     fn record_partial_metrics_span(
         &self,
         partial_start_t: &mut Option<u64>,
         partial_reason: &mut Option<AdaptiveFallbackReason>,
     ) {
-        let Some(start_t) = partial_start_t.take() else { return; };
-        let elapsed = self.cpu.total_t_states().saturating_sub(start_t);
-        adaptive_metrics::record_partial_span(
-            elapsed,
-            partial_reason.take().unwrap_or(AdaptiveFallbackReason::FullWindowUnavailable),
-        );
+        let end_t = self.cpu.total_t_states();
+        self.record_partial_metrics_span_until(partial_start_t, partial_reason, end_t);
     }
 
     pub(super) fn service_execution_compiled(
@@ -849,8 +859,16 @@ impl CycleAccurateMachineBackend {
             let full_window = at_boundary && full_window_blocker.is_none();
 
             let before_completed = self.cpu.completed_instructions();
+            let before_full_t = self.cpu.total_t_states();
             if let Some(elapsed) = self.execute_compiled_full_window(&mut remaining, full_window) {
-                self.record_partial_metrics_span(&mut partial_start_t, &mut partial_reason);
+                // execute_compiled_full_window commits its T-states before returning.
+                // Close any preceding Partial span at the exact pre-Full boundary
+                // so those T-states are not counted once as Partial and again as Full.
+                self.record_partial_metrics_span_until(
+                    &mut partial_start_t,
+                    &mut partial_reason,
+                    before_full_t,
+                );
                 let completed = self.cpu.completed_instructions().saturating_sub(before_completed);
                 adaptive_metrics::record_full_window(completed, elapsed);
                 if serial_clocked {
