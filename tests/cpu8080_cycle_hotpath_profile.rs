@@ -6,15 +6,19 @@ use rustair::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace
 
 const T_STATES_PER_CASE: u64 = 50_000_000;
 
-fn profile_opcode(name: &str, opcode: u8) {
-    let mut cpu = Cpu8080Cycle::new();
-    let inputs = Cpu8080Inputs {
+fn stable_inputs(opcode: u8) -> Cpu8080Inputs {
+    Cpu8080Inputs {
         data_in: opcode,
         ready: true,
         interrupt: false,
         hold: false,
         reset: false,
-    };
+    }
+}
+
+fn profile_opcode(name: &str, opcode: u8) {
+    let mut cpu = Cpu8080Cycle::new();
+    let inputs = stable_inputs(opcode);
 
     let started = Instant::now();
     let mut completed = 0u64;
@@ -31,6 +35,62 @@ fn profile_opcode(name: &str, opcode: u8) {
     );
 }
 
+fn profile_nop_trace_materialization() {
+    let inputs = stable_inputs(0x00);
+
+    let mut full_trace_cpu = Cpu8080Cycle::new();
+    let mut completed = 0u64;
+    let started = Instant::now();
+    for _ in 0..T_STATES_PER_CASE {
+        let trace = full_trace_cpu.tick(inputs);
+        completed += trace.instruction_complete as u64;
+        black_box(trace);
+    }
+    let elapsed = started.elapsed();
+    eprintln!(
+        "[CPU CYCLE TRACE COST] full TickTrace black_box : {:.3?}  {:.2} M T-state/s  completed={completed}",
+        elapsed,
+        T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0,
+    );
+
+    let mut completion_cpu = Cpu8080Cycle::new();
+    let mut completed = 0u64;
+    let started = Instant::now();
+    for _ in 0..T_STATES_PER_CASE {
+        let trace = completion_cpu.tick(inputs);
+        completed += trace.instruction_complete as u64;
+    }
+    black_box((
+        completion_cpu.total_t_states(),
+        completion_cpu.registers(),
+        completion_cpu.pins(),
+        completed,
+    ));
+    let elapsed = started.elapsed();
+    eprintln!(
+        "[CPU CYCLE TRACE COST] completion field only    : {:.3?}  {:.2} M T-state/s  completed={completed}",
+        elapsed,
+        T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0,
+    );
+
+    let mut state_only_cpu = Cpu8080Cycle::new();
+    let started = Instant::now();
+    for _ in 0..T_STATES_PER_CASE {
+        let _ = state_only_cpu.tick(inputs);
+    }
+    black_box((
+        state_only_cpu.total_t_states(),
+        state_only_cpu.registers(),
+        state_only_cpu.pins(),
+    ));
+    let elapsed = started.elapsed();
+    eprintln!(
+        "[CPU CYCLE TRACE COST] return ignored/state end : {:.3?}  {:.2} M T-state/s",
+        elapsed,
+        T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0,
+    );
+}
+
 #[test]
 #[ignore = "manual release-mode Cpu8080Cycle hot-path profiler"]
 fn profile_cpu8080_cycle_hot_instruction_families() {
@@ -41,6 +101,8 @@ fn profile_cpu8080_cycle_hot_instruction_families() {
         size_of::<Cpu8080Pins>(),
         size_of::<Cpu8080Inputs>(),
     );
+
+    profile_nop_trace_materialization();
 
     // Constant data_in is sufficient here because the core samples it only on
     // read T3. For multi-byte control flow the immediate/stack bytes therefore
