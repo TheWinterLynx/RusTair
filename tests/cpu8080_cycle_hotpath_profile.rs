@@ -53,6 +53,44 @@ fn profile_nop_trace_materialization() {
         T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0,
     );
 
+    // Consume every externally visible field, but scalarize them into a checksum
+    // instead of forcing the 40-byte TickTrace aggregate through black_box. This
+    // distinguishes the cost of computing/using all observations from the cost
+    // of materializing/copying the aggregate itself.
+    let mut scalar_cpu = Cpu8080Cycle::new();
+    let mut checksum = 0u64;
+    let started = Instant::now();
+    for _ in 0..T_STATES_PER_CASE {
+        let trace = scalar_cpu.tick(inputs);
+        checksum = checksum
+            .wrapping_add(trace.total_t_states)
+            .wrapping_add(u64::from(trace.instruction_t_states))
+            .wrapping_add(trace.machine_cycle as u64)
+            .wrapping_add(u64::from(trace.machine_cycle_index))
+            .wrapping_add(trace.t_state as u64)
+            .wrapping_add(u64::from(trace.opcode.unwrap_or(0)))
+            .wrapping_add(trace.instruction_complete as u64)
+            .wrapping_add(trace.reset as u64)
+            .wrapping_add(trace.fault.is_some() as u64)
+            .wrapping_add(trace.pins.phi1 as u64)
+            .wrapping_add(trace.pins.phi2 as u64)
+            .wrapping_add(u64::from(trace.pins.address.unwrap_or(0)))
+            .wrapping_add(u64::from(trace.pins.data_out.unwrap_or(0)))
+            .wrapping_add(trace.pins.sync as u64)
+            .wrapping_add(trace.pins.dbin as u64)
+            .wrapping_add(trace.pins.wr_n as u64)
+            .wrapping_add(trace.pins.inte as u64)
+            .wrapping_add(trace.pins.wait as u64)
+            .wrapping_add(trace.pins.hlda as u64);
+    }
+    black_box(checksum);
+    let elapsed = started.elapsed();
+    eprintln!(
+        "[CPU CYCLE TRACE COST] all fields scalarized     : {:.3?}  {:.2} M T-state/s  checksum={checksum}",
+        elapsed,
+        T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0,
+    );
+
     let mut completion_cpu = Cpu8080Cycle::new();
     let mut completed = 0u64;
     let started = Instant::now();
