@@ -114,6 +114,7 @@ impl Cpu8080Cycle {
                 | Instruction::Lxi(_)
                 | Instruction::Inx(_)
                 | Instruction::Dcx(_)
+                | Instruction::Dad(_)
                 | Instruction::Ldax(_)
                 | Instruction::Stax(_)
                 | Instruction::LdaDirect
