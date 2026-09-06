@@ -222,8 +222,14 @@ impl Cpu8080Cycle {
         self.pins.inte = self.inte;
     }
 
-    /// Execute one whole instruction using RusTair's validated instruction-level 8080
-    /// semantics, then import the programmer-visible result back into this exact core.
+    /// Execute one whole instruction using RusTair's validated instruction-level
+    /// 8080 semantics, then import the programmer-visible result back into this
+    /// exact core at the next clean fetch boundary.
+    ///
+    /// This remains as the narrow one-instruction bridge used by focused tests;
+    /// production Full execution uses `begin_full_execution_window` and
+    /// `commit_full_execution_window` so the register set is copied only at real
+    /// synchronization boundaries rather than once per opcode.
     #[cfg(test)]
     pub(crate) fn execute_full_instruction<B: Bus>(
         &mut self,
