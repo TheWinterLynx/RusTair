@@ -124,6 +124,11 @@ impl FullPanelActivity {
         (mixed as usize).wrapping_mul(0x9e37_79b1) & (FULL_PANEL_HISTOGRAM_ENTRIES - 1)
     }
 
+    #[inline]
+    fn previous_status_reads_memory(&self) -> bool {
+        self.latched_status & 0x80 != 0
+    }
+
     fn replay_entry(bus: &mut AltairBus, entry: FullPanelHistogramEntry) {
         if entry.weight == 0 {
             return;
@@ -231,13 +236,27 @@ impl FullPanelActivity {
         writes_data: bool,
         protected: bool,
         inte: bool,
+        write_t1_data_from_s100: Option<u8>,
     ) {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
+        debug_assert!(!writes_data || write_t1_data_from_s100.is_none() || self.previous_status_reads_memory());
 
         // Once another external machine cycle starts, the previous one can no
         // longer be the final presentation boundary and is safe to coalesce.
         self.commit_pending(bus);
+
+        // A write can begin while the 8212 still exposes the preceding read
+        // status. At that T1 address the selected RAM may therefore drive DI
+        // before PHI1 latches the write status. Once the write status takes over,
+        // DI floats and the front-panel DATA lamps retain that just-seen byte for
+        // the rest of the write cycle. Ordinary reads keep their established
+        // T1/T2 timing and are intentionally not changed here.
+        if writes_data {
+            if let Some(t1_data) = write_t1_data_from_s100 {
+                self.panel_data = t1_data;
+            }
+        }
 
         let first_key = Self::state_key(
             address,
@@ -282,6 +301,43 @@ impl FullPanelActivity {
         pending.internal_tail = pending.internal_tail.saturating_add(t_states);
     }
 
+    fn replay_final_write_cycle(bus: &mut AltairBus, pending: PendingPanelCycle) {
+        debug_assert!(pending.writes_data);
+        let first_panel_data = (pending.first_key >> 16) as u8;
+        let first_status = (pending.first_key >> 24) as u8;
+
+        // T1: CPU presents the new write status on DO while the 8212 still shows
+        // the previous status. If that previous status was sMEMR, DI already
+        // contains the pre-write RAM byte captured by the local recorder.
+        bus.cycle_drive_s100_t_state(
+            Some(pending.address),
+            Some(pending.status_word),
+            Some(first_panel_data),
+            Some(pending.status_word),
+            Some(first_status),
+            pending.inte,
+            true,
+            false,
+            false,
+        );
+
+        // T2/T3: the 8212 has latched the write status, DI is released, and the
+        // write byte is on CPU D/DO. DATA lamps retain the T1 DI byte.
+        for index in 1..pending.t_states {
+            bus.cycle_drive_s100_t_state(
+                Some(pending.address),
+                Some(pending.data),
+                None,
+                Some(pending.data),
+                (index == 1).then_some(pending.status_word),
+                pending.inte,
+                true,
+                false,
+                false,
+            );
+        }
+    }
+
     fn finish(&mut self, bus: &mut AltairBus) {
         let Some(pending) = self.pending.take() else {
             self.flush_histogram(bus, self.latest_committed_key);
@@ -292,15 +348,22 @@ impl FullPanelActivity {
         // for raw duty, but end with the true predecessor so the canonical helper
         // sees exactly the 8212/panel DATA state that existed before final T1.
         self.flush_histogram(bus, self.latest_committed_key);
-        bus.cycle_full_project_panel_cycle(
-            pending.address,
-            pending.data,
-            pending.status_word,
-            pending.t_states,
-            pending.reads_data,
-            pending.writes_data,
-            pending.inte,
-        );
+        if pending.writes_data {
+            // Final writes need the same pre-PHI1 DI retention as completed writes.
+            // Materialize their three exact visible T-states directly so the bus
+            // also rejoins Partial with the real write direction still presented.
+            Self::replay_final_write_cycle(bus, pending);
+        } else {
+            bus.cycle_full_project_panel_cycle(
+                pending.address,
+                pending.data,
+                pending.status_word,
+                pending.t_states,
+                pending.reads_data,
+                pending.writes_data,
+                pending.inte,
+            );
+        }
         if pending.internal_tail != 0 {
             bus.cycle_full_project_internal_t_states(pending.internal_tail, pending.inte);
         }
@@ -421,6 +484,11 @@ impl<'a> FullInstructionBus<'a> {
         writes_data: bool,
     ) {
         let protected = self.protected(address);
+        let write_t1_data_from_s100 = if writes_data && self.panel.previous_status_reads_memory() {
+            self.bus.peek_memory(address)
+        } else {
+            None
+        };
         self.panel.project_machine_cycle(
             self.bus,
             address,
@@ -431,6 +499,7 @@ impl<'a> FullInstructionBus<'a> {
             writes_data,
             protected,
             self.inte,
+            write_t1_data_from_s100,
         );
         self.projected_t_states = self.projected_t_states.saturating_add(t_states);
         self.last_projected_address = Some(address);
@@ -540,9 +609,10 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn write(&mut self, address: u16, value: u8) {
+        // Capture the pre-write T1 DI level before the guest RAM byte changes.
+        self.project_machine_cycle(address, value, 0x00, 3, false, true);
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
-        self.project_machine_cycle(address, value, 0x00, 3, false, true);
         self.remember_write_boundary(address, value);
     }
 
@@ -582,9 +652,10 @@ impl Bus for FullInstructionBus<'_> {
 
     #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
+        // Stack writes have the same stale-sMEMR T1 behavior as ordinary writes.
+        self.project_machine_cycle(address, value, 0x04, 3, false, true);
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
-        self.project_machine_cycle(address, value, 0x04, 3, false, true);
         self.remember_write_boundary(address, value);
     }
 
