@@ -266,7 +266,7 @@ impl Cpu8080Cycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu8080_cycle::Cpu8080Cycle;
+    use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Inputs};
 
     #[test]
     fn power_on_seed_carries_interrupt_flip_flop_without_advancing_time() {
@@ -346,6 +346,58 @@ mod tests {
         assert_eq!(cpu.completed_instructions(), 4);
         assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch);
         assert_eq!(cpu.t_state(), TState::T1);
+    }
+
+    #[test]
+    fn full_dad_family_matches_exact_cycle_core_at_10_t_states() {
+        struct TestBus {
+            memory: [u8; 16],
+        }
+        impl Bus for TestBus {
+            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
+            fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
+        }
+
+        let registers = Registers {
+            a: 0x5a,
+            b: 0x12,
+            c: 0x34,
+            d: 0xfe,
+            e: 0xdc,
+            h: 0x90,
+            l: 0x01,
+            f: 0xd6,
+            sp: 0x8002,
+            pc: 0,
+        };
+
+        for opcode in [0x09, 0x19, 0x29, 0x39] {
+            let mut full = Cpu8080Cycle::new();
+            let mut exact = Cpu8080Cycle::new();
+            full.set_registers(registers);
+            exact.set_registers(registers);
+            let mut bus = TestBus { memory: [0; 16] };
+            bus.memory[0] = opcode;
+
+            assert_eq!(full.execute_full_instruction(&mut bus, opcode), Some(10));
+
+            for _ in 0..10 {
+                let address = exact.cycle_address();
+                let data_in = bus.memory[address as usize];
+                let trace = exact.tick(Cpu8080Inputs {
+                    data_in,
+                    ready: true,
+                    ..Cpu8080Inputs::default()
+                });
+                assert!(trace.fault.is_none());
+            }
+
+            assert_eq!(full.registers(), exact.registers(), "DAD {opcode:02x} registers");
+            assert_eq!(full.total_t_states(), exact.total_t_states(), "DAD {opcode:02x} T-states");
+            assert_eq!(full.completed_instructions(), exact.completed_instructions(), "DAD {opcode:02x} instruction count");
+            assert_eq!(exact.machine_cycle(), MachineCycle::InstructionFetch);
+            assert_eq!(exact.t_state(), TState::T1);
+        }
     }
 
     #[test]
