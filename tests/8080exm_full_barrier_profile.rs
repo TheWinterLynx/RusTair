@@ -42,6 +42,20 @@ struct OpcodeCost {
     t_states: u64,
 }
 
+fn add_cost(
+    costs: &mut [OpcodeCost; 256],
+    instructions: &mut u64,
+    t_states: &mut u64,
+    opcode: u8,
+    elapsed: u64,
+) {
+    *instructions += 1;
+    *t_states += elapsed;
+    let cost = &mut costs[opcode as usize];
+    cost.instructions += 1;
+    cost.t_states += elapsed;
+}
+
 fn cpm_bdos_return(cpu: &mut Cpu8080, bus: &ProfileBus) {
     // A CALL 0005h has already pushed the return address. We deliberately trap
     // BDOS in the host instead of executing a console shim: this profiler is only
@@ -149,9 +163,19 @@ fn profile_8080exm_dynamic_pressure_from_current_full_barrier_opcodes() {
 
     loop {
         if cpu.pc == 0 {
+            // Match the established classic reference meter: production replaces
+            // warm boot with HLT, but the published total normalizes that final
+            // instruction to the conventional OUT 0 cost (10 T-states).
+            add_cost(&mut costs, &mut instructions, &mut t_states, 0xd3, 10);
             break;
         }
         if cpu.pc == 5 {
+            // The classic reference meter normalizes CALL 0005h to OUT 1 + RET,
+            // i.e. two synthetic instructions and 20 T-states. Charge the same
+            // opcodes here so the barrier histogram and the reference totals use
+            // exactly one accounting convention.
+            add_cost(&mut costs, &mut instructions, &mut t_states, 0xd3, 10);
+            add_cost(&mut costs, &mut instructions, &mut t_states, 0xc9, 10);
             cpm_bdos_return(&mut cpu, &bus);
             continue;
         }
@@ -161,11 +185,7 @@ fn profile_8080exm_dynamic_pressure_from_current_full_barrier_opcodes() {
 
         let opcode = bus.memory[cpu.pc as usize];
         let elapsed = u64::from(cpu.step(&mut bus));
-        instructions += 1;
-        t_states += elapsed;
-        let cost = &mut costs[opcode as usize];
-        cost.instructions += 1;
-        cost.t_states += elapsed;
+        add_cost(&mut costs, &mut instructions, &mut t_states, opcode, elapsed);
 
         if instructions >= next_progress {
             eprintln!(
