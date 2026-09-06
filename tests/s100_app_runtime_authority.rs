@@ -7,17 +7,34 @@ fn compact(source: &str) -> String {
     source.split_whitespace().collect()
 }
 
+fn function_body<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
+    let start = source
+        .find(start)
+        .unwrap_or_else(|| panic!("missing function boundary {start}"));
+    let tail = &source[start..];
+    let end = tail
+        .find(next)
+        .unwrap_or_else(|| panic!("missing following function boundary {next}"));
+    &tail[..end]
+}
+
 #[test]
 fn app_mounts_slot_native_s100_hardware_at_every_runtime_configuration_boundary() {
     let app = compact(APP_SOURCE);
-    let persistence = compact(PERSISTENCE_SOURCE);
-
     assert!(app.contains(
         "self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init);"
     ));
-    assert!(persistence.contains(
-        "self.machine.configure_s100_hardware(self.config.machine.s100_hardware,self.config.machine.ram_init);"
-    ));
+
+    let persisted_apply = function_body(
+        PERSISTENCE_SOURCE,
+        "fn apply_persisted_settings",
+        "fn capture_persisted_settings_with_leds",
+    );
+    assert!(persisted_apply.contains("configure_s100_hardware"));
+    assert!(persisted_apply.contains("self.config.machine.s100_hardware"));
+    assert!(persisted_apply.contains("self.config.machine.ram_init"));
+    assert!(!persisted_apply.contains("configure_memory("));
+
     assert!(S100_UI_SOURCE.contains("app.apply_s100_hardware_configuration(valid, action)"));
     assert!(RUNTIME_SOURCE.contains("self.machine.s100_hardware() != self.config.machine.s100_hardware"));
 }
