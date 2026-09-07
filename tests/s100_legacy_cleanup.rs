@@ -3,6 +3,7 @@ const CONFIG_MOD: &str = include_str!("../src/config/mod.rs");
 const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
+const MEMORY: &str = include_str!("../src/machine/memory.rs");
 
 #[test]
 fn migrated_aggregate_hardware_state_does_not_survive_in_machine_config() {
@@ -82,4 +83,14 @@ fn app_has_no_duplicate_serial_hardware_apply_boundary() {
     }
     assert!(APP.contains("fn apply_s100_hardware_configuration"));
     assert!(!RUNTIME.contains("ui.menu_button(\"Serial board\""));
+}
+
+#[test]
+fn memory_has_one_physical_s100_runtime_representation() {
+    assert!(!MEMORY.contains("legacy_aggregate"));
+    assert!(!MEMORY.contains("legacy_fabric"));
+    assert!(MEMORY.contains("S100RuntimeFabric"));
+    assert!(MEMORY.contains("S100HardwareConfig::from_legacy_globals("));
+    assert!(MEMORY.contains("compatibility S-100 assembly"));
+    assert!(MEMORY.contains("Physical RAM and I/O cards drive PRDY through the live backplane"));
 }
