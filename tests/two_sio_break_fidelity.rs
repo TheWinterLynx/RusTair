@@ -1,19 +1,27 @@
 use std::time::Duration;
 
 use rustair::backend::{BackendHost, BackendSerialPort, EmulationEngine};
-use rustair::config::SerialBoard;
+use rustair::config::{RamInit, S100HardwareConfig};
 
 const TCP_APP: &str = include_str!("../src/app/external_serial.rs");
 const TERMINAL_APP: &str = include_str!("../src/app/terminal_serial.rs");
 const ASR_APP: &str = include_str!("../src/app/asr33_controller.rs");
 
+fn two_sio_host(engine: EmulationEngine) -> BackendHost {
+    let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
+    let hardware = S100HardwareConfig::historical_8800b_18_slot_starter()
+        .validate()
+        .unwrap();
+    host.configure_s100_hardware(hardware, RamInit::Zeroed);
+    host.power(true);
+    host.front_panel_reset();
+    host
+}
+
 #[test]
 fn both_engines_keep_tdr_tsr_clocking_under_break_without_fabricating_wire_bytes() {
     for engine in EmulationEngine::ALL {
-        let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
-        host.configure_serial_board(SerialBoard::TwoSio88);
-        host.power(true);
-        host.front_panel_reset();
+        let mut host = two_sio_host(engine);
 
         // 75h = /16, 8N1, CR6:CR5=11: RTS LOW + continuous BREAK/SPACE.
         host.debugger_output_port(0x10, 0x75);
