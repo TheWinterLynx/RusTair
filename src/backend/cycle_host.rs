@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioConnectorOutputs,
-    SioElectricalLevel, SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SioConnectorOutputs,
+    SioElectricalLevel,
 };
 use crate::cpu8080_cycle::{MachineCycle, TState};
 use crate::debugger_control::DebugExecutionControl;
@@ -347,28 +347,6 @@ impl MachineBackend for CycleHostBackend {
     fn protect_current_board(&mut self, p: bool) -> BackendResult<()> { self.inner.protect_current_board(p) }
     fn switch_register(&mut self) -> BackendResult<u16> { self.inner.switch_register() }
     fn set_switch_register(&mut self, v: u16) -> BackendResult<()> { self.inner.set_switch_register(v) }
-    fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
-        if self.inner.machine().serial_board() == board { return Ok(()); }
-        let powered = self.inner.machine().powered;
-        self.reset_debugger_epoch(); self.inner.machine_mut().configure_serial_board(board);
-        if powered { self.inner.assert_reset()?; self.inner.release_reset()?; self.teaching_reset_seen = true; }
-        self.reset_idle_chassis_clock_tracking(); Ok(())
-    }
-    fn serial_board(&mut self) -> BackendResult<SerialBoard> { self.inner.serial_board() }
-    fn configure_sio_hardware(&mut self, config: SioHardwareConfig) -> BackendResult<()> {
-        if self.inner.machine().sio_hardware() == config { return Ok(()); }
-        let powered = self.inner.machine().powered;
-        self.reset_debugger_epoch();
-        self.inner.machine_mut().configure_sio_hardware(config);
-        if powered {
-            self.inner.assert_reset()?;
-            self.inner.release_reset()?;
-            self.teaching_reset_seen = true;
-        }
-        self.reset_idle_chassis_clock_tracking();
-        Ok(())
-    }
-    fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> { Ok(self.inner.machine().sio_hardware()) }
     fn sio_logical_lines(&mut self) -> BackendResult<Option<SioLogicalLines>> {
         Ok(self.inner.machine().bus.sio_logical_lines().map(SioLogicalLines::from))
     }
@@ -386,38 +364,6 @@ impl MachineBackend for CycleHostBackend {
     }
     fn sio_pulse_output_device_ready(&mut self) -> BackendResult<bool> {
         Ok(self.inner.machine_mut().bus.pulse_sio_output_device_ready())
-    }
-    fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) -> BackendResult<()> {
-        if self.inner.machine().two_sio_straps() == straps { return Ok(()); }
-        let powered = self.inner.machine().powered;
-        self.reset_debugger_epoch();
-        self.inner.machine_mut().configure_two_sio_straps(straps);
-        if powered {
-            self.inner.assert_reset()?;
-            self.inner.release_reset()?;
-            self.teaching_reset_seen = true;
-        }
-        self.reset_idle_chassis_clock_tracking();
-        Ok(())
-    }
-    fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> { Ok(self.inner.machine().two_sio_straps()) }
-    fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) -> BackendResult<()> {
-        if self.inner.machine().bus.two_sio_interrupt_wiring() == wiring { return Ok(()); }
-        let powered = self.inner.machine().powered;
-        self.reset_debugger_epoch();
-        if powered { self.inner.halt()?; }
-        self.inner.machine_mut().bus.configure_two_sio_interrupt_wiring(wiring);
-        self.inner.machine_mut().bus.clear_transient_memory_guards();
-        if powered {
-            self.inner.assert_reset()?;
-            self.inner.release_reset()?;
-            self.teaching_reset_seen = true;
-        }
-        self.reset_idle_chassis_clock_tracking();
-        Ok(())
-    }
-    fn two_sio_interrupt_wiring(&mut self) -> BackendResult<TwoSioInterruptWiring> {
-        Ok(self.inner.machine().bus.two_sio_interrupt_wiring())
     }
     fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
         Ok(self.inner.machine().bus.two_sio_vector_interrupt_requests())
@@ -571,17 +517,6 @@ mod tests {
         assert_eq!(snapshot.visible_lamps.memr, 0.0);
         assert_eq!(snapshot.visible_lamps.m1, 0.0);
         assert_eq!(snapshot.visible_lamps.wait, 0.0);
-    }
-
-    #[test]
-    fn powered_serial_board_change_resets_real_cycle_core() {
-        let mut backend = CycleHostBackend::default();
-        backend.power(true).unwrap(); backend.assert_reset().unwrap(); backend.release_reset().unwrap();
-        backend.inner.machine_mut().bus.load(0, &[0x00]); backend.run().unwrap(); backend.service_execution(4).unwrap();
-        assert_ne!(backend.inner.cpu().registers().pc, 0);
-        backend.configure_serial_board(SerialBoard::TwoSio88).unwrap();
-        assert_eq!(backend.inner.cpu().registers().pc, 0);
-        assert_eq!(backend.inner.machine().serial_board(), SerialBoard::TwoSio88);
     }
 
     #[test]
