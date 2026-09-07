@@ -11,7 +11,12 @@ const CPM_BDOS_PAGE_BYTES: usize = 0x0100;
 const CPM_STACK_GUARD_BYTES: usize = 0x0100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DiagnosticRunSpeed { Authentic, X5, X10, Unlimited }
+enum DiagnosticRunSpeed {
+    Authentic,
+    X5,
+    X10,
+    Unlimited,
+}
 
 impl DiagnosticRunSpeed {
     const ALL: [Self; 4] = [Self::Authentic, Self::X5, Self::X10, Self::Unlimited];
@@ -29,17 +34,33 @@ impl DiagnosticRunSpeed {
         }
     }
 }
-impl Default for DiagnosticRunSpeed { fn default() -> Self { Self::Unlimited } }
+impl Default for DiagnosticRunSpeed {
+    fn default() -> Self {
+        Self::Unlimited
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ClassicDiagnostic { Preliminary, Tst8080, CpuTest, ExerciserModified }
+enum ClassicDiagnostic {
+    Preliminary,
+    Tst8080,
+    CpuTest,
+    ExerciserModified,
+}
 
 impl ClassicDiagnostic {
-    const SUITE: [Self; 4] = [Self::Preliminary, Self::Tst8080, Self::CpuTest, Self::ExerciserModified];
+    const SUITE: [Self; 4] = [
+        Self::Preliminary,
+        Self::Tst8080,
+        Self::CpuTest,
+        Self::ExerciserModified,
+    ];
     const fn filename(self) -> &'static str {
         match self {
-            Self::Preliminary => "8080PRE.COM", Self::Tst8080 => "TST8080.COM",
-            Self::CpuTest => "CPUTEST.COM", Self::ExerciserModified => "8080EXM.COM",
+            Self::Preliminary => "8080PRE.COM",
+            Self::Tst8080 => "TST8080.COM",
+            Self::CpuTest => "CPUTEST.COM",
+            Self::ExerciserModified => "8080EXM.COM",
         }
     }
     const fn label(self) -> &'static str {
@@ -60,23 +81,37 @@ impl ClassicDiagnostic {
     }
     const fn expected_instructions(self) -> u64 {
         match self {
-            Self::Preliminary => 1_061, Self::Tst8080 => 651,
-            Self::CpuTest => 33_971_311, Self::ExerciserModified => 2_919_050_698,
+            Self::Preliminary => 1_061,
+            Self::Tst8080 => 651,
+            Self::CpuTest => 33_971_311,
+            Self::ExerciserModified => 2_919_050_698,
         }
     }
     const fn expected_t_states(self) -> u64 {
         match self {
-            Self::Preliminary => 7_817, Self::Tst8080 => 4_924,
-            Self::CpuTest => 255_653_383, Self::ExerciserModified => 23_803_381_171,
+            Self::Preliminary => 7_817,
+            Self::Tst8080 => 4_924,
+            Self::CpuTest => 255_653_383,
+            Self::ExerciserModified => 23_803_381_171,
         }
     }
 }
 
 #[derive(Clone, Debug)]
-struct ControlCheck { name: &'static str, passed: bool, detail: String }
+struct ControlCheck {
+    name: &'static str,
+    passed: bool,
+    detail: String,
+}
 #[derive(Clone, Debug)]
-struct ControlLineReport { checks: Vec<ControlCheck> }
-impl ControlLineReport { fn passed(&self) -> bool { self.checks.iter().all(|check| check.passed) } }
+struct ControlLineReport {
+    checks: Vec<ControlCheck>,
+}
+impl ControlLineReport {
+    fn passed(&self) -> bool {
+        self.checks.iter().all(|check| check.passed)
+    }
+}
 
 #[derive(Clone, Debug)]
 struct CompletedDiagnostic {
@@ -102,7 +137,8 @@ struct SuiteReport {
 }
 impl SuiteReport {
     fn passed(&self) -> bool {
-        self.control.passed() && self.results.len() == ClassicDiagnostic::SUITE.len()
+        self.control.passed()
+            && self.results.len() == ClassicDiagnostic::SUITE.len()
             && self.results.iter().all(reference_match)
     }
 }
@@ -122,8 +158,11 @@ impl Default for EmbeddedDiagnosticsState {
         Self {
             speed: DiagnosticRunSpeed::default(),
             port: cpu_diagnostics::DiagnosticSerialPort::Port0,
-            active_test: None, suite: None, individual_result: None,
-            control_report: None, suite_report: None,
+            active_test: None,
+            suite: None,
+            individual_result: None,
+            control_report: None,
+            suite_report: None,
         }
     }
 }
@@ -139,19 +178,22 @@ fn append_abs(code: &mut Vec<u8>, opcode: u8, address: u16) {
     code.extend_from_slice(&[opcode, lo, hi]);
 }
 
-fn build_cpm_environment(board: SerialBoard, port: cpu_diagnostics::DiagnosticSerialPort, bdos_base: u16) -> Option<CpmDiagnosticEnvironment> {
-    let (status_port, data_port, ready_mask, wait_branch) = match (board, port) {
-        (SerialBoard::Sio88, cpu_diagnostics::DiagnosticSerialPort::Port0) => (0x00, 0x01, 0xc0, 0xc2),
-        (SerialBoard::Sio88, cpu_diagnostics::DiagnosticSerialPort::Port1) => return None,
-        (SerialBoard::TwoSio88, cpu_diagnostics::DiagnosticSerialPort::Port0) => (0x10, 0x11, 0x02, 0xca),
-        (SerialBoard::TwoSio88, cpu_diagnostics::DiagnosticSerialPort::Port1) => (0x12, 0x13, 0x02, 0xca),
+fn build_cpm_environment(
+    endpoint: cpu_diagnostics::ResolvedDiagnosticPort,
+    bdos_base: u16,
+) -> CpmDiagnosticEnvironment {
+    let (ready_mask, wait_branch) = match endpoint.board {
+        SerialBoard::Sio88 => (0xc0, 0xc2),
+        SerialBoard::TwoSio88 => (0x02, 0xca),
     };
 
     let mut page_zero = [0u8; CPM_PAGE_ZERO_SIZE];
     page_zero[0..3].copy_from_slice(&[0xc3, 0x80, 0x00]);
     let [bdos_lo, bdos_hi] = bdos_base.to_le_bytes();
     page_zero[5..8].copy_from_slice(&[0xc3, bdos_lo, bdos_hi]);
-    let boot = [0x31, bdos_lo, bdos_hi, 0x3e, 0x76, 0x32, 0x00, 0x00, 0xc3, 0x00, 0x01];
+    let boot = [
+        0x31, bdos_lo, bdos_hi, 0x3e, 0x76, 0x32, 0x00, 0x00, 0xc3, 0x00, 0x01,
+    ];
     page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
 
     const CHAR_OFFSET: u16 = 0x0012;
@@ -166,34 +208,32 @@ fn build_cpm_environment(board: SerialBoard, port: cpu_diagnostics::DiagnosticSe
     let poll_addr = bdos_base.wrapping_add(POLL_OFFSET);
 
     let mut bdos = Vec::with_capacity(0x37);
-    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]); bdos.push(0x79);
-    bdos.extend_from_slice(&[0xfe, 0x02]); append_abs(&mut bdos, 0xca, char_addr);
-    bdos.extend_from_slice(&[0xfe, 0x09]); append_abs(&mut bdos, 0xca, string_addr);
+    bdos.extend_from_slice(&[0xf5, 0xc5, 0xd5, 0xe5]);
+    bdos.push(0x79);
+    bdos.extend_from_slice(&[0xfe, 0x02]);
+    append_abs(&mut bdos, 0xca, char_addr);
+    bdos.extend_from_slice(&[0xfe, 0x09]);
+    append_abs(&mut bdos, 0xca, string_addr);
     append_abs(&mut bdos, 0xc3, done_addr);
-    bdos.push(0x7b); append_abs(&mut bdos, 0xcd, putc_addr); append_abs(&mut bdos, 0xc3, done_addr);
-    bdos.push(0x1a); bdos.extend_from_slice(&[0xfe, 0x24]); append_abs(&mut bdos, 0xca, done_addr);
-    append_abs(&mut bdos, 0xcd, putc_addr); bdos.push(0x13); append_abs(&mut bdos, 0xc3, string_addr);
+    bdos.push(0x7b);
+    append_abs(&mut bdos, 0xcd, putc_addr);
+    append_abs(&mut bdos, 0xc3, done_addr);
+    bdos.push(0x1a);
+    bdos.extend_from_slice(&[0xfe, 0x24]);
+    append_abs(&mut bdos, 0xca, done_addr);
+    append_abs(&mut bdos, 0xcd, putc_addr);
+    bdos.push(0x13);
+    append_abs(&mut bdos, 0xc3, string_addr);
     bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]);
-    bdos.push(0x47); bdos.extend_from_slice(&[0xdb, status_port, 0xe6, ready_mask]);
+    bdos.push(0x47);
+    bdos.extend_from_slice(&[0xdb, endpoint.status_port, 0xe6, ready_mask]);
     append_abs(&mut bdos, wait_branch, poll_addr);
-    bdos.extend_from_slice(&[0x78, 0xd3, data_port, 0xc9]);
+    bdos.extend_from_slice(&[0x78, 0xd3, endpoint.data_port, 0xc9]);
     debug_assert_eq!(bdos.len(), 0x37);
-    Some(CpmDiagnosticEnvironment { page_zero, bdos_base, bdos })
-}
-
-fn port_connection(port: cpu_diagnostics::DiagnosticSerialPort) -> SerialConnection {
-    match port {
-        cpu_diagnostics::DiagnosticSerialPort::Port0 => SerialConnection::Port0,
-        cpu_diagnostics::DiagnosticSerialPort::Port1 => SerialConnection::Port1,
-    }
-}
-
-fn port_label(board: SerialBoard, port: cpu_diagnostics::DiagnosticSerialPort) -> &'static str {
-    match (board, port) {
-        (SerialBoard::Sio88, cpu_diagnostics::DiagnosticSerialPort::Port0) => "88-SIO Port 0 [00h/01h]",
-        (SerialBoard::Sio88, cpu_diagnostics::DiagnosticSerialPort::Port1) => "Unavailable",
-        (SerialBoard::TwoSio88, cpu_diagnostics::DiagnosticSerialPort::Port0) => "88-2SIO Port 0 [10h/11h]",
-        (SerialBoard::TwoSio88, cpu_diagnostics::DiagnosticSerialPort::Port1) => "88-2SIO Port 1 [12h/13h]",
+    CpmDiagnosticEnvironment {
+        page_zero,
+        bdos_base,
+        bdos,
     }
 }
 
@@ -208,14 +248,20 @@ fn format_count(value: u64) -> String {
     let digits = value.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, ch) in digits.chars().enumerate() {
-        if index != 0 && (digits.len() - index) % 3 == 0 { out.push(','); }
+        if index != 0 && (digits.len() - index) % 3 == 0 {
+            out.push(',');
+        }
         out.push(ch);
     }
     out
 }
 fn format_diff(actual: u64, expected: u64) -> String {
     let diff = actual as i128 - expected as i128;
-    if diff > 0 { format!("+{diff}") } else { diff.to_string() }
+    if diff > 0 {
+        format!("+{diff}")
+    } else {
+        diff.to_string()
+    }
 }
 
 fn configured_cpu_board(hardware: S100HardwareConfig) -> CpuBoard {
@@ -233,16 +279,20 @@ fn baseline_hardware() -> S100HardwareConfig {
     hardware
         .set_slot(
             2,
-            Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                S100RamBoardModel::Mits4KStatic88_4Mcs,
-                0x0000,
-            ))),
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(
+                    S100RamBoardModel::Mits4KStatic88_4Mcs,
+                    0x0000,
+                ),
+            )),
         )
         .unwrap();
     hardware
         .set_slot(
             3,
-            Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+            Some(S100InstalledCardConfig::Mits88Sio(
+                SioHardwareConfig::default(),
+            )),
         )
         .unwrap();
     hardware.validate().unwrap()
@@ -273,10 +323,16 @@ fn run_control_line_baseline() -> ControlLineReport {
     let after = after_di.total_t_states.unwrap_or(before);
     checks.push(ControlCheck {
         name: "EI delay / DI",
-        passed: !after_ei.inte && after_nop.inte && !after_di.inte && after.saturating_sub(before) == 12,
+        passed: !after_ei.inte
+            && after_nop.inte
+            && !after_di.inte
+            && after.saturating_sub(before) == 12,
         detail: format!(
             "Adaptive Cycle · INTE after EI={} · after NOP={} · after DI={} · T-states={}",
-            after_ei.inte, after_nop.inte, after_di.inte, after.saturating_sub(before)
+            after_ei.inte,
+            after_nop.inte,
+            after_di.inte,
+            after.saturating_sub(before)
         ),
     });
 
@@ -289,7 +345,10 @@ fn run_control_line_baseline() -> ControlLineReport {
     checks.push(ControlCheck {
         name: "EI immediately followed by DI",
         passed: !after_ei.inte && !after_di.inte,
-        detail: format!("Adaptive Cycle · INTE after EI={} · after DI={}", after_ei.inte, after_di.inte),
+        detail: format!(
+            "Adaptive Cycle · INTE after EI={} · after DI={}",
+            after_ei.inte, after_di.inte
+        ),
     });
 
     let mut machine = baseline_machine(&[0x76]);
@@ -298,10 +357,14 @@ fn run_control_line_baseline() -> ControlLineReport {
     let halted = machine.intel8080_state();
     checks.push(ControlCheck {
         name: "HLT entry / RUN latch",
-        passed: halted.halted == Some(true) && halted.pc == 1 && machine.front_panel_state().running,
+        passed: halted.halted == Some(true)
+            && halted.pc == 1
+            && machine.front_panel_state().running,
         detail: format!(
             "Adaptive Cycle · HALT={:?} · PC={:04X} · RUN latch={}",
-            halted.halted, halted.pc, machine.front_panel_state().running
+            halted.halted,
+            halted.pc,
+            machine.front_panel_state().running
         ),
     });
 
@@ -314,7 +377,10 @@ fn run_control_line_baseline() -> ControlLineReport {
     let (_, last_out, _, out_count) = machine.io_port_activity(0x01);
     checks.push(ControlCheck {
         name: "IN / OUT guest bus contract",
-        passed: io_cpu.a == 0xa5 && io_cpu.halted == Some(true) && last_out == Some(0xa5) && out_count == 1,
+        passed: io_cpu.a == 0xa5
+            && io_cpu.halted == Some(true)
+            && last_out == Some(0xa5)
+            && out_count == 1,
         detail: format!(
             "Adaptive Cycle · IN FFh -> A={:02X} · OUT 01h={:?} · OUT count={} · HALT={:?}",
             io_cpu.a, last_out, out_count, io_cpu.halted
@@ -367,8 +433,9 @@ fn run_control_line_baseline() -> ControlLineReport {
         .bus_teaching_snapshot()
         .and_then(|snapshot| snapshot.status.hlda)
         .unwrap_or(false);
-    let hold_release_transition_ok =
-        hlda_before_release_clock && hlda_after_first_release_clock && !hlda_after_release_clock;
+    let hold_release_transition_ok = hlda_before_release_clock
+        && hlda_after_first_release_clock
+        && !hlda_after_release_clock;
     machine.set_running(false);
 
     checks.push(ControlCheck {
@@ -397,78 +464,149 @@ fn run_control_line_baseline() -> ControlLineReport {
 
 impl RusTairApp {
     pub(in crate::app) fn effective_emulation_speed(&self) -> EmulationSpeed {
-        if self.embedded_diagnostics.active_test.is_some() || self.embedded_diagnostics.suite.is_some() {
+        if self.embedded_diagnostics.active_test.is_some()
+            || self.embedded_diagnostics.suite.is_some()
+        {
             self.embedded_diagnostics.speed.emulation_speed()
-        } else { self.config.preferences.emulation_speed }
+        } else {
+            self.config.preferences.emulation_speed
+        }
     }
 
     pub(in crate::app) fn draw_cpu_diagnostics_menu(&mut self, ui: &mut egui::Ui) {
-        if self.config.machine.serial_board == SerialBoard::Sio88
-            && self.embedded_diagnostics.port == cpu_diagnostics::DiagnosticSerialPort::Port1
-        { self.embedded_diagnostics.port = cpu_diagnostics::DiagnosticSerialPort::Port0; }
+        let hardware = self.config.machine.s100_hardware;
+        if self.embedded_diagnostics.port.resolve(hardware).is_none()
+            && cpu_diagnostics::DiagnosticSerialPort::Port0
+                .resolve(hardware)
+                .is_some()
+        {
+            self.embedded_diagnostics.port = cpu_diagnostics::DiagnosticSerialPort::Port0;
+        }
 
         let picker_open = self.diagnostic_file_dialog.is_some();
-        let running = self.embedded_diagnostics.active_test.is_some() || self.embedded_diagnostics.suite.is_some();
-        let speed_locked = running || self.embedded_diagnostics.individual_result.is_some() || self.embedded_diagnostics.suite_report.is_some();
+        let running = self.embedded_diagnostics.active_test.is_some()
+            || self.embedded_diagnostics.suite.is_some();
+        let speed_locked = running
+            || self.embedded_diagnostics.individual_result.is_some()
+            || self.embedded_diagnostics.suite_report.is_some();
         let busy = picker_open || running;
-        let cpu_board = configured_cpu_board(self.config.machine.s100_hardware);
+        let cpu_board = configured_cpu_board(hardware);
         ui.small("Embedded Intel 8080 tests execute as real guest code through the Adaptive Cycle backend. The RusTair baseline covers EI/DI, HALT, I/O and bus-arbitration behaviour.");
         ui.separator();
 
         ui.menu_button("Test speed", |ui| {
             ui.add_enabled_ui(!speed_locked, |ui| {
                 for speed in DiagnosticRunSpeed::ALL {
-                    if ui.selectable_label(self.embedded_diagnostics.speed == speed, speed.label(cpu_board)).clicked() { self.embedded_diagnostics.speed = speed; }
+                    if ui
+                        .selectable_label(
+                            self.embedded_diagnostics.speed == speed,
+                            speed.label(cpu_board),
+                        )
+                        .clicked()
+                    {
+                        self.embedded_diagnostics.speed = speed;
+                    }
                 }
             });
         });
-        ui.small(format!("Selected speed: {}", self.embedded_diagnostics.speed.label(cpu_board)));
+        ui.small(format!(
+            "Selected speed: {}",
+            self.embedded_diagnostics.speed.label(cpu_board)
+        ));
 
         ui.menu_button("Serial output", |ui| {
-            let board = self.config.machine.serial_board;
             let p0 = cpu_diagnostics::DiagnosticSerialPort::Port0;
-            if ui.selectable_label(self.embedded_diagnostics.port == p0, port_label(board, p0)).clicked() { self.embedded_diagnostics.port = p0; }
-            if board == SerialBoard::TwoSio88 {
-                let p1 = cpu_diagnostics::DiagnosticSerialPort::Port1;
-                if ui.selectable_label(self.embedded_diagnostics.port == p1, port_label(board, p1)).clicked() { self.embedded_diagnostics.port = p1; }
+            let p1 = cpu_diagnostics::DiagnosticSerialPort::Port1;
+            if let Some(endpoint) = p0.resolve(hardware) {
+                if ui
+                    .selectable_label(
+                        self.embedded_diagnostics.port == p0,
+                        endpoint.label(),
+                    )
+                    .clicked()
+                {
+                    self.embedded_diagnostics.port = p0;
+                }
+            }
+            if let Some(endpoint) = p1.resolve(hardware) {
+                if ui
+                    .selectable_label(
+                        self.embedded_diagnostics.port == p1,
+                        endpoint.label(),
+                    )
+                    .clicked()
+                {
+                    self.embedded_diagnostics.port = p1;
+                }
+            }
+            if p0.resolve(hardware).is_none() && p1.resolve(hardware).is_none() {
+                ui.small("No S-100 serial card installed.");
             }
         });
 
         ui.separator();
-        if ui.add_enabled(!busy, egui::Button::new("Run full CPU diagnostic suite")).clicked() { self.start_embedded_cpu_suite(); ui.close(); }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Run full CPU diagnostic suite"))
+            .clicked()
+        {
+            self.start_embedded_cpu_suite();
+            ui.close();
+        }
         ui.small("Suite: Adaptive Cycle RusTair baseline → 8080PRE → TST8080 → CPUTEST → 8080EXM. Requires at least 32 KiB of uniquely mapped RAM from 0000h.");
 
         ui.menu_button("Run individual test", |ui| {
             let enabled = !busy;
-            if ui.add_enabled(enabled, egui::Button::new("RusTair control-line baseline")).clicked() {
+            if ui
+                .add_enabled(enabled, egui::Button::new("RusTair control-line baseline"))
+                .clicked()
+            {
                 let report = run_control_line_baseline();
                 let passed = report.passed();
                 self.embedded_diagnostics.control_report = Some(report);
-                self.status = if passed { "RusTair control-line baseline: PASS".into() } else { "RusTair control-line baseline: FAIL — inspect report".into() };
+                self.status = if passed {
+                    "RusTair control-line baseline: PASS".into()
+                } else {
+                    "RusTair control-line baseline: FAIL — inspect report".into()
+                };
                 ui.close();
             }
             ui.separator();
             for test in ClassicDiagnostic::SUITE {
-                if ui.add_enabled(enabled, egui::Button::new(test.label())).clicked() { self.start_embedded_classic_test(test, false); ui.close(); }
+                if ui.add_enabled(enabled, egui::Button::new(test.label())).clicked() {
+                    self.start_embedded_classic_test(test, false);
+                    ui.close();
+                }
             }
         });
 
         ui.separator();
-        if ui.add_enabled(!busy, egui::Button::new("Load external .COM…")).clicked() {
-            self.start_cpu_diagnostic_dialog(self.embedded_diagnostics.port); ui.close();
+        if ui
+            .add_enabled(!busy, egui::Button::new("Load external .COM…"))
+            .clicked()
+        {
+            self.start_cpu_diagnostic_dialog(self.embedded_diagnostics.port);
+            ui.close();
         }
         ui.small("External .COM files use the normal emulator speed selected under Configuration → CPU.");
         if running && !picker_open {
             ui.separator();
-            if ui.button("Abort running diagnostic / suite").clicked() { self.abort_embedded_cpu_diagnostics(); ui.close(); }
+            if ui.button("Abort running diagnostic / suite").clicked() {
+                self.abort_embedded_cpu_diagnostics();
+                ui.close();
+            }
         }
-        if picker_open { ui.small("The Windows diagnostic picker is open; guest execution is paused until it closes."); }
+        if picker_open {
+            ui.small("The Windows diagnostic picker is open; guest execution is paused until it closes.");
+        }
     }
 
     pub(in crate::app) fn poll_embedded_cpu_diagnostics(&mut self, ctx: &egui::Context) {
-        if (self.embedded_diagnostics.active_test.is_some() || self.embedded_diagnostics.suite.is_some())
+        if (self.embedded_diagnostics.active_test.is_some()
+            || self.embedded_diagnostics.suite.is_some())
             && let Some(result) = self.machine.take_cpu_diagnostic_result()
-        { self.handle_embedded_cpu_result(result); }
+        {
+            self.handle_embedded_cpu_result(result);
+        }
         self.draw_embedded_individual_result(ctx);
         self.draw_control_line_report(ctx);
         self.draw_suite_report(ctx);
@@ -476,6 +614,12 @@ impl RusTairApp {
 
     fn start_embedded_cpu_suite(&mut self) {
         let hardware = self.config.machine.s100_hardware;
+        if self.embedded_diagnostics.port.resolve(hardware).is_none() {
+            self.report_load_error(
+                "The embedded diagnostic suite requires an installed MITS 88-SIO or 88-2SIO output port.",
+            );
+            return;
+        }
         let usable = hardware.unique_ram_prefix_bytes();
         if usable < 32 * 1024 {
             self.report_load_error(format!("The full embedded CPU diagnostic suite includes CPUTEST.COM and requires at least 32 KiB of uniquely mapped RAM from 0000h. The current S-100 chassis provides {} contiguous bytes from 0000h ({} bytes installed across RAM cards).", usable, hardware.installed_ram_bytes()));
@@ -494,36 +638,61 @@ impl RusTairApp {
             speed,
             cpu_board,
         });
-        if !self.start_embedded_classic_test(ClassicDiagnostic::SUITE[0], true) { self.embedded_diagnostics.suite = None; }
+        if !self.start_embedded_classic_test(ClassicDiagnostic::SUITE[0], true) {
+            self.embedded_diagnostics.suite = None;
+        }
     }
 
-    fn start_embedded_classic_test(&mut self, test: ClassicDiagnostic, suite_member: bool) -> bool {
+    fn start_embedded_classic_test(
+        &mut self,
+        test: ClassicDiagnostic,
+        suite_member: bool,
+    ) -> bool {
         let port = self.embedded_diagnostics.port;
         self.embedded_diagnostics.active_test = Some(test);
-        if !suite_member { self.embedded_diagnostics.suite = None; self.embedded_diagnostics.suite_report = None; }
-        if self.load_embedded_classic_test(test, port) { true } else { self.embedded_diagnostics.active_test = None; false }
+        if !suite_member {
+            self.embedded_diagnostics.suite = None;
+            self.embedded_diagnostics.suite_report = None;
+        }
+        if self.load_embedded_classic_test(test, port) {
+            true
+        } else {
+            self.embedded_diagnostics.active_test = None;
+            false
+        }
     }
 
-    fn load_embedded_classic_test(&mut self, test: ClassicDiagnostic, port: cpu_diagnostics::DiagnosticSerialPort) -> bool {
+    fn load_embedded_classic_test(
+        &mut self,
+        test: ClassicDiagnostic,
+        port: cpu_diagnostics::DiagnosticSerialPort,
+    ) -> bool {
         let bytes = test.bytes();
-        let board = self.config.machine.serial_board;
-        let connection = port_connection(port);
-        if board == SerialBoard::Sio88 && port == cpu_diagnostics::DiagnosticSerialPort::Port1 {
-            self.report_load_error("CPU diagnostic cannot use Port 1 because the installed MITS 88-SIO only provides Port 0.");
-            return false;
-        }
-
         let hardware = self.config.machine.s100_hardware;
+        let Some(serial_endpoint) = port.resolve(hardware) else {
+            self.report_load_error(format!(
+                "{} cannot start because the requested output port is not present on the installed S-100 serial hardware.",
+                test.filename()
+            ));
+            return false;
+        };
+        let connection = port.connection();
         let installed = hardware.installed_ram_bytes();
         let usable = hardware.unique_ram_prefix_bytes();
         let image_end = CPM_COM_LOAD_ADDRESS as usize + bytes.len();
-        let minimum_bytes = image_end.saturating_add(CPM_STACK_GUARD_BYTES).saturating_add(CPM_BDOS_PAGE_BYTES);
+        let minimum_bytes = image_end
+            .saturating_add(CPM_STACK_GUARD_BYTES)
+            .saturating_add(CPM_BDOS_PAGE_BYTES);
         let Some(bdos_base_usize) = usable.checked_sub(CPM_BDOS_PAGE_BYTES) else {
             self.report_load_error(format!("{} cannot start because the S-100 chassis has no complete 256-byte BDOS page in its uniquely mapped low-memory region ({} contiguous bytes from 0000h, {} bytes installed in total).", test.filename(), usable, installed));
             return false;
         };
         let Some(tpa_limit) = bdos_base_usize.checked_sub(CPM_STACK_GUARD_BYTES) else {
-            self.report_load_error(format!("{} has no stack area below BDOS in the uniquely mapped low-memory region.", test.filename())); return false;
+            self.report_load_error(format!(
+                "{} has no stack area below BDOS in the uniquely mapped low-memory region.",
+                test.filename()
+            ));
+            return false;
         };
         if image_end > tpa_limit {
             self.report_load_error(format!("{} is {} bytes and needs at least {} KiB including the CP/M stack/BDOS reserve. The current S-100 chassis provides {} contiguous uniquely mapped bytes from 0000h ({} bytes installed in total).", test.filename(), bytes.len(), minimum_bytes.div_ceil(1024), usable, installed));
@@ -531,11 +700,11 @@ impl RusTairApp {
         }
 
         let bdos_base = bdos_base_usize as u16;
-        let Some(environment) = build_cpm_environment(board, port, bdos_base) else {
-            self.report_load_error(format!("{} is unavailable on {}.", port_label(board, port), board.label())); return false;
-        };
+        let environment = build_cpm_environment(serial_endpoint, bdos_base);
 
-        if !self.machine.powered() { self.set_altair_power(true); }
+        if !self.machine.powered() {
+            self.set_altair_power(true);
+        }
         self.machine.set_running(false);
         self.machine.reset();
         self.asr33.tx_started = None;
@@ -548,10 +717,14 @@ impl RusTairApp {
         self.machine.load_bytes(0, &clean_ram);
         self.machine.load_bytes(0, &environment.page_zero);
         self.machine.load_bytes(CPM_COM_LOAD_ADDRESS, bytes);
-        self.machine.load_bytes(environment.bdos_base, &environment.bdos);
+        self.machine
+            .load_bytes(environment.bdos_base, &environment.bdos);
         self.machine.begin_cpu_diagnostic_meter(
-            test.filename().into(), environment.bdos_base, environment.bdos.len(),
-            Some(test.expected_instructions()), Some(test.expected_t_states()),
+            test.filename().into(),
+            environment.bdos_base,
+            environment.bdos.len(),
+            Some(test.expected_instructions()),
+            Some(test.expected_t_states()),
         );
 
         match self.serial_router.device_on(connection) {
@@ -562,13 +735,17 @@ impl RusTairApp {
             None => {}
         }
         self.machine.set_running(true);
-        let endpoint = self.serial_router.device_on(connection).map(Self::serial_device_name).unwrap_or("no endpoint connected");
+        let endpoint = self
+            .serial_router
+            .device_on(connection)
+            .map(Self::serial_device_name)
+            .unwrap_or("no endpoint connected");
         let cpu_board = configured_cpu_board(hardware);
         self.status = format!(
             "Embedded CPU diagnostic running: {} — {} — output via {} → {}",
             test.filename(),
             self.embedded_diagnostics.speed.label(cpu_board),
-            port_label(board, port),
+            serial_endpoint.label(),
             endpoint
         );
         true
@@ -582,7 +759,9 @@ impl RusTairApp {
                 let next_test = ClassicDiagnostic::SUITE[suite.next_index];
                 suite.next_index += 1;
                 self.embedded_diagnostics.suite = Some(suite);
-                if !self.start_embedded_classic_test(next_test, true) { self.embedded_diagnostics.suite = None; }
+                if !self.start_embedded_classic_test(next_test, true) {
+                    self.embedded_diagnostics.suite = None;
+                }
                 return;
             }
             let report = SuiteReport {
@@ -593,11 +772,18 @@ impl RusTairApp {
             };
             let passed = report.passed();
             self.embedded_diagnostics.suite_report = Some(report);
-            self.status = if passed { "Embedded CPU diagnostic suite complete — ALL TESTS PASS / REFERENCE MATCH".into() }
-                else { "Embedded CPU diagnostic suite complete — FAILURE / REFERENCE MISMATCH".into() };
+            self.status = if passed {
+                "Embedded CPU diagnostic suite complete — ALL TESTS PASS / REFERENCE MATCH".into()
+            } else {
+                "Embedded CPU diagnostic suite complete — FAILURE / REFERENCE MISMATCH".into()
+            };
         } else {
             let matched = reference_match(&result);
-            self.status = if matched { format!("{} complete — REFERENCE MATCH", result.name) } else { format!("{} complete — REFERENCE MISMATCH", result.name) };
+            self.status = if matched {
+                format!("{} complete — REFERENCE MATCH", result.name)
+            } else {
+                format!("{} complete — REFERENCE MISMATCH", result.name)
+            };
             self.embedded_diagnostics.individual_result = Some(CompletedDiagnostic {
                 result,
                 speed: self.embedded_diagnostics.speed,
@@ -615,94 +801,187 @@ impl RusTairApp {
     }
 
     fn draw_embedded_individual_result(&mut self, ctx: &egui::Context) {
-        let Some(completed) = self.embedded_diagnostics.individual_result.as_ref() else { return; };
+        let Some(completed) = self.embedded_diagnostics.individual_result.as_ref() else {
+            return;
+        };
         let result = &completed.result;
         let matched = reference_match(result);
         let speed_label = completed.speed.label(completed.cpu_board);
         let mut dismiss = false;
-        egui::Window::new("CPU diagnostic complete").id(egui::Id::new("embedded-cpu-diagnostic-result"))
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).resizable(false).default_width(560.0)
+        egui::Window::new("CPU diagnostic complete")
+            .id(egui::Id::new("embedded-cpu-diagnostic-result"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(false)
+            .default_width(560.0)
             .show(ctx, |ui| {
-                ui.heading(&result.name); ui.add_space(6.0);
-                if matched { ui.strong("REFERENCE MATCH — instruction count and T-state total are exact."); }
-                else { ui.strong("REFERENCE MISMATCH — inspect the differences below."); }
+                ui.heading(&result.name);
+                ui.add_space(6.0);
+                if matched {
+                    ui.strong("REFERENCE MATCH — instruction count and T-state total are exact.");
+                } else {
+                    ui.strong("REFERENCE MISMATCH — inspect the differences below.");
+                }
                 ui.add_space(8.0);
-                egui::Grid::new("embedded-cpu-result-grid").num_columns(4).spacing([18.0, 5.0]).show(ui, |ui| {
-                    ui.strong("Metric"); ui.strong("Actual"); ui.strong("Expected"); ui.strong("Diff"); ui.end_row();
-                    ui.label("Instructions"); ui.monospace(format_count(result.instructions));
-                    if let Some(expected) = result.expected_instructions { ui.monospace(format_count(expected)); ui.monospace(format_diff(result.instructions, expected)); }
-                    else { ui.label("—"); ui.label("—"); }
-                    ui.end_row();
-                    ui.label("T-states"); ui.monospace(format_count(result.t_states));
-                    if let Some(expected) = result.expected_t_states { ui.monospace(format_count(expected)); ui.monospace(format_diff(result.t_states, expected)); }
-                    else { ui.label("—"); ui.label("—"); }
-                    ui.end_row();
-                });
+                egui::Grid::new("embedded-cpu-result-grid")
+                    .num_columns(4)
+                    .spacing([18.0, 5.0])
+                    .show(ui, |ui| {
+                        ui.strong("Metric");
+                        ui.strong("Actual");
+                        ui.strong("Expected");
+                        ui.strong("Diff");
+                        ui.end_row();
+                        ui.label("Instructions");
+                        ui.monospace(format_count(result.instructions));
+                        if let Some(expected) = result.expected_instructions {
+                            ui.monospace(format_count(expected));
+                            ui.monospace(format_diff(result.instructions, expected));
+                        } else {
+                            ui.label("—");
+                            ui.label("—");
+                        }
+                        ui.end_row();
+                        ui.label("T-states");
+                        ui.monospace(format_count(result.t_states));
+                        if let Some(expected) = result.expected_t_states {
+                            ui.monospace(format_count(expected));
+                            ui.monospace(format_diff(result.t_states, expected));
+                        } else {
+                            ui.label("—");
+                            ui.label("—");
+                        }
+                        ui.end_row();
+                    });
                 ui.add_space(8.0);
                 ui.label(format!("Test speed: {speed_label}"));
-                if ui.button("OK").clicked() { dismiss = true; }
+                if ui.button("OK").clicked() {
+                    dismiss = true;
+                }
             });
-        if dismiss { self.embedded_diagnostics.individual_result = None; }
+        if dismiss {
+            self.embedded_diagnostics.individual_result = None;
+        }
     }
 
     fn draw_control_line_report(&mut self, ctx: &egui::Context) {
-        let Some(report) = self.embedded_diagnostics.control_report.as_ref() else { return; };
+        let Some(report) = self.embedded_diagnostics.control_report.as_ref() else {
+            return;
+        };
         let passed = report.passed();
         let mut dismiss = false;
-        egui::Window::new("RusTair 8080 control-line baseline").id(egui::Id::new("rustair-control-line-baseline"))
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).resizable(true).default_width(700.0)
+        egui::Window::new("RusTair 8080 control-line baseline")
+            .id(egui::Id::new("rustair-control-line-baseline"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(true)
+            .default_width(700.0)
             .show(ctx, |ui| {
                 ui.heading("RusTair Adaptive Cycle 8080");
-                if passed { ui.strong("PASS — all Adaptive Cycle baseline checks succeeded."); } else { ui.strong("FAIL — at least one Adaptive Cycle baseline check failed."); }
+                if passed {
+                    ui.strong("PASS — all Adaptive Cycle baseline checks succeeded.");
+                } else {
+                    ui.strong("FAIL — at least one Adaptive Cycle baseline check failed.");
+                }
                 ui.add_space(8.0);
                 for check in &report.checks {
-                    let line = format!("{}  {} - {}", if check.passed { "PASS" } else { "FAIL" }, check.name, check.detail)
-                        .replace('·', "|").replace('→', "->");
+                    let line = format!(
+                        "{}  {} - {}",
+                        if check.passed { "PASS" } else { "FAIL" },
+                        check.name,
+                        check.detail
+                    )
+                    .replace('·', "|")
+                    .replace('→', "->");
                     ui.label(egui::RichText::new(line).monospace());
                 }
                 ui.add_space(8.0);
                 ui.small("The baseline is executed through the single Adaptive Cycle BackendHost; Full and Partial are internal execution regimes of the same physical machine.");
-                if ui.button("OK").clicked() { dismiss = true; }
+                if ui.button("OK").clicked() {
+                    dismiss = true;
+                }
             });
-        if dismiss { self.embedded_diagnostics.control_report = None; }
+        if dismiss {
+            self.embedded_diagnostics.control_report = None;
+        }
     }
 
     fn draw_suite_report(&mut self, ctx: &egui::Context) {
-        let Some(report) = self.embedded_diagnostics.suite_report.as_ref() else { return; };
+        let Some(report) = self.embedded_diagnostics.suite_report.as_ref() else {
+            return;
+        };
         let passed = report.passed();
         let speed_label = report.speed.label(report.cpu_board);
         let mut dismiss = false;
-        egui::Window::new("CPU diagnostic suite complete").id(egui::Id::new("embedded-cpu-suite-result"))
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false).resizable(true).default_width(780.0)
+        egui::Window::new("CPU diagnostic suite complete")
+            .id(egui::Id::new("embedded-cpu-suite-result"))
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .collapsible(false)
+            .resizable(true)
+            .default_width(780.0)
             .show(ctx, |ui| {
-                if passed { ui.heading("ALL TESTS PASS"); ui.strong("All classic instruction/T-state references match exactly."); }
-                else { ui.heading("SUITE FAILURE"); ui.strong("Inspect the failing row or control-line check below."); }
+                if passed {
+                    ui.heading("ALL TESTS PASS");
+                    ui.strong("All classic instruction/T-state references match exactly.");
+                } else {
+                    ui.heading("SUITE FAILURE");
+                    ui.strong("Inspect the failing row or control-line check below.");
+                }
                 ui.add_space(8.0);
                 ui.label(format!("Test speed: {speed_label}"));
-                ui.label(format!("RusTair Adaptive Cycle control-line baseline: {}", if report.control.passed() { "PASS" } else { "FAIL" }));
+                ui.label(format!(
+                    "RusTair Adaptive Cycle control-line baseline: {}",
+                    if report.control.passed() { "PASS" } else { "FAIL" }
+                ));
                 for check in &report.control.checks {
-                    ui.small(format!("{}  {} — {}", if check.passed { "PASS" } else { "FAIL" }, check.name, check.detail));
+                    ui.small(format!(
+                        "{}  {} — {}",
+                        if check.passed { "PASS" } else { "FAIL" },
+                        check.name,
+                        check.detail
+                    ));
                 }
                 ui.separator();
-                egui::Grid::new("embedded-cpu-suite-grid").num_columns(5).spacing([16.0, 5.0]).striped(true).show(ui, |ui| {
-                    ui.strong("Test"); ui.strong("Result"); ui.strong("Instructions"); ui.strong("T-states"); ui.strong("T diff"); ui.end_row();
-                    for result in &report.results {
-                        let ok = reference_match(result);
-                        ui.monospace(&result.name); ui.monospace(if ok { "PASS" } else { "FAIL" });
-                        ui.monospace(format_count(result.instructions)); ui.monospace(format_count(result.t_states));
-                        if let Some(expected) = result.expected_t_states { ui.monospace(format_diff(result.t_states, expected)); } else { ui.label("—"); }
+                egui::Grid::new("embedded-cpu-suite-grid")
+                    .num_columns(5)
+                    .spacing([16.0, 5.0])
+                    .striped(true)
+                    .show(ui, |ui| {
+                        ui.strong("Test");
+                        ui.strong("Result");
+                        ui.strong("Instructions");
+                        ui.strong("T-states");
+                        ui.strong("T diff");
                         ui.end_row();
-                    }
-                });
-                ui.add_space(10.0); if ui.button("OK").clicked() { dismiss = true; }
+                        for result in &report.results {
+                            let ok = reference_match(result);
+                            ui.monospace(&result.name);
+                            ui.monospace(if ok { "PASS" } else { "FAIL" });
+                            ui.monospace(format_count(result.instructions));
+                            ui.monospace(format_count(result.t_states));
+                            if let Some(expected) = result.expected_t_states {
+                                ui.monospace(format_diff(result.t_states, expected));
+                            } else {
+                                ui.label("—");
+                            }
+                            ui.end_row();
+                        }
+                    });
+                ui.add_space(10.0);
+                if ui.button("OK").clicked() {
+                    dismiss = true;
+                }
             });
-        if dismiss { self.embedded_diagnostics.suite_report = None; }
+        if dismiss {
+            self.embedded_diagnostics.suite_report = None;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{TwoSioAddressBlock, TwoSioInterruptWiring, TwoSioStraps};
 
     #[test]
     fn embedded_classic_images_and_reference_totals_are_stable() {
@@ -713,7 +992,10 @@ mod tests {
         assert_eq!(ClassicDiagnostic::Preliminary.expected_t_states(), 7_817);
         assert_eq!(ClassicDiagnostic::Tst8080.expected_t_states(), 4_924);
         assert_eq!(ClassicDiagnostic::CpuTest.expected_t_states(), 255_653_383);
-        assert_eq!(ClassicDiagnostic::ExerciserModified.expected_t_states(), 23_803_381_171);
+        assert_eq!(
+            ClassicDiagnostic::ExerciserModified.expected_t_states(),
+            23_803_381_171
+        );
     }
 
     #[test]
@@ -727,10 +1009,22 @@ mod tests {
                 DiagnosticRunSpeed::Unlimited,
             ]
         );
-        assert_eq!(DiagnosticRunSpeed::Authentic.emulation_speed(), EmulationSpeed::Authentic);
-        assert_eq!(DiagnosticRunSpeed::X5.emulation_speed(), EmulationSpeed::X5);
-        assert_eq!(DiagnosticRunSpeed::X10.emulation_speed(), EmulationSpeed::X10);
-        assert_eq!(DiagnosticRunSpeed::Unlimited.emulation_speed(), EmulationSpeed::Unlimited);
+        assert_eq!(
+            DiagnosticRunSpeed::Authentic.emulation_speed(),
+            EmulationSpeed::Authentic
+        );
+        assert_eq!(
+            DiagnosticRunSpeed::X5.emulation_speed(),
+            EmulationSpeed::X5
+        );
+        assert_eq!(
+            DiagnosticRunSpeed::X10.emulation_speed(),
+            EmulationSpeed::X10
+        );
+        assert_eq!(
+            DiagnosticRunSpeed::Unlimited.emulation_speed(),
+            EmulationSpeed::Unlimited
+        );
     }
 
     #[test]
@@ -742,17 +1036,58 @@ mod tests {
     #[test]
     fn embedded_baseline_uses_explicit_physical_s100_cards() {
         let hardware = baseline_hardware();
-        assert_eq!(hardware.active_cpu_board_slot(), Some((1, CpuBoard::Mits8080)));
-        assert!(matches!(hardware.slot(2), Some(S100InstalledCardConfig::Ram(_))));
-        assert!(matches!(hardware.slot(3), Some(S100InstalledCardConfig::Mits88Sio(_))));
+        assert_eq!(
+            hardware.active_cpu_board_slot(),
+            Some((1, CpuBoard::Mits8080))
+        );
+        assert!(matches!(
+            hardware.slot(2),
+            Some(S100InstalledCardConfig::Ram(_))
+        ));
+        assert!(matches!(
+            hardware.slot(3),
+            Some(S100InstalledCardConfig::Mits88Sio(_))
+        ));
         assert_eq!(hardware.unique_ram_prefix_bytes(), 4096);
     }
 
     #[test]
     fn embedded_bdos_remains_high_memory_compatible() {
-        let env = build_cpm_environment(SerialBoard::TwoSio88, cpu_diagnostics::DiagnosticSerialPort::Port0, 0xff00).unwrap();
+        let endpoint = cpu_diagnostics::ResolvedDiagnosticPort {
+            board: SerialBoard::TwoSio88,
+            slot: 3,
+            channel: 0,
+            status_port: 0x10,
+            data_port: 0x11,
+        };
+        let env = build_cpm_environment(endpoint, 0xff00);
         assert_eq!(&env.page_zero[5..8], &[0xc3, 0x00, 0xff]);
         assert_eq!(&env.page_zero[0x80..0x83], &[0x31, 0x00, 0xff]);
         assert_eq!(env.bdos.len(), 0x37);
+    }
+
+    #[test]
+    fn embedded_bdos_uses_readdressed_physical_two_sio_port() {
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        hardware
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        let mut straps = TwoSioStraps::default();
+        straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
+        hardware
+            .set_slot(
+                5,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps,
+                    interrupt_wiring: TwoSioInterruptWiring::default(),
+                }),
+            )
+            .unwrap();
+        let endpoint = cpu_diagnostics::DiagnosticSerialPort::Port1
+            .resolve(hardware)
+            .unwrap();
+        let env = build_cpm_environment(endpoint, 0x7f00);
+        assert_eq!(env.bdos[0x2d], 0x46);
+        assert_eq!(env.bdos[0x35], 0x47);
     }
 }
