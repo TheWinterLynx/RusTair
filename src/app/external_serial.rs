@@ -190,21 +190,26 @@ impl RusTairApp {
     }
 
     fn draw_external_connection_selector(&mut self, ui: &mut egui::Ui) {
-        let board = self.config.machine.serial_board;
-        let straps = self.config.machine.two_sio_straps;
+        let hardware = self.config.machine.s100_hardware;
+        let board = hardware.active_serial_board();
         let current = self.external_tcp_connection();
         let mut selected = current;
         ui.horizontal(|ui| {
             ui.label("Virtual cable:");
             egui::ComboBox::from_id_salt("external-tcp-serial-connection")
-                .selected_text(Self::serial_connection_label(board, straps, current)).show_ui(ui, |ui| {
+                .selected_text(Self::serial_connection_label(hardware, current)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut selected, SerialConnection::Disconnected, "Disconnected");
-                    ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(board, straps, SerialConnection::Port0));
-                    if board == SerialBoard::TwoSio88 {
-                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(board, straps, SerialConnection::Port1));
+                    if board.is_some() {
+                        ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(hardware, SerialConnection::Port0));
+                    }
+                    if board == Some(SerialBoard::TwoSio88) {
+                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(hardware, SerialConnection::Port1));
                     }
                 });
         });
+        if board.is_none() {
+            ui.small("Install an 88-SIO or 88-2SIO in Configuration → S-100 Chassis / Cards before attaching the TCP endpoint.");
+        }
         if selected != current { self.set_serial_connection(SerialDevice::ExternalTcp, selected); }
     }
 
@@ -288,7 +293,7 @@ impl RusTairApp {
 
             ui.separator();
             ui::collapsible_section(ui, "How the serial bridge behaves", false, |ui| {
-                ui.label("• TCP is only the host transport; the guest still sees the selected 88-SIO/88-2SIO UART and normal I/O addresses.");
+                ui.label("• TCP is only the host transport; the guest still sees the installed S-100 88-SIO/88-2SIO UART and its physical I/O addresses.");
                 ui.label("• Duplex controls how the attached terminal should display typed input. RusTair does not create local-echo serial bytes.");
                 ui.label("• ASR-33 style masks bit 7 in both directions and uppercases host a-z on input; 7-bit ASCII preserves input case; Raw 8-bit performs no transformation.");
                 ui.label("• TCP may receive pasted text instantly, but bytes enter the physical receive line at the configured endpoint rate; a full MC6850 RDR does not pause the wire and may therefore produce OVRN.");
