@@ -4,6 +4,10 @@ const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 const MEMORY: &str = include_str!("../src/machine/memory.rs");
+const MACHINE_MOD: &str = include_str!("../src/machine/mod.rs");
+const SERIAL_DEVICES: &str = include_str!("../src/machine/serial_devices.rs");
+const SERIAL_CARD: &str = include_str!("../src/machine/serial_card.rs");
+const SERIAL_BUS: &str = include_str!("../src/machine/serial_bus.rs");
 const BACKEND: &str = include_str!("../src/backend/mod.rs");
 const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
 
@@ -32,7 +36,6 @@ fn migrated_aggregate_hardware_state_does_not_survive_in_machine_config() {
 
 #[test]
 fn old_hardware_keys_are_read_only_migration_inputs() {
-    // They remain parseable so pre-slot-native config.ini files upgrade once.
     for key in [
         "\"machine.cpu_model\"",
         "\"machine.ram_size\"",
@@ -51,8 +54,6 @@ fn old_hardware_keys_are_read_only_migration_inputs() {
     }
     assert!(PERSISTENCE.contains("S100HardwareConfig::from_legacy_globals("));
 
-    // New files serialize the physical assembly once. These exact assignment
-    // prefixes must never reappear in `to_text()` output.
     for forbidden_write in [
         "writeln!(out, \"machine.cpu_model=",
         "writeln!(out, \"machine.ram_size=",
@@ -116,8 +117,32 @@ fn backend_has_no_aggregate_serial_configuration_contract() {
 fn memory_has_one_physical_s100_runtime_representation() {
     assert!(!MEMORY.contains("legacy_aggregate"));
     assert!(!MEMORY.contains("legacy_fabric"));
+    assert!(!MEMORY.contains("uses_explicit_hardware"));
     assert!(MEMORY.contains("S100RuntimeFabric"));
     assert!(MEMORY.contains("S100HardwareConfig::from_legacy_globals("));
     assert!(MEMORY.contains("compatibility S-100 assembly"));
     assert!(MEMORY.contains("Physical RAM and I/O cards drive PRDY through the live backplane"));
+}
+
+#[test]
+fn altair_bus_owns_no_parallel_uart_state() {
+    for forbidden in [
+        "mod io_devices;",
+        "io: IoDevices",
+        "sio_interrupt_control:",
+        "exact_t_state_clock_owner:",
+    ] {
+        assert!(
+            !MACHINE_MOD.contains(forbidden),
+            "machine-wide serial singleton returned: {forbidden}"
+        );
+    }
+    assert!(MACHINE_MOD.contains("mod serial_devices;"));
+    assert!(MACHINE_MOD.contains("mod serial_card;"));
+    assert!(MACHINE_MOD.contains("mod serial_bus;"));
+    assert!(!SERIAL_DEVICES.contains("impl AltairBus"));
+    assert!(SERIAL_CARD.contains("RuntimeSerialCardHandle"));
+    assert!(SERIAL_CARD.contains("impl S100IoRegisterDevice for RuntimeSerialCardDevice"));
+    assert!(SERIAL_BUS.contains("self.memory.serial_receive"));
+    assert!(!SERIAL_BUS.contains("self.io."));
 }
