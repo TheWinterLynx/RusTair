@@ -1,75 +1,6 @@
 use super::*;
 
 impl RusTairApp {
-    /// Apply the physical 88-SIO jumper/UART configuration.
-    ///
-    /// Revision, interface variant, address decode, baud preset, COM2502 word
-    /// format and interrupt routing are board-level wiring. They therefore cannot
-    /// be changed while the emulated chassis is powered, just as the 88-2SIO
-    /// strap controls cannot.
-    pub(in crate::app) fn apply_sio_hardware(&mut self, config: crate::config::SioHardwareConfig) {
-        if self.config.machine.sio_hardware == config { return; }
-        if self.machine.powered() {
-            self.status = "Power OFF the Altair before changing 88-SIO hardware wiring".into();
-            return;
-        }
-
-        // Changing A/B/C changes the physical connector family. Preserve a
-        // virtual data-only peer that explicitly follows the selected family,
-        // but unplug any direct physical endpoint that would require an
-        // unconfigured level converter (ASR-33 outside C, COM outside A).
-        let disconnected_endpoint = if self.config.machine.serial_board == SerialBoard::Sio88 {
-            self.serial_router
-                .device_on(SerialConnection::Port0)
-                .filter(|device| !device.supports_sio_interface(config.interface))
-        } else {
-            None
-        };
-
-        // BREAK belongs to the ASR's physical cable. Return the old connector to
-        // MARK before moving jumpers/unplugging it so no stale SPACE condition can
-        // survive on a backend boundary independently of the router state.
-        if disconnected_endpoint == Some(SerialDevice::InternalAsr33) {
-            let _ = self.serial_set_receive_break_at(SerialConnection::Port0, false);
-        }
-
-        self.config.machine.sio_hardware = config;
-        self.machine.configure_sio_hardware(config);
-        if let Some(device) = disconnected_endpoint {
-            self.serial_router.connect(device, SerialConnection::Disconnected);
-            if device == SerialDevice::InternalAsr33 {
-                self.asr33.answerback.clear();
-            }
-        }
-        self.asr33.tx_started = None;
-        self.asr33.answerback.clear();
-        self.terminal.tx_started = None;
-        self.external_serial.reset_line_timing();
-        self.external_com.reset_line_timing();
-        let now = Instant::now();
-        self.last_tick = now;
-        self.execution_clock.reset_at(now);
-        let disconnected_suffix = disconnected_endpoint.map_or_else(String::new, |device| {
-            format!(
-                " · {} cable disconnected: {}",
-                Self::serial_device_name(device),
-                device.sio_requirement_label(),
-            )
-        });
-        self.status = format!(
-            "88-SIO hardware: {} · {:02X}h/{:02X}h · {} · {} · {} · IN→{} · OUT→{}{}",
-            config.revision.label(),
-            config.address.status(),
-            config.address.data(),
-            config.interface.label(),
-            config.baud.label(),
-            config.format.label(),
-            config.interrupt_wiring.input.label(),
-            config.interrupt_wiring.output.label(),
-            disconnected_suffix,
-        );
-    }
-
     /// Physical receive-line availability. This is intentionally different from
     /// RDR/RDRF emptiness: an MC6850 may have an unread byte in RDR while its
     /// receive shift register / external line is already ready for the next frame.
@@ -95,14 +26,20 @@ impl RusTairApp {
     /// Physical RTS level driven by the MC6850 attached to this virtual cable.
     /// Returns None for disconnected cables and for the revision-sensitive 88-SIO,
     /// which must not fabricate MC6850 pins.
-    pub(in crate::app) fn serial_rts_high_at(&mut self, connection: SerialConnection) -> Option<bool> {
+    pub(in crate::app) fn serial_rts_high_at(
+        &mut self,
+        connection: SerialConnection,
+    ) -> Option<bool> {
         Self::backend_serial_port(connection)
             .and_then(|port| self.machine.serial_modem_lines(port))
             .map(|lines| lines.rts_high)
     }
 
     /// Continuous MC6850 spacing/BREAK output at the selected cable boundary.
-    pub(in crate::app) fn serial_break_active_at(&mut self, connection: SerialConnection) -> Option<bool> {
+    pub(in crate::app) fn serial_break_active_at(
+        &mut self,
+        connection: SerialConnection,
+    ) -> Option<bool> {
         Self::backend_serial_port(connection)
             .and_then(|port| self.machine.serial_modem_lines(port))
             .map(|lines| lines.break_active)
