@@ -1,15 +1,11 @@
-use rustair::backend::CycleAccurateMachineBackend;
-use rustair::config::SerialBoard;
+use rustair::backend::{CycleAccurateMachineBackend, MachineBackend};
+use rustair::config::{RamInit, S100HardwareConfig};
 use rustair::machine::AltairBus;
 
 const PORT0_CONTROL: u8 = 0x10;
 const PORT0_STATUS: u8 = 0x10;
 
-fn exercise_modem_pin_contract(bus: &mut AltairBus) {
-    assert_eq!(bus.serial_modem_lines(0), None, "88-SIO must not fabricate MC6850 modem pins");
-    assert!(!bus.set_serial_modem_inputs(0, true, true));
-
-    bus.configure_serial_board(SerialBoard::TwoSio88);
+fn exercise_two_sio_modem_pin_contract(bus: &mut AltairBus) {
     assert_eq!(bus.serial_modem_lines(0), Some((false, false, false, false)));
     assert_eq!(bus.serial_modem_lines(1), Some((false, false, false, false)));
     assert_eq!(bus.serial_modem_lines(2), None);
@@ -34,7 +30,11 @@ fn exercise_modem_pin_contract(bus: &mut AltairBus) {
 
     assert!(bus.set_serial_modem_inputs(0, false, true));
     assert_eq!(bus.serial_modem_lines(0), Some((false, false, false, true)));
-    assert_eq!(bus.peek_io_port(PORT0_STATUS) & 0x84, 0x84, "DCD high must project both status and enabled IRQ");
+    assert_eq!(
+        bus.peek_io_port(PORT0_STATUS) & 0x84,
+        0x84,
+        "DCD high must project both status and enabled IRQ"
+    );
 
     // The DCD interrupt remains latched after the input returns low until the
     // documented status-read then data-read clearing sequence completes.
@@ -46,7 +46,23 @@ fn exercise_modem_pin_contract(bus: &mut AltairBus) {
 }
 
 #[test]
-fn adaptive_cycle_exposes_the_physical_88_2sio_modem_pin_contract() {
-    let mut cycle = CycleAccurateMachineBackend::default();
-    exercise_modem_pin_contract(&mut cycle.machine_mut().bus);
+fn adaptive_cycle_exposes_only_the_modem_pins_of_the_installed_physical_card() {
+    let mut sio_cycle = CycleAccurateMachineBackend::default();
+    assert_eq!(
+        sio_cycle.machine().bus.serial_modem_lines(0),
+        None,
+        "default physical 88-SIO must not fabricate MC6850 modem pins"
+    );
+    assert!(!sio_cycle.machine_mut().bus.set_serial_modem_inputs(0, true, true));
+
+    let mut two_sio_cycle = CycleAccurateMachineBackend::default();
+    two_sio_cycle
+        .configure_s100_hardware(
+            S100HardwareConfig::historical_8800b_18_slot_starter()
+                .validate()
+                .unwrap(),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+    exercise_two_sio_modem_pin_contract(&mut two_sio_cycle.machine_mut().bus);
 }
