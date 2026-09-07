@@ -181,4 +181,17 @@ impl AltairBus {
     pub fn debugger_complete_serial_tx(&mut self, data_port: u8) -> Option<u8> {
         self.memory.debugger_complete_serial_tx(data_port)
     }
+
+    /// Temporary compatibility shim for the remaining Partial branch cleanup.
+    /// Both paths below still address the installed S-100 card; there is no
+    /// hidden UART state behind these methods.
+    pub(crate) fn cycle_input_port(&mut self, port: u8) -> u8 {
+        self.peek_io_port(port)
+    }
+
+    pub(crate) fn cycle_output_port(&mut self, port: u8, value: u8) {
+        if port != 0xff {
+            self.memory.debugger_output_port(port, value);
+        }
+    }
 }
