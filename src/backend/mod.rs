@@ -8,8 +8,8 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::config::{
-    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioConnectorOutputs,
-    SioElectricalLevel, SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps,
+    RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SioConnectorOutputs,
+    SioElectricalLevel,
 };
 use crate::machine::{CpuDiagnosticResult, PanelLampSnapshot};
 use crate::s100_runtime::RuntimeMemoryInspection;
@@ -231,14 +231,6 @@ pub trait MachineBackend {
     fn protect_current_board(&mut self, protected: bool) -> BackendResult<()>;
     fn switch_register(&mut self) -> BackendResult<u16>;
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()>;
-    fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()>;
-    fn serial_board(&mut self) -> BackendResult<SerialBoard>;
-    fn configure_sio_hardware(&mut self, _config: SioHardwareConfig) -> BackendResult<()> {
-        Err(BackendError::Unsupported { operation: "configure 88-SIO hardware", engine: self.engine() })
-    }
-    fn sio_hardware(&mut self) -> BackendResult<SioHardwareConfig> {
-        Err(BackendError::Unsupported { operation: "query 88-SIO hardware", engine: self.engine() })
-    }
     fn sio_logical_lines(&mut self) -> BackendResult<Option<SioLogicalLines>> {
         Err(BackendError::Unsupported { operation: "read 88-SIO logical lines", engine: self.engine() })
     }
@@ -253,18 +245,6 @@ pub trait MachineBackend {
     }
     fn sio_pulse_output_device_ready(&mut self) -> BackendResult<bool> {
         Err(BackendError::Unsupported { operation: "pulse 88-SIO ROT", engine: self.engine() })
-    }
-    fn configure_two_sio_straps(&mut self, _straps: TwoSioStraps) -> BackendResult<()> {
-        Err(BackendError::Unsupported { operation: "configure 88-2SIO straps", engine: self.engine() })
-    }
-    fn two_sio_straps(&mut self) -> BackendResult<TwoSioStraps> {
-        Err(BackendError::Unsupported { operation: "query 88-2SIO straps", engine: self.engine() })
-    }
-    fn configure_two_sio_interrupt_wiring(&mut self, _wiring: TwoSioInterruptWiring) -> BackendResult<()> {
-        Err(BackendError::Unsupported { operation: "configure 88-2SIO interrupt wiring", engine: self.engine() })
-    }
-    fn two_sio_interrupt_wiring(&mut self) -> BackendResult<TwoSioInterruptWiring> {
-        Err(BackendError::Unsupported { operation: "query 88-2SIO interrupt wiring", engine: self.engine() })
     }
     fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
         Err(BackendError::Unsupported { operation: "query 88-2SIO VI lines", engine: self.engine() })
@@ -472,19 +452,11 @@ impl BackendHost {
     pub fn configure_s100_hardware(&mut self, hardware: S100HardwareConfig, init: RamInit) { Self::call(self.backend.configure_s100_hardware(hardware, init)); }
     pub fn s100_hardware(&mut self) -> S100HardwareConfig { Self::call(self.backend.s100_hardware()) }
     pub fn inspect_memory_mapping(&mut self, address: u16) -> RuntimeMemoryInspection { Self::call(self.backend.inspect_memory_mapping(address)) }
-    pub fn configure_serial_board(&mut self, board: SerialBoard) { Self::call(self.backend.configure_serial_board(board)); }
-    pub fn serial_board(&mut self) -> SerialBoard { Self::call(self.backend.serial_board()) }
-    pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) { Self::call(self.backend.configure_sio_hardware(config)); }
-    pub fn sio_hardware(&mut self) -> SioHardwareConfig { Self::call(self.backend.sio_hardware()) }
     pub fn sio_logical_lines(&mut self) -> Option<SioLogicalLines> { Self::call(self.backend.sio_logical_lines()) }
     pub fn sio_connector_outputs(&mut self) -> Option<SioConnectorOutputs> { Self::call(self.backend.sio_connector_outputs()) }
     pub fn sio_decode_connector_input(&mut self, level: SioElectricalLevel) -> Option<bool> { Self::call(self.backend.sio_decode_connector_input(level)) }
     pub fn sio_pulse_input_device_ready(&mut self) -> bool { Self::call(self.backend.sio_pulse_input_device_ready()) }
     pub fn sio_pulse_output_device_ready(&mut self) -> bool { Self::call(self.backend.sio_pulse_output_device_ready()) }
-    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) { Self::call(self.backend.configure_two_sio_straps(straps)); }
-    pub fn two_sio_straps(&mut self) -> TwoSioStraps { Self::call(self.backend.two_sio_straps()) }
-    pub fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) { Self::call(self.backend.configure_two_sio_interrupt_wiring(wiring)); }
-    pub fn two_sio_interrupt_wiring(&mut self) -> TwoSioInterruptWiring { Self::call(self.backend.two_sio_interrupt_wiring()) }
     pub fn two_sio_vector_interrupt_requests(&mut self) -> u8 { Self::call(self.backend.two_sio_vector_interrupt_requests()) }
     pub fn power(&mut self, on: bool) { Self::call(self.backend.power(on)); }
     pub fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) { Self::call(self.backend.power_with_historical_run_latch(on, historical)); }
@@ -573,9 +545,16 @@ impl BackendHost {
 mod tests {
     use super::*;
     use crate::config::{
-        SioAddressPair, SioBaudRate, SioInterface, SioRevision, TwoSioAddressBlock,
-        TwoSioBaudTap, TwoSioInterruptTarget,
+        S100InstalledCardConfig, SioAddressPair, SioBaudRate, SioHardwareConfig, SioInterface,
+        SioRevision, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
+        TwoSioInterruptWiring, TwoSioStraps,
     };
+
+    fn mount_serial(host: &mut BackendHost, card: S100InstalledCardConfig) {
+        let mut hardware = host.s100_hardware();
+        hardware.set_slot(4, Some(card)).unwrap();
+        host.configure_s100_hardware(hardware, RamInit::Zeroed);
+    }
 
     #[test]
     fn adaptive_cycle_is_the_only_builtin_engine() {
@@ -603,26 +582,24 @@ mod tests {
 
     #[test]
     fn adaptive_backend_projects_physical_sio_hardware() {
-        let mut hardware = SioHardwareConfig::default();
-        hardware.revision = SioRevision::Rev0;
-        hardware.address = SioAddressPair::try_new(0x06).unwrap();
-        hardware.baud = SioBaudRate::try_new(9_600).unwrap();
+        let mut sio = SioHardwareConfig::default();
+        sio.revision = SioRevision::Rev0;
+        sio.address = SioAddressPair::try_new(0x06).unwrap();
+        sio.baud = SioBaudRate::try_new(9_600).unwrap();
         let mut host = BackendHost::default();
-        host.configure_serial_board(SerialBoard::Sio88);
-        host.configure_sio_hardware(hardware);
-        assert_eq!(host.sio_hardware(), hardware);
+        mount_serial(&mut host, S100InstalledCardConfig::Mits88Sio(sio));
+        assert_eq!(host.s100_hardware().active_sio_hardware(), Some(sio));
         assert_eq!(host.peek_io_port(0x06), 0x83);
         assert_eq!(host.peek_io_port(0x00), 0xff);
     }
 
     #[test]
     fn adaptive_backend_exposes_sio_lines_through_backend_contract() {
-        let mut hardware = SioHardwareConfig::default();
-        hardware.revision = SioRevision::Rev0;
-        hardware.interface = SioInterface::TtyC;
+        let mut sio = SioHardwareConfig::default();
+        sio.revision = SioRevision::Rev0;
+        sio.interface = SioInterface::TtyC;
         let mut host = BackendHost::default();
-        host.configure_serial_board(SerialBoard::Sio88);
-        host.configure_sio_hardware(hardware);
+        mount_serial(&mut host, S100InstalledCardConfig::Mits88Sio(sio));
         assert_eq!(
             host.sio_logical_lines(),
             Some(SioLogicalLines {
@@ -660,9 +637,14 @@ mod tests {
             ..TwoSioStraps::default()
         };
         let mut host = BackendHost::default();
-        host.configure_serial_board(SerialBoard::TwoSio88);
-        host.configure_two_sio_straps(straps);
-        assert_eq!(host.two_sio_straps(), straps);
+        mount_serial(
+            &mut host,
+            S100InstalledCardConfig::Mits88TwoSio {
+                straps,
+                interrupt_wiring: TwoSioInterruptWiring::default(),
+            },
+        );
+        assert_eq!(host.s100_hardware().active_two_sio_straps(), Some(straps));
         assert_eq!(host.peek_io_port(0x44) & 0x02, 0x02);
         assert_eq!(host.peek_io_port(0x10), 0xff);
     }
@@ -674,9 +656,14 @@ mod tests {
             port1: TwoSioInterruptTarget::Disconnected,
         };
         let mut host = BackendHost::default();
-        host.configure_serial_board(SerialBoard::TwoSio88);
-        host.configure_two_sio_interrupt_wiring(wiring);
-        assert_eq!(host.two_sio_interrupt_wiring(), wiring);
+        mount_serial(
+            &mut host,
+            S100InstalledCardConfig::Mits88TwoSio {
+                straps: TwoSioStraps::default(),
+                interrupt_wiring: wiring,
+            },
+        );
+        assert_eq!(host.s100_hardware().active_two_sio_interrupt_wiring(), Some(wiring));
         host.debugger_output_port(0x10, 0x95);
         assert!(host.debugger_inject_serial_rx(0x11, b'I'));
         assert_eq!(host.two_sio_vector_interrupt_requests(), 1 << 3);
