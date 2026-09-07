@@ -5,32 +5,81 @@ const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 
 #[test]
-fn migrated_cpu_and_aggregate_ram_state_do_not_survive_in_machine_config() {
+fn migrated_aggregate_hardware_state_does_not_survive_in_machine_config() {
     for forbidden in [
         "pub cpu_model:",
         "pub ram_size:",
         "pub ram_board_profile:",
+        "pub serial_board:",
+        "pub sio_hardware:",
+        "pub two_sio_straps:",
+        "pub two_sio_interrupt_wiring:",
         "fn cpu_board(",
     ] {
-        assert!(!MACHINE.contains(forbidden), "obsolete runtime authority survived: {forbidden}");
+        assert!(
+            !MACHINE.contains(forbidden),
+            "obsolete runtime authority survived: {forbidden}"
+        );
     }
+    assert!(MACHINE.contains("pub s100_hardware: S100HardwareConfig"));
     assert!(!CONFIG_MOD.contains("mod cpu_board_authority;"));
     assert!(!APP.contains(".machine.cpu_board()"));
     assert!(!RUNTIME.contains(".machine.cpu_board()"));
 }
 
 #[test]
-fn old_cpu_and_ram_keys_are_read_only_migration_inputs() {
-    // They must remain parseable so old config.ini files upgrade automatically.
-    assert!(PERSISTENCE.contains("\"machine.cpu_model\""));
-    assert!(PERSISTENCE.contains("\"machine.ram_size\""));
-    assert!(PERSISTENCE.contains("\"machine.ram_board_profile\""));
+fn old_hardware_keys_are_read_only_migration_inputs() {
+    // They remain parseable so pre-slot-native config.ini files upgrade once.
+    for key in [
+        "\"machine.cpu_model\"",
+        "\"machine.ram_size\"",
+        "\"machine.ram_board_profile\"",
+        "\"machine.serial_board\"",
+        "\"machine.sio_hardware\"",
+        "\"machine.two_sio_base\"",
+        "\"machine.two_sio_port0_baud\"",
+        "\"machine.two_sio_port1_baud\"",
+        "\"machine.two_sio_port0_interface\"",
+        "\"machine.two_sio_port1_interface\"",
+        "\"machine.two_sio_port0_irq\"",
+        "\"machine.two_sio_port1_irq\"",
+    ] {
+        assert!(PERSISTENCE.contains(key), "legacy migration parser lost {key}");
+    }
     assert!(PERSISTENCE.contains("S100HardwareConfig::from_legacy_globals("));
 
-    // New files serialize the physical assembly only. A writeln! containing one
-    // of the old keys would make the migration state persistent again.
-    assert!(!PERSISTENCE.contains("writeln!(out, \"machine.cpu_model="));
-    assert!(!PERSISTENCE.contains("writeln!(out, \"machine.ram_size="));
-    assert!(!PERSISTENCE.contains("writeln!(out, \"machine.ram_board_profile="));
-    assert!(PERSISTENCE.contains("writeln!(out, \"machine.s100_hardware={}\""));
+    // New files serialize the physical assembly once. These exact assignment
+    // prefixes must never reappear in `to_text()` output.
+    for forbidden_write in [
+        "writeln!(out, \"machine.cpu_model=",
+        "writeln!(out, \"machine.ram_size=",
+        "writeln!(out, \"machine.ram_board_profile=",
+        "writeln!(out, \"machine.serial_board=",
+        "writeln!(out, \"machine.sio_hardware=",
+        "writeln!(out, \"machine.two_sio_",
+    ] {
+        assert!(
+            !PERSISTENCE.contains(forbidden_write),
+            "legacy hardware key became writable again: {forbidden_write}"
+        );
+    }
+    assert!(PERSISTENCE.contains("machine.s100_hardware={}"));
+    assert!(PERSISTENCE.contains("const CONFIG_VERSION: u32 = 6;"));
+}
+
+#[test]
+fn app_has_no_duplicate_serial_hardware_apply_boundary() {
+    for forbidden in [
+        "fn apply_serial_board_configuration",
+        "fn apply_sio_hardware",
+        "fn apply_two_sio_straps",
+        "fn apply_two_sio_interrupt_wiring",
+    ] {
+        assert!(
+            !APP.contains(forbidden),
+            "obsolete aggregate serial apply path survived: {forbidden}"
+        );
+    }
+    assert!(APP.contains("fn apply_s100_hardware_configuration"));
+    assert!(!RUNTIME.contains("ui.menu_button(\"Serial board\""));
 }
