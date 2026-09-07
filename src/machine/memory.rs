@@ -22,14 +22,17 @@ pub(crate) enum MemoryReadyPhase {
     Other,
 }
 
-/// Transitional memory facade while Cycle and serial are moved onto the live
-/// S-100 fabric. RAM bytes themselves already live exclusively in RuntimeRamCard.
+/// Bus-owned memory/card facade for the live S-100 fabric.
+///
+/// RAM bytes and serial-card state always live in `S100RuntimeFabric`. The
+/// aggregate `RamSize`/`RamBoardProfile` fields below exist only so old tests and
+/// migration helpers can request a compatibility assembly; they no longer select
+/// a second runtime representation.
 pub(super) struct Memory {
     fabric: S100RuntimeFabric,
     ram_size: RamSize,
     init_mode: RamInit,
     board_profile: RamBoardProfile,
-    legacy_aggregate: bool,
     /// True when at least one installed card consumes PHI1, PHI2 or the buffered
     /// CLOC net as a connector input. If false, an edge that changes only those
     /// three physical clock nets cannot affect card state or CPU package inputs.
@@ -54,15 +57,15 @@ impl Default for Memory {
         let ram_size = RamSize::K8;
         let init_mode = RamInit::Random;
         let board_profile = RamBoardProfile::FastNoWait;
+        let fabric = S100RuntimeFabric::new(S100HardwareConfig::default(), init_mode)
+            .expect("default slot-native S-100 assembly must be valid");
+        let phase_edge_requires_settle = Self::phase_edge_listener_present(&fabric);
         Self {
-            fabric: Self::legacy_fabric(ram_size, board_profile, init_mode),
+            fabric,
             ram_size,
             init_mode,
             board_profile,
-            legacy_aggregate: true,
-            // Aggregate compatibility tests still consume the old edge projection.
-            // Be conservative there; phase-elision is enabled only for explicit hardware.
-            phase_edge_requires_settle: true,
+            phase_edge_requires_settle,
             last_cycle_pins: Cpu8080Pins::default(),
             full_execution_desynced: false,
             read_wait_active: false,
@@ -74,7 +77,9 @@ impl Default for Memory {
 }
 
 impl Memory {
-    pub(super) fn uses_explicit_hardware(&self) -> bool { !self.legacy_aggregate }
+    /// Kept temporarily for callers being cleaned up in the same branch. There
+    /// is no aggregate runtime any more: every Memory instance is slot-native.
+    pub(super) const fn uses_explicit_hardware(&self) -> bool { true }
 
     pub(super) fn advance_serial_time(&self, t_states: u64) {
         self.fabric.advance_serial_time(t_states);
@@ -152,24 +157,32 @@ impl Memory {
     pub(super) fn set_io_trace_enabled(&self, enabled: bool) { self.fabric.set_io_trace_enabled(enabled); }
     pub(super) fn clear_io_trace(&self) { self.fabric.clear_io_trace(); }
 
-    fn legacy_hardware(size: RamSize, profile: RamBoardProfile) -> S100HardwareConfig {
+    fn compatibility_hardware(&self, size: RamSize, profile: RamBoardProfile) -> S100HardwareConfig {
+        let current = self.fabric.hardware();
+        let serial_board = current.active_serial_board().unwrap_or(SerialBoard::Sio88);
+        let sio_hardware = current.active_sio_hardware().unwrap_or_default();
+        let two_sio_straps = current.active_two_sio_straps().unwrap_or_default();
+        let two_sio_interrupt_wiring = current
+            .active_two_sio_interrupt_wiring()
+            .unwrap_or_default();
         S100HardwareConfig::from_legacy_globals(
             size,
             profile,
-            SerialBoard::Sio88,
-            SioHardwareConfig::default(),
-            TwoSioStraps::default(),
-            TwoSioInterruptWiring::default(),
+            serial_board,
+            sio_hardware,
+            two_sio_straps,
+            two_sio_interrupt_wiring,
         )
     }
 
-    fn legacy_fabric(
+    fn compatibility_fabric(
+        &self,
         size: RamSize,
         profile: RamBoardProfile,
         init_mode: RamInit,
     ) -> S100RuntimeFabric {
-        S100RuntimeFabric::new(Self::legacy_hardware(size, profile), init_mode)
-            .expect("legacy RAM compatibility assembly must be valid")
+        S100RuntimeFabric::new(self.compatibility_hardware(size, profile), init_mode)
+            .expect("compatibility S-100 assembly must be valid")
     }
 
     fn phase_edge_listener_present(fabric: &S100RuntimeFabric) -> bool {
@@ -184,7 +197,7 @@ impl Memory {
     }
 
     fn phase_only_edge_is_unobserved(&self, pins: Cpu8080Pins) -> bool {
-        if self.legacy_aggregate || self.phase_edge_requires_settle || self.full_execution_desynced {
+        if self.phase_edge_requires_settle || self.full_execution_desynced {
             return false;
         }
         let previous = self.last_cycle_pins;
@@ -205,12 +218,14 @@ impl Memory {
         phi1_rising || phi1_falling || phi2_rising || phi2_falling
     }
 
+    /// Compatibility helper for old fixtures. It now builds a real slot-native
+    /// assembly rather than selecting a separate aggregate memory runtime.
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
         self.ram_size = size;
         self.init_mode = init_mode;
-        self.legacy_aggregate = true;
-        self.fabric = Self::legacy_fabric(size, self.board_profile, init_mode);
-        self.phase_edge_requires_settle = true;
+        let fabric = self.compatibility_fabric(size, self.board_profile, init_mode);
+        self.phase_edge_requires_settle = Self::phase_edge_listener_present(&fabric);
+        self.fabric = fabric;
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
         self.clear_transient_guards();
@@ -226,7 +241,6 @@ impl Memory {
         self.phase_edge_requires_settle = Self::phase_edge_listener_present(&fabric);
         self.fabric = fabric;
         self.init_mode = init_mode;
-        self.legacy_aggregate = false;
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
         self.clear_transient_guards();
@@ -282,8 +296,25 @@ impl Memory {
     pub(super) fn cycle_live_sample(&self) -> &S100BusSample { self.fabric.sample() }
     pub(super) fn cycle_latched_status_word(&self) -> u8 { self.fabric.cpu_latched_status_word() }
 
+    /// Compatibility helper for old aggregate timing fixtures. Rebuild the
+    /// compatibility card with the requested physical wait-state value while
+    /// copying its current bytes into the replacement card.
     pub(super) fn configure_board_profile(&mut self, profile: RamBoardProfile) {
+        let bytes = (0..self.ram_size.bytes())
+            .map(|address| {
+                self.fabric
+                    .peek_unique_memory(address as u16)
+                    .unwrap_or(S100_OPEN_BUS_VALUE)
+            })
+            .collect::<Vec<_>>();
         self.board_profile = profile;
+        let fabric = self.compatibility_fabric(self.ram_size, profile, self.init_mode);
+        let _ = fabric.load_bytes(0, &bytes);
+        self.phase_edge_requires_settle = Self::phase_edge_listener_present(&fabric);
+        self.fabric = fabric;
+        self.last_cycle_pins = Cpu8080Pins::default();
+        self.full_execution_desynced = false;
+        self.clear_transient_guards();
         self.reset_timing();
     }
 
@@ -292,9 +323,6 @@ impl Memory {
     }
 
     pub(super) fn read_wait_states(&self, address: u16) -> u8 {
-        if self.legacy_aggregate {
-            return self.board_profile(address).map(RamBoardProfile::read_wait_states).unwrap_or(0);
-        }
         self.fabric.fast_read_wait_states(address)
     }
 
@@ -446,8 +474,8 @@ impl Memory {
         }
     }
 
-    /// Transitional T3 read helper retained for serial/front-panel migration
-    /// tests. Guest Partial memory reads sample the live CPU-board DI input.
+    /// T3 helper used only for the BASIC 3.2 compatibility guard and panel-side
+    /// diagnostics. Ordinary Partial memory reads sample live S-100 DI directly.
     pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
@@ -512,33 +540,15 @@ impl super::AltairBus {
         self.memory.board_profile(address)
     }
 
+    /// Physical RAM and I/O cards drive PRDY through the live backplane. The
+    /// old aggregate READY synthesizer is intentionally gone.
     pub(crate) fn cycle_memory_ready(
         &mut self,
-        address: u16,
-        memory_read: bool,
-        phase: MemoryReadyPhase,
+        _address: u16,
+        _memory_read: bool,
+        _phase: MemoryReadyPhase,
     ) -> bool {
-        if !self.memory.legacy_aggregate { return true; }
-
-        let memory_ready = self.memory.ready_for_t_state(address, memory_read, phase);
-        let signals = self.s100.signals();
-        let inp_about_to_latch = !memory_read
-            && phase == MemoryReadyPhase::T2
-            && signals.psync
-            && signals.data_out.map_or(false, |word| word & 0x40 != 0);
-        let input_read = !memory_read
-            && match phase {
-                MemoryReadyPhase::T1 => false,
-                MemoryReadyPhase::T2 => signals.inp || inp_about_to_latch,
-                _ => signals.inp,
-            };
-        let io_wait_selected = input_read && self.io.input_wait_states(address as u8) != 0;
-        let io_ready = self.io.ready_for_input_t_state(address as u8, input_read, phase);
-        let ready = memory_ready && io_ready;
-        let phi1_owned_2sio_transition = io_wait_selected
-            && matches!(phase, MemoryReadyPhase::T2 | MemoryReadyPhase::Tw);
-        if !phi1_owned_2sio_transition { self.s100.set_memory_ready_input(ready); }
-        ready
+        true
     }
 
     pub(crate) fn cycle_settle_memory_ready_after_panel_freeze(&mut self) {
