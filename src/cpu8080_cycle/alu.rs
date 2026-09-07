@@ -7,6 +7,32 @@ pub(super) const FLAG_AC: u8 = 0x10;
 pub(super) const FLAG_Z: u8 = 0x40;
 pub(super) const FLAG_S: u8 = 0x80;
 
+const fn build_szp_table() -> [u8; 256] {
+    let mut table = [0u8; 256];
+    let mut i = 0usize;
+    while i < 256 {
+        let value = i as u8;
+        let mut flags = FLAG_1;
+        if value & 0x80 != 0 {
+            flags |= FLAG_S;
+        }
+        if value == 0 {
+            flags |= FLAG_Z;
+        }
+        if value.count_ones() & 1 == 0 {
+            flags |= FLAG_P;
+        }
+        table[i] = flags;
+        i += 1;
+    }
+    table
+}
+
+// MAME's mature 8080/8085 core uses a 256-entry Z/S/P lookup table so the
+// arithmetic hot path does not repeatedly branch and count parity bits. Keep
+// the same idea here, generated at compile time from the 8080 flag definition.
+const SZP_TABLE: [u8; 256] = build_szp_table();
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AluOp {
     Add,
@@ -43,23 +69,8 @@ impl AluOp {
 }
 
 #[inline]
-fn parity(value: u8) -> bool {
-    value.count_ones() & 1 == 0
-}
-
-#[inline]
 fn set_szp(registers: &mut Registers, value: u8) {
-    registers.f &= !(FLAG_S | FLAG_Z | FLAG_P);
-    if value & 0x80 != 0 {
-        registers.f |= FLAG_S;
-    }
-    if value == 0 {
-        registers.f |= FLAG_Z;
-    }
-    if parity(value) {
-        registers.f |= FLAG_P;
-    }
-    registers.f |= FLAG_1;
+    registers.f = (registers.f & !(FLAG_S | FLAG_Z | FLAG_P)) | SZP_TABLE[value as usize];
 }
 
 /// Execute an 8080 ALU/internal accumulator operation.
@@ -234,6 +245,18 @@ fn daa(registers: &mut Registers) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn szp_table_matches_the_8080_flag_definition_for_all_values() {
+        for value in 0u16..=0xff {
+            let value = value as u8;
+            let expected = FLAG_1
+                | if value & 0x80 != 0 { FLAG_S } else { 0 }
+                | if value == 0 { FLAG_Z } else { 0 }
+                | if value.count_ones() & 1 == 0 { FLAG_P } else { 0 };
+            assert_eq!(SZP_TABLE[value as usize], expected, "value {value:02x}");
+        }
+    }
 
     #[test]
     fn subtraction_aux_carry_uses_8080_internal_carry_polarity() {
