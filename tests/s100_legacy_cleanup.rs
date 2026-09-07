@@ -10,6 +10,7 @@ const SERIAL_CARD: &str = include_str!("../src/machine/serial_card.rs");
 const SERIAL_BUS: &str = include_str!("../src/machine/serial_bus.rs");
 const BACKEND: &str = include_str!("../src/backend/mod.rs");
 const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
+const PARTIAL: &str = include_str!("../src/backend/cycle/partial_impl.rs");
 
 #[test]
 fn migrated_aggregate_hardware_state_does_not_survive_in_machine_config() {
@@ -108,6 +109,10 @@ fn backend_has_no_aggregate_serial_configuration_contract() {
             !CYCLE_HOST.contains(forbidden),
             "Cycle host reintroduced aggregate serial authority: {forbidden}"
         );
+        assert!(
+            !PARTIAL.contains(forbidden),
+            "Partial reintroduced aggregate serial authority: {forbidden}"
+        );
     }
     assert!(BACKEND.contains("fn configure_s100_hardware("));
     assert!(BACKEND.contains("fn s100_hardware("));
@@ -145,4 +150,20 @@ fn altair_bus_owns_no_parallel_uart_state() {
     assert!(SERIAL_CARD.contains("impl S100IoRegisterDevice for RuntimeSerialCardDevice"));
     assert!(SERIAL_BUS.contains("self.memory.serial_receive"));
     assert!(!SERIAL_BUS.contains("self.io."));
+}
+
+#[test]
+fn partial_has_no_aggregate_execution_fallback() {
+    for forbidden in [
+        "cycle_uses_physical_serial",
+        "legacy_data_override",
+        "direct_interrupt_opcode",
+        "cycle_input_port(",
+        "cycle_output_port(",
+        "refresh_interrupt_request_line",
+    ] {
+        assert!(!PARTIAL.contains(forbidden), "aggregate Partial fallback returned: {forbidden}");
+        assert!(!SERIAL_BUS.contains(forbidden), "serial bus compatibility shim returned: {forbidden}");
+        assert!(!MACHINE_MOD.contains(forbidden), "machine bus compatibility shim returned: {forbidden}");
+    }
 }
