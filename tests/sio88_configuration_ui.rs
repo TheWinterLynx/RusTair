@@ -1,87 +1,51 @@
 const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
-const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
-const SERIAL_HARDWARE_SOURCE: &str = include_str!("../src/app/serial_hardware.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
+const S100_UI_SOURCE: &str = include_str!("../src/app/ui/s100_hardware.rs");
 const SIO_CONFIG_SOURCE: &str = include_str!("../src/config/sio.rs");
 
 #[test]
-fn sio_hardware_controls_are_power_off_only_and_physically_named() {
-    assert!(RUNTIME_SOURCE.contains("Physical 88-SIO configuration:"));
-    assert!(RUNTIME_SOURCE.contains("ui.add_enabled_ui(!powered"));
-    assert!(RUNTIME_SOURCE.contains("Logic revision:"));
-    assert!(RUNTIME_SOURCE.contains("Line interface:"));
-    assert!(RUNTIME_SOURCE.contains("I/O address:"));
-    assert!(RUNTIME_SOURCE.contains("Baud preset:"));
-    assert!(RUNTIME_SOURCE.contains("Data bits:"));
-    assert!(RUNTIME_SOURCE.contains("Parity:"));
-    assert!(RUNTIME_SOURCE.contains("Stop bits:"));
-    assert!(RUNTIME_SOURCE.contains("Input IRQ source:"));
-    assert!(RUNTIME_SOURCE.contains("Output IRQ source:"));
-    assert!(SERIAL_HARDWARE_SOURCE.contains("Power OFF the Altair before changing 88-SIO hardware wiring"));
+fn sio_hardware_controls_live_only_in_the_power_off_s100_slot_editor() {
+    assert!(S100_UI_SOURCE.contains("POWER OFF required to move cards"));
+    assert!(S100_UI_SOURCE.contains("88-SIO physical configuration"));
+    assert!(S100_UI_SOURCE.contains("Revision:"));
+    assert!(S100_UI_SOURCE.contains("Interface:"));
+    assert!(S100_UI_SOURCE.contains("I/O address:"));
+    assert!(S100_UI_SOURCE.contains("Baud:"));
+    assert!(S100_UI_SOURCE.contains("Data bits:"));
+    assert!(S100_UI_SOURCE.contains("Parity:"));
+    assert!(S100_UI_SOURCE.contains("Stop bits:"));
+    assert!(S100_UI_SOURCE.contains("Input IRQ:"));
+    assert!(S100_UI_SOURCE.contains("Output IRQ:"));
+    assert!(S100_UI_SOURCE.contains("S100InstalledCardConfig::Mits88Sio"));
 }
 
 #[test]
-fn sio_ui_uses_documented_baud_table_not_terminal_speed_as_board_clock() {
-    assert!(RUNTIME_SOURCE.contains("crate::config::SioBaudRate::STANDARD"));
-    assert!(RUNTIME_SOURCE.contains("The MITS baud chart provides 110, 150, 300, 600, 1200, 2400, 4800, 9600 and 19200 baud presets."));
+fn sio_slot_editor_uses_the_documented_card_configuration_types() {
+    assert!(S100_UI_SOURCE.contains("SioBaudRate::STANDARD"));
+    assert!(S100_UI_SOURCE.contains("SioInterruptTarget::ALL"));
+    assert!(S100_UI_SOURCE.contains("replace_slot(app, hardware, slot"));
+    assert!(SIO_CONFIG_SOURCE.contains("pub interrupt_wiring: SioInterruptWiring"));
 }
 
 #[test]
-fn sio_interrupt_ui_keeps_runtime_enables_separate_from_physical_routing() {
-    assert!(RUNTIME_SOURCE.contains("crate::config::SioInterruptTarget::ALL"));
-    assert!(RUNTIME_SOURCE.contains("D0 enables the input interrupt source and D1 enables the output source at runtime"));
-    assert!(RUNTIME_SOURCE.contains("Selecting the same destination for both sources represents the equivalent combined BH wiring result."));
-    assert!(RUNTIME_SOURCE.contains("VI0..VI7 are raw requests for a separate 88-Vector Interrupt system"));
-    assert!(RUNTIME_SOURCE.contains("Rev 0 uses the original external RIN/ROT device-ready flip-flops"));
-    assert!(RUNTIME_SOURCE.contains("COM2502 RDA/TBMT remain separate signals"));
-}
-
-#[test]
-fn sio_hardware_is_persisted_as_one_atomic_card_configuration() {
-    assert!(PERSISTENCE_SOURCE.contains("const CONFIG_VERSION: u32 = 5;"));
-    assert!(PERSISTENCE_SOURCE.contains("machine.sio_hardware"));
+fn persistence_v6_writes_one_physical_s100_assembly_only() {
+    assert!(PERSISTENCE_SOURCE.contains("const CONFIG_VERSION: u32 = 6;"));
     assert!(PERSISTENCE_SOURCE.contains("machine.s100_hardware"));
     assert!(PERSISTENCE_SOURCE.contains("SioHardwareConfig::from_persistence_key"));
-    assert!(PERSISTENCE_SOURCE.contains("self.machine.configure_sio_hardware(self.config.machine.sio_hardware);"));
-    assert!(SIO_CONFIG_SOURCE.contains("pub interrupt_wiring: SioInterruptWiring"));
-    assert!(SIO_CONFIG_SOURCE.contains("fields.len() != 7 && fields.len() != 9"));
-    assert!(SIO_CONFIG_SOURCE.contains("SioInterruptWiring::default()"));
+
+    // Old keys remain read-only migration inputs. New files must never recreate
+    // a second global serial-card authority beside the slot inventory.
+    assert!(PERSISTENCE_SOURCE.contains("\"machine.sio_hardware\""));
+    assert!(!PERSISTENCE_SOURCE.contains("writeln!(out, \"machine.sio_hardware="));
+    assert!(!PERSISTENCE_SOURCE.contains("writeln!(out, \"machine.serial_board="));
+    assert!(!PERSISTENCE_SOURCE.contains("writeln!(out, \"machine.two_sio_straps="));
 }
 
 #[test]
-fn s100_remount_uses_the_single_live_cycle_backend() {
-    let start = APP_SOURCE
-        .find("fn apply_s100_hardware_configuration")
-        .expect("app must own the physical S-100 remount boundary");
-    let tail = &APP_SOURCE[start..];
-    let end = tail
-        .find("fn apply_ram_initialization")
-        .expect("RAM initialization helper after S-100 remount boundary");
-    let function = &tail[..end];
-    let compact: String = function.split_whitespace().collect();
-
-    assert!(compact.contains(
-        "self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init);"
-    ));
-    assert!(compact.contains("self.config.machine.s100_hardware=hardware;"));
-    assert!(!function.contains("replace_engine"));
-    assert!(!compact.contains("self.machine.configure_memory("));
-}
-
-#[test]
-fn selecting_sio_reapplies_its_dormant_physical_configuration() {
-    let start = APP_SOURCE
-        .find("fn apply_serial_board_configuration")
-        .expect("app must own serial-board selection");
-    let tail = &APP_SOURCE[start..];
-    let end = tail
-        .find("fn apply_two_sio_straps")
-        .expect("helper after serial-board selection");
-    let function = &tail[..end];
-
-    assert!(function.contains("SerialBoard::Sio88"));
-    assert!(function.contains("self.machine.configure_sio_hardware"));
-    assert!(function.contains("self.config.machine.sio_hardware"));
-    assert!(function.contains("address.status()"));
-    assert!(function.contains("address.data()"));
+fn app_has_one_s100_remount_boundary_and_no_global_serial_apply_helpers() {
+    assert!(APP_SOURCE.contains("configure_s100_hardware(hardware, self.config.machine.ram_init)"));
+    assert!(!APP_SOURCE.contains("fn apply_serial_board_configuration"));
+    assert!(!APP_SOURCE.contains("fn apply_sio_hardware"));
+    assert!(!APP_SOURCE.contains("fn apply_two_sio_straps"));
+    assert!(!APP_SOURCE.contains("fn apply_two_sio_interrupt_wiring"));
 }
