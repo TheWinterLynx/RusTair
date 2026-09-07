@@ -1,10 +1,33 @@
 use std::time::Duration;
 
-use rustair::backend::{BackendHost, BackendSerialPort};
-use rustair::config::{
-    SioAddressPair, SioHardwareConfig, SioInterruptTarget, SioInterruptWiring, SioRevision,
+use rustair::backend::{
+    BackendHost, BackendSerialPort, CycleAccurateMachineBackend, MachineBackend,
 };
-use rustair::machine::AltairBus;
+use rustair::config::{
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, SioAddressPair, SioHardwareConfig,
+    SioInterruptTarget, SioInterruptWiring, SioRevision,
+};
+use rustair::s100_chassis::S100ChassisConfig;
+
+fn hardware_with_sio(config: SioHardwareConfig) -> S100HardwareConfig {
+    let mut hardware =
+        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+    hardware
+        .set_slot(2, Some(S100InstalledCardConfig::Mits88Sio(config)))
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
+fn cycle_with_sio(config: SioHardwareConfig) -> CycleAccurateMachineBackend {
+    let mut cycle = CycleAccurateMachineBackend::default();
+    cycle
+        .configure_s100_hardware(hardware_with_sio(config), RamInit::Zeroed)
+        .unwrap();
+    cycle
+}
 
 #[test]
 fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
@@ -35,11 +58,11 @@ fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
 
 #[test]
 fn physical_address_pair_moves_decode_and_old_ports_become_open_bus() {
-    let mut bus = AltairBus::default();
-    bus.configure_sio_hardware(SioHardwareConfig {
+    let mut cycle = cycle_with_sio(SioHardwareConfig {
         address: SioAddressPair::try_new(0x06).unwrap(),
         ..SioHardwareConfig::default()
     });
+    let bus = &mut cycle.machine_mut().bus;
 
     assert_eq!(bus.peek_io_port(0x00), 0xff);
     assert_eq!(bus.peek_io_port(0x01), 0xff);
@@ -50,11 +73,11 @@ fn physical_address_pair_moves_decode_and_old_ports_become_open_bus() {
 
 #[test]
 fn rev0_exposes_uart_flags_and_external_device_ready_as_independent_status_sources() {
-    let mut bus = AltairBus::default();
-    bus.configure_sio_hardware(SioHardwareConfig {
+    let mut cycle = cycle_with_sio(SioHardwareConfig {
         revision: SioRevision::Rev0,
         ..SioHardwareConfig::default()
     });
+    let bus = &mut cycle.machine_mut().bus;
 
     assert_eq!(bus.peek_io_port(0x00), 0x83, "Rev0 starts with external D0/D7 ready latches reset and COM2502 TBMT on D1");
     assert!(bus.debugger_inject_serial_rx(0x01, b'A'));
@@ -69,15 +92,15 @@ fn rev0_exposes_uart_flags_and_external_device_ready_as_independent_status_sourc
 
 #[test]
 fn rev0_external_ready_routes_to_vi_then_data_cycles_clear_it_at_public_boundary() {
-    let mut bus = AltairBus::default();
-    bus.configure_sio_hardware(SioHardwareConfig {
+    let mut cycle = cycle_with_sio(SioHardwareConfig {
         revision: SioRevision::Rev0,
+        interrupt_wiring: SioInterruptWiring {
+            input: SioInterruptTarget::Vi3,
+            output: SioInterruptTarget::Vi4,
+        },
         ..SioHardwareConfig::default()
     });
-    bus.configure_sio_interrupt_wiring(SioInterruptWiring {
-        input: SioInterruptTarget::Vi3,
-        output: SioInterruptTarget::Vi4,
-    });
+    let bus = &mut cycle.machine_mut().bus;
     bus.debugger_output_port(0x00, 0x03);
 
     assert!(bus.pulse_sio_input_device_ready());
@@ -93,7 +116,8 @@ fn rev0_external_ready_routes_to_vi_then_data_cycles_clear_it_at_public_boundary
 
 #[test]
 fn com2502_overrun_overwrites_old_unread_byte_at_public_bus_boundary() {
-    let mut bus = AltairBus::default();
+    let mut cycle = cycle_with_sio(SioHardwareConfig::default());
+    let bus = &mut cycle.machine_mut().bus;
     assert!(bus.debugger_inject_serial_rx(0x01, b'A'));
     assert!(bus.debugger_inject_serial_rx(0x01, b'B'));
     assert_eq!(bus.peek_io_port(0x00) & 0x10, 0x10);
