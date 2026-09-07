@@ -93,7 +93,6 @@ pub(super) enum Instruction {
     Unsupported(u8),
 }
 
-#[inline(always)]
 pub(super) const fn decode(opcode: u8) -> Instruction {
     match opcode {
         // The NMOS 8080 silicon treats these seven undocumented holes as NOP.
