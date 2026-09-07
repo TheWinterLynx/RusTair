@@ -93,11 +93,7 @@ pub(super) enum Instruction {
     Unsupported(u8),
 }
 
-/// Canonical decoder used only while building the compile-time 256-entry table.
-/// Keeping the existing predicate implementation here makes the table a pure
-/// representation change: there is still exactly one source of 8080 opcode
-/// semantics to audit.
-const fn decode_canonical(opcode: u8) -> Instruction {
+pub(super) const fn decode(opcode: u8) -> Instruction {
     match opcode {
         // The NMOS 8080 silicon treats these seven undocumented holes as NOP.
         0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 => {
@@ -215,23 +211,6 @@ const fn decode_canonical(opcode: u8) -> Instruction {
     }
 
     Instruction::Unsupported(opcode)
-}
-
-const fn build_decode_table() -> [Instruction; 256] {
-    let mut table = [Instruction::Nop; 256];
-    let mut index = 0usize;
-    while index < table.len() {
-        table[index] = decode_canonical(index as u8);
-        index += 1;
-    }
-    table
-}
-
-const DECODE_TABLE: [Instruction; 256] = build_decode_table();
-
-#[inline(always)]
-pub(super) const fn decode(opcode: u8) -> Instruction {
-    DECODE_TABLE[opcode as usize]
 }
 
 #[cfg(test)]
