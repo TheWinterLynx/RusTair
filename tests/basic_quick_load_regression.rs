@@ -1,5 +1,9 @@
 use rustair::backend::{BackendHost, BackendSerialPort};
-use rustair::config::{RamInit, RamSize, SerialBoard};
+use rustair::config::{
+    RamInit, RamSize, S100HardwareConfig, S100InstalledCardConfig, SioHardwareConfig,
+};
+use rustair::s100_chassis::S100ChassisConfig;
+use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
 const BASIC32_IMAGE: &[u8; 4096] = include_bytes!("../assets/4kbas32.bin");
 const PORT0: BackendSerialPort = BackendSerialPort::Port0;
@@ -50,10 +54,61 @@ fn run_until_output(
     }
 }
 
+fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
+    let mut hardware =
+        S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+
+    match ram {
+        RamSize::K8 => {
+            for (slot, base) in [(2, 0x0000), (3, 0x1000)] {
+                hardware
+                    .set_slot(
+                        slot,
+                        Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+                            S100RamBoardModel::Mits4KStatic88_4Mcs,
+                            base,
+                        ))),
+                    )
+                    .unwrap();
+            }
+            hardware
+                .set_slot(
+                    4,
+                    Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+                )
+                .unwrap();
+        }
+        RamSize::K64 => {
+            for (slot, base) in [(2, 0x0000), (3, 0x4000), (4, 0x8000), (5, 0xc000)] {
+                hardware
+                    .set_slot(
+                        slot,
+                        Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+                            S100RamBoardModel::Mits16KStatic88_16Mcs,
+                            base,
+                        ))),
+                    )
+                    .unwrap();
+            }
+            hardware
+                .set_slot(
+                    6,
+                    Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+                )
+                .unwrap();
+        }
+        _ => panic!("Quick BASIC regression only defines physical 8 KiB and 64 KiB fixtures"),
+    }
+
+    hardware.validate().unwrap()
+}
+
 fn start_quick_basic(ram: RamSize, trace: bool) -> BackendHost {
     let mut machine = BackendHost::default();
-    machine.configure_memory(ram, RamInit::Zeroed);
-    machine.configure_serial_board(SerialBoard::Sio88);
+    machine.configure_s100_hardware(quick_basic_hardware(ram), RamInit::Zeroed);
     machine.power(true);
     machine.set_running(false);
     machine.reset();
