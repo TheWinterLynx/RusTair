@@ -5,7 +5,12 @@
 //! from `RUSTAIR_BASIC32_TAP`; the tape is never committed to RusTair.
 
 use rustair::backend::{BackendHost, BackendSerialPort};
-use rustair::config::{RamInit, RamSize, SerialBoard};
+use rustair::config::{
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, SerialBoard, SioHardwareConfig,
+    TwoSioInterruptWiring, TwoSioStraps,
+};
+use rustair::s100_chassis::S100ChassisConfig;
+use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 use std::path::{Path, PathBuf};
 
 const BASIC32_LEADER: u8 = 0xAE;
@@ -42,6 +47,46 @@ fn bootstrap_for(board: SerialBoard) -> TestBootstrap {
             sense: 0x08,
         },
     }
+}
+
+fn hardware_for(board: SerialBoard) -> S100HardwareConfig {
+    let mut hardware =
+        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+    hardware
+        .set_slot(
+            2,
+            Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+                S100RamBoardModel::Mits4KStatic88_4Mcs,
+                0x0000,
+            ))),
+        )
+        .unwrap();
+    hardware
+        .set_slot(
+            3,
+            Some(match board {
+                SerialBoard::Sio88 => {
+                    S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())
+                }
+                SerialBoard::TwoSio88 => S100InstalledCardConfig::Mits88TwoSio {
+                    straps: TwoSioStraps::default(),
+                    interrupt_wiring: TwoSioInterruptWiring::default(),
+                },
+            }),
+        )
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
+fn machine_for(board: SerialBoard) -> BackendHost {
+    let mut machine = BackendHost::default();
+    machine.configure_s100_hardware(hardware_for(board), RamInit::Zeroed);
+    machine.power(true);
+    machine.set_running(false);
+    machine
 }
 
 #[derive(Clone, Debug)]
@@ -382,11 +427,7 @@ fn wrong_board_bootstrap_does_not_consume_selected_uart_data() {
         (SerialBoard::Sio88, bootstrap_for(SerialBoard::TwoSio88)),
         (SerialBoard::TwoSio88, bootstrap_for(SerialBoard::Sio88)),
     ] {
-        let mut machine = BackendHost::default();
-        machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-        machine.configure_serial_board(board);
-        machine.power(true);
-        machine.set_running(false);
+        let mut machine = machine_for(board);
         install_bootstrap_through_panel(&mut machine, wrong_bootstrap);
         start_bootstrap(&mut machine, wrong_bootstrap);
 
@@ -401,11 +442,7 @@ fn wrong_board_bootstrap_does_not_consume_selected_uart_data() {
 
 #[test]
 fn two_sio_port1_cannot_feed_port0_basic_bootstrap() {
-    let mut machine = BackendHost::default();
-    machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-    machine.configure_serial_board(SerialBoard::TwoSio88);
-    machine.power(true);
-    machine.set_running(false);
+    let mut machine = machine_for(SerialBoard::TwoSio88);
     let bootstrap = bootstrap_for(SerialBoard::TwoSio88);
     install_bootstrap_through_panel(&mut machine, bootstrap);
     start_bootstrap(&mut machine, bootstrap);
@@ -457,11 +494,7 @@ fn authentic_basic32_real_tape_matches_bundled_program_on_adaptive_cycle_and_bot
     }
 
     for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
-        let mut machine = BackendHost::default();
-        machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-        machine.configure_serial_board(board);
-        machine.power(true);
-        machine.set_running(false);
+        let mut machine = machine_for(board);
 
         let bootstrap = bootstrap_for(board);
         install_bootstrap_through_panel(&mut machine, bootstrap);
