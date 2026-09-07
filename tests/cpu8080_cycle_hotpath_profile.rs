@@ -35,6 +35,31 @@ fn profile_opcode(name: &str, opcode: u8) {
     );
 }
 
+fn profile_opcode_state_only(name: &str, opcode: u8) {
+    let mut cpu = Cpu8080Cycle::new();
+    let inputs = stable_inputs(opcode);
+
+    let started = Instant::now();
+    for _ in 0..T_STATES_PER_CASE {
+        let _ = cpu.tick(inputs);
+    }
+    black_box((
+        cpu.total_t_states(),
+        cpu.completed_instructions(),
+        cpu.registers(),
+        cpu.pins(),
+        cpu.machine_cycle(),
+        cpu.machine_cycle_index(),
+        cpu.t_state(),
+    ));
+    let elapsed = started.elapsed();
+    let mticks = T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    eprintln!(
+        "[CPU CYCLE INTRINSIC] {name:<12} opcode={opcode:02X}  {T_STATES_PER_CASE} T  {:.3?}  {mticks:.2} M T-state/s [TickTrace return unused]",
+        elapsed,
+    );
+}
+
 fn profile_nop_trace_materialization() {
     let inputs = stable_inputs(0x00);
 
@@ -156,4 +181,16 @@ fn profile_cpu8080_cycle_hot_instruction_families() {
     profile_opcode("JMP", 0xC3);      // 10T, two operand reads
     profile_opcode("RET", 0xC9);      // 10T, two stack reads
     profile_opcode("CALL", 0xCD);     // 17T, operand reads + stack writes
+
+    eprintln!("[CPU CYCLE INTRINSIC] ---- same families with TickTrace return unused ----");
+    profile_opcode_state_only("NOP", 0x00);
+    profile_opcode_state_only("MOV B,B", 0x40);
+    profile_opcode_state_only("INR B", 0x04);
+    profile_opcode_state_only("ADD B", 0x80);
+    profile_opcode_state_only("ADI imm", 0xC6);
+    profile_opcode_state_only("DAD B", 0x09);
+    profile_opcode_state_only("PUSH B", 0xC5);
+    profile_opcode_state_only("JMP", 0xC3);
+    profile_opcode_state_only("RET", 0xC9);
+    profile_opcode_state_only("CALL", 0xCD);
 }
