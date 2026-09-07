@@ -2,11 +2,10 @@ use std::time::Duration;
 
 use rand::RngCore;
 
-use crate::config::SerialBoard;
 use crate::cpu8080_cycle::{
     Cpu8080Cycle, Cpu8080CycleFault, Cpu8080Inputs, MachineCycle, Registers, TState, TickTrace,
 };
-use crate::machine::{AltairChassis, Cycle8080S100Adapter, MemoryReadyPhase};
+use crate::machine::{AltairChassis, Cycle8080S100Adapter};
 use crate::s100::S100Signal;
 
 use super::{
@@ -210,11 +209,14 @@ impl CycleAccurateMachineBackend {
         )
     }
 
-    /// Return only data sources that are not yet represented by a live S-100
-    /// card, plus the front panel's direct CPU-D injection. Ordinary RAM reads
-    /// deliberately return `None`: their DI byte must come from the resolved
-    /// backplane and CPU-board input buffers.
-    fn legacy_data_override_for_current_t_state(
+    /// Data which legitimately bypasses an installed S-100 responder.
+    ///
+    /// EXAMINE jams the 8080 package D bus directly from Display/Control, and
+    /// the Altair sense-switch input at FFh is a front-panel source rather than
+    /// a serial card. The BASIC 3.2 top-of-memory compatibility guard also lives
+    /// at the memory façade. Ordinary RAM, serial IN and INTA data are never
+    /// overridden here: those bytes come from the resolved physical backplane.
+    fn direct_cpu_data_override_for_current_t_state(
         &mut self,
         front_panel_data: Option<u8>,
     ) -> Option<u8> {
@@ -230,14 +232,7 @@ impl CycleAccurateMachineBackend {
         let address = self.cpu.pins().address.unwrap_or(0);
         match self.cpu.machine_cycle() {
             MachineCycle::InputRead if address as u8 == 0xff => {
-                Some(self.machine.bus.cycle_input_port(0xff))
-            }
-            MachineCycle::InputRead if !self.machine.bus.cycle_uses_physical_serial() => {
-                Some(self.machine.bus.cycle_input_port(address as u8))
-            }
-            MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
-                (!self.machine.bus.cycle_uses_physical_serial())
-                    .then(|| self.machine.bus.direct_interrupt_opcode())
+                Some(self.machine.bus.peek_io_port(0xff))
             }
             MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
                 if address == u16::MAX =>
@@ -251,15 +246,6 @@ impl CycleAccurateMachineBackend {
     }
 
     fn apply_trace_side_effects(&mut self, trace: &TickTrace, record_instruction: bool) {
-        if !self.machine.bus.cycle_uses_physical_serial()
-            && trace.t_state == TState::T3
-            && trace.machine_cycle == MachineCycle::OutputWrite
-        {
-            if let (Some(address), Some(value)) = (trace.pins.address, trace.pins.data_out) {
-                self.machine.bus.cycle_output_port(address as u8, value);
-            }
-        }
-
         if record_instruction && trace.instruction_complete {
             self.machine.bus.instruction_complete(
                 self.instruction_address,
@@ -307,11 +293,7 @@ impl CycleAccurateMachineBackend {
                 }
             }
             MachineCycle::InterruptAck | MachineCycle::InterruptAckWhileHalt => {
-                if self.machine.bus.cycle_uses_physical_serial() {
-                    Some(sampled_data_in)
-                } else {
-                    Some(self.machine.bus.direct_interrupt_opcode())
-                }
+                Some(sampled_data_in)
             }
             _ => None,
         }
@@ -336,21 +318,11 @@ impl CycleAccurateMachineBackend {
             front_panel_direct,
             ready,
         );
-        let live_memory_read = matches!(
-            trace.machine_cycle,
-            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
-        );
-        if !front_panel_direct
-            && (live_memory_read || self.machine.bus.cycle_uses_physical_serial())
-        {
-            // `sampled_data_in` is the byte seen at the 8080 package after the
-            // MITS CPU-board input path has resolved an undriven bus to the
-            // guest-visible open-bus value. The front-panel DATA lamps instead
-            // sit on physical S-100 DI. Memory cycles therefore always project
-            // the live fabric DI level, even for the aggregate compatibility
-            // chassis; physical serial cycles do the same once the serial card
-            // itself is installed in that fabric. High-Z consequently retains
-            // the last actually driven panel byte instead of fabricating FFh.
+        if !front_panel_direct {
+            // The DATA lamps sit on physical S-100 DI, not on the package-side
+            // open-bus value. Preserve the resolved DI level for every normal
+            // bus cycle; high-Z therefore retains the last genuinely driven
+            // panel byte instead of fabricating FFh.
             sample.data_in = self.machine.bus.cycle_live_s100_sample().data_in();
         }
         self.machine.bus.drive_cpu_board_sample(sample);
@@ -442,23 +414,6 @@ impl CycleAccurateMachineBackend {
     #[inline]
     fn refresh_teaching_visible_lamps(&mut self) {}
 
-    fn memory_ready_for_current_t_state(&mut self) -> bool {
-        let memory_read = matches!(
-            self.cpu.machine_cycle(),
-            MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
-        );
-        let phase = match self.cpu.t_state() {
-            TState::T1 => MemoryReadyPhase::T1,
-            TState::T2 => MemoryReadyPhase::T2,
-            TState::Tw => MemoryReadyPhase::Tw,
-            TState::T3 => MemoryReadyPhase::T3,
-            _ => MemoryReadyPhase::Other,
-        };
-        self.machine
-            .bus
-            .cycle_memory_ready(self.cpu.cycle_address(), memory_read, phase)
-    }
-
     fn tick_once_with_front_panel_data(
         &mut self,
         ready: bool,
@@ -471,26 +426,15 @@ impl CycleAccurateMachineBackend {
             self.instruction_address = self.cpu.registers().pc;
         }
 
-        self.machine.bus.refresh_interrupt_request_line();
         // `ready` is the physical Display/Control contribution to PRDY for this
         // exact T-state. RUN normally holds it high; SINGLE STEP pulses it high
         // only for the released cycle, and the parking path deliberately passes
         // false. RAM and I/O cards may still pull the effective READY low after
         // this source has been driven.
         self.machine.bus.cycle_set_ready_input(ready);
-        let memory_ready = self.memory_ready_for_current_t_state();
-        let legacy_ready = ready && memory_ready;
-        let physical_serial = self.machine.bus.cycle_uses_physical_serial();
-        let legacy_data_override = self.legacy_data_override_for_current_t_state(front_panel_data);
-        let lines = self.machine.bus.cpu_control_lines();
+        let data_override = self.direct_cpu_data_override_for_current_t_state(front_panel_data);
         let mut initial_inputs = self.machine.bus.cycle_live_s100_inputs();
-        if !physical_serial {
-            initial_inputs.ready &= legacy_ready && lines.ready;
-            initial_inputs.interrupt = lines.interrupt;
-            initial_inputs.hold = lines.hold;
-            initial_inputs.reset = lines.reset;
-        }
-        if let Some(value) = legacy_data_override {
+        if let Some(value) = data_override {
             initial_inputs.data_in = value;
         }
 
@@ -505,14 +449,7 @@ impl CycleAccurateMachineBackend {
                 let mut live = bus
                     .cycle_drive_live_s100_edge(pins)
                     .expect("validated S-100 hardware must resolve every Cycle edge");
-                if !physical_serial {
-                    let legacy_lines = bus.cpu_control_lines();
-                    live.ready &= ready && legacy_lines.ready;
-                    live.interrupt = legacy_lines.interrupt;
-                    live.hold = legacy_lines.hold;
-                    live.reset = legacy_lines.reset;
-                }
-                if let Some(value) = legacy_data_override {
+                if let Some(value) = data_override {
                     live.data_in = value;
                 }
                 if edge_index == 2 {
@@ -532,8 +469,6 @@ impl CycleAccurateMachineBackend {
             sampled_inputs.ready,
         );
         self.retain_teaching_tick(&trace, sampled_inputs, front_panel_data);
-
-        self.machine.bus.refresh_interrupt_request_line();
 
         if trace.t_state == TState::T1
             && trace.pins.sync
@@ -813,7 +748,6 @@ impl CycleAccurateMachineBackend {
 
     fn reset_cycle_core_from_s100(&mut self) {
         self.cpu_fault = None;
-        self.machine.bus.refresh_interrupt_request_line();
         let lines = self.machine.bus.cpu_control_lines();
         let inputs = Cpu8080Inputs {
             ready: lines.ready,
@@ -1009,17 +943,11 @@ impl MachineBackend for CycleAccurateMachineBackend {
         Ok(())
     }
 
-    fn configure_serial_board(&mut self, board: SerialBoard) -> BackendResult<()> {
-        self.machine.configure_serial_board(board);
-        Ok(())
-    }
-    fn serial_board(&mut self) -> BackendResult<SerialBoard> { Ok(self.machine.serial_board()) }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()> {
         match port {
             BackendSerialPort::Port0 => self.machine.bus.serial_receive(byte),
             BackendSerialPort::Port1 => self.machine.bus.serial_port1_receive(byte),
         }
-        self.machine.bus.refresh_interrupt_request_line();
         Ok(())
     }
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool> {
@@ -1047,16 +975,13 @@ impl MachineBackend for CycleAccurateMachineBackend {
         })
     }
     fn serial_tx_complete(&mut self, port: BackendSerialPort) -> BackendResult<Option<u8>> {
-        let completed = match port {
+        Ok(match port {
             BackendSerialPort::Port0 => self.machine.bus.serial_tx_complete(),
             BackendSerialPort::Port1 => self.machine.bus.serial_port1_tx_complete(),
-        };
-        self.machine.bus.refresh_interrupt_request_line();
-        Ok(completed)
+        })
     }
     fn clear_serial(&mut self) -> BackendResult<()> {
         self.machine.bus.clear_serial();
-        self.machine.bus.refresh_interrupt_request_line();
         Ok(())
     }
 
@@ -1634,28 +1559,5 @@ mod tests {
         assert_eq!(teaching.s100_di, live.data_in());
         assert_eq!(teaching.s100_do, live.data_out());
         assert_eq!(teaching.interrupt, Some(backend.machine().bus.cpu_control_lines().interrupt));
-    }
-
-    #[test]
-    fn explicit_chassis_ignores_a_different_byte_in_the_legacy_serial_singleton() {
-        use crate::config::{RamInit, S100HardwareConfig};
-        let mut backend = CycleAccurateMachineBackend::default();
-        backend.machine.bus.configure_s100_hardware_memory(
-            S100HardwareConfig::historical_8800b_18_slot_starter(),
-            RamInit::Zeroed,
-        ).unwrap();
-        backend.machine.bus.configure_serial_board(SerialBoard::TwoSio88);
-        backend.power(true).unwrap();
-        backend.assert_reset().unwrap();
-        backend.release_reset().unwrap();
-        backend.load_bytes(0, &[0xdb, 0x11]).unwrap();
-        backend.machine.bus.inject_legacy_serial_for_test(0x11, b'L');
-        assert!(backend.machine.bus.debugger_inject_serial_rx(0x11, b'P'));
-        backend.run().unwrap();
-        backend.service_execution(11).unwrap();
-
-        assert_eq!(backend.cpu().registers().a, b'P');
-        assert!(!backend.machine.bus.legacy_serial_empty_for_test(),
-            "the obsolete singleton must not have participated in the physical IN");
     }
 }
