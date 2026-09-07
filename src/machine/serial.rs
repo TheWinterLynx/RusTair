@@ -5,13 +5,13 @@ pub(super) mod sio_interface;
 #[path = "sio.rs"]
 pub(super) mod sio;
 
-use crate::config::{SerialBoard, SioConnectorOutputs, SioElectricalLevel};
+use crate::config::{SioConnectorOutputs, SioElectricalLevel};
 
 impl super::AltairBus {
     /// Physical revision and interrupt-pad destinations installed on the 88-SIO.
     ///
-    /// Keeping these as hardware types (rather than strings/UI state) also makes
-    /// every execution strategy observe the exact same card configuration.
+    /// The values come from the actual card in the live S-100 inventory. There
+    /// is no dormant/global 88-SIO configuration beside that slot anymore.
     pub fn sio_physical_wiring(
         &self,
     ) -> Option<(
@@ -19,8 +19,7 @@ impl super::AltairBus {
         super::SioInterruptTarget,
         super::SioInterruptTarget,
     )> {
-        if self.io.serial_board() != SerialBoard::Sio88 { return None; }
-        let config = self.io.sio_hardware();
+        let config = self.memory.primary_sio_hardware()?;
         Some((
             config.revision,
             config.interrupt_wiring.input,
@@ -35,31 +34,20 @@ impl super::AltairBus {
     /// device-ready flip-flop that the pulse set. RSI/TSO are the instantaneous
     /// asynchronous serial levels; idle is MARK/HIGH. BIN/BOT are board outputs.
     pub fn sio_logical_lines(&self) -> Option<(bool, bool, bool, bool, bool, bool)> {
-        if self.cycle_uses_physical_serial() {
-            return self.memory.sio_handshake_lines();
-        }
-        let lines = self.io.sio_handshake_lines()?;
-        Some((
-            lines.rsi_high,
-            lines.input_device_ready,
-            lines.output_device_ready,
-            lines.tso_high,
-            lines.bin_high,
-            lines.bot_high,
-        ))
+        self.memory.sio_handshake_lines()
     }
 
     /// STSO/SBIN/SBOT after the physically selected A/B/C line interface.
     /// RS-232 voltage polarity, TTL level and current-loop conduction remain
     /// distinct typed states instead of being collapsed to an ambiguous bool.
     pub fn sio_connector_outputs(&self) -> Option<SioConnectorOutputs> {
-        if self.io.serial_board() != SerialBoard::Sio88 { return None; }
-        let lines = self.io.sio_handshake_lines()?;
+        let config = self.memory.primary_sio_hardware()?;
+        let lines = self.memory.sio_handshake_lines()?;
         Some(sio_interface::connector_outputs(
-            self.io.sio_hardware().interface,
-            lines.tso_high,
-            lines.bin_high,
-            lines.bot_high,
+            config.interface,
+            lines.3,
+            lines.4,
+            lines.5,
         ))
     }
 
@@ -67,8 +55,8 @@ impl super::AltairBus {
     /// interface back to the board's common TTL logic domain. A level belonging
     /// to another electrical family is rejected rather than silently coerced.
     pub fn sio_decode_connector_input(&self, level: SioElectricalLevel) -> Option<bool> {
-        if self.io.serial_board() != SerialBoard::Sio88 { return None; }
-        sio_interface::decode_input(self.io.sio_hardware().interface, level)
+        let config = self.memory.primary_sio_hardware()?;
+        sio_interface::decode_input(config.interface, level)
     }
 
     /// Prepared Adaptive-Cycle Full memory access. This is a normal guest
@@ -126,20 +114,35 @@ impl super::AltairBus {
 mod tests {
     use super::*;
     use crate::config::{
-        SioHardwareConfig, SioInterface, SioInterruptTarget, SioInterruptWiring,
-        SioRevision,
+        RamInit, S100HardwareConfig, S100InstalledCardConfig, SioHardwareConfig, SioInterface,
+        SioInterruptTarget, SioInterruptWiring, SioRevision,
     };
+    use crate::s100_chassis::S100ChassisConfig;
+
+    fn bus_with_sio(config: SioHardwareConfig) -> super::super::AltairBus {
+        let mut hardware =
+            S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+        hardware
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        hardware
+            .set_slot(2, Some(S100InstalledCardConfig::Mits88Sio(config)))
+            .unwrap();
+        let mut bus = super::super::AltairBus::default();
+        bus.configure_s100_hardware_memory(hardware.validate().unwrap(), RamInit::Zeroed)
+            .unwrap();
+        bus
+    }
 
     #[test]
     fn bus_exposes_installed_sio_revision_and_interrupt_pad_wiring() {
-        let mut bus = super::super::AltairBus::default();
         let mut config = SioHardwareConfig::default();
         config.revision = SioRevision::Rev0;
         config.interrupt_wiring = SioInterruptWiring {
             input: SioInterruptTarget::Vi2,
             output: SioInterruptTarget::Pint,
         };
-        bus.configure_sio_hardware(config);
+        let bus = bus_with_sio(config);
         assert_eq!(
             bus.sio_physical_wiring(),
             Some((SioRevision::Rev0, SioInterruptTarget::Vi2, SioInterruptTarget::Pint))
@@ -148,10 +151,11 @@ mod tests {
 
     #[test]
     fn bus_exposes_all_six_original_sio_logical_signals() {
-        let mut bus = super::super::AltairBus::default();
-        let mut config = bus.sio_hardware();
-        config.revision = SioRevision::Rev0;
-        bus.configure_sio_hardware(config);
+        let config = SioHardwareConfig {
+            revision: SioRevision::Rev0,
+            ..SioHardwareConfig::default()
+        };
+        let mut bus = bus_with_sio(config);
         assert_eq!(bus.sio_logical_lines(), Some((true, false, false, true, false, false)));
         assert!(bus.pulse_sio_input_device_ready());
         assert!(bus.pulse_sio_output_device_ready());
@@ -160,32 +164,56 @@ mod tests {
 
     #[test]
     fn bus_projects_same_logic_through_each_physical_abc_interface() {
-        let mut bus = super::super::AltairBus::default();
-        let mut config = bus.sio_hardware();
-        config.revision = SioRevision::Rev0;
-        config.interface = SioInterface::Rs232A;
-        bus.configure_sio_hardware(config);
-        assert!(bus.pulse_sio_input_device_ready());
-        assert!(bus.pulse_sio_output_device_ready());
-        let a = bus.sio_connector_outputs().unwrap();
-        assert_eq!(a.stso, SioElectricalLevel::Rs232Negative);
-        assert_eq!(a.sbin, SioElectricalLevel::Rs232Negative);
-        assert_eq!(a.sbot, SioElectricalLevel::Rs232Negative);
-        assert_eq!(bus.sio_decode_connector_input(SioElectricalLevel::Rs232Negative), Some(true));
-        assert_eq!(bus.sio_decode_connector_input(SioElectricalLevel::TtlHigh), None);
+        for (interface, expected) in [
+            (
+                SioInterface::Rs232A,
+                (
+                    SioElectricalLevel::Rs232Negative,
+                    SioElectricalLevel::Rs232Negative,
+                    SioElectricalLevel::Rs232Negative,
+                ),
+            ),
+            (
+                SioInterface::TtlB,
+                (
+                    SioElectricalLevel::TtlHigh,
+                    SioElectricalLevel::TtlLow,
+                    SioElectricalLevel::TtlLow,
+                ),
+            ),
+            (
+                SioInterface::TtyC,
+                (
+                    SioElectricalLevel::CurrentLoopConducting,
+                    SioElectricalLevel::CurrentLoopOpen,
+                    SioElectricalLevel::CurrentLoopOpen,
+                ),
+            ),
+        ] {
+            let config = SioHardwareConfig {
+                revision: SioRevision::Rev0,
+                interface,
+                ..SioHardwareConfig::default()
+            };
+            let mut bus = bus_with_sio(config);
+            assert!(bus.pulse_sio_input_device_ready());
+            assert!(bus.pulse_sio_output_device_ready());
+            let outputs = bus.sio_connector_outputs().unwrap();
+            assert_eq!((outputs.stso, outputs.sbin, outputs.sbot), expected);
+        }
 
-        config.interface = SioInterface::TtlB;
-        bus.configure_sio_hardware(config);
-        let b = bus.sio_connector_outputs().unwrap();
-        assert_eq!(b.stso, SioElectricalLevel::TtlHigh);
-        assert_eq!(b.sbin, SioElectricalLevel::TtlLow);
-        assert_eq!(b.sbot, SioElectricalLevel::TtlLow);
-
-        config.interface = SioInterface::TtyC;
-        bus.configure_sio_hardware(config);
-        let c = bus.sio_connector_outputs().unwrap();
-        assert_eq!(c.stso, SioElectricalLevel::CurrentLoopConducting);
-        assert_eq!(c.sbin, SioElectricalLevel::CurrentLoopOpen);
-        assert_eq!(c.sbot, SioElectricalLevel::CurrentLoopOpen);
+        let rs232 = bus_with_sio(SioHardwareConfig {
+            revision: SioRevision::Rev0,
+            interface: SioInterface::Rs232A,
+            ..SioHardwareConfig::default()
+        });
+        assert_eq!(
+            rs232.sio_decode_connector_input(SioElectricalLevel::Rs232Negative),
+            Some(true)
+        );
+        assert_eq!(
+            rs232.sio_decode_connector_input(SioElectricalLevel::TtlHigh),
+            None
+        );
     }
 }
