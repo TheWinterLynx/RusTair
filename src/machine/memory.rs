@@ -77,10 +77,6 @@ impl Default for Memory {
 }
 
 impl Memory {
-    /// Kept temporarily for callers being cleaned up in the same branch. There
-    /// is no aggregate runtime any more: every Memory instance is slot-native.
-    pub(super) const fn uses_explicit_hardware(&self) -> bool { true }
-
     pub(super) fn advance_serial_time(&self, t_states: u64) {
         self.fabric.advance_serial_time(t_states);
     }
@@ -557,14 +553,6 @@ impl super::AltairBus {
     }
 
     pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 { self.memory.cycle_read(address) }
-
-    pub(crate) fn cycle_input_port(&mut self, port: u8) -> u8 {
-        if port == 0xff { self.panel.input() } else { self.io.input(port) }
-    }
-
-    pub(crate) fn cycle_output_port(&mut self, port: u8, value: u8) {
-        if port != 0xff { self.io.output(port, value); }
-    }
 
     pub(crate) fn raw_s100_status_word(&self) -> u8 {
         let s = self.s100.signals();
