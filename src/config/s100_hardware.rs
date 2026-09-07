@@ -9,7 +9,9 @@ pub const MAX_S100_SLOTS: usize = 18;
 /// Physical card families that can be selected in the chassis editor.
 ///
 /// Aggregate capacities such as "8K RAM" intentionally do not appear here:
-/// those are machine totals assembled from one or more real cards.
+/// those are machine totals assembled from one or more real cards. The
+/// compatibility RAM variant is deliberately absent from `ALL`: it remains a
+/// persistence/migration representation, not hardware a user can newly install.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100InstalledCardKind {
     Mits8080Cpu,
@@ -27,7 +29,8 @@ pub enum S100InstalledCardKind {
 }
 
 impl S100InstalledCardKind {
-    pub const ALL: [Self; 10] = [
+    /// Card kinds offered for a new physical S-100 configuration.
+    pub const ALL: [Self; 9] = [
         Self::Mits8080Cpu,
         Self::Mits1KStatic88Mcs,
         Self::Mits4KDynamic88_4Mcd,
@@ -37,7 +40,6 @@ impl S100InstalledCardKind {
         Self::Mits16KDynamic88_16Mcd,
         Self::Mits88Sio,
         Self::Mits88TwoSio,
-        Self::FastRamCompatibility,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -51,7 +53,7 @@ impl S100InstalledCardKind {
             Self::Mits16KDynamic88_16Mcd => "MITS 88-16MCD 16K Dynamic RAM",
             Self::Mits88Sio => "MITS 88-SIO",
             Self::Mits88TwoSio => "MITS 88-2SIO",
-            Self::FastRamCompatibility => "Fast RAM compatibility (non-historical)",
+            Self::FastRamCompatibility => "Fast RAM compatibility (migration only)",
         }
     }
 
@@ -103,8 +105,10 @@ impl FastRamCompatibilityConfig {
 /// Persistable physical configuration of one fitted S-100 connector.
 ///
 /// Serial-card strap state belongs to the card instance, not to the machine as a
-/// global singleton. This permits independently strapped 88-SIO/88-2SIO boards
-/// to coexist without adding card-family branches to the electrical backplane.
+/// global singleton. The runtime fabric can materialize every installed card.
+/// Host cable routing is intentionally limited to one serial card for now, so a
+/// validated user configuration must contain at most one 88-SIO/88-2SIO until
+/// the endpoint router itself becomes slot-aware.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100InstalledCardConfig {
     Mits8080Cpu,
@@ -246,6 +250,16 @@ impl S100HardwareConfig {
         })
     }
 
+    pub fn serial_slots(self) -> impl Iterator<Item = (usize, S100InstalledCardConfig)> {
+        self.installed_cards().filter(|(_, card)| {
+            matches!(
+                card,
+                S100InstalledCardConfig::Mits88Sio(_)
+                    | S100InstalledCardConfig::Mits88TwoSio { .. }
+            )
+        })
+    }
+
     /// The one CPU board physically installed in the fitted S-100 connectors.
     /// A temporarily invalid POWER-OFF edit may return `None`; validated runtime
     /// configurations contain exactly one CPU card.
@@ -260,6 +274,47 @@ impl S100HardwareConfig {
 
     pub fn active_cpu_board(self) -> Option<CpuBoard> {
         self.active_cpu_board_slot().map(|(_, board)| board)
+    }
+
+    /// The single serial card addressable by host-side cables in a validated
+    /// configuration. Returns `None` for no card or an intentionally invalid
+    /// POWER-OFF edit containing more than one serial card.
+    pub fn active_serial_card_slot(self) -> Option<(usize, S100InstalledCardConfig)> {
+        let mut cards = self.serial_slots();
+        let card = cards.next()?;
+        cards.next().is_none().then_some(card)
+    }
+
+    pub fn active_serial_board(self) -> Option<SerialBoard> {
+        self.active_serial_card_slot().map(|(_, card)| match card {
+            S100InstalledCardConfig::Mits88Sio(_) => SerialBoard::Sio88,
+            S100InstalledCardConfig::Mits88TwoSio { .. } => SerialBoard::TwoSio88,
+            _ => unreachable!("serial slot iterator returned a non-serial card"),
+        })
+    }
+
+    pub fn active_sio_hardware(self) -> Option<SioHardwareConfig> {
+        self.active_serial_card_slot().and_then(|(_, card)| match card {
+            S100InstalledCardConfig::Mits88Sio(config) => Some(config),
+            _ => None,
+        })
+    }
+
+    pub fn active_two_sio_straps(self) -> Option<TwoSioStraps> {
+        self.active_serial_card_slot().and_then(|(_, card)| match card {
+            S100InstalledCardConfig::Mits88TwoSio { straps, .. } => Some(straps),
+            _ => None,
+        })
+    }
+
+    pub fn active_two_sio_interrupt_wiring(self) -> Option<TwoSioInterruptWiring> {
+        self.active_serial_card_slot().and_then(|(_, card)| match card {
+            S100InstalledCardConfig::Mits88TwoSio {
+                interrupt_wiring,
+                ..
+            } => Some(interrupt_wiring),
+            _ => None,
+        })
     }
 
     pub fn installed_ram_bytes(self) -> usize {
@@ -349,6 +404,10 @@ impl S100HardwareConfig {
         if cpu_count != 1 {
             return Err(S100HardwareConfigError::UnsupportedCpuCardCount(cpu_count));
         }
+        let serial_count = self.serial_slots().count();
+        if serial_count > 1 {
+            return Err(S100HardwareConfigError::UnsupportedSerialCardCount(serial_count));
+        }
         Ok(self)
     }
 
@@ -401,16 +460,22 @@ impl S100HardwareConfig {
 
 impl Default for S100HardwareConfig {
     fn default() -> Self {
-        // This is an explicit compatibility starter assembly, not a call into
-        // the pre-v5 migration path. Legacy aggregate settings are allowed to
-        // enter only through `from_legacy_globals` while reading an old config.
+        // Fresh installations use only hardware that the normal S-100 editor can
+        // represent. Two real MITS 4K static boards preserve the established 8K
+        // default without presenting the migration-only compatibility RAM as a
+        // physical card.
         let mut config = Self::empty(S100ChassisConfig::original_8800(1))
             .expect("default original Altair chassis is valid");
         config.slots[0] = Some(S100InstalledCardConfig::Mits8080Cpu);
-        config.slots[1] = Some(S100InstalledCardConfig::FastRamCompatibility(
-            FastRamCompatibilityConfig::no_wait(0, 8 * 1024),
-        ));
-        config.slots[2] = Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()));
+        config.slots[1] = Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+            S100RamBoardModel::Mits4KStatic88_4Mcs,
+            0x0000,
+        )));
+        config.slots[2] = Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
+            S100RamBoardModel::Mits4KStatic88_4Mcs,
+            0x1000,
+        )));
+        config.slots[3] = Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()));
         config
     }
 }
@@ -423,6 +488,10 @@ pub enum S100HardwareConfigError {
     InvalidRamCard(S100RamConfigError),
     InvalidCompatibilityRamWindow { base_address: u16, populated_bytes: usize },
     UnsupportedCpuCardCount(usize),
+    /// The live S-100 fabric can materialize multiple serial cards, but the
+    /// current host cable router addresses only one board's Port 0/Port 1.
+    /// Reject ambiguity rather than silently attaching a cable to the first card.
+    UnsupportedSerialCardCount(usize),
 }
 
 /// UI-friendly connector populations documented by the chassis model.
@@ -439,7 +508,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggregate_capacity_is_not_a_historical_card_kind() {
+    fn migration_ram_is_not_a_user_selectable_card_kind() {
+        assert!(!S100InstalledCardKind::ALL
+            .iter()
+            .any(|kind| *kind == S100InstalledCardKind::FastRamCompatibility));
         assert!(!S100InstalledCardKind::ALL
             .iter()
             .any(|kind| kind.label() == "8K RAM"));
@@ -464,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn default_inventory_preserves_old_machine_semantics_without_calling_migration() {
+    fn default_inventory_is_physical_eight_k_without_migration_ram() {
         let config = S100HardwareConfig::default();
         assert_eq!(config.chassis, S100ChassisConfig::original_8800(1));
         assert_eq!(config.cpu_slots().collect::<Vec<_>>(), vec![1]);
@@ -472,9 +544,24 @@ mod tests {
         assert_eq!(config.unique_ram_prefix_bytes(), 8 * 1024);
         assert!(matches!(
             config.slot(2),
-            Some(S100InstalledCardConfig::FastRamCompatibility(_))
+            Some(S100InstalledCardConfig::Ram(S100RamCardConfig {
+                model: S100RamBoardModel::Mits4KStatic88_4Mcs,
+                base_address: 0x0000,
+                ..
+            }))
         ));
-        assert!(matches!(config.slot(3), Some(S100InstalledCardConfig::Mits88Sio(_))));
+        assert!(matches!(
+            config.slot(3),
+            Some(S100InstalledCardConfig::Ram(S100RamCardConfig {
+                model: S100RamBoardModel::Mits4KStatic88_4Mcs,
+                base_address: 0x1000,
+                ..
+            }))
+        ));
+        assert!(matches!(config.slot(4), Some(S100InstalledCardConfig::Mits88Sio(_))));
+        assert!(!config
+            .installed_cards()
+            .any(|(_, card)| matches!(card, S100InstalledCardConfig::FastRamCompatibility(_))));
         config.validate().unwrap();
     }
 
@@ -496,17 +583,32 @@ mod tests {
     }
 
     #[test]
-    fn each_serial_board_owns_its_own_physical_straps() {
+    fn active_serial_identity_and_straps_come_from_the_installed_card() {
+        let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        let mut sio = SioHardwareConfig::default();
+        sio.address = crate::config::SioAddressPair::try_new(0x06).unwrap();
+        config.set_slot(5, Some(S100InstalledCardConfig::Mits88Sio(sio))).unwrap();
+        let config = config.validate().unwrap();
+        assert_eq!(config.active_serial_card_slot(), Some((5, S100InstalledCardConfig::Mits88Sio(sio))));
+        assert_eq!(config.active_serial_board(), Some(SerialBoard::Sio88));
+        assert_eq!(config.active_sio_hardware(), Some(sio));
+        assert_eq!(config.active_two_sio_straps(), None);
+    }
+
+    #[test]
+    fn validation_rejects_ambiguous_multiple_serial_cards_until_cables_are_slot_aware() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
         config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
         config.set_slot(2, Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()))).unwrap();
-        config.set_slot(3, Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()))).unwrap();
-        config.set_slot(4, Some(S100InstalledCardConfig::Mits88TwoSio {
+        config.set_slot(3, Some(S100InstalledCardConfig::Mits88TwoSio {
             straps: TwoSioStraps::default(),
             interrupt_wiring: TwoSioInterruptWiring::default(),
         })).unwrap();
-        config.validate().unwrap();
-        assert_eq!(config.installed_cards().count(), 4);
+        assert!(matches!(
+            config.validate(),
+            Err(S100HardwareConfigError::UnsupportedSerialCardCount(2))
+        ));
     }
 
     #[test]
