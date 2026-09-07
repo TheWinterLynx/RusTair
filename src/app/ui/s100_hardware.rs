@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::{
-    fitted_connector_choices, S100HardwareConfig, S100InstalledCardConfig,
+    fitted_connector_choices, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
     S100InstalledCardKind, SioAddressPair, SioBaudRate, SioDataBits, SioInterface,
     SioInterruptTarget, SioParity, SioRevision, SioStopBits, TwoSioAddressBlock,
     TwoSioBaudTap, TwoSioInterruptTarget, TwoSioSignalInterface,
@@ -59,7 +59,8 @@ pub(in crate::app) fn draw_s100_hardware_menu(app: &mut RusTairApp, ui: &mut egu
                             Ok(()) => commit_hardware(app, candidate, "S-100 connector population changed"),
                             Err(error) => {
                                 app.status = format!(
-                                    "Cannot reduce S-100 connectors without removing cards first: {error:?}"
+                                    "Cannot reduce S-100 connectors without removing cards first: {}",
+                                    hardware_error_label(error)
                                 );
                             }
                         }
@@ -88,7 +89,8 @@ pub(in crate::app) fn draw_s100_hardware_menu(app: &mut RusTairApp, ui: &mut egu
         ui.small("POWER OFF required to move cards, change chassis connectors, or alter physical card straps.");
     }
     ui.separator();
-    ui.small("CPU and RAM entries are the live execution topology used by both Fast and Cycle. 88-SIO/88-2SIO entries are already persisted per slot but still use the transitional serial runtime until those boards are connected as live S-100 bus cards.");
+    ui.small("Every CPU, RAM and serial entry above is the live physical S-100 topology. Adaptive Full and Partial are internal execution strategies over this same machine; neither creates a second set of cards or configuration.");
+    ui.small("Host cables currently identify Port 0 / Port 1 on one installed serial card. Until cable routing becomes slot-aware for multiple boards, the editor rejects ambiguous configurations with more than one 88-SIO/88-2SIO instead of silently choosing a card.");
 }
 
 fn change_chassis_model(
@@ -115,8 +117,9 @@ fn change_chassis_model(
         Ok(()) => commit_hardware(app, candidate, "S-100 chassis model changed"),
         Err(error) => {
             app.status = format!(
-                "Cannot select {} while cards occupy unsupported slots: {error:?}",
-                model.label()
+                "Cannot select {} while cards occupy unsupported slots: {}",
+                model.label(),
+                hardware_error_label(error)
             );
         }
     }
@@ -158,7 +161,12 @@ fn draw_slot_menu(
                     candidate,
                     &format!("S-100 slot {slot}: {}", kind.label()),
                 ),
-                Err(error) => app.status = format!("Invalid S-100 card configuration: {error:?}"),
+                Err(error) => {
+                    app.status = format!(
+                        "Invalid S-100 card configuration: {}",
+                        hardware_error_label(error)
+                    )
+                }
             }
             ui.close();
             return;
@@ -190,10 +198,10 @@ fn draw_slot_menu(
                     "Compatibility RAM: {:04X}h + {} bytes · {} read wait(s)",
                     config.base_address, config.populated_bytes, config.read_wait_states
                 ));
-                ui.small("Non-historical migration card. Replace it with real MITS RAM boards for hardware-fidelity configurations.");
+                ui.small("Read-only migration representation from an older aggregate configuration. It cannot be selected for a new slot; replace it with real MITS RAM boards when convenient.");
             }
             S100InstalledCardConfig::Mits8080Cpu => {
-                ui.small("Intel 8080 at the MITS board's authentic 2 MHz hardware clock. Fast/Cycle are execution engines, not different cards.");
+                ui.small("Intel 8080 at the MITS board's authentic 2 MHz hardware clock. Adaptive Full/Partial are host execution strategies over this same board, not different CPU hardware.");
             }
         }
     }
@@ -444,7 +452,12 @@ fn replace_slot(
     let mut candidate = hardware;
     match candidate.set_slot(slot, Some(card)) {
         Ok(()) => commit_hardware(app, candidate, &format!("S-100 slot {slot} straps updated")),
-        Err(error) => app.status = format!("Invalid S-100 slot {slot} configuration: {error:?}"),
+        Err(error) => {
+            app.status = format!(
+                "Invalid S-100 slot {slot} configuration: {}",
+                hardware_error_label(error)
+            )
+        }
     }
 }
 
@@ -452,8 +465,20 @@ fn commit_hardware(app: &mut RusTairApp, candidate: S100HardwareConfig, action: 
     match candidate.validate() {
         Ok(valid) => app.apply_s100_hardware_configuration(valid, action),
         Err(error) => {
-            app.status = format!("S-100 inventory rejected: {error:?}");
+            app.status = format!("S-100 inventory rejected: {}", hardware_error_label(error));
         }
+    }
+}
+
+fn hardware_error_label(error: S100HardwareConfigError) -> String {
+    match error {
+        S100HardwareConfigError::UnsupportedSerialCardCount(count) => format!(
+            "{count} serial cards installed, but host cable routing can currently address only one board. Remove one 88-SIO/88-2SIO or wait for slot-aware multi-board cable routing"
+        ),
+        S100HardwareConfigError::UnsupportedCpuCardCount(count) => format!(
+            "exactly one CPU board is required; this inventory contains {count}"
+        ),
+        other => format!("{other:?}"),
     }
 }
 
@@ -509,7 +534,7 @@ fn card_summary(card: Option<S100InstalledCardConfig>) -> String {
             config.base_address
         ),
         Some(S100InstalledCardConfig::FastRamCompatibility(config)) => format!(
-            "Fast RAM compatibility @ {:04X}h ({} bytes)",
+            "Legacy RAM migration @ {:04X}h ({} bytes)",
             config.base_address, config.populated_bytes
         ),
         Some(card) => card.kind().label().to_owned(),
