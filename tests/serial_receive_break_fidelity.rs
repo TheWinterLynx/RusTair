@@ -1,19 +1,52 @@
 use std::time::Duration;
 
 use rustair::backend::{BackendHost, BackendSerialPort, EmulationEngine};
-use rustair::config::{SerialBoard, SioHardwareConfig, SioInterface};
+use rustair::config::{
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, SerialBoard, SioHardwareConfig,
+    SioInterface, TwoSioInterruptWiring, TwoSioStraps,
+};
+use rustair::s100_chassis::S100ChassisConfig;
+
+fn hardware_for(board: SerialBoard, sio: SioHardwareConfig) -> S100HardwareConfig {
+    let mut hardware =
+        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+    hardware
+        .set_slot(
+            2,
+            Some(match board {
+                SerialBoard::Sio88 => S100InstalledCardConfig::Mits88Sio(sio),
+                SerialBoard::TwoSio88 => S100InstalledCardConfig::Mits88TwoSio {
+                    straps: TwoSioStraps::default(),
+                    interrupt_wiring: TwoSioInterruptWiring::default(),
+                },
+            }),
+        )
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
+fn host_for(engine: EmulationEngine, board: SerialBoard, sio: SioHardwareConfig) -> BackendHost {
+    let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
+    host.configure_s100_hardware(hardware_for(board, sio), RamInit::Zeroed);
+    host.power(true);
+    host.front_panel_reset();
+    host
+}
 
 #[test]
 fn both_engines_deliver_asr_break_to_88_sio_as_continuous_space_with_framing_error() {
     for engine in EmulationEngine::ALL {
-        let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
-        host.configure_serial_board(SerialBoard::Sio88);
-        host.configure_sio_hardware(SioHardwareConfig {
-            interface: SioInterface::TtyC,
-            ..SioHardwareConfig::default()
-        });
-        host.power(true);
-        host.front_panel_reset();
+        let mut host = host_for(
+            engine,
+            SerialBoard::Sio88,
+            SioHardwareConfig {
+                interface: SioInterface::TtyC,
+                ..SioHardwareConfig::default()
+            },
+        );
 
         assert!(host.serial_set_receive_break(BackendSerialPort::Port0, true));
         assert!(!host.serial_rx_line_idle(BackendSerialPort::Port0));
@@ -44,10 +77,7 @@ fn both_engines_deliver_asr_break_to_88_sio_as_continuous_space_with_framing_err
 #[test]
 fn both_engines_deliver_asr_break_to_88_2sio_as_space_and_mc6850_framing_error() {
     for engine in EmulationEngine::ALL {
-        let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
-        host.configure_serial_board(SerialBoard::TwoSio88);
-        host.power(true);
-        host.front_panel_reset();
+        let mut host = host_for(engine, SerialBoard::TwoSio88, SioHardwareConfig::default());
         host.debugger_output_port(0x10, 0x95); // /16, 8N1, receive IRQ enabled
 
         assert!(host.serial_set_receive_break(BackendSerialPort::Port0, true));
@@ -73,10 +103,7 @@ fn both_engines_deliver_asr_break_to_88_2sio_as_space_and_mc6850_framing_error()
 fn short_break_release_never_fabricates_a_nul_character_in_either_serial_board() {
     for engine in EmulationEngine::ALL {
         for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
-            let mut host = BackendHost::from_engine(engine).expect("built-in Rust 8080 engine");
-            host.configure_serial_board(board);
-            host.power(true);
-            host.front_panel_reset();
+            let mut host = host_for(engine, board, SioHardwareConfig::default());
             if board == SerialBoard::TwoSio88 {
                 host.debugger_output_port(0x10, 0x15); // /16, 8N1
             }
