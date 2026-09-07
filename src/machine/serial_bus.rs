@@ -3,6 +3,34 @@ use crate::config::SerialBoard;
 use super::AltairBus;
 
 impl AltairBus {
+    pub fn serial_receive(&mut self, byte: u8) {
+        let _ = self.memory.serial_receive(0, byte);
+    }
+
+    pub fn serial_rx_empty(&self) -> bool {
+        self.memory.serial_rx_empty(0)
+    }
+
+    pub fn serial_rx_len(&self) -> usize {
+        self.memory.serial_rx_len(0)
+    }
+
+    pub fn serial_tx_front(&self) -> Option<u8> {
+        self.memory.serial_tx_front(0)
+    }
+
+    pub fn serial_tx_complete(&mut self) -> Option<u8> {
+        self.memory.serial_tx_complete(0)
+    }
+
+    pub fn tx_busy(&self) -> bool {
+        self.memory.serial_tx_busy(0)
+    }
+
+    pub fn clear_serial(&mut self) {
+        self.memory.clear_serial();
+    }
+
     /// Raw VI levels sourced by the installed 88-2SIO. They remain separate
     /// from processor PINT until a real 88-VI card is installed to arbitrate them.
     pub fn two_sio_vector_interrupt_requests(&self) -> u8 {
