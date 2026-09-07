@@ -18,7 +18,6 @@ use panel_bus::S100BusState;
 
 pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
-pub(crate) use memory::MemoryReadyPhase;
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
 pub(crate) use serial_card::{RuntimeSerialCardDevice, RuntimeSerialCardHandle};
@@ -104,12 +103,6 @@ impl Default for AltairBus {
 }
 
 impl AltairBus {
-    /// Temporary compatibility predicate while `partial_impl.rs` is simplified
-    /// in the next cleanup step. There is now only a physical serial path.
-    pub(crate) const fn cycle_uses_physical_serial(&self) -> bool {
-        true
-    }
-
     pub fn configure_memory(&mut self, size: RamSize, init_mode: RamInit) {
         self.cancel_cpu_diagnostic_meter();
         self.memory.configure(size, init_mode);
@@ -276,17 +269,6 @@ impl AltairBus {
 
     fn commit_panel_activity(&mut self, dt: Duration, dynamic: bool) {
         self.s100.commit(dt, dynamic);
-    }
-
-    /// Retained only until the next Partial cleanup commit removes the old
-    /// aggregate branch entirely. Physical interrupt state already comes from
-    /// the resolved CPU package inputs on the live S-100 fabric.
-    pub(crate) fn refresh_interrupt_request_line(&mut self) {}
-
-    /// Retained only so the now-unreachable aggregate Interrupt-Acknowledge
-    /// branch in Partial still type-checks until that branch is deleted.
-    pub(crate) const fn direct_interrupt_opcode(&self) -> u8 {
-        0xff
     }
 
     pub(crate) fn cpu_control_lines(&self) -> S100CpuControlLines {
