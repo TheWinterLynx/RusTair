@@ -4,6 +4,8 @@ const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 const MEMORY: &str = include_str!("../src/machine/memory.rs");
+const BACKEND: &str = include_str!("../src/backend/mod.rs");
+const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
 
 #[test]
 fn migrated_aggregate_hardware_state_does_not_survive_in_machine_config() {
@@ -83,6 +85,31 @@ fn app_has_no_duplicate_serial_hardware_apply_boundary() {
     }
     assert!(APP.contains("fn apply_s100_hardware_configuration"));
     assert!(!RUNTIME.contains("ui.menu_button(\"Serial board\""));
+}
+
+#[test]
+fn backend_has_no_aggregate_serial_configuration_contract() {
+    for forbidden in [
+        "fn configure_serial_board(",
+        "fn serial_board(&mut self)",
+        "fn configure_sio_hardware(",
+        "fn sio_hardware(&mut self)",
+        "fn configure_two_sio_straps(",
+        "fn two_sio_straps(&mut self)",
+        "fn configure_two_sio_interrupt_wiring(",
+        "fn two_sio_interrupt_wiring(&mut self)",
+    ] {
+        assert!(
+            !BACKEND.contains(forbidden),
+            "aggregate backend serial authority returned: {forbidden}"
+        );
+        assert!(
+            !CYCLE_HOST.contains(forbidden),
+            "Cycle host reintroduced aggregate serial authority: {forbidden}"
+        );
+    }
+    assert!(BACKEND.contains("fn configure_s100_hardware("));
+    assert!(BACKEND.contains("fn s100_hardware("));
 }
 
 #[test]
