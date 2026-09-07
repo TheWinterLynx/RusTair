@@ -5,16 +5,16 @@ use super::*;
 /// The loader bytes are the MITS front-panel bootstrap, not a RusTair helper
 /// program. BASIC 3.2 uses leader/checksum-loader marker 256 octal (AEh); 4K
 /// uses checksum-loader selector 017 octal. The 88-2SIO variant below uses the
-/// historically appropriate two-stop-bit ACIA setup for an ASR-33. The published
-/// 10h/11h byte image remains the canonical template; when the physical 88-2SIO
-/// A2-A7 straps select another block, only the immediate IN/OUT port operands are
-/// changed exactly as a real operator would have to enter them.
+/// historically appropriate two-stop-bit ACIA setup for an ASR-33. Published
+/// byte images remain canonical templates; if the installed S-100 card has been
+/// readdressed, only immediate I/O-port operands are changed exactly as a real
+/// operator would have to enter them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BootstrapDefinition {
     pub(super) board: SerialBoard,
     pub(super) name: &'static str,
-    /// Canonical MITS template. `resolved_bytes()` applies only the installed
-    /// 88-2SIO I/O-address operands; the historical template itself is immutable.
+    /// Canonical MITS template. `resolved_bytes()` applies only installed card
+    /// address straps; the historical template itself remains immutable.
     pub(super) bytes: &'static [u8],
     pub(super) required_sense: u8,
     pub(super) status_port: u8,
@@ -39,7 +39,7 @@ const BASIC32_4K_88_2SIO: [u8; 28] = [
 
 impl BootstrapDefinition {
     /// Canonical published/default installation. Tests use this to protect the
-    /// original MITS byte image; production loading uses `for_installed()`.
+    /// original MITS byte image; production loading uses `for_hardware()`.
     pub(super) const fn for_board(board: SerialBoard) -> Self {
         match board {
             SerialBoard::Sio88 => Self {
@@ -65,6 +65,8 @@ impl BootstrapDefinition {
         }
     }
 
+    /// Compatibility helper retained for focused bootstrap tests. Runtime code
+    /// must resolve the actual installed S-100 card through `for_hardware()`.
     pub(super) const fn for_installed(board: SerialBoard, straps: TwoSioStraps) -> Self {
         match board {
             SerialBoard::Sio88 => Self::for_board(SerialBoard::Sio88),
@@ -81,17 +83,54 @@ impl BootstrapDefinition {
         }
     }
 
+    const fn for_sio(config: crate::config::SioHardwareConfig) -> Self {
+        Self {
+            board: SerialBoard::Sio88,
+            name: "Microsoft 4K BASIC 3.2 — MITS 88-SIO rev. 1 bootstrap",
+            bytes: &BASIC32_4K_88_SIO,
+            required_sense: 0x00,
+            status_port: config.address.status(),
+            data_port: config.address.data(),
+            poll_start: 0x0003,
+            poll_end: 0x0009,
+        }
+    }
+
+    fn for_hardware(hardware: S100HardwareConfig) -> Result<Self, String> {
+        let Some((slot, card)) = hardware.active_serial_card_slot() else {
+            return Err(
+                "Install one MITS 88-SIO or 88-2SIO in Configuration → S-100 Chassis / Cards before using Authentic Load."
+                    .into(),
+            );
+        };
+        match card {
+            S100InstalledCardConfig::Mits88Sio(config) => Ok(Self::for_sio(config)),
+            S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
+                Ok(Self::for_installed(SerialBoard::TwoSio88, straps))
+            }
+            _ => Err(format!(
+                "Slot {slot} is not a supported MITS serial card for the BASIC 3.2 bootstrap."
+            )),
+        }
+    }
+
     /// Return the actual bytes the operator must deposit for the installed card.
-    /// The 88-2SIO instruction sequence is unchanged; only its four immediate
-    /// port operands follow A2-A7. This is not an address alias or compatibility
-    /// hack: a physical 8080 program must name the address decoded by the card.
+    /// Instruction sequences are unchanged; only immediate port operands follow
+    /// the physical address decode. This is not an alias or compatibility hack:
+    /// a real 8080 program must name the address decoded by the installed card.
     fn resolved_bytes(self) -> Vec<u8> {
         let mut bytes = self.bytes.to_vec();
-        if self.board == SerialBoard::TwoSio88 {
-            bytes[0x03] = self.status_port;
-            bytes[0x07] = self.status_port;
-            bytes[0x0F] = self.status_port;
-            bytes[0x13] = self.data_port;
+        match self.board {
+            SerialBoard::Sio88 => {
+                bytes[0x07] = self.status_port;
+                bytes[0x0B] = self.data_port;
+            }
+            SerialBoard::TwoSio88 => {
+                bytes[0x03] = self.status_port;
+                bytes[0x07] = self.status_port;
+                bytes[0x0F] = self.status_port;
+                bytes[0x13] = self.data_port;
+            }
         }
         bytes
     }
@@ -477,8 +516,29 @@ fn bootstrap_instruction_text(
     definition: BootstrapDefinition,
     info: BootstrapInstructionInfo,
 ) -> (String, String) {
-    if definition.board == SerialBoard::TwoSio88 {
-        match info.start {
+    match definition.board {
+        SerialBoard::Sio88 => match info.start {
+            0x06 => {
+                return (
+                    format!("IN ${:02X}", definition.status_port),
+                    format!(
+                        "Reads the installed 88-SIO status port at {:02X}h into A.",
+                        definition.status_port
+                    ),
+                );
+            }
+            0x0A => {
+                return (
+                    format!("IN ${:02X}", definition.data_port),
+                    format!(
+                        "Reads one byte from the installed 88-SIO data port at {:02X}h into A.",
+                        definition.data_port
+                    ),
+                );
+            }
+            _ => {}
+        },
+        SerialBoard::TwoSio88 => match info.start {
             0x02 | 0x06 => {
                 return (
                     format!("OUT ${:02X}", definition.status_port),
@@ -507,7 +567,7 @@ fn bootstrap_instruction_text(
                 );
             }
             _ => {}
-        }
+        },
     }
     (info.mnemonic.to_owned(), info.effect.to_owned())
 }
@@ -646,17 +706,14 @@ impl RusTairApp {
     }
 
     fn arm_authentic_tape_reader(&mut self) -> Result<(), String> {
-        let definition = BootstrapDefinition::for_installed(
-            self.config.machine.serial_board,
-            self.config.machine.two_sio_straps,
-        );
+        let definition = BootstrapDefinition::for_hardware(self.config.machine.s100_hardware)?;
         if let Some(issue) = low_4k_mapping_issue(&mut self.machine) {
             return Err(format!(
                 "Microsoft 4K BASIC 3.2 requires a uniquely mapped low 4 KiB S-100 RAM window: {issue}."
             ));
         }
         if !bootstrap_matches(&mut self.machine, definition) {
-            return Err("The installed board/strap configuration's BASIC 3.2 bootstrap is not verified at 0000h. Enter it manually or use Install bootstrap first.".into());
+            return Err("The installed S-100 serial card's BASIC 3.2 bootstrap is not verified at 0000h. Enter it manually or use Install bootstrap first.".into());
         }
         if self.tty.tape_input_total_len() == 0 {
             return Err("Mount a BASIC 3.2 paper-tape image first.".into());
@@ -665,7 +722,7 @@ impl RusTairApp {
             return Err("Set the ASR-33 to LINE before starting the reader.".into());
         }
         if self.asr_connection() != SerialConnection::Port0 {
-            return Err("Connect the ASR-33 to Port 0; the historical bootstrap reads the board's first port.".into());
+            return Err("Connect the ASR-33 to the installed serial card's Port 0; the historical bootstrap reads the board's first port.".into());
         }
         if !self.machine.powered() {
             return Err("Power ON the Altair before starting the reader.".into());
@@ -734,10 +791,17 @@ impl RusTairApp {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    let definition = BootstrapDefinition::for_installed(
-                        self.config.machine.serial_board,
-                        self.config.machine.two_sio_straps,
-                    );
+                    let definition = match BootstrapDefinition::for_hardware(
+                        self.config.machine.s100_hardware,
+                    ) {
+                        Ok(definition) => definition,
+                        Err(error) => {
+                            ui.heading("Authentic Microsoft 4K BASIC 3.2 Loader");
+                            ui.colored_label(Color32::LIGHT_RED, error);
+                            ui.small("Authentic Load never creates a phantom serial interface. Install the required card while POWER is OFF, then reopen this workflow.");
+                            return;
+                        }
+                    };
                     let resolved_bootstrap = definition.resolved_bytes();
                     let panel = self.machine.front_panel_state();
                     let sense = (panel.switches >> 8) as u8;
@@ -760,16 +824,26 @@ impl RusTairApp {
                     );
 
                     ui.strong(definition.name);
-                    ui.small("Authentic path: the bootstrap executes on the emulated 8080 and consumes the mounted tape through the selected UART. No BASIC bytes are injected directly into RAM.");
+                    ui.small("Authentic path: the bootstrap executes on the emulated 8080 and consumes the mounted tape through the installed S-100 UART. No BASIC bytes are injected directly into RAM.");
                     ui.small("RAM qualification is based on the physical S-100 address map, not an aggregate capacity: every address in 0000h..0FFFh must have exactly one RAM responder.");
-                    if definition.board == SerialBoard::TwoSio88 {
-                        ui.small(format!(
-                            "A2-A7 are currently strapped for {:02X}h-{:02X}h. The MITS 10h/11h bootstrap template is entered with its four immediate I/O operands resolved to {:02X}h/{:02X}h; no legacy-port alias is created.",
-                            self.config.machine.two_sio_straps.address.base(),
-                            self.config.machine.two_sio_straps.address.base() + 3,
-                            definition.status_port,
-                            definition.data_port,
-                        ));
+                    match definition.board {
+                        SerialBoard::Sio88 if definition.status_port != 0x00 => {
+                            ui.small(format!(
+                                "The installed 88-SIO is addressed at {:02X}h/{:02X}h. The canonical 00h/01h bootstrap template is entered with its IN operands resolved to those physical addresses; no legacy-port alias is created.",
+                                definition.status_port,
+                                definition.data_port,
+                            ));
+                        }
+                        SerialBoard::TwoSio88 => {
+                            ui.small(format!(
+                                "A2-A7 are currently strapped for {:02X}h-{:02X}h. The MITS 10h/11h bootstrap template is entered with its four immediate I/O operands resolved to {:02X}h/{:02X}h; no legacy-port alias is created.",
+                                definition.status_port,
+                                definition.status_port.saturating_add(3),
+                                definition.status_port,
+                                definition.data_port,
+                            ));
+                        }
+                        _ => {}
                     }
                     ui.add_space(6.0);
 
@@ -781,8 +855,15 @@ impl RusTairApp {
                                 .striped(true)
                                 .show(ui, |ui| {
                                     ui.label("Serial board");
+                                    let slot = self
+                                        .config
+                                        .machine
+                                        .s100_hardware
+                                        .active_serial_card_slot()
+                                        .map(|(slot, _)| slot)
+                                        .unwrap_or(0);
                                     ui.label(format!(
-                                        "{} · status {:02X}h / data {:02X}h",
+                                        "Slot {slot} · {} · status {:02X}h / data {:02X}h",
                                         definition.board.label(),
                                         definition.status_port,
                                         definition.data_port
@@ -816,9 +897,12 @@ impl RusTairApp {
                                             Color32::LIGHT_RED
                                         },
                                         if asr_port_ok {
-                                            "Port 0 — correct"
+                                            Self::serial_connection_label(
+                                                self.config.machine.s100_hardware,
+                                                SerialConnection::Port0,
+                                            )
                                         } else {
-                                            "Must be connected to Port 0"
+                                            "Must be connected to the installed card's Port 0".into()
                                         },
                                     );
                                     ui.end_row();
@@ -955,14 +1039,14 @@ impl RusTairApp {
                                 }
                             });
 
-                            ui.small("Install bootstrap is the one-click assisted path. The row-by-row table below remains the didactic bootstrap path. The generic Front Panel Operator button now opens the single S-100-aware operator implementation; the older duplicate operator has been removed.");
+                            ui.small("Install bootstrap is the one-click assisted path. The row-by-row table below remains the didactic bootstrap path. The generic Front Panel Operator button opens the single S-100-aware operator implementation.");
                         });
 
                     egui::CollapsingHeader::new("Manual front-panel procedure")
                         .default_open(false)
                         .show(ui, |ui| {
-                            ui.label("1. Power ON, STOP the machine, RESET, set the ASR-33 to LINE and connect it to Port 0.");
-                            ui.label("2. Put all 16 switches DOWN and operate EXAMINE. Enter the first byte with switches A7..A0 and DEPOSIT; enter each following byte with DEPOSIT NEXT. For 88-2SIO the table below reflects the installed A2-A7 address straps.");
+                            ui.label("1. Power ON, STOP the machine, RESET, set the ASR-33 to LINE and connect it to the installed serial card's Port 0.");
+                            ui.label("2. Put all 16 switches DOWN and operate EXAMINE. Enter the first byte with switches A7..A0 and DEPOSIT; enter each following byte with DEPOSIT NEXT. The table below reflects the installed card's physical I/O address straps.");
                             ui.label("3. Verify the loader if desired, then put all switches DOWN and EXAMINE 0000h again.");
                             ui.label(format!(
                                 "4. Set A15..A8 to {:02X}h ({}).",
@@ -1151,7 +1235,7 @@ impl RusTairApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TwoSioAddressBlock;
+    use crate::config::{SioAddressPair, TwoSioAddressBlock};
 
     #[test]
     fn basic32_4k_bootstraps_keep_historical_leader_and_ports() {
@@ -1178,6 +1262,29 @@ mod tests {
             .windows(2)
             .any(|bytes| bytes == [0xDB, 0x11]));
         assert_eq!(two_sio.required_sense, 0x08);
+    }
+
+    #[test]
+    fn readdressed_sio_bootstrap_changes_only_physical_io_operands() {
+        let mut config = crate::config::SioHardwareConfig::default();
+        config.address = SioAddressPair::try_new(0x06).unwrap();
+        let definition = BootstrapDefinition::for_sio(config);
+        let resolved = definition.resolved_bytes();
+        assert_eq!(definition.status_port, 0x06);
+        assert_eq!(definition.data_port, 0x07);
+        assert_eq!(resolved[0x07], 0x06);
+        assert_eq!(resolved[0x0B], 0x07);
+        for (index, (&canonical, &actual)) in BASIC32_4K_88_SIO
+            .iter()
+            .zip(resolved.iter())
+            .enumerate()
+        {
+            if ![0x07, 0x0B].contains(&index) {
+                assert_eq!(actual, canonical, "non-port SIO byte changed at {index:02X}h");
+            }
+        }
+        assert!(bootstrap_switch_tooltip(definition, 6, resolved[6]).contains("IN $06"));
+        assert!(bootstrap_switch_tooltip(definition, 10, resolved[10]).contains("IN $07"));
     }
 
     #[test]
