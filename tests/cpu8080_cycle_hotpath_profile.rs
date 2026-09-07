@@ -4,7 +4,8 @@ use std::time::Instant;
 
 use rustair::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Inputs, Cpu8080Pins, TickTrace};
 
-const T_STATES_PER_CASE: u64 = 50_000_000;
+const T_STATES_PER_CASE: u64 = 20_000_000;
+const INTRINSIC_REPEATS: usize = 5;
 
 fn stable_inputs(opcode: u8) -> Cpu8080Inputs {
     Cpu8080Inputs {
@@ -35,7 +36,7 @@ fn profile_opcode(name: &str, opcode: u8) {
     );
 }
 
-fn profile_opcode_state_only(name: &str, opcode: u8) {
+fn intrinsic_once(opcode: u8) -> f64 {
     let mut cpu = Cpu8080Cycle::new();
     let inputs = stable_inputs(opcode);
 
@@ -52,11 +53,25 @@ fn profile_opcode_state_only(name: &str, opcode: u8) {
         cpu.machine_cycle_index(),
         cpu.t_state(),
     ));
-    let elapsed = started.elapsed();
-    let mticks = T_STATES_PER_CASE as f64 / elapsed.as_secs_f64() / 1_000_000.0;
+    T_STATES_PER_CASE as f64 / started.elapsed().as_secs_f64() / 1_000_000.0
+}
+
+fn profile_opcode_state_only(name: &str, opcode: u8) {
+    let mut samples = [0.0f64; INTRINSIC_REPEATS];
+    for sample in &mut samples {
+        *sample = intrinsic_once(opcode);
+    }
+    samples.sort_by(f64::total_cmp);
+    let median = samples[INTRINSIC_REPEATS / 2];
+    let best = samples[INTRINSIC_REPEATS - 1];
+    let worst = samples[0];
+    let spread = if median != 0.0 {
+        (best - worst) / median * 100.0
+    } else {
+        0.0
+    };
     eprintln!(
-        "[CPU CYCLE INTRINSIC] {name:<12} opcode={opcode:02X}  {T_STATES_PER_CASE} T  {:.3?}  {mticks:.2} M T-state/s [TickTrace return unused]",
-        elapsed,
+        "[CPU CYCLE INTRINSIC] {name:<12} opcode={opcode:02X}  median={median:.2} best={best:.2} worst={worst:.2} M T-state/s  spread={spread:.1}%  repeats={INTRINSIC_REPEATS} [TickTrace return unused]"
     );
 }
 
@@ -154,6 +169,15 @@ fn profile_nop_trace_materialization() {
     );
 }
 
+fn warm_hotpath() {
+    let mut cpu = Cpu8080Cycle::new();
+    let inputs = stable_inputs(0x00);
+    for _ in 0..1_000_000 {
+        let _ = cpu.tick(inputs);
+    }
+    black_box(cpu.total_t_states());
+}
+
 #[test]
 #[ignore = "manual release-mode Cpu8080Cycle hot-path profiler"]
 fn profile_cpu8080_cycle_hot_instruction_families() {
@@ -164,7 +188,12 @@ fn profile_cpu8080_cycle_hot_instruction_families() {
         size_of::<Cpu8080Pins>(),
         size_of::<Cpu8080Inputs>(),
     );
+    eprintln!(
+        "[CPU CYCLE PROFILE CONFIG] {} T/case, intrinsic median of {} repeats",
+        T_STATES_PER_CASE, INTRINSIC_REPEATS
+    );
 
+    warm_hotpath();
     profile_nop_trace_materialization();
 
     // Constant data_in is sufficient here because the core samples it only on
@@ -182,7 +211,7 @@ fn profile_cpu8080_cycle_hot_instruction_families() {
     profile_opcode("RET", 0xC9);      // 10T, two stack reads
     profile_opcode("CALL", 0xCD);     // 17T, operand reads + stack writes
 
-    eprintln!("[CPU CYCLE INTRINSIC] ---- same families with TickTrace return unused ----");
+    eprintln!("[CPU CYCLE INTRINSIC] ---- median of repeated runs, TickTrace return unused ----");
     profile_opcode_state_only("NOP", 0x00);
     profile_opcode_state_only("MOV B,B", 0x40);
     profile_opcode_state_only("INR B", 0x04);
