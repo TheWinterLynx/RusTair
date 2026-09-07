@@ -1,53 +1,94 @@
 # RusTair
 
-Native Rust implementation of the **MITS Altair 8800** simulator, with a photographic front panel, machine audio and an ASR-33 teletype.
+RusTair is a native Rust emulator of the **MITS Altair 8800** focused on hardware fidelity: an Intel 8080 CPU board, physical S-100 cards, the Display/Control front panel, serial interfaces and peripherals are modeled as parts of one machine rather than as independent shortcuts.
 
-## Current state
+## Architecture
 
-- Native Windows/Linux desktop UI using `eframe/egui`.
-- Intel 8080 CPU core in Rust.
-- 8 KiB Altair memory model and front-panel operations.
-- Address/data/status LEDs.
-- Configurable two-position and spring-centred three-position front-panel switches.
-- Per-switch, per-pose sprite selection, X/Y micro-adjustment and scale.
-- ASR-33 teletype with keyboard, paper tape and audio.
-- Bundled Microsoft 4K BASIC image.
-- Embedded runtime assets: release executables are self-contained and do not require an adjacent `assets/` directory.
+```text
+Altair 8800
+├── Chassis
+│   └── S-100 backplane
+│       ├── MITS 8080 CPU board
+│       ├── RAM cards
+│       ├── MITS 88-SIO / 88-2SIO
+│       └── additional S-100 cards as they are implemented
+└── Display/Control front panel
+    └── connected to the system bus
+```
 
-## Build
+Cards do not call one another directly. The CPU board, memory and I/O cards observe and drive the S-100 bus. The front panel is part of the same physical system.
+
+There is one production execution engine: **Adaptive Cycle 8080**. It uses two internal strategies over the same authoritative CPU/chassis/card state:
+
+- **Partial** — exact Intel 8080 T-state/PHI1/PHI2 execution through the live S-100 fabric.
+- **Full** — accelerated whole-instruction execution only where the same externally visible machine-cycle schedule can be reconstructed safely.
+
+Full and Partial are implementation strategies, not separate emulated machines or user-selectable CPU cores.
+
+## Implemented system
+
+- Intel 8080 cycle core with T1/T2/Tw/T3/T4/T5, READY, HOLD/HLDA, HLT, RESET and interrupts.
+- MITS 8080 CPU board on the live S-100 backplane.
+- Configurable Altair 8800 / 8800a / 8800b chassis connector populations.
+- Slot-native MITS RAM boards with per-card address/population/timing configuration.
+- MITS 88-SIO including revision, A/B/C electrical interface, baud/format and interrupt routing.
+- MITS 88-2SIO including address, baud/interface straps and interrupt wiring.
+- Photographic Display/Control front panel with exact switch controls, LEDs, EXAMINE/DEPOSIT, RUN/STOP, RESET, PROTECT and related bus behavior.
+- ASR-33 teletype with keyboard, paper tape, reader/punch mechanics and audio.
+- Text terminal plus optional TCP and host COM endpoints.
+- Explicit serial cabling: endpoints can be disconnected or attached to an available emulated port; incompatible direct electrical connections are rejected rather than hidden behind an implicit level converter.
+- RAM viewer, debugger, execution history, I/O inspector, T-state teacher and panel-operator tools.
+- Quick/direct program loading and authentic paper-tape loading are separate workflows.
+- Embedded Microsoft BASIC and classic Intel 8080 diagnostic support.
+- Persistent hardware, peripheral, wiring and UI preferences.
+
+## Build and test
+
+Normal desktop execution should use a release build:
 
 ```powershell
 cargo run --release
 ```
 
-The release executable is created at `target/release/rustair.exe` on Windows.
+Run the complete automated test suite with:
 
-> The ASR-33 source artwork is larger than 2048 pixels on a side. With the current `egui` version a debug build can trip a debug-only texture-size assertion on some backends, while the release build used by GitHub Actions runs correctly on the same machine. Use `--release` for normal local testing.
+```powershell
+cargo test
+```
+
+The Windows release executable is written to `target/release/rustair.exe`.
+
+The ASR-33 artwork is larger than 2048 pixels on a side. Some graphics backends can trip a debug-only `egui` texture assertion, so `--release` is the supported normal desktop build.
+
+## Configuration model
+
+Physical hardware is configured under **Configuration → S-100 Chassis / Cards** while POWER is off. Chassis, slot occupancy, RAM card straps and serial-card straps are properties of that inventory.
+
+Host emulation speed is deliberately separate from the installed CPU board. The MITS 8080 board remains a 2 MHz historical device; 5×, 10× and Unlimited change only how quickly virtual machine time is advanced on the host.
+
+ASR-33 and Text Terminal each have their own cable selector. BASIC auto-open is a UI preference only: it may reveal the console already connected to the relevant port, but it must never rewire the machine.
+
+Compatibility workarounds are explicit and opt-in. Historical bugs or awkward hardware behavior are not silently corrected merely to make software run.
 
 ## Source layout
 
-- `src/main.rs` — executable entry point.
-- `src/app/` — application composition, controllers and UI.
-- `src/embedded_assets.rs` — compile-time registry for bundled runtime assets.
-- `src/audio.rs` — audio playback engine using embedded MP3 data.
-- `src/machine/` — Altair memory, I/O bus and machine state.
-- `src/cpu8080.rs` — Intel 8080 core.
-- `src/peripherals/asr33/` — reusable ASR-33 data model.
-
-## Front-panel switch configuration
-
-Every physical switch uses the same `SwitchConfig` structure in the front-panel UI modules.
-
-Two-position switches use `SwitchKind::TwoPosition` and spring-centred controls use `SwitchKind::ThreePosition`.
-
-Each available pose has its own sprite reference, X/Y offset and scale. This means, for example, A15 UP can use a different sprite while other positions continue using the default artwork.
+- `src/app/` — desktop application, controllers, persistence and UI.
+- `src/backend/` — host-facing Adaptive Cycle execution boundary.
+- `src/cpu8080_cycle/` — authoritative T-state-accurate Intel 8080 core.
+- `src/cpu8080.rs` — validated instruction-level semantic executor used by internal Full windows.
+- `src/machine/` — CPU-independent Altair chassis, front-panel state and runtime card façades.
+- `src/s100_*` / `src/s100/` — S-100 contacts, backplane, CPU/I/O/RAM cards and live runtime fabric.
+- `src/config/` — physical hardware and application configuration.
+- `src/io/` — external serial transports and cable routing.
+- `src/peripherals/asr33/` — ASR-33 model.
+- `tests/` — architecture, fidelity, UI-structure, differential and classic diagnostic regression tests.
 
 ## Runtime assets
 
-The active front-panel artwork is under `assets/panels/white-pivot/`.
+Active front-panel artwork lives under `assets/panels/white-pivot/`. Shared build inputs under `assets/` include ASR-33 artwork/audio, fonts, panel audio, Microsoft BASIC and embedded CPU diagnostics.
 
-Shared source assets under `assets/` include the ASR-33 artwork/audio, `teletype.ttf`, `fan.mp3`, `click.mp3`, `powerbtn.mp3`, Microsoft 4K BASIC and the embedded CPU diagnostic images.
+Normal release execution uses bytes embedded into the executable. User-selected binaries, paper tapes and terminal files remain ordinary external files.
 
-These files remain in the repository as build inputs, but normal release execution reads them from bytes compiled into the executable. User-selected files such as external binaries, paper tapes and terminal text files continue to be loaded from disk normally.
+## Project direction
 
-Legacy/unused artwork is intentionally not kept in the active asset set.
+The active roadmap is kept in [`TODO.md`](TODO.md). The priority is to finish and verify one coherent Altair implementation before adding speculative hardware: clean physical ownership, historical fidelity, usable performance and regression coverage come first.
