@@ -70,8 +70,9 @@ impl super::AltairBus {
     /// T1 status byte on CPU D/DO from the later dedicated S-100 status outputs.
     /// The original 88-2SIO also makes its one input wait edge-owned: SINP clocks
     /// its V flip-flop at this T2 PHI1 and pulls PRDY low; the processor's PWAIT
-    /// output clears V at TW PHI1 and releases PRDY again. Keep those electrical
-    /// transitions here rather than moving them to a host-side T-state boundary.
+    /// output clears V at TW PHI1 and releases PRDY again. Those transitions are
+    /// implemented by the installed 88-2SIO card's S-100 `observe_bus()` path;
+    /// the CPU board must not fabricate a second wait source.
     pub(crate) fn drive_cycle_cpu_board_edge<E>(&mut self, _edge: E, pins: Cpu8080Pins) {
         self.s100.drive_cpu_board_edge(
             pins.phi1,
@@ -83,20 +84,6 @@ impl super::AltairBus {
         if pins.phi1 && pins.sync {
             if let Some(word) = pins.data_out {
                 self.s100.latch_cpu_status(word);
-            }
-        }
-        if !self.cycle_uses_physical_serial() && pins.phi1 && pins.sync {
-            let signals = self.s100.signals();
-            let port = signals.address as u8;
-            if signals.inp && self.io.input_wait_states(port) != 0 {
-                self.s100.set_memory_ready_input(false);
-            }
-        }
-        if !self.cycle_uses_physical_serial() && pins.phi1 && pins.wait {
-            let signals = self.s100.signals();
-            let port = signals.address as u8;
-            if signals.inp && self.io.input_wait_states(port) != 0 {
-                self.s100.set_memory_ready_input(true);
             }
         }
     }
