@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use rustair::backend::{BackendHost, BackendSerialPort};
-use rustair::config::{RamInit, RamSize, SerialBoard};
+use rustair::config::{RamInit, S100HardwareConfig};
 
 const CYCLE_HOST_SOURCE: &str = include_str!("../src/backend/cycle_host.rs");
 const CHASSIS_SOURCE: &str = include_str!("../src/machine/chassis.rs");
@@ -12,8 +12,12 @@ const RDRF: u8 = 0x01;
 
 fn machine() -> BackendHost {
     let mut machine = BackendHost::default();
-    machine.configure_memory(RamSize::K1, RamInit::Zeroed);
-    machine.configure_serial_board(SerialBoard::TwoSio88);
+    machine.configure_s100_hardware(
+        S100HardwareConfig::historical_8800b_18_slot_starter()
+            .validate()
+            .unwrap(),
+        RamInit::Zeroed,
+    );
     machine.power(true);
     machine.assert_front_panel_reset();
     machine.release_front_panel_reset();
