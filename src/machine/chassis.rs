@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::config::{RamBoardProfile, SerialBoard, SioHardwareConfig, TwoSioStraps};
+use crate::config::RamBoardProfile;
 
 use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 
@@ -21,14 +21,8 @@ pub struct AltairChassis {
 
 impl Default for AltairChassis {
     fn default() -> Self {
-        let mut bus = AltairBus::default();
-        // Every exact CPU-board sample driven by this chassis is one real
-        // Partial-core T-state. Independent card oscillators can therefore
-        // advance exactly once per sample; Full advances equivalent elapsed
-        // card time explicitly at its synchronization boundary.
-        bus.set_exact_t_state_clock_owner(true);
         Self {
-            bus,
+            bus: AltairBus::default(),
             powered: false,
             running: false,
             stop_switch_asserted: false,
@@ -73,63 +67,6 @@ impl AltairChassis {
 
     pub fn take_cpu_diagnostic_result(&mut self) -> Option<CpuDiagnosticResult> {
         self.bus.take_cpu_diagnostic_result()
-    }
-
-    /// Select only the physical serial board. Any processor reset caused by a
-    /// board change belongs to the backend that owns the processor core. A real
-    /// card swap is a machine reconfiguration, so the chassis drops the RUN
-    /// latch before Adaptive Cycle performs its processor RESET sequence.
-    pub fn configure_serial_board(&mut self, board: SerialBoard) {
-        if self.bus.serial_board() == board {
-            return;
-        }
-        self.running = false;
-        self.bus.set_run(false);
-        self.bus.cycle_set_ready_input(false);
-        self.bus.configure_serial_board(board);
-        self.bus.clear_transient_memory_guards();
-    }
-
-    pub fn serial_board(&self) -> SerialBoard {
-        self.bus.serial_board()
-    }
-
-    /// Move the physical revision/address/baud/format/interface configuration on
-    /// the installed or dormant 88-SIO card. Processor reset remains the
-    /// responsibility of the Adaptive Cycle backend that owns the CPU core.
-    pub fn configure_sio_hardware(&mut self, config: SioHardwareConfig) {
-        if self.bus.sio_hardware() == config {
-            return;
-        }
-        self.running = false;
-        self.bus.set_run(false);
-        self.bus.cycle_set_ready_input(false);
-        self.bus.configure_sio_hardware(config);
-        self.bus.clear_transient_memory_guards();
-    }
-
-    pub fn sio_hardware(&self) -> SioHardwareConfig {
-        self.bus.sio_hardware()
-    }
-
-    /// Move the physical A2-A7/baud-generator jumpers on the installed 88-2SIO.
-    ///
-    /// The bus owns the actual strap state and decoder. The chassis façade only
-    /// applies the same physical reconfiguration boundary as a card swap: RUN
-    /// and READY are withdrawn before the backend resets its processor core.
-    pub fn configure_two_sio_straps(&mut self, straps: TwoSioStraps) {
-        if self.bus.two_sio_straps() == straps {
-            return;
-        }
-        self.running = false;
-        self.bus.set_run(false);
-        self.bus.cycle_set_ready_input(false);
-        self.bus.configure_two_sio_straps(straps);
-        self.bus.clear_transient_memory_guards();
-    }
-
-    pub fn two_sio_straps(&self) -> TwoSioStraps {
-        self.bus.two_sio_straps()
     }
 
     pub fn release_run_stop(&mut self, run: bool) {
