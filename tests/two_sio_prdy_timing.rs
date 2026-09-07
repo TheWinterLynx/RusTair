@@ -1,10 +1,14 @@
 use rustair::backend::{BackendHost, BusMachineCycle, BusTState};
-use rustair::config::{RamInit, RamSize, SerialBoard};
+use rustair::config::{RamInit, S100HardwareConfig};
 
 fn prepared_host(program: &[u8]) -> BackendHost {
     let mut host = BackendHost::default();
-    host.configure_memory(RamSize::K1, RamInit::Zeroed);
-    host.configure_serial_board(SerialBoard::TwoSio88);
+    host.configure_s100_hardware(
+        S100HardwareConfig::historical_8800b_18_slot_starter()
+            .validate()
+            .unwrap(),
+        RamInit::Zeroed,
+    );
     host.power(true);
     host.front_panel_reset();
     host.load_bytes(0, program);
