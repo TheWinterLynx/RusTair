@@ -1,10 +1,15 @@
 use rustair::backend::BackendHost;
-use rustair::config::SerialBoard;
+use rustair::config::{RamInit, S100HardwareConfig};
 
 #[test]
 fn debugger_two_sio_in_does_not_leak_prdy_wait_into_next_adaptive_instruction() {
     let mut backend = BackendHost::default();
-    backend.configure_serial_board(SerialBoard::TwoSio88);
+    backend.configure_s100_hardware(
+        S100HardwareConfig::historical_8800b_18_slot_starter()
+            .validate()
+            .unwrap(),
+        RamInit::Zeroed,
+    );
     backend.power(true);
     backend.assert_front_panel_reset();
     backend.release_front_panel_reset();
