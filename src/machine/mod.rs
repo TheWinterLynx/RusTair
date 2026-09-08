@@ -296,8 +296,11 @@ impl AltairBus {
         );
         // Every caller of this boundary is one exact Cpu8080Cycle T-state.
         // Independent card oscillators therefore advance exactly once here;
-        // Full advances equivalent elapsed card time at its sync boundary.
+        // Full advances equivalent elapsed card time at its sync boundary. If
+        // that elapsed T-state changes PINT/VI/PRDY, settle the real connector
+        // before the next CPU T-state samples its initial package inputs.
         self.memory.advance_serial_time(1);
+        self.settle_host_serial_change();
     }
 
     fn refresh_protect_line(&mut self) {
@@ -331,9 +334,9 @@ impl AltairBus {
         let was_asserted = self.s100.signals().ext_clear;
         self.s100.set_ext_clear(asserted);
         if asserted && !was_asserted {
-            // The front-panel CLEAR line resets the actual installed UART card;
-            // there is no parallel singleton to reset anymore.
-            self.memory.clear_serial();
+            // The front-panel CLEAR line resets the actual installed UART card
+            // and the resulting PINT/VI/PRDY change is resolved on S-100 now.
+            self.clear_serial();
         }
     }
 
