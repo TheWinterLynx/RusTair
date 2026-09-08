@@ -306,6 +306,15 @@ impl RuntimeSerialCardHandle {
         (self.board == SerialBoard::Sio88).then(|| self.state.borrow().sio_hardware())
     }
 
+    pub(crate) fn two_sio_straps(&self) -> Option<TwoSioStraps> {
+        (self.board == SerialBoard::TwoSio88).then(|| self.state.borrow().two_sio_straps())
+    }
+
+    pub(crate) fn two_sio_interrupt_wiring(&self) -> Option<TwoSioInterruptWiring> {
+        (self.board == SerialBoard::TwoSio88)
+            .then(|| self.state.borrow().two_sio_interrupt_wiring())
+    }
+
     pub(crate) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
         self.state.borrow().trace_port_activity(port)
     }
