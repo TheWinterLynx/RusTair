@@ -1,6 +1,5 @@
 use crate::config::{
     RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SerialBoard, SioHardwareConfig,
-    TwoSioInterruptWiring, TwoSioStraps,
 };
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
 use crate::s100::{S100ContactRole, S100Signal};
@@ -12,15 +11,6 @@ pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
 pub const MEMORY_BOARD_SIZE: usize = 1024;
 pub const MEMORY_BOARD_COUNT: usize = MAX_MEM_SIZE / MEMORY_BOARD_SIZE;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MemoryReadyPhase {
-    T1,
-    T2,
-    Tw,
-    T3,
-    Other,
-}
 
 /// Bus-owned memory/card facade for the live S-100 fabric.
 ///
@@ -46,8 +36,6 @@ pub(super) struct Memory {
     /// to Partial must therefore force one real fabric settle before phase-only
     /// edge elision is legal again.
     full_execution_desynced: bool,
-    read_wait_active: bool,
-    read_wait_remaining: u8,
     basic32_probe_guard: bool,
     basic32_probe_write: Option<u8>,
 }
@@ -68,8 +56,6 @@ impl Default for Memory {
             phase_edge_requires_settle,
             last_cycle_pins: Cpu8080Pins::default(),
             full_execution_desynced: false,
-            read_wait_active: false,
-            read_wait_remaining: 0,
             basic32_probe_guard: false,
             basic32_probe_write: None,
         }
@@ -141,10 +127,6 @@ impl Memory {
     pub(super) fn serial_vector_interrupt_requests(&self) -> u8 { self.fabric.serial_vector_interrupt_requests() }
     pub(super) fn primary_serial_board(&self) -> Option<SerialBoard> { self.fabric.primary_serial_board() }
     pub(super) fn primary_sio_hardware(&self) -> Option<SioHardwareConfig> { self.fabric.primary_sio_hardware() }
-    pub(super) fn primary_two_sio_straps(&self) -> Option<TwoSioStraps> { self.fabric.primary_two_sio_straps() }
-    pub(super) fn primary_two_sio_interrupt_wiring(&self) -> Option<TwoSioInterruptWiring> {
-        self.fabric.primary_two_sio_interrupt_wiring()
-    }
     pub(super) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
         self.fabric.io_port_activity(port)
     }
@@ -225,7 +207,6 @@ impl Memory {
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
         self.clear_transient_guards();
-        self.reset_timing();
     }
 
     pub(super) fn configure_hardware(
@@ -240,7 +221,6 @@ impl Memory {
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
         self.clear_transient_guards();
-        self.reset_timing();
         Ok(())
     }
 
@@ -311,54 +291,10 @@ impl Memory {
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
         self.clear_transient_guards();
-        self.reset_timing();
     }
 
     pub(super) fn board_profile(&self, address: u16) -> Option<RamBoardProfile> {
         (self.fabric.mapped_ram_card_count(address) != 0).then_some(self.board_profile)
-    }
-
-    pub(super) fn read_wait_states(&self, address: u16) -> u8 {
-        self.fabric.fast_read_wait_states(address)
-    }
-
-    pub(super) fn reset_timing(&mut self) {
-        self.read_wait_active = false;
-        self.read_wait_remaining = 0;
-    }
-
-    pub(super) fn ready_for_t_state(
-        &mut self,
-        address: u16,
-        memory_read: bool,
-        phase: MemoryReadyPhase,
-    ) -> bool {
-        if !memory_read {
-            self.reset_timing();
-            return true;
-        }
-        match phase {
-            MemoryReadyPhase::T1 => {
-                self.read_wait_remaining = self.read_wait_states(address);
-                self.read_wait_active = self.read_wait_remaining != 0;
-                !self.read_wait_active
-            }
-            MemoryReadyPhase::T2 => !self.read_wait_active,
-            MemoryReadyPhase::Tw if self.read_wait_active => {
-                if self.read_wait_remaining > 1 {
-                    self.read_wait_remaining -= 1;
-                    false
-                } else {
-                    self.reset_timing();
-                    true
-                }
-            }
-            MemoryReadyPhase::Tw => true,
-            MemoryReadyPhase::T3 | MemoryReadyPhase::Other => {
-                self.reset_timing();
-                true
-            }
-        }
     }
 
     pub(super) fn installed_size(&self) -> usize { self.fabric.installed_ram_bytes() }
@@ -366,13 +302,11 @@ impl Memory {
     pub(super) fn initialize(&mut self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(self.init_mode);
-        self.reset_timing();
     }
 
     pub(super) fn randomize(&mut self) {
         self.clear_transient_guards();
         self.fabric.initialize_memory(RamInit::Random);
-        self.reset_timing();
     }
 
     pub(super) fn arm_basic32_full_memory_probe_guard(&mut self) -> bool {
@@ -536,19 +470,7 @@ impl super::AltairBus {
         self.memory.board_profile(address)
     }
 
-    /// Physical RAM and I/O cards drive PRDY through the live backplane. The
-    /// old aggregate READY synthesizer is intentionally gone.
-    pub(crate) fn cycle_memory_ready(
-        &mut self,
-        _address: u16,
-        _memory_read: bool,
-        _phase: MemoryReadyPhase,
-    ) -> bool {
-        true
-    }
-
     pub(crate) fn cycle_settle_memory_ready_after_panel_freeze(&mut self) {
-        self.memory.reset_timing();
         self.s100.set_memory_ready_input(true);
     }
 
@@ -726,24 +648,5 @@ mod tests {
         ).unwrap();
         assert_eq!(memory.peek(u16::MAX), Some(0));
         assert_eq!(memory.preview_read(u16::MAX), 0xc8);
-    }
-}
-
-#[cfg(test)]
-mod timing_tests {
-    use super::*;
-
-    #[test]
-    fn legacy_mits_1k_profile_still_yields_two_wait_cycles_without_replacing_bytes() {
-        let mut memory = Memory::default();
-        memory.configure(RamSize::K1, RamInit::Zeroed);
-        memory.write(0x0010, 0x5a);
-        memory.configure_board_profile(RamBoardProfile::Mits1KStatic1975);
-        assert_eq!(memory.peek(0x0010), Some(0x5a));
-        assert!(!memory.ready_for_t_state(0, true, MemoryReadyPhase::T1));
-        assert!(!memory.ready_for_t_state(0, true, MemoryReadyPhase::T2));
-        assert!(!memory.ready_for_t_state(0, true, MemoryReadyPhase::Tw));
-        assert!(memory.ready_for_t_state(0, true, MemoryReadyPhase::Tw));
-        assert!(memory.ready_for_t_state(0, true, MemoryReadyPhase::T3));
     }
 }
