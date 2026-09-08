@@ -1197,7 +1197,6 @@ mod tests {
         backend.service_execution(2).unwrap();
         assert_eq!(backend.cpu().t_state(), TState::T3);
         backend.assert_run_stop(false).unwrap();
-
         assert!(!backend.machine().running);
         assert!(!backend.machine().bus.cpu_control_lines().ready);
         assert!(backend.machine().wait_led());
@@ -1345,7 +1344,8 @@ mod tests {
         backend.protect_current_board(true).unwrap();
         assert!(backend.front_panel_state().unwrap().current_board_protected);
         assert!(backend.machine().bus.is_protected(0x0400));
-        assert!(!backend.machine().bus.is_protected(0x0c00));
+        assert!(backend.machine().bus.is_protected(0x0c00));
+        assert!(!backend.machine().bus.is_protected(0x1000));
 
         backend.panel_deposit(false).unwrap();
         assert_eq!(backend.peek_memory(0x0456).unwrap(), Some(0x11));
