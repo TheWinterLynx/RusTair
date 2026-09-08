@@ -1,6 +1,5 @@
 use rustair::backend::{BackendHost, BusTState};
-use rustair::config::{RamInit, RamSize, SerialBoard};
-use rustair::machine::AltairBus;
+use rustair::config::{RamInit, RamSize, S100HardwareConfig};
 
 const OPEN_BUS: u8 = 0xff;
 
@@ -10,6 +9,26 @@ fn prepared_host(program: &[u8]) -> BackendHost {
     host.power(true);
     host.front_panel_reset();
     host.load_bytes(0, program);
+    host
+}
+
+fn sio_host() -> BackendHost {
+    let mut host = BackendHost::default();
+    host.configure_s100_hardware(
+        S100HardwareConfig::default().validate().unwrap(),
+        RamInit::Zeroed,
+    );
+    host
+}
+
+fn two_sio_host() -> BackendHost {
+    let mut host = BackendHost::default();
+    host.configure_s100_hardware(
+        S100HardwareConfig::historical_8800b_18_slot_starter()
+            .validate()
+            .unwrap(),
+        RamInit::Zeroed,
+    );
     host
 }
 
@@ -91,33 +110,30 @@ fn cycle_exact_t2_keeps_unmapped_s100_di_floating_before_cpu_samples_open_bus_ff
 
 #[test]
 fn unmapped_io_reads_ff_with_88_sio_installed() {
-    let mut bus = AltairBus::default();
-    bus.configure_serial_board(SerialBoard::Sio88);
+    let mut host = sio_host();
 
-    assert_eq!(bus.debugger_input_port(0x10), OPEN_BUS);
-    assert_eq!(bus.debugger_input_port(0x11), OPEN_BUS);
-    assert_eq!(bus.debugger_input_port(0x12), OPEN_BUS);
-    assert_eq!(bus.debugger_input_port(0x13), OPEN_BUS);
-    assert_eq!(bus.debugger_input_port(0x7e), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x10), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x11), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x12), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x13), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x7e), OPEN_BUS);
 }
 
 #[test]
 fn unmapped_io_reads_ff_with_88_2sio_installed() {
-    let mut bus = AltairBus::default();
-    bus.configure_serial_board(SerialBoard::TwoSio88);
+    let mut host = two_sio_host();
 
-    assert_eq!(bus.debugger_input_port(0x00), OPEN_BUS);
-    assert_eq!(bus.debugger_input_port(0x01), OPEN_BUS);
-    assert_eq!(bus.debugger_input_port(0x7e), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x00), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x01), OPEN_BUS);
+    assert_eq!(host.debugger_input_port(0x7e), OPEN_BUS);
 }
 
 #[test]
 fn open_bus_does_not_override_a_responding_device() {
-    let mut bus = AltairBus::default();
-    bus.configure_serial_board(SerialBoard::TwoSio88);
+    let mut host = two_sio_host();
 
     // A selected 6850 responds at its status port. With no received character
     // and an empty transmitter the currently modelled status is TDRE only.
-    assert_eq!(bus.debugger_input_port(0x10), 0x02);
-    assert_eq!(bus.debugger_input_port(0x12), 0x02);
+    assert_eq!(host.debugger_input_port(0x10), 0x02);
+    assert_eq!(host.debugger_input_port(0x12), 0x02);
 }
