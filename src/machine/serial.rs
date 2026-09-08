@@ -19,8 +19,12 @@ impl super::AltairBus {
         super::SioInterruptTarget,
         super::SioInterruptTarget,
     )> {
-        if self.io.serial_board() != SerialBoard::Sio88 { return None; }
-        let config = self.io.sio_hardware();
+        let config = if self.cycle_uses_physical_serial() {
+            self.memory.primary_sio_hardware()?
+        } else {
+            if self.io.serial_board() != SerialBoard::Sio88 { return None; }
+            self.io.sio_hardware()
+        };
         Some((
             config.revision,
             config.interrupt_wiring.input,
@@ -53,13 +57,31 @@ impl super::AltairBus {
     /// RS-232 voltage polarity, TTL level and current-loop conduction remain
     /// distinct typed states instead of being collapsed to an ambiguous bool.
     pub fn sio_connector_outputs(&self) -> Option<SioConnectorOutputs> {
-        if self.io.serial_board() != SerialBoard::Sio88 { return None; }
-        let lines = self.io.sio_handshake_lines()?;
+        let (config, lines) = if self.cycle_uses_physical_serial() {
+            (
+                self.memory.primary_sio_hardware()?,
+                self.memory.sio_handshake_lines()?,
+            )
+        } else {
+            if self.io.serial_board() != SerialBoard::Sio88 { return None; }
+            let lines = self.io.sio_handshake_lines()?;
+            (
+                self.io.sio_hardware(),
+                (
+                    lines.rsi_high,
+                    lines.input_device_ready,
+                    lines.output_device_ready,
+                    lines.tso_high,
+                    lines.bin_high,
+                    lines.bot_high,
+                ),
+            )
+        };
         Some(sio_interface::connector_outputs(
-            self.io.sio_hardware().interface,
-            lines.tso_high,
-            lines.bin_high,
-            lines.bot_high,
+            config.interface,
+            lines.3,
+            lines.4,
+            lines.5,
         ))
     }
 
@@ -67,8 +89,13 @@ impl super::AltairBus {
     /// interface back to the board's common TTL logic domain. A level belonging
     /// to another electrical family is rejected rather than silently coerced.
     pub fn sio_decode_connector_input(&self, level: SioElectricalLevel) -> Option<bool> {
-        if self.io.serial_board() != SerialBoard::Sio88 { return None; }
-        sio_interface::decode_input(self.io.sio_hardware().interface, level)
+        let interface = if self.cycle_uses_physical_serial() {
+            self.memory.primary_sio_hardware()?.interface
+        } else {
+            if self.io.serial_board() != SerialBoard::Sio88 { return None; }
+            self.io.sio_hardware().interface
+        };
+        sio_interface::decode_input(interface, level)
     }
 
     /// Prepared Adaptive-Cycle Full memory access. This is a normal guest
