@@ -1,4 +1,4 @@
-use rustair::backend::{CycleAccurateMachineBackend, MachineBackend};
+use rustair::backend::CycleAccurateMachineBackend;
 use rustair::config::{RamInit, S100HardwareConfig};
 use rustair::machine::AltairBus;
 
