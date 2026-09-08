@@ -4,11 +4,11 @@ use crate::s100_runtime::DisplayControlLines;
 use super::AltairBus;
 
 impl AltairBus {
-    /// Host endpoints mutate the same UART silicon that is installed on an S-100
-    /// card, but those mutations happen outside a CPU clock edge. Resolve that
-    /// card's newly dirty connector immediately so PINT/VI/PRDY observability
-    /// stays physical and the next CPU sample sees the already-settled bus.
-    fn settle_host_serial_change(&mut self) {
+    /// Host endpoints and card-local elapsed time mutate the same UART silicon
+    /// installed on an S-100 card outside the just-resolved CPU edge. Resolve
+    /// that newly dirty connector immediately so PINT/VI/PRDY observability
+    /// remains physical and the next CPU sample sees an already-settled bus.
+    pub(super) fn settle_host_serial_change(&mut self) {
         let signals = self.s100.signals();
         let display = DisplayControlLines {
             ready: signals.front_panel_ready,
