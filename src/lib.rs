@@ -29,6 +29,8 @@ pub(crate) mod embedded_assets;
 pub(crate) mod mc6850;
 
 #[cfg(test)]
+mod backend_test_compat;
+#[cfg(test)]
 mod s100_cycle_integration_tests;
 
 // Keep the original public module path working while the implementation now

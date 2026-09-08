@@ -31,6 +31,13 @@ impl AltairBus {
         self.memory.clear_serial();
     }
 
+    /// Compatibility synchronization hook retained while Full still calls the
+    /// old boundary name. The authoritative interrupt source is the installed
+    /// S-100 card; this method deliberately never fabricates PINT from a host
+    /// UART singleton. A later physical bus settle observes any connector dirtied
+    /// by elapsed card time before the CPU samples an interrupt edge.
+    pub(crate) fn refresh_interrupt_request_line(&mut self) {}
+
     /// Raw VI levels sourced by the installed 88-2SIO. They remain separate
     /// from processor PINT until a real 88-VI card is installed to arbitrate them.
     pub fn two_sio_vector_interrupt_requests(&self) -> u8 {
