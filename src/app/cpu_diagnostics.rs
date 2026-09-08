@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::S100InstalledCardConfig;
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 

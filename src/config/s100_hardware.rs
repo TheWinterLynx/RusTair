@@ -105,10 +105,9 @@ impl FastRamCompatibilityConfig {
 /// Persistable physical configuration of one fitted S-100 connector.
 ///
 /// Serial-card strap state belongs to the card instance, not to the machine as a
-/// global singleton. The runtime fabric can materialize every installed card.
-/// Host cable routing is intentionally limited to one serial card for now, so a
-/// validated user configuration must contain at most one 88-SIO/88-2SIO until
-/// the endpoint router itself becomes slot-aware.
+/// global singleton. The runtime fabric can materialize every installed card,
+/// including multiple independently strapped or electrically overlapping serial
+/// cards exactly as a real backplane can.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100InstalledCardConfig {
     Mits8080Cpu,
@@ -276,9 +275,10 @@ impl S100HardwareConfig {
         self.active_cpu_board_slot().map(|(_, board)| board)
     }
 
-    /// The single serial card addressable by host-side cables in a validated
-    /// configuration. Returns `None` for no card or an intentionally invalid
-    /// POWER-OFF edit containing more than one serial card.
+    /// Return the serial card used by host-side helpers only when the physical
+    /// inventory contains exactly one serial card. Multiple serial cards are
+    /// valid S-100 hardware; a caller that needs to address one of them must use
+    /// `serial_slots()` and identify its slot explicitly.
     pub fn active_serial_card_slot(self) -> Option<(usize, S100InstalledCardConfig)> {
         let mut cards = self.serial_slots();
         let card = cards.next()?;
@@ -382,9 +382,10 @@ impl S100HardwareConfig {
         (start..end).all(|address| self.ram_responder_count(address as u16) == 1)
     }
 
-    /// Validate the persisted electrical assembly. RAM address overlap is not an
-    /// error here: mis-strapped real cards are representable and the electrical
-    /// backplane must expose their DI contention at runtime.
+    /// Validate the persisted electrical assembly. RAM and I/O address overlap
+    /// are not errors here: mis-strapped real cards are representable and the
+    /// electrical backplane must expose contention at runtime. The only global
+    /// cardinality restriction is the single supported CPU bus master.
     pub fn validate(self) -> Result<Self, S100HardwareConfigError> {
         self.chassis
             .validate()
@@ -403,10 +404,6 @@ impl S100HardwareConfig {
         let cpu_count = self.cpu_slots().count();
         if cpu_count != 1 {
             return Err(S100HardwareConfigError::UnsupportedCpuCardCount(cpu_count));
-        }
-        let serial_count = self.serial_slots().count();
-        if serial_count > 1 {
-            return Err(S100HardwareConfigError::UnsupportedSerialCardCount(serial_count));
         }
         Ok(self)
     }
@@ -488,10 +485,6 @@ pub enum S100HardwareConfigError {
     InvalidRamCard(S100RamConfigError),
     InvalidCompatibilityRamWindow { base_address: u16, populated_bytes: usize },
     UnsupportedCpuCardCount(usize),
-    /// The live S-100 fabric can materialize multiple serial cards, but the
-    /// current host cable router addresses only one board's Port 0/Port 1.
-    /// Reject ambiguity rather than silently attaching a cable to the first card.
-    UnsupportedSerialCardCount(usize),
 }
 
 /// UI-friendly connector populations documented by the chassis model.
@@ -597,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_rejects_ambiguous_multiple_serial_cards_until_cables_are_slot_aware() {
+    fn validation_preserves_multiple_serial_cards_for_physical_bus_resolution() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
         config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
         config.set_slot(2, Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()))).unwrap();
@@ -605,10 +598,9 @@ mod tests {
             straps: TwoSioStraps::default(),
             interrupt_wiring: TwoSioInterruptWiring::default(),
         })).unwrap();
-        assert!(matches!(
-            config.validate(),
-            Err(S100HardwareConfigError::UnsupportedSerialCardCount(2))
-        ));
+        let config = config.validate().unwrap();
+        assert_eq!(config.serial_slots().count(), 2);
+        assert_eq!(config.active_serial_card_slot(), None);
     }
 
     #[test]

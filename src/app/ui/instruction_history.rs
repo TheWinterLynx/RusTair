@@ -1,7 +1,6 @@
 use super::super::{egui, RusTairApp};
 use super::execution_position::current_instruction_address;
 use crate::backend::{Intel8080State, InstructionTraceEntry};
-use crate::config::SerialBoard;
 use crate::debugger8080::detect_simple_backward_loop;
 use crate::decoder8080::{decode_8080, ControlFlow};
 use crate::explain8080::{explain_instruction, MemoryValue8080};
@@ -182,36 +181,27 @@ impl RusTairApp {
     }
 
     fn io_port_context(&self, port: u8) -> Option<String> {
+        let mut labels = Vec::new();
         if port == 0xff {
-            return Some("Altair front-panel sense-switch input".into());
+            labels.push("Altair front-panel sense/data port".to_owned());
         }
-
-        let board = self.config.machine.serial_board;
-        let mapped = match board {
-            SerialBoard::Sio88 => {
-                if port == board.status_port() {
-                    Some("MITS 88-SIO status port")
-                } else if port == board.data_port() {
-                    Some("MITS 88-SIO data port")
-                } else {
-                    None
-                }
-            }
-            SerialBoard::TwoSio88 => {
-                if port == board.status_port() {
-                    Some("MITS 88-2SIO Port 0 status/control")
-                } else if port == board.data_port() {
-                    Some("MITS 88-2SIO Port 0 data")
-                } else if board.port1_status_port() == Some(port) {
-                    Some("MITS 88-2SIO Port 1 status/control")
-                } else if board.port1_data_port() == Some(port) {
-                    Some("MITS 88-2SIO Port 1 data")
-                } else {
-                    None
-                }
-            }
-        };
-        mapped.map(|label| format!("Current board mapping: {label}"))
+        labels.extend(
+            self.physical_serial_port_bindings(port)
+                .into_iter()
+                .map(|binding| {
+                    format!(
+                        "Slot {} · {} [{:02X}h]",
+                        binding.slot,
+                        binding.kind.label(),
+                        binding.port
+                    )
+                }),
+        );
+        match labels.as_slice() {
+            [] => None,
+            [only] => Some(format!("Current physical mapping: {only}")),
+            _ => Some(format!("Current physical contention: {}", labels.join(" + "))),
+        }
     }
 
     fn effect_context(&self, effect: InstructionEffect8080) -> String {
