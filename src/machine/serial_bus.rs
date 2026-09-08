@@ -24,6 +24,14 @@ impl AltairBus {
             .expect("validated S-100 hardware must resolve host-side serial changes");
     }
 
+    /// Full still asks for an interrupt-line refresh at its synchronization
+    /// boundaries. The operation is now a real connector settle, not an
+    /// aggregate UART-to-IRQ projection; PINT remains sourced only by installed
+    /// S-100 cards and reaches the CPU package through the backplane resolver.
+    pub(crate) fn refresh_interrupt_request_line(&mut self) {
+        self.settle_host_serial_change();
+    }
+
     pub fn serial_receive(&mut self, byte: u8) {
         let _ = self.memory.serial_receive(0, byte);
         self.settle_host_serial_change();
