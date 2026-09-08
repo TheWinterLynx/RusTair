@@ -31,7 +31,7 @@ use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort};
 use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig,
-    S100InstalledCardConfig, SerialBoard, TerminalSpeed,
+    S100InstalledCardConfig, SerialBoard, TerminalSpeed, TwoSioStraps,
 };
 #[cfg(test)]
 use crate::config::RamSize;
@@ -447,7 +447,6 @@ impl RusTairApp {
             SerialConnection::Port1 => Some(BackendSerialPort::Port1),
         }
     }
-
     fn serial_rx_empty_at(&mut self, connection: SerialConnection) -> bool {
         Self::backend_serial_port(connection).map(|port| self.machine.serial_rx_empty(port)).unwrap_or(true)
     }
