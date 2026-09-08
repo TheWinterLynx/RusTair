@@ -254,21 +254,26 @@ impl RusTairApp {
     }
 
     fn draw_external_com_connection_selector(&mut self, ui: &mut egui::Ui) {
-        let board = self.config.machine.serial_board;
-        let straps = self.config.machine.two_sio_straps;
+        let hardware = self.config.machine.s100_hardware;
+        let board = hardware.active_serial_board();
         let current = self.external_com_connection();
         let mut selected = current;
         ui.horizontal(|ui| {
             ui.label("Virtual cable:");
             egui::ComboBox::from_id_salt("external-com-serial-connection")
-                .selected_text(Self::serial_connection_label(board, straps, current)).show_ui(ui, |ui| {
+                .selected_text(Self::serial_connection_label(hardware, current)).show_ui(ui, |ui| {
                     ui.selectable_value(&mut selected, SerialConnection::Disconnected, "Disconnected");
-                    ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(board, straps, SerialConnection::Port0));
-                    if board == SerialBoard::TwoSio88 {
-                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(board, straps, SerialConnection::Port1));
+                    if board.is_some() {
+                        ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(hardware, SerialConnection::Port0));
+                    }
+                    if board == Some(SerialBoard::TwoSio88) {
+                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(hardware, SerialConnection::Port1));
                     }
                 });
         });
+        if board.is_none() {
+            ui.small("Install an 88-SIO or 88-2SIO in Configuration → S-100 Chassis / Cards before attaching the COM endpoint.");
+        }
         if selected != current { self.set_serial_connection(SerialDevice::ExternalCom, selected); }
     }
 
@@ -331,7 +336,7 @@ impl RusTairApp {
 
             ui.separator();
             ui::collapsible_section(ui, "How the COM bridge behaves", false, |ui| {
-                ui.label("• The host COM device is a transport only; guest software still sees the selected 88-SIO/88-2SIO and its normal I/O addresses.");
+                ui.label("• The host COM device is a transport only; guest software still sees the installed S-100 88-SIO/88-2SIO and its physical I/O addresses.");
                 ui.label("• The OS serial driver applies baud rate, data bits, parity, stop bits and flow control to the actual host port.");
                 ui.label("• Received host bytes enter the emulated receive line when its shift path is free; an unread MC6850 RDR does not stop a later frame and can therefore produce OVRN.");
                 ui.label("• With Host Pins selected, asserted host CTS/CD become LOW on the active-LOW MC6850 CTS/DCD inputs; deasserted host signals become HIGH.");

@@ -30,8 +30,8 @@ use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort};
 use crate::config::{
-    AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig, SerialBoard,
-    TerminalSpeed, TwoSioInterruptWiring, TwoSioStraps,
+    AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig,
+    S100InstalledCardConfig, SerialBoard, TerminalSpeed,
 };
 #[cfg(test)]
 use crate::config::RamSize;
@@ -141,13 +141,17 @@ impl RusTairApp {
             .active_cpu_board()
             .expect("default S-100 configuration has one CPU board");
         let cpu = cpu_board.cpu_model();
+        let serial = config
+            .machine
+            .serial_board()
+            .map_or("no serial card", SerialBoard::label);
         let status = format!(
-            "Ready — RusTair Adaptive Cycle 8080 — {} / {} @ {:.1} MHz — {} KiB S-100 RAM — {} — ASR-33 connected",
+            "Ready — RusTair Adaptive Cycle 8080 — {} / {} @ {:.1} MHz — {} KiB S-100 RAM — {}",
             cpu_board.label(),
             cpu.label(),
             cpu_board.clock_hz() as f32 / 1_000_000.0,
             config.machine.s100_hardware.installed_ram_bytes() / 1024,
-            config.machine.serial_board.label(),
+            serial,
         );
         let mut terminal = TerminalState::default();
         terminal.speed = config.peripherals.terminal_speed;
@@ -211,24 +215,35 @@ impl RusTairApp {
         );
     }
 
-    /// Apply a validated physical slot inventory to the active backend.
+    /// Apply one validated physical slot inventory to the active backend.
     ///
-    /// This is the app-side authority used by the S-100 editor and persistence.
-    /// Debugger/UI inspection may read card handles directly, but guest execution
-    /// can only reach memory through the CPU board and live backplane built here.
+    /// This is the sole app-side hardware authority. CPU, RAM and serial identity
+    /// and all card straps are materialized from the S-100 slots in one remount.
     fn apply_s100_hardware_configuration(&mut self, hardware: S100HardwareConfig, action: &str) {
         if self.machine.powered() {
             self.status = "POWER OFF required to move or reconfigure S-100 cards".into();
             return;
         }
+
+        let previous = self.config.machine.s100_hardware;
+        let old_asr_connection = self.asr_connection();
+        if old_asr_connection.is_connected() {
+            let _ = self.serial_set_receive_break_at(old_asr_connection, false);
+        }
+
         self.machine
             .configure_s100_hardware(hardware, self.config.machine.ram_init);
         self.config.machine.s100_hardware = hardware;
+        self.reconcile_serial_router_after_hardware_change(previous, hardware);
+
         let now = Instant::now();
         self.last_tick = now;
         self.execution_clock.reset_at(now);
+        let serial = hardware
+            .active_serial_board()
+            .map_or("no serial card".to_string(), |board| board.label().to_string());
         self.status = format!(
-            "{action} — live S-100 chassis remounted ({} KiB RAM) — POWER remains OFF",
+            "{action} — live S-100 chassis remounted ({} KiB RAM, {serial}) — POWER remains OFF",
             hardware.installed_ram_bytes() / 1024
         );
     }
@@ -254,150 +269,46 @@ impl RusTairApp {
         );
     }
 
-    fn apply_serial_board_configuration(&mut self, serial_board: SerialBoard) {
-        if self.config.machine.serial_board == serial_board { return; }
-        self.config.machine.serial_board = serial_board;
-        self.machine.configure_serial_board(serial_board);
-        match serial_board {
-            SerialBoard::Sio88 => {
-                self.machine.configure_sio_hardware(self.config.machine.sio_hardware);
-            }
-            SerialBoard::TwoSio88 => {
-                self.machine.configure_two_sio_straps(self.config.machine.two_sio_straps);
-                self.machine.configure_two_sio_interrupt_wiring(
-                    self.config.machine.two_sio_interrupt_wiring,
-                );
+    fn reconcile_serial_router_after_hardware_change(
+        &mut self,
+        previous: S100HardwareConfig,
+        next: S100HardwareConfig,
+    ) {
+        if previous.active_serial_board() != next.active_serial_board() {
+            match next.active_serial_board() {
+                Some(board) => self.serial_router.reset_for_board(board),
+                None => {
+                    for device in [
+                        SerialDevice::InternalAsr33,
+                        SerialDevice::TextTerminal,
+                        SerialDevice::ExternalTcp,
+                        SerialDevice::ExternalCom,
+                    ] {
+                        self.serial_router
+                            .connect(device, SerialConnection::Disconnected);
+                    }
+                }
             }
         }
-        self.execution_clock.reset_at(Instant::now());
-        self.serial_router.reset_for_board(serial_board);
-        let asr_directly_compatible = match serial_board {
-            SerialBoard::Sio88 => SerialDevice::InternalAsr33
-                .supports_sio_interface(self.config.machine.sio_hardware.interface),
-            SerialBoard::TwoSio88 => SerialDevice::InternalAsr33
-                .supports_two_sio_interface(self.config.machine.two_sio_straps.port0_interface),
-        };
-        if !asr_directly_compatible {
-            self.serial_router.connect(
-                SerialDevice::InternalAsr33,
-                SerialConnection::Disconnected,
-            );
+
+        for device in [
+            SerialDevice::InternalAsr33,
+            SerialDevice::TextTerminal,
+            SerialDevice::ExternalTcp,
+            SerialDevice::ExternalCom,
+        ] {
+            let connection = self.serial_router.connection(device);
+            if !Self::serial_connection_supported(next, device, connection) {
+                self.serial_router
+                    .connect(device, SerialConnection::Disconnected);
+            }
         }
+
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
         self.terminal.tx_started = None;
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
-        self.status = match serial_board {
-            SerialBoard::Sio88 => format!(
-                "Serial board configured: MITS 88-SIO — Port 0 {:02X}h/{:02X}h @ {} · {} · {}; machine reset{}",
-                self.config.machine.sio_hardware.address.status(),
-                self.config.machine.sio_hardware.address.data(),
-                self.config.machine.sio_hardware.baud.label(),
-                self.config.machine.sio_hardware.revision.label(),
-                self.config.machine.sio_hardware.format.label(),
-                if asr_directly_compatible { "" } else { " · ASR-33 left disconnected: direct cable requires 88-SIO C current loop" },
-            ),
-            SerialBoard::TwoSio88 => format!(
-                "Serial board configured: MITS 88-2SIO — Port 0 {:02X}h/{:02X}h @ {} · {}; Port 1 {:02X}h/{:02X}h @ {} · {}; DI→{}; EI→{}; machine reset{}",
-                self.config.machine.serial_status_port(),
-                self.config.machine.serial_data_port(),
-                self.config.machine.two_sio_straps.port0_baud.label(),
-                self.config.machine.two_sio_straps.port0_interface.label(),
-                self.config.machine.serial_port1_status_port().unwrap_or(0),
-                self.config.machine.serial_port1_data_port().unwrap_or(0),
-                self.config.machine.two_sio_straps.port1_baud.label(),
-                self.config.machine.two_sio_straps.port1_interface.label(),
-                self.config.machine.two_sio_interrupt_wiring.port0.label(),
-                self.config.machine.two_sio_interrupt_wiring.port1.label(),
-                if asr_directly_compatible { "" } else { " · ASR-33 left disconnected: Port 0 is not TTY 20 mA current loop" },
-            ),
-        };
-    }
-
-    fn apply_two_sio_straps(&mut self, straps: TwoSioStraps) {
-        if self.config.machine.two_sio_straps == straps { return; }
-        if self.machine.powered() {
-            self.status = "Power OFF the Altair before moving physical 88-2SIO address/baud/interface wiring".into();
-            return;
-        }
-
-        let incompatible: Vec<(SerialConnection, SerialDevice)> = [
-            (SerialConnection::Port0, straps.port0_interface),
-            (SerialConnection::Port1, straps.port1_interface),
-        ]
-        .into_iter()
-        .filter_map(|(connection, interface)| {
-            self.serial_router
-                .device_on(connection)
-                .filter(|device| !device.supports_two_sio_interface(interface))
-                .map(|device| (connection, device))
-        })
-        .collect();
-
-        if incompatible.iter().any(|(_, device)| *device == SerialDevice::InternalAsr33) {
-            let old_asr_connection = self.asr_connection();
-            let _ = self.serial_set_receive_break_at(old_asr_connection, false);
-        }
-
-        self.config.machine.two_sio_straps = straps;
-        self.machine.configure_two_sio_straps(straps);
-        for (_, device) in &incompatible {
-            self.serial_router.connect(*device, SerialConnection::Disconnected);
-            if *device == SerialDevice::InternalAsr33 { self.asr33.answerback.clear(); }
-        }
-        self.asr33.tx_started = None;
-        self.asr33.answerback.clear();
-        self.terminal.tx_started = None;
-        self.external_serial.reset_line_timing();
-        self.external_com.reset_line_timing();
-        self.execution_clock.reset_at(Instant::now());
-        let disconnected_suffix = if incompatible.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " · disconnected incompatible cable(s): {}",
-                incompatible
-                    .iter()
-                    .map(|(_, device)| Self::serial_device_name(*device))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        self.status = format!(
-            "88-2SIO wiring: {:02X}h-{:02X}h; Port 0 {} baud / {}; Port 1 {} baud / {} — POWER remains OFF{}",
-            straps.address.base(),
-            straps.address.base() + 3,
-            straps.port0_baud.label(),
-            straps.port0_interface.label(),
-            straps.port1_baud.label(),
-            straps.port1_interface.label(),
-            disconnected_suffix,
-        );
-    }
-
-    fn apply_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
-        if self.config.machine.two_sio_interrupt_wiring == wiring { return; }
-        if self.machine.powered() {
-            self.status = "Power OFF the Altair before changing the physical 88-2SIO DI/EI interrupt wiring".into();
-            return;
-        }
-        self.config.machine.two_sio_interrupt_wiring = wiring;
-        self.machine.configure_two_sio_interrupt_wiring(wiring);
-        self.execution_clock.reset_at(Instant::now());
-        self.status = format!(
-            "88-2SIO interrupt wiring: DI / Port 0 → {}; EI / Port 1 → {} — POWER remains OFF",
-            wiring.port0.label(), wiring.port1.label(),
-        );
-    }
-
-    fn two_sio_vi_mask_label(mask: u8) -> String {
-        if mask == 0 { return "none".into(); }
-        (0u8..8)
-            .filter(|level| mask & (1u8 << level) != 0)
-            .map(|level| format!("VI{level}"))
-            .collect::<Vec<_>>()
-            .join(", ")
     }
 
     fn serial_device_name(device: SerialDevice) -> &'static str {
@@ -409,35 +320,74 @@ impl RusTairApp {
         }
     }
 
-    fn serial_connection_label(board: SerialBoard, straps: TwoSioStraps, connection: SerialConnection) -> String {
-        match (board, connection) {
-            (_, SerialConnection::Disconnected) => "Disconnected".into(),
-            (SerialBoard::Sio88, SerialConnection::Port0) => "88-SIO [configured I/O]".into(),
-            (SerialBoard::Sio88, SerialConnection::Port1) => "Unavailable".into(),
-            (SerialBoard::TwoSio88, SerialConnection::Port0) => format!(
-                "88-2SIO Port 0 [{:02X}h/{:02X}h · {}]",
-                straps.address.port0_status(), straps.address.port0_data(), straps.port0_interface.label(),
-            ),
-            (SerialBoard::TwoSio88, SerialConnection::Port1) => format!(
-                "88-2SIO Port 1 [{:02X}h/{:02X}h · {}]",
-                straps.address.port1_status(), straps.address.port1_data(), straps.port1_interface.label(),
-            ),
+    fn serial_connection_supported(
+        hardware: S100HardwareConfig,
+        device: SerialDevice,
+        connection: SerialConnection,
+    ) -> bool {
+        if connection == SerialConnection::Disconnected {
+            return true;
+        }
+        let Some((_, card)) = hardware.active_serial_card_slot() else {
+            return false;
+        };
+        match (card, connection) {
+            (S100InstalledCardConfig::Mits88Sio(config), SerialConnection::Port0) => {
+                device.supports_sio_interface(config.interface)
+            }
+            (S100InstalledCardConfig::Mits88Sio(_), SerialConnection::Port1) => false,
+            (
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
+                SerialConnection::Port0,
+            ) => device.supports_two_sio_interface(straps.port0_interface),
+            (
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
+                SerialConnection::Port1,
+            ) => device.supports_two_sio_interface(straps.port1_interface),
+            _ => false,
         }
     }
 
-    fn serial_connection_label_with_sio(
-        board: SerialBoard,
-        sio: crate::config::SioHardwareConfig,
-        straps: TwoSioStraps,
+    fn serial_connection_label(
+        hardware: S100HardwareConfig,
         connection: SerialConnection,
     ) -> String {
-        if board == SerialBoard::Sio88 && connection == SerialConnection::Port0 {
-            return format!(
-                "88-SIO {} [{:02X}h/{:02X}h]",
-                sio.interface.label(), sio.address.status(), sio.address.data(),
-            );
+        if connection == SerialConnection::Disconnected {
+            return "Disconnected".into();
         }
-        Self::serial_connection_label(board, straps, connection)
+        let Some((slot, card)) = hardware.active_serial_card_slot() else {
+            return "Unavailable — no serial card installed".into();
+        };
+        match (card, connection) {
+            (S100InstalledCardConfig::Mits88Sio(config), SerialConnection::Port0) => format!(
+                "Slot {slot} · 88-SIO {} [{:02X}h/{:02X}h]",
+                config.interface.label(),
+                config.address.status(),
+                config.address.data(),
+            ),
+            (S100InstalledCardConfig::Mits88Sio(_), SerialConnection::Port1) => {
+                "Unavailable — 88-SIO has one serial channel".into()
+            }
+            (
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
+                SerialConnection::Port0,
+            ) => format!(
+                "Slot {slot} · 88-2SIO Port 0 [{:02X}h/{:02X}h · {}]",
+                straps.address.port0_status(),
+                straps.address.port0_data(),
+                straps.port0_interface.label(),
+            ),
+            (
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
+                SerialConnection::Port1,
+            ) => format!(
+                "Slot {slot} · 88-2SIO Port 1 [{:02X}h/{:02X}h · {}]",
+                straps.address.port1_status(),
+                straps.address.port1_data(),
+                straps.port1_interface.label(),
+            ),
+            _ => "Unavailable".into(),
+        }
     }
 
     fn serial_connection(&self, device: SerialDevice) -> SerialConnection {
@@ -445,30 +395,21 @@ impl RusTairApp {
     }
 
     fn set_serial_connection(&mut self, device: SerialDevice, connection: SerialConnection) {
-        if self.config.machine.serial_board == SerialBoard::Sio88 && connection == SerialConnection::Port1 { return; }
-        if self.config.machine.serial_board == SerialBoard::Sio88
-            && connection == SerialConnection::Port0
-            && !device.supports_sio_interface(self.config.machine.sio_hardware.interface)
-        {
+        let hardware = self.config.machine.s100_hardware;
+        if !Self::serial_connection_supported(hardware, device, connection) {
+            let reason = match hardware.active_serial_card_slot().map(|(_, card)| card) {
+                Some(S100InstalledCardConfig::Mits88Sio(_)) => device.sio_requirement_label(),
+                Some(S100InstalledCardConfig::Mits88TwoSio { .. }) => {
+                    device.two_sio_requirement_label()
+                }
+                _ => "install a serial card in Configuration → S-100 Chassis / Cards first",
+            };
             self.status = format!(
-                "{} not connected: {}; no hidden level converter is installed",
-                Self::serial_device_name(device), device.sio_requirement_label(),
+                "{} not connected: {}; no hidden level converter or phantom UART is inserted",
+                Self::serial_device_name(device),
+                reason,
             );
             return;
-        }
-        if self.config.machine.serial_board == SerialBoard::TwoSio88 {
-            let interface = match connection {
-                SerialConnection::Disconnected => None,
-                SerialConnection::Port0 => Some(self.config.machine.two_sio_straps.port0_interface),
-                SerialConnection::Port1 => Some(self.config.machine.two_sio_straps.port1_interface),
-            };
-            if interface.is_some_and(|interface| !device.supports_two_sio_interface(interface)) {
-                self.status = format!(
-                    "{} not connected: {}; no hidden level converter is installed",
-                    Self::serial_device_name(device), device.two_sio_requirement_label(),
-                );
-                return;
-            }
         }
         if self.serial_router.connection(device) == connection { return; }
 
@@ -491,12 +432,7 @@ impl RusTairApp {
             self.asr33.answerback.clear();
         }
         let device_name = Self::serial_device_name(device);
-        let connection_name = Self::serial_connection_label_with_sio(
-            self.config.machine.serial_board,
-            self.config.machine.sio_hardware,
-            self.config.machine.two_sio_straps,
-            connection,
-        );
+        let connection_name = Self::serial_connection_label(hardware, connection);
         self.status = if let Some(displaced) = displaced {
             format!("{device_name} connected to {connection_name}; {} disconnected from that port", Self::serial_device_name(displaced))
         } else {
@@ -547,12 +483,15 @@ impl RusTairApp {
     fn terminal_serial_tx_complete(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_complete_at(c) }
 
     fn service_disconnected_serial_ports(&mut self) {
+        if self.config.machine.serial_board().is_none() {
+            return;
+        }
         if self.serial_router.device_on(SerialConnection::Port0).is_none()
             && self.machine.serial_tx_busy(BackendSerialPort::Port0)
         {
             self.machine.serial_tx_complete(BackendSerialPort::Port0);
         }
-        if self.config.machine.serial_board == SerialBoard::TwoSio88
+        if self.config.machine.serial_board() == Some(SerialBoard::TwoSio88)
             && self.serial_router.device_on(SerialConnection::Port1).is_none()
             && self.machine.serial_tx_busy(BackendSerialPort::Port1)
         {

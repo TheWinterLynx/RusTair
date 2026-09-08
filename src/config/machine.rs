@@ -32,10 +32,10 @@ impl Default for CpuModel {
 
 /// Physical CPU board installed in the S-100 chassis.
 ///
-/// This is deliberately separate from the emulator engine. Fast and Cycle
-/// Accurate are two implementations of the same currently installed MITS 8080
-/// board. A future Z80 implementation should enter the machine as a documented
-/// historical S-100 CPU board, not as a synthetic backend-only CPU choice.
+/// This is deliberately separate from host execution strategy. Adaptive Full
+/// and exact Partial both execute the same installed MITS 8080 board. A future
+/// Z80 implementation must enter the machine as a documented S-100 CPU board,
+/// not as a synthetic backend-only CPU choice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuBoard {
     Mits8080,
@@ -241,11 +241,11 @@ impl Default for RamBoardProfile {
     }
 }
 
-/// Transitional serial runtime selector.
+/// Identity of one installed MITS serial-card family.
 ///
-/// Serial card identity already belongs to `S100HardwareConfig`; this enum is
-/// retained only until endpoints/debugger are switched from the old singleton
-/// `IoDevices` bridge to per-slot 88-SIO/88-2SIO card handles.
+/// This is not a global machine selector. The active board is determined from
+/// the serial card installed in `S100HardwareConfig`; the enum remains useful to
+/// describe card capabilities, migration inputs and endpoint defaults.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SerialBoard {
     Sio88,
@@ -262,8 +262,8 @@ impl SerialBoard {
         }
     }
 
-    /// Canonical/default Port 0 status address. For an installed serial board
-    /// whose jumpers were moved, use `MachineConfig::serial_status_port()`.
+    /// Canonical/default Port 0 status address for the card family. Installed
+    /// cards may be strapped to a different address.
     pub const fn status_port(self) -> u8 {
         match self {
             Self::Sio88 => 0x00,
@@ -271,8 +271,8 @@ impl SerialBoard {
         }
     }
 
-    /// Canonical/default Port 0 data address. For an installed serial board
-    /// whose jumpers were moved, use `MachineConfig::serial_data_port()`.
+    /// Canonical/default Port 0 data address for the card family. Installed cards
+    /// may be strapped to a different address.
     pub const fn data_port(self) -> u8 {
         match self {
             Self::Sio88 => 0x01,
@@ -399,48 +399,66 @@ impl Default for TerminalSpeed {
     }
 }
 
+/// Physical machine configuration.
+///
+/// Every installed CPU/RAM/serial card and its straps live in `s100_hardware`.
+/// `ram_init` is the only emulator-side policy kept here because it describes
+/// how newly powered RAM cells are seeded, not what hardware is installed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct MachineConfig {
     pub ram_init: RamInit,
-    /// Transitional serial globals retained only while the old singleton serial
-    /// runtime is being replaced by per-slot card state. They must agree with the
-    /// selected compatibility card until that bridge is removed.
-    pub serial_board: SerialBoard,
-    pub sio_hardware: SioHardwareConfig,
-    pub two_sio_straps: TwoSioStraps,
-    pub two_sio_interrupt_wiring: TwoSioInterruptWiring,
-    /// Sole CPU/RAM/chassis hardware authority and already the persisted physical
-    /// representation for serial cards as well.
     pub s100_hardware: S100HardwareConfig,
 }
 
 impl MachineConfig {
-    pub const fn serial_status_port(self) -> u8 {
-        match self.serial_board {
-            SerialBoard::Sio88 => self.sio_hardware.address.status(),
-            SerialBoard::TwoSio88 => self.two_sio_straps.address.port0_status(),
+    pub fn serial_board(self) -> Option<SerialBoard> {
+        self.s100_hardware.active_serial_board()
+    }
+
+    pub fn sio_hardware(self) -> Option<SioHardwareConfig> {
+        self.s100_hardware.active_sio_hardware()
+    }
+
+    pub fn two_sio_straps(self) -> Option<TwoSioStraps> {
+        self.s100_hardware.active_two_sio_straps()
+    }
+
+    pub fn two_sio_interrupt_wiring(self) -> Option<TwoSioInterruptWiring> {
+        self.s100_hardware.active_two_sio_interrupt_wiring()
+    }
+
+    pub fn serial_status_port(self) -> Option<u8> {
+        match self.s100_hardware.active_serial_card_slot()?.1 {
+            super::s100_hardware::S100InstalledCardConfig::Mits88Sio(config) => {
+                Some(config.address.status())
+            }
+            super::s100_hardware::S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
+                Some(straps.address.port0_status())
+            }
+            _ => None,
         }
     }
 
-    pub const fn serial_data_port(self) -> u8 {
-        match self.serial_board {
-            SerialBoard::Sio88 => self.sio_hardware.address.data(),
-            SerialBoard::TwoSio88 => self.two_sio_straps.address.port0_data(),
+    pub fn serial_data_port(self) -> Option<u8> {
+        match self.s100_hardware.active_serial_card_slot()?.1 {
+            super::s100_hardware::S100InstalledCardConfig::Mits88Sio(config) => {
+                Some(config.address.data())
+            }
+            super::s100_hardware::S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
+                Some(straps.address.port0_data())
+            }
+            _ => None,
         }
     }
 
-    pub const fn serial_port1_status_port(self) -> Option<u8> {
-        match self.serial_board {
-            SerialBoard::Sio88 => None,
-            SerialBoard::TwoSio88 => Some(self.two_sio_straps.address.port1_status()),
-        }
+    pub fn serial_port1_status_port(self) -> Option<u8> {
+        let straps = self.two_sio_straps()?;
+        Some(straps.address.port1_status())
     }
 
-    pub const fn serial_port1_data_port(self) -> Option<u8> {
-        match self.serial_board {
-            SerialBoard::Sio88 => None,
-            SerialBoard::TwoSio88 => Some(self.two_sio_straps.address.port1_data()),
-        }
+    pub fn serial_port1_data_port(self) -> Option<u8> {
+        let straps = self.two_sio_straps()?;
+        Some(straps.address.port1_data())
     }
 }
 
@@ -486,7 +504,8 @@ pub struct AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{SioAddressPair, TwoSioAddressBlock, TwoSioInterruptTarget};
+    use crate::config::{S100InstalledCardConfig, SioAddressPair, TwoSioAddressBlock};
+    use crate::s100_chassis::S100ChassisConfig;
 
     #[test]
     fn classic_altair_maps_to_mits_8080_board_at_two_megahertz() {
@@ -546,52 +565,42 @@ mod tests {
     }
 
     #[test]
-    fn default_serial_board_is_88_sio() {
-        assert_eq!(AppConfig::default().machine.serial_board, SerialBoard::Sio88);
-        assert_eq!(AppConfig::default().machine.sio_hardware, SioHardwareConfig::default());
+    fn default_serial_identity_comes_from_slot_four_88_sio() {
+        let machine = AppConfig::default().machine;
+        assert_eq!(machine.serial_board(), Some(SerialBoard::Sio88));
+        assert_eq!(machine.sio_hardware(), Some(SioHardwareConfig::default()));
+        assert_eq!(machine.serial_status_port(), Some(0x00));
+        assert_eq!(machine.serial_data_port(), Some(0x01));
+        assert_eq!(machine.serial_port1_status_port(), None);
     }
 
     #[test]
-    fn sio_serial_ports_follow_physical_address_jumpers() {
-        let mut config = AppConfig::default();
-        config.machine.sio_hardware.address = SioAddressPair::try_new(0x06).unwrap();
-        assert_eq!(config.machine.serial_status_port(), 0x06);
-        assert_eq!(config.machine.serial_data_port(), 0x07);
-        assert_eq!(config.machine.serial_port1_status_port(), None);
-        assert_eq!(config.machine.serial_port1_data_port(), None);
+    fn sio_serial_ports_follow_the_installed_cards_physical_address_jumpers() {
+        let mut hardware = AppConfig::default().machine.s100_hardware;
+        let mut sio = SioHardwareConfig::default();
+        sio.address = SioAddressPair::try_new(0x06).unwrap();
+        hardware.set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(sio))).unwrap();
+        let machine = MachineConfig { s100_hardware: hardware, ..MachineConfig::default() };
+        assert_eq!(machine.serial_status_port(), Some(0x06));
+        assert_eq!(machine.serial_data_port(), Some(0x07));
     }
 
     #[test]
-    fn two_sio_exposes_both_standard_port_pairs() {
-        let mut config = AppConfig::default();
-        config.machine.serial_board = SerialBoard::TwoSio88;
-        assert_eq!((config.machine.serial_status_port(), config.machine.serial_data_port()), (0x10, 0x11));
-        assert_eq!(config.machine.serial_port1_status_port(), Some(0x12));
-        assert_eq!(config.machine.serial_port1_data_port(), Some(0x13));
-    }
-
-    #[test]
-    fn machine_serial_ports_follow_physical_two_sio_address_straps() {
-        let mut config = AppConfig::default();
-        config.machine.serial_board = SerialBoard::TwoSio88;
-        config.machine.two_sio_straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
-        assert_eq!(config.machine.serial_status_port(), 0x44);
-        assert_eq!(config.machine.serial_data_port(), 0x45);
-        assert_eq!(config.machine.serial_port1_status_port(), Some(0x46));
-        assert_eq!(config.machine.serial_port1_data_port(), Some(0x47));
-    }
-
-    #[test]
-    fn two_sio_interrupt_wiring_is_machine_configuration_not_address_state() {
-        let mut config = AppConfig::default();
-        let original_straps = config.machine.two_sio_straps;
-        config.machine.two_sio_interrupt_wiring = TwoSioInterruptWiring {
-            port0: TwoSioInterruptTarget::Vi3,
-            port1: TwoSioInterruptTarget::Disconnected,
-        };
-        assert_eq!(config.machine.two_sio_straps, original_straps);
-        assert_eq!(config.machine.two_sio_interrupt_wiring.port0, TwoSioInterruptTarget::Vi3);
-        assert_eq!(config.machine.two_sio_interrupt_wiring.port1, TwoSioInterruptTarget::Disconnected);
+    fn two_sio_exposes_both_pairs_from_its_installed_straps() {
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+        hardware.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        let mut straps = TwoSioStraps::default();
+        straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
+        hardware.set_slot(2, Some(S100InstalledCardConfig::Mits88TwoSio {
+            straps,
+            interrupt_wiring: TwoSioInterruptWiring::default(),
+        })).unwrap();
+        let machine = MachineConfig { s100_hardware: hardware, ..MachineConfig::default() };
+        assert_eq!(machine.serial_board(), Some(SerialBoard::TwoSio88));
+        assert_eq!(machine.serial_status_port(), Some(0x44));
+        assert_eq!(machine.serial_data_port(), Some(0x45));
+        assert_eq!(machine.serial_port1_status_port(), Some(0x46));
+        assert_eq!(machine.serial_port1_data_port(), Some(0x47));
     }
 }
 
