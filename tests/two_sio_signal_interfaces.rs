@@ -9,6 +9,10 @@ const ROUTER: &str = include_str!("../src/io/serial_router.rs");
 const APP: &str = include_str!("../src/app/mod.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 
+fn compact(source: &str) -> String {
+    source.split_whitespace().collect()
+}
+
 fn hardware_with_two_sio(straps: TwoSioStraps) -> S100HardwareConfig {
     let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
     hardware
@@ -70,29 +74,31 @@ fn direct_endpoint_matrix_never_invents_a_level_converter() {
     assert!(ROUTER.contains("Self::InternalAsr33 => matches!(interface, TwoSioSignalInterface::Tty20mA)"));
     assert!(ROUTER.contains("Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232)"));
     assert!(ROUTER.contains("Self::TextTerminal | Self::ExternalTcp => true"));
-    assert!(APP.contains("device.supports_two_sio_interface(straps.port0_interface)"));
-    assert!(APP.contains("device.supports_two_sio_interface(straps.port1_interface)"));
+    let app = compact(APP);
+    assert!(app.contains("device.supports_two_sio_interface(straps.port0_interface)"));
+    assert!(app.contains("device.supports_two_sio_interface(straps.port1_interface)"));
     assert!(APP.contains("no hidden level converter or phantom UART is inserted"));
 }
 
 #[test]
 fn s100_remount_releases_the_old_asr_wire_before_reconciling_cables() {
-    let release = APP
-        .find("serial_set_receive_break_at(old_asr_connection, false)")
+    let app = compact(APP);
+    let release = app
+        .find("serial_set_receive_break_at(old_asr_connection,false)")
         .expect("old ASR receive wire must return to MARK before a remount");
-    let configure = APP
-        .find("self.machine\n            .configure_s100_hardware(hardware, self.config.machine.ram_init)")
-        .or_else(|| APP.find("self.machine.configure_s100_hardware(hardware, self.config.machine.ram_init)"))
+    let configure = app
+        .find("self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init)")
         .expect("app must remount complete S-100 hardware");
     assert!(release < configure);
-    assert!(APP.contains("reconcile_serial_router_after_hardware_change(previous, hardware)"));
+    assert!(app.contains("reconcile_serial_router_after_hardware_change(previous,hardware)"));
 }
 
 #[test]
 fn persisted_wiring_is_validated_against_the_installed_two_sio_card() {
-    assert!(PERSISTENCE.contains("Some(S100InstalledCardConfig::Mits88TwoSio { straps, .. })"));
-    assert!(PERSISTENCE.contains("device.supports_two_sio_interface(straps.port0_interface)"));
-    assert!(PERSISTENCE.contains("device.supports_two_sio_interface(straps.port1_interface)"));
-    assert!(PERSISTENCE.contains("valid_connection(hardware, device, connection)"));
+    let persistence = compact(PERSISTENCE);
+    assert!(persistence.contains("Some(S100InstalledCardConfig::Mits88TwoSio{straps,..})"));
+    assert!(persistence.contains("device.supports_two_sio_interface(straps.port0_interface)"));
+    assert!(persistence.contains("device.supports_two_sio_interface(straps.port1_interface)"));
+    assert!(persistence.contains("valid_connection(hardware,device,connection)"));
     assert!(!PERSISTENCE.contains("self.machine.configure_two_sio_straps("));
 }
