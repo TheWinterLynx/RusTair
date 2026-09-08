@@ -174,10 +174,6 @@ impl IoDevices {
         self.clear_serial();
     }
 
-    pub(super) fn serial_board(&self) -> SerialBoard {
-        self.serial_board
-    }
-
     pub(super) fn configure_sio_hardware(&mut self, config: SioHardwareConfig) {
         self.sio.configure(config);
         self.sio_control = 0;
@@ -204,10 +200,6 @@ impl IoDevices {
         wiring: TwoSioInterruptWiring,
     ) {
         self.two_sio_interrupt_wiring = wiring;
-    }
-
-    pub(super) fn two_sio_interrupt_wiring(&self) -> TwoSioInterruptWiring {
-        self.two_sio_interrupt_wiring
     }
 
     fn two_sio_port(&self, index: usize) -> Option<&TwoSioPort> {
