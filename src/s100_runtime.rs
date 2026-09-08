@@ -303,14 +303,6 @@ impl S100RuntimeFabric {
         self.serial.iter().find_map(|installed| installed.handle.sio_hardware())
     }
 
-    pub(crate) fn primary_two_sio_straps(&self) -> Option<crate::config::TwoSioStraps> {
-        self.serial.iter().find_map(|installed| installed.handle.two_sio_straps())
-    }
-
-    pub(crate) fn primary_two_sio_interrupt_wiring(&self) -> Option<crate::config::TwoSioInterruptWiring> {
-        self.serial.iter().find_map(|installed| installed.handle.two_sio_interrupt_wiring())
-    }
-
     fn serial_handle_for_data_port(&self, port: u8) -> Option<&RuntimeSerialCardHandle> {
         self.serial.iter().map(|installed| &installed.handle)
             .find(|handle| handle.data_port_matches(port))
