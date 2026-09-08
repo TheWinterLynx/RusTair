@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use rustair::backend::{
-    BackendHost, BackendSerialPort, CycleAccurateMachineBackend, MachineBackend,
-};
+use rustair::backend::{BackendHost, BackendSerialPort, CycleAccurateMachineBackend};
 use rustair::config::{
     RamInit, S100HardwareConfig, S100InstalledCardConfig, SioAddressPair, SioHardwareConfig,
     SioInterruptTarget, SioInterruptWiring, SioRevision,
