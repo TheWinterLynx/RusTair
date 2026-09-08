@@ -177,16 +177,16 @@ mod tests {
                 SioInterface::TtlB,
                 (
                     SioElectricalLevel::TtlHigh,
-                    SioElectricalLevel::TtlLow,
-                    SioElectricalLevel::TtlLow,
+                    SioElectricalLevel::TtlHigh,
+                    SioElectricalLevel::TtlHigh,
                 ),
             ),
             (
                 SioInterface::TtyC,
                 (
                     SioElectricalLevel::CurrentLoopConducting,
-                    SioElectricalLevel::CurrentLoopOpen,
-                    SioElectricalLevel::CurrentLoopOpen,
+                    SioElectricalLevel::CurrentLoopConducting,
+                    SioElectricalLevel::CurrentLoopConducting,
                 ),
             ),
         ] {
