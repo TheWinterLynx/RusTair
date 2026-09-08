@@ -9,6 +9,10 @@ const COM_SOURCE: &str = include_str!("../src/app/external_com.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
 const TWO_SIO_CONFIG_SOURCE: &str = include_str!("../src/config/two_sio.rs");
 
+fn compact(source: &str) -> String {
+    source.split_whitespace().collect()
+}
+
 fn function_body<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
     let start = source
         .find(start)
@@ -58,12 +62,13 @@ fn every_endpoint_label_is_derived_from_the_installed_s100_hardware() {
         ("External TCP", TCP_SOURCE),
         ("External COM", COM_SOURCE),
     ] {
+        let compact_source = compact(source);
         assert!(
-            source.contains("let hardware = self.config.machine.s100_hardware"),
+            compact_source.contains("lethardware=self.config.machine.s100_hardware"),
             "{name} must read the physical S-100 inventory"
         );
         assert!(
-            source.contains("serial_connection_label(hardware"),
+            compact_source.contains("serial_connection_label(hardware"),
             "{name} must label the actual installed slot/card/port"
         );
         assert!(
@@ -75,21 +80,23 @@ fn every_endpoint_label_is_derived_from_the_installed_s100_hardware() {
 
 #[test]
 fn app_rejects_wrong_family_direct_cables_without_level_conversion() {
-    assert!(APP_SOURCE.contains("S100InstalledCardConfig::Mits88TwoSio { straps, .. }"));
-    assert!(APP_SOURCE.contains("device.supports_two_sio_interface(straps.port0_interface)"));
-    assert!(APP_SOURCE.contains("device.supports_two_sio_interface(straps.port1_interface)"));
+    let app = compact(APP_SOURCE);
+    assert!(app.contains("S100InstalledCardConfig::Mits88TwoSio{straps,..}"));
+    assert!(app.contains("device.supports_two_sio_interface(straps.port0_interface)"));
+    assert!(app.contains("device.supports_two_sio_interface(straps.port1_interface)"));
     assert!(APP_SOURCE.contains("two_sio_requirement_label"));
     assert!(APP_SOURCE.contains("no hidden level converter or phantom UART is inserted"));
     assert!(APP_SOURCE.contains("serial_set_receive_break_at(old_asr_connection, false)"));
-    assert!(APP_SOURCE.contains("self.machine.configure_s100_hardware(hardware, self.config.machine.ram_init)"));
+    assert!(app.contains("self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init)"));
 }
 
 #[test]
 fn persisted_cables_are_revalidated_against_each_installed_port_interface() {
-    assert!(PERSISTENCE_SOURCE.contains("Some(S100InstalledCardConfig::Mits88TwoSio { straps, .. })"));
-    assert!(PERSISTENCE_SOURCE.contains("device.supports_two_sio_interface(straps.port0_interface)"));
-    assert!(PERSISTENCE_SOURCE.contains("device.supports_two_sio_interface(straps.port1_interface)"));
-    assert!(PERSISTENCE_SOURCE.contains("valid_connection(hardware, device, connection)"));
+    let persistence = compact(PERSISTENCE_SOURCE);
+    assert!(persistence.contains("Some(S100InstalledCardConfig::Mits88TwoSio{straps,..})"));
+    assert!(persistence.contains("device.supports_two_sio_interface(straps.port0_interface)"));
+    assert!(persistence.contains("device.supports_two_sio_interface(straps.port1_interface)"));
+    assert!(persistence.contains("valid_connection(hardware,device,connection)"));
 
     // Legacy per-port keys remain readable but are no longer a live authority.
     assert!(PERSISTENCE_SOURCE.contains("\"machine.two_sio_port0_interface\""));
