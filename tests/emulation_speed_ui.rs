@@ -31,9 +31,20 @@ fn authentic_speed_label_comes_from_installed_board_clock() {
 
 #[test]
 fn embedded_cpu_tests_offer_real_x5_x10_and_unlimited_modes() {
-    assert!(EMBEDDED_DIAGNOSTICS.contains(
-        "enum DiagnosticRunSpeed { Authentic, X5, X10, Unlimited }"
-    ));
+    let enum_body = EMBEDDED_DIAGNOSTICS
+        .split("enum DiagnosticRunSpeed {")
+        .nth(1)
+        .expect("DiagnosticRunSpeed enum")
+        .split('}')
+        .next()
+        .expect("DiagnosticRunSpeed enum body");
+    let variants: Vec<_> = enum_body
+        .split(',')
+        .map(str::trim)
+        .filter(|variant| !variant.is_empty())
+        .collect();
+
+    assert_eq!(variants, ["Authentic", "X5", "X10", "Unlimited"]);
     assert!(EMBEDDED_DIAGNOSTICS.contains("Self::X5 => EmulationSpeed::X5"));
     assert!(EMBEDDED_DIAGNOSTICS.contains("Self::X10 => EmulationSpeed::X10"));
     assert!(EMBEDDED_DIAGNOSTICS.contains("Self::Unlimited => EmulationSpeed::Unlimited"));
