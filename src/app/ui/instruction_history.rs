@@ -1,7 +1,6 @@
 use super::super::{egui, RusTairApp};
 use super::execution_position::current_instruction_address;
 use crate::backend::{Intel8080State, InstructionTraceEntry};
-use crate::config::S100InstalledCardConfig;
 use crate::debugger8080::detect_simple_backward_loop;
 use crate::decoder8080::{decode_8080, ControlFlow};
 use crate::explain8080::{explain_instruction, MemoryValue8080};
@@ -182,46 +181,26 @@ impl RusTairApp {
     }
 
     fn io_port_context(&self, port: u8) -> Option<String> {
+        let mut labels = Vec::new();
         if port == 0xff {
-            return Some("Altair front-panel sense-switch input".into());
+            labels.push("Altair front-panel sense/data port".to_owned());
         }
-
-        let (slot, card) = self
-            .config
-            .machine
-            .s100_hardware
-            .active_serial_card_slot()?;
-        match card {
-            S100InstalledCardConfig::Mits88Sio(config) => {
-                if port == config.address.status() {
-                    Some(format!(
-                        "Current physical mapping: Slot {slot} · MITS 88-SIO status [{:02X}h]",
-                        config.address.status()
-                    ))
-                } else if port == config.address.data() {
-                    Some(format!(
-                        "Current physical mapping: Slot {slot} · MITS 88-SIO data [{:02X}h]",
-                        config.address.data()
-                    ))
-                } else {
-                    None
-                }
-            }
-            S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
-                let mappings = [
-                    (straps.address.port0_status(), "MITS 88-2SIO Port 0 status/control"),
-                    (straps.address.port0_data(), "MITS 88-2SIO Port 0 data"),
-                    (straps.address.port1_status(), "MITS 88-2SIO Port 1 status/control"),
-                    (straps.address.port1_data(), "MITS 88-2SIO Port 1 data"),
-                ];
-                mappings
-                    .into_iter()
-                    .find(|(mapped_port, _)| *mapped_port == port)
-                    .map(|(_, label)| {
-                        format!("Current physical mapping: Slot {slot} · {label} [{port:02X}h]")
-                    })
-            }
-            _ => None,
+        labels.extend(
+            self.physical_serial_port_bindings(port)
+                .into_iter()
+                .map(|binding| {
+                    format!(
+                        "Slot {} · {} [{:02X}h]",
+                        binding.slot,
+                        binding.kind.label(),
+                        binding.port
+                    )
+                }),
+        );
+        match labels.as_slice() {
+            [] => None,
+            [only] => Some(format!("Current physical mapping: {only}")),
+            _ => Some(format!("Current physical contention: {}", labels.join(" + "))),
         }
     }
 
