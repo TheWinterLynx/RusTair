@@ -1,10 +1,32 @@
 use crate::config::SerialBoard;
+use crate::s100_runtime::DisplayControlLines;
 
 use super::AltairBus;
 
 impl AltairBus {
+    /// Host endpoints mutate the same UART silicon that is installed on an S-100
+    /// card, but those mutations happen outside a CPU clock edge. Resolve that
+    /// card's newly dirty connector immediately so PINT/VI/PRDY observability
+    /// stays physical and the next CPU sample sees the already-settled bus.
+    fn settle_host_serial_change(&mut self) {
+        let signals = self.s100.signals();
+        let display = DisplayControlLines {
+            ready: signals.front_panel_ready,
+            run: signals.run,
+            hold: signals.hold,
+            reset: signals.reset,
+            external_clear: signals.ext_clear,
+            protect: false,
+            unprotect: false,
+        };
+        self.memory
+            .cycle_refresh_external_inputs(display)
+            .expect("validated S-100 hardware must resolve host-side serial changes");
+    }
+
     pub fn serial_receive(&mut self, byte: u8) {
         let _ = self.memory.serial_receive(0, byte);
+        self.settle_host_serial_change();
     }
 
     pub fn serial_rx_empty(&self) -> bool {
@@ -20,7 +42,9 @@ impl AltairBus {
     }
 
     pub fn serial_tx_complete(&mut self) -> Option<u8> {
-        self.memory.serial_tx_complete(0)
+        let completed = self.memory.serial_tx_complete(0);
+        self.settle_host_serial_change();
+        completed
     }
 
     pub fn tx_busy(&self) -> bool {
@@ -29,14 +53,8 @@ impl AltairBus {
 
     pub fn clear_serial(&mut self) {
         self.memory.clear_serial();
+        self.settle_host_serial_change();
     }
-
-    /// Compatibility synchronization hook retained while Full still calls the
-    /// old boundary name. The authoritative interrupt source is the installed
-    /// S-100 card; this method deliberately never fabricates PINT from a host
-    /// UART singleton. A later physical bus settle observes any connector dirtied
-    /// by elapsed card time before the CPU samples an interrupt edge.
-    pub(crate) fn refresh_interrupt_request_line(&mut self) {}
 
     /// Raw VI levels sourced by the installed 88-2SIO. They remain separate
     /// from processor PINT until a real 88-VI card is installed to arbitrate them.
@@ -67,12 +85,17 @@ impl AltairBus {
         cts_high: bool,
         dcd_high: bool,
     ) -> bool {
-        self.memory
-            .set_serial_modem_inputs(port_index, cts_high, dcd_high)
+        let accepted = self
+            .memory
+            .set_serial_modem_inputs(port_index, cts_high, dcd_high);
+        self.settle_host_serial_change();
+        accepted
     }
 
     pub fn set_serial_receive_break(&mut self, port_index: usize, active: bool) -> bool {
-        self.memory.set_serial_receive_break(port_index, active)
+        let accepted = self.memory.set_serial_receive_break(port_index, active);
+        self.settle_host_serial_change();
+        accepted
     }
 
     /// `(RIN ready latched, ROT ready latched, BIN high, BOT high)` at the
@@ -84,19 +107,25 @@ impl AltairBus {
     }
 
     pub fn pulse_sio_input_device_ready(&mut self) -> bool {
-        self.memory.pulse_sio_input_device_ready()
+        let pulsed = self.memory.pulse_sio_input_device_ready();
+        self.settle_host_serial_change();
+        pulsed
     }
 
     pub fn pulse_sio_output_device_ready(&mut self) -> bool {
-        self.memory.pulse_sio_output_device_ready()
+        let pulsed = self.memory.pulse_sio_output_device_ready();
+        self.settle_host_serial_change();
+        pulsed
     }
 
     pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
         self.memory.advance_serial_time(t_states);
+        self.settle_host_serial_change();
     }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
         let _ = self.memory.serial_receive(1, byte);
+        self.settle_host_serial_change();
     }
 
     pub fn serial_port1_rx_empty(&self) -> bool {
@@ -116,7 +145,9 @@ impl AltairBus {
     }
 
     pub fn serial_port1_tx_complete(&mut self) -> Option<u8> {
-        self.memory.serial_tx_complete(1)
+        let completed = self.memory.serial_tx_complete(1);
+        self.settle_host_serial_change();
+        completed
     }
 
     pub fn serial_port1_tx_busy(&self) -> bool {
@@ -163,29 +194,40 @@ impl AltairBus {
         if port == 0xff {
             self.panel.input()
         } else {
-            self.memory.debugger_input_port(port)
+            let value = self.memory.debugger_input_port(port);
+            self.settle_host_serial_change();
+            value
         }
     }
 
     pub fn debugger_output_port(&mut self, port: u8, value: u8) {
         if port != 0xff {
             self.memory.debugger_output_port(port, value);
+            self.settle_host_serial_change();
         }
     }
 
     pub fn debugger_inject_serial_rx(&mut self, data_port: u8, byte: u8) -> bool {
-        self.memory.debugger_inject_serial_rx(data_port, byte)
+        let injected = self.memory.debugger_inject_serial_rx(data_port, byte);
+        self.settle_host_serial_change();
+        injected
     }
 
     pub fn debugger_clear_serial_rx(&mut self, data_port: u8) -> bool {
-        self.memory.debugger_clear_serial_rx(data_port)
+        let cleared = self.memory.debugger_clear_serial_rx(data_port);
+        self.settle_host_serial_change();
+        cleared
     }
 
     pub fn debugger_clear_serial_tx(&mut self, data_port: u8) -> bool {
-        self.memory.debugger_clear_serial_tx(data_port)
+        let cleared = self.memory.debugger_clear_serial_tx(data_port);
+        self.settle_host_serial_change();
+        cleared
     }
 
     pub fn debugger_complete_serial_tx(&mut self, data_port: u8) -> Option<u8> {
-        self.memory.debugger_complete_serial_tx(data_port)
+        let completed = self.memory.debugger_complete_serial_tx(data_port);
+        self.settle_host_serial_change();
+        completed
     }
 }
