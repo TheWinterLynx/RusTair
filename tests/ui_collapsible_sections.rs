@@ -16,6 +16,10 @@ fn assert_sections(source: &str, sections: &[&str]) {
     }
 }
 
+fn compact(source: &str) -> String {
+    source.split_whitespace().collect()
+}
+
 #[test]
 fn ram_inspector_primary_sidebar_sections_are_collapsible() {
     let source = include_str!("../src/app/ui/memory_viewer.rs");
@@ -177,11 +181,13 @@ fn modal_diagnostic_result_windows_remain_explicitly_non_collapsible() {
     // These are acknowledgement/result dialogs rather than tool sections. Keep
     // their OK action visible instead of allowing the whole modal to collapse.
     let cpu = include_str!("../src/app/cpu_diagnostics.rs");
+    let cpu_compact = compact(cpu);
     assert!(cpu.contains("egui::Window::new(\"CPU diagnostic complete\")"));
-    assert!(cpu.contains(".collapsible(false).resizable(false)"));
+    assert!(cpu_compact.contains(".collapsible(false).resizable(false)"));
 
     let embedded = include_str!("../src/app/embedded_cpu_diagnostics.rs");
+    let embedded_compact = compact(embedded);
     assert!(embedded.contains("egui::Window::new(\"CPU diagnostic complete\")"));
     assert!(embedded.contains("egui::Window::new(\"CPU diagnostic suite complete\")"));
-    assert!(embedded.contains(".collapsible(false).resizable(true)"));
+    assert!(embedded_compact.contains(".collapsible(false).resizable(true)"));
 }
