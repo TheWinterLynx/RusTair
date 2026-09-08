@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::app::serial_hardware::PhysicalSerialPortKind;
 
 const IO_INSPECTOR_OPEN: &str = "rustair-io-inspector-open";
 const IO_CAPTURE_ENABLED: &str = "rustair-io-inspector-capture-enabled";
@@ -66,34 +67,37 @@ impl RusTairApp {
         Self::bump_trace_view_generation(ctx);
     }
 
-    fn port_name(&self, port: u8) -> &'static str {
-        match (self.config.machine.serial_board, port) {
-            (SerialBoard::Sio88, 0x00) => "MITS 88-SIO status",
-            (SerialBoard::Sio88, 0x01) => "MITS 88-SIO data",
-            (SerialBoard::Sio88, 0x10) => "88-2SIO absent status",
-            (SerialBoard::Sio88, 0x12) => "88-2SIO absent status",
-            (SerialBoard::TwoSio88, 0x00) => "88-SIO absent status",
-            (SerialBoard::TwoSio88, 0x10) => "88-2SIO Port 0 status/control",
-            (SerialBoard::TwoSio88, 0x11) => "88-2SIO Port 0 data",
-            (SerialBoard::TwoSio88, 0x12) => "88-2SIO Port 1 status/control",
-            (SerialBoard::TwoSio88, 0x13) => "88-2SIO Port 1 data",
-            (_, 0xff) => "Altair front-panel sense/data port",
-            _ => "Unmapped",
+    fn port_name(&self, port: u8) -> String {
+        let mut labels = Vec::new();
+        if port == 0xff {
+            labels.push("Altair front-panel sense/data port".to_owned());
         }
+        labels.extend(
+            self.physical_serial_port_bindings(port)
+                .into_iter()
+                .map(|binding| format!("Slot {} · {}", binding.slot, binding.kind.label())),
+        );
+        match labels.as_slice() {
+            [] => "Unmapped".into(),
+            [only] => only.clone(),
+            _ => format!("CONTENTION: {}", labels.join(" + ")),
+        }
+    }
+
+    fn unique_serial_port_kind(&self, port: u8) -> Option<PhysicalSerialPortKind> {
+        let bindings = self.physical_serial_port_bindings(port);
+        (bindings.len() == 1).then_some(bindings[0].kind)
     }
 
     fn is_serial_data_port(&self, port: u8) -> bool {
-        match self.config.machine.serial_board {
-            SerialBoard::Sio88 => port == 0x01,
-            SerialBoard::TwoSio88 => matches!(port, 0x11 | 0x13),
-        }
+        self.unique_serial_port_kind(port)
+            .is_some_and(PhysicalSerialPortKind::is_data)
     }
 
     fn is_serial_status_port(&self, port: u8) -> bool {
-        match self.config.machine.serial_board {
-            SerialBoard::Sio88 => port == 0x00,
-            SerialBoard::TwoSio88 => matches!(port, 0x10 | 0x12),
-        }
+        self.physical_serial_port_bindings(port)
+            .iter()
+            .any(|binding| binding.kind.is_status())
     }
 
     fn byte_text(byte: u8) -> String {
@@ -163,7 +167,7 @@ impl RusTairApp {
         let panel = self.machine.front_panel_state();
         ui.horizontal_wrapped(|ui| {
             ui.strong("INTEL 8080 I/O INSPECTOR / EDITOR"); ui.separator();
-            ui.label(self.config.machine.serial_board.label()); ui.separator();
+            ui.label(self.physical_serial_inventory_label()); ui.separator();
             ui.monospace(format!("PC {:04X}h", cpu.pc)); ui.separator();
             ui.label(if panel.running { "RUNNING" } else { "STOPPED" }); ui.separator();
             self.draw_capture_toolbar(ui);
@@ -188,22 +192,37 @@ impl RusTairApp {
     }
 
     fn draw_status_interpretation(&self, ui: &mut egui::Ui, port: u8, value: u8) {
-        match (self.config.machine.serial_board, port) {
-            (SerialBoard::Sio88, 0x00) => {
-                ui.strong("88-SIO status"); ui.monospace(format!("{:08b}", value));
+        if port == 0xff {
+            ui.strong("Front-panel I/O port"); ui.monospace(format!("{:08b}", value));
+            ui.small("IN FFh reads A15..A8 sense switches; OUT FFh drives the eight data lamps in the current panel model.");
+            if !self.physical_serial_port_bindings(port).is_empty() {
+                ui.small("A serial card also decodes FFh, so the physical bus has multiple responders at this address.");
+            }
+            return;
+        }
+
+        let bindings = self.physical_serial_port_bindings(port);
+        if bindings.len() > 1 {
+            ui.strong("S-100 I/O contention");
+            ui.label(format!(
+                "{} physical serial cards decode {:02X}h. A single UART status interpretation would be misleading.",
+                bindings.len(), port
+            ));
+            return;
+        }
+        let Some(binding) = bindings.first().copied() else { return; };
+        match binding.kind {
+            PhysicalSerialPortKind::SioStatus => {
+                ui.strong(format!("Slot {} · 88-SIO status", binding.slot)); ui.monospace(format!("{:08b}", value));
                 ui.label(format!("bit 0 = {} → RX {}", value & 0x01, if value & 0x01 != 0 { "empty / wait" } else { "data available" }));
                 ui.label(format!("bits 6/7 = {:02b} → TX {}", (value >> 6) & 0x03, if value & 0xc0 != 0 { "busy" } else { "ready" }));
-                ui.small("BASIC 3.2 waits on IN 00h until bit 0 becomes 0, then consumes the byte with IN 01h.");
+                ui.small(format!("Guest software polls the installed 88-SIO status address at {:02X}h, then reads the paired DATA register.", port));
             }
-            (SerialBoard::TwoSio88, 0x10 | 0x12) => {
-                ui.strong("MC6850-style status"); ui.monospace(format!("{:08b}", value));
+            PhysicalSerialPortKind::TwoSioStatus(channel) => {
+                ui.strong(format!("Slot {} · 88-2SIO Port {channel} status", binding.slot)); ui.monospace(format!("{:08b}", value));
                 ui.label(format!("bit 0 RDRF = {} → RX {}", value & 0x01, if value & 0x01 != 0 { "data available" } else { "empty" }));
                 ui.label(format!("bit 1 TDRE = {} → TX {}", (value >> 1) & 0x01, if value & 0x02 != 0 { "ready" } else { "busy" }));
-                ui.small("Writing this port targets the control register; CR1:CR0 = 11 performs the emulated master reset.");
-            }
-            (_, 0xff) => {
-                ui.strong("Front-panel I/O port"); ui.monospace(format!("{:08b}", value));
-                ui.small("IN FFh reads A15..A8 sense switches; OUT FFh drives the eight data lamps in the current panel model.");
+                ui.small("Writing this physical status/control address targets the MC6850 control register; CR1:CR0 = 11 performs the emulated master reset.");
             }
             _ => {}
         }
@@ -408,7 +427,8 @@ impl RusTairApp {
     fn draw_io_inspector(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("io-inspector-toolbar").resizable(false).show(ctx, |ui| self.draw_io_header(ui));
         let selected_id = egui::Id::new(SELECTED_PORT);
-        let mut selected = ctx.data_mut(|data| *data.get_temp_mut_or(selected_id, self.config.machine.serial_board.data_port()));
+        let default_port = self.first_physical_serial_data_port().unwrap_or(0xff);
+        let mut selected = ctx.data_mut(|data| *data.get_temp_mut_or(selected_id, default_port));
         egui::SidePanel::right("io-inspector-sidebar").resizable(true).default_width(365.0).width_range(300.0..=520.0)
             .show(ctx, |ui| self.draw_io_sidebar(ui, &mut selected));
         ctx.data_mut(|data| data.insert_temp(selected_id, selected));
