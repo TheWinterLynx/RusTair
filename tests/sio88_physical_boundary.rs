@@ -1,4 +1,4 @@
-use rustair::backend::{CycleAccurateMachineBackend, MachineBackend};
+use rustair::backend::CycleAccurateMachineBackend;
 use rustair::config::{
     RamInit, S100HardwareConfig, S100InstalledCardConfig, SioElectricalLevel,
     SioHardwareConfig, SioInterface, SioInterruptTarget, SioInterruptWiring, SioRevision,
