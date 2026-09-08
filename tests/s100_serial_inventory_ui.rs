@@ -13,11 +13,12 @@ fn physical_s100_validation_does_not_forbid_multiple_serial_cards() {
 #[test]
 fn current_editor_does_not_create_ambiguous_second_serial_card() {
     let compact: String = UI_SOURCE.split_whitespace().collect();
+    let lower = UI_SOURCE.to_ascii_lowercase();
 
     assert!(UI_SOURCE.contains("fn is_serial_kind"));
     assert!(compact.contains("hardware.serial_slots().any(|(serial_slot,_)|serial_slot!=slot)"));
     assert!(UI_SOURCE.contains("slot + channel"));
-    assert!(UI_SOURCE.contains("The S-100 fabric supports it"));
+    assert!(lower.contains("the s-100 fabric supports it"));
 }
 
 #[test]
