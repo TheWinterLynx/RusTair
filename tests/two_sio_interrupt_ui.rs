@@ -52,7 +52,7 @@ fn di_and_ei_remain_independent_physical_interrupt_destinations() {
     assert!(IO_DEVICES_SOURCE.contains("fn two_sio_irq(&self, index: usize) -> bool"));
     assert!(IO_DEVICES_SOURCE.contains("TwoSioInterruptTarget::drives_pint"));
     assert!(IO_DEVICES_SOURCE.contains("TwoSioInterruptTarget::vector_level"));
-    assert!(IO_DEVICES_SOURCE.contains("self.two_sio_interrupt_wiring.target(index)"));
+    assert!(compact(IO_DEVICES_SOURCE).contains("self.two_sio_interrupt_wiring.target(index)"));
 }
 
 #[test]
