@@ -20,7 +20,7 @@ pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
-pub(crate) use serial_card::{RuntimeSerialCardDevice, RuntimeSerialCardHandle};
+pub(crate) use serial_card::RuntimeSerialCardHandle;
 
 pub const CLOCK_HZ: u32 = 2_000_000;
 
@@ -314,7 +314,6 @@ impl AltairBus {
     }
 
     fn assert_front_panel_reset_bus(&mut self, run: bool) {
-        self.memory.reset_timing();
         self.s100.set_memory_ready_input(true);
         self.s100.assert_front_panel_reset(run);
     }
@@ -347,7 +346,6 @@ impl AltairBus {
     }
 
     fn power_off_s100(&mut self) {
-        self.memory.reset_timing();
         self.s100.power_off();
     }
 }
