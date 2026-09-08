@@ -1,8 +1,9 @@
 use rustair::backend::CycleAccurateMachineBackend;
 use rustair::config::{
-    SioElectricalLevel, SioHardwareConfig, SioInterface, SioInterruptTarget,
-    SioInterruptWiring, SioRevision,
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, SioElectricalLevel,
+    SioHardwareConfig, SioInterface, SioInterruptTarget, SioInterruptWiring, SioRevision,
 };
+use rustair::s100_chassis::S100ChassisConfig;
 
 fn configured(interface: SioInterface) -> SioHardwareConfig {
     SioHardwareConfig {
@@ -16,11 +17,29 @@ fn configured(interface: SioInterface) -> SioHardwareConfig {
     }
 }
 
+fn hardware_with_sio(config: SioHardwareConfig) -> S100HardwareConfig {
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+    hardware
+        .set_slot(5, Some(S100InstalledCardConfig::Mits88Sio(config)))
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
+fn cycle_with_sio(config: SioHardwareConfig) -> CycleAccurateMachineBackend {
+    let mut cycle = CycleAccurateMachineBackend::default();
+    cycle
+        .configure_s100_hardware(hardware_with_sio(config), RamInit::Zeroed)
+        .unwrap();
+    cycle
+}
+
 #[test]
 fn adaptive_cycle_exposes_rev0_wiring_and_idle_six_line_state() {
     let config = configured(SioInterface::TtyC);
-    let mut cycle = CycleAccurateMachineBackend::default();
-    cycle.machine_mut().configure_sio_hardware(config);
+    let cycle = cycle_with_sio(config);
 
     let expected_wiring = Some((
         SioRevision::Rev0,
@@ -39,8 +58,7 @@ fn abc_electrical_variants_preserve_board_side_logical_semantics() {
 
     for interface in [SioInterface::Rs232A, SioInterface::TtlB, SioInterface::TtyC] {
         let config = configured(interface);
-        let mut cycle = CycleAccurateMachineBackend::default();
-        cycle.machine_mut().configure_sio_hardware(config);
+        let mut cycle = cycle_with_sio(config);
         assert!(cycle.machine_mut().bus.pulse_sio_input_device_ready());
         assert!(cycle.machine_mut().bus.pulse_sio_output_device_ready());
 
@@ -63,8 +81,7 @@ fn abc_electrical_variants_preserve_board_side_logical_semantics() {
 #[test]
 fn connector_input_family_mismatch_is_rejected_by_adaptive_cycle() {
     let config = configured(SioInterface::Rs232A);
-    let mut cycle = CycleAccurateMachineBackend::default();
-    cycle.machine_mut().configure_sio_hardware(config);
+    let cycle = cycle_with_sio(config);
 
     assert_eq!(
         cycle

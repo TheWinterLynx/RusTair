@@ -1,63 +1,78 @@
 const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
-const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
+const S100_UI_SOURCE: &str = include_str!("../src/app/ui/s100_hardware.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
+const TWO_SIO_CONFIG_SOURCE: &str = include_str!("../src/config/two_sio.rs");
+const IO_DEVICES_SOURCE: &str = include_str!("../src/machine/io_devices.rs");
 
-#[test]
-fn selecting_two_sio_reapplies_dormant_physical_interrupt_wiring() {
-    let start = APP_SOURCE
-        .find("fn apply_serial_board_configuration")
-        .expect("app must own the serial-board selection boundary");
-    let tail = &APP_SOURCE[start..];
+fn compact(source: &str) -> String {
+    source.split_whitespace().collect()
+}
+
+fn function_body<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
+    let start = source
+        .find(start)
+        .unwrap_or_else(|| panic!("missing function boundary {start}"));
+    let tail = &source[start..];
     let end = tail
-        .find("fn apply_two_sio_straps")
-        .expect("88-2SIO strap helper after serial-board selection boundary");
-    let function = &tail[..end];
-
-    assert!(function.contains("SerialBoard::TwoSio88"));
-    assert!(function.contains("self.machine.configure_two_sio_straps"));
-    assert!(function.contains("self.config.machine.two_sio_straps"));
-    assert!(function.contains("self.machine.configure_two_sio_interrupt_wiring"));
-    assert!(function.contains("self.config.machine.two_sio_interrupt_wiring"));
-    assert!(!function.contains("replace_engine"));
+        .find(next)
+        .unwrap_or_else(|| panic!("missing following function boundary {next}"));
+    &tail[..end]
 }
 
 #[test]
-fn interrupt_wiring_changes_require_power_off() {
-    let start = APP_SOURCE
-        .find("fn apply_two_sio_interrupt_wiring")
-        .expect("app must own a physical interrupt-wiring apply boundary");
-    let tail = &APP_SOURCE[start..];
-    let end = tail
-        .find("fn two_sio_vi_mask_label")
-        .expect("helper after interrupt wiring apply boundary");
-    let function = &tail[..end];
-    assert!(function.contains("if self.machine.powered()"));
-    assert!(function.contains("Power OFF the Altair before changing the physical 88-2SIO DI/EI interrupt wiring"));
+fn two_sio_interrupt_wiring_is_edited_as_part_of_the_physical_slot_card() {
+    assert!(S100_UI_SOURCE.contains("ui.add_enabled_ui(!powered"));
+    let ui = function_body(
+        S100_UI_SOURCE,
+        "fn draw_two_sio_card_configuration",
+        "fn replace_slot",
+    );
+    let compact_ui = compact(ui);
+
+    assert!(compact_ui.contains("fornext_targetinTwoSioInterruptTarget::ALL"));
+    assert!(ui.contains("next.port0 = next_target"));
+    assert!(ui.contains("next.port1 = next_target"));
+    assert!(ui.contains("S100InstalledCardConfig::Mits88TwoSio"));
+    assert!(ui.contains("interrupt_wiring: next"));
+
+    assert!(!APP_SOURCE.contains("fn apply_two_sio_interrupt_wiring"));
+    assert!(!APP_SOURCE.contains("fn apply_serial_board_configuration"));
 }
 
 #[test]
-fn serial_configuration_exposes_independent_di_and_ei_targets() {
-    assert!(RUNTIME_SOURCE.contains("Physical 88-2SIO interrupt wiring:"));
-    assert!(RUNTIME_SOURCE.contains("DI / Port 0 IRQ:"));
-    assert!(RUNTIME_SOURCE.contains("EI / Port 1 IRQ:"));
-    assert!(RUNTIME_SOURCE.contains("crate::config::TwoSioInterruptTarget::ALL"));
-    assert!(RUNTIME_SOURCE.contains("next.port0 = target"));
-    assert!(RUNTIME_SOURCE.contains("next.port1 = target"));
-    assert!(RUNTIME_SOURCE.contains("ui.add_enabled_ui(!powered"));
+fn di_and_ei_remain_independent_physical_interrupt_destinations() {
+    assert!(TWO_SIO_CONFIG_SOURCE.contains("pub struct TwoSioInterruptWiring"));
+    assert!(TWO_SIO_CONFIG_SOURCE.contains("pub port0: TwoSioInterruptTarget"));
+    assert!(TWO_SIO_CONFIG_SOURCE.contains("pub port1: TwoSioInterruptTarget"));
+    assert!(TWO_SIO_CONFIG_SOURCE.contains("pub const fn drives_pint"));
+    assert!(TWO_SIO_CONFIG_SOURCE.contains("pub const fn vector_level"));
+
+    // Runtime IRQ state and the board's physical routing remain separate. A VI
+    // target is exposed as a raw level; this layer never fabricates an RST byte.
+    assert!(IO_DEVICES_SOURCE.contains("fn two_sio_irq(&self, index: usize) -> bool"));
+    assert!(IO_DEVICES_SOURCE.contains("TwoSioInterruptTarget::drives_pint"));
+    assert!(IO_DEVICES_SOURCE.contains("TwoSioInterruptTarget::vector_level"));
+    assert!(IO_DEVICES_SOURCE.contains("self.two_sio_interrupt_wiring.target(index)"));
 }
 
 #[test]
-fn ui_keeps_vector_interrupt_boundary_explicit_and_observable() {
-    assert!(RUNTIME_SOURCE.contains(
-        "selecting VIx never fabricates a CPU RST opcode inside the 88-2SIO"
-    ));
-    assert!(RUNTIME_SOURCE.contains("Active raw 88-2SIO vector outputs:"));
-    assert!(RUNTIME_SOURCE.contains("self.machine.two_sio_vector_interrupt_requests()"));
+fn two_sio_interrupt_wiring_is_persisted_inside_s100_hardware_only() {
+    assert!(PERSISTENCE_SOURCE.contains("const CONFIG_VERSION: u32 = 6;"));
+    assert!(PERSISTENCE_SOURCE.contains("\"machine.s100_hardware={}\""));
+
+    // Old independent keys survive only as migration inputs.
+    assert!(PERSISTENCE_SOURCE.contains("\"machine.two_sio_port0_irq\""));
+    assert!(PERSISTENCE_SOURCE.contains("\"machine.two_sio_port1_irq\""));
+    assert!(!PERSISTENCE_SOURCE.contains("writeln!(out, \"machine.two_sio_port0_irq="));
+    assert!(!PERSISTENCE_SOURCE.contains("writeln!(out, \"machine.two_sio_port1_irq="));
+    assert!(PERSISTENCE_SOURCE.contains("S100HardwareConfig::from_legacy_globals("));
 }
 
 #[test]
-fn persistence_has_independent_port_keys_and_safe_old_config_default() {
-    assert!(PERSISTENCE_SOURCE.contains("machine.two_sio_port0_irq"));
-    assert!(PERSISTENCE_SOURCE.contains("machine.two_sio_port1_irq"));
-    assert!(PERSISTENCE_SOURCE.contains("old_or_invalid_interrupt_wiring_keeps_safe_migration_default"));
+fn editing_two_sio_irq_wiring_remounts_the_complete_s100_card() {
+    let replace = function_body(S100_UI_SOURCE, "fn replace_slot", "fn commit_hardware");
+    assert!(replace.contains("candidate.set_slot(slot, Some(card))"));
+
+    let commit = function_body(S100_UI_SOURCE, "fn commit_hardware", "fn is_serial_kind");
+    assert!(commit.contains("app.apply_s100_hardware_configuration(valid, action)"));
 }
