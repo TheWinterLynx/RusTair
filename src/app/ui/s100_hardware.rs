@@ -22,6 +22,15 @@ pub(in crate::app) fn draw_s100_hardware_menu(app: &mut RusTairApp, ui: &mut egu
         "Installed RAM across cards: {} KiB",
         hardware.installed_ram_bytes() / 1024
     ));
+    let serial_cards = hardware.serial_slots().count();
+    if serial_cards > 1 {
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            format!(
+                "{serial_cards} serial cards are physically installed. The S-100 fabric supports this, but host endpoint cables are not slot-aware yet; remove extras before attaching ASR-33, Text Terminal, TCP or COM."
+            ),
+        );
+    }
     ui.separator();
 
     ui.add_enabled_ui(!powered, |ui| {
@@ -88,7 +97,8 @@ pub(in crate::app) fn draw_s100_hardware_menu(app: &mut RusTairApp, ui: &mut egu
         ui.small("POWER OFF required to move cards, change chassis connectors, or alter physical card straps.");
     }
     ui.separator();
-    ui.small("CPU and RAM entries are the live execution topology used by both Fast and Cycle. 88-SIO/88-2SIO entries are already persisted per slot but still use the transitional serial runtime until those boards are connected as live S-100 bus cards.");
+    ui.small("CPU, RAM and serial entries are the slot-native physical inventory used by the Adaptive Cycle machine. Full and Partial are internal execution strategies over this same hardware, not separate machines.");
+    ui.small("The electrical S-100 model supports multiple serial cards. The current host cable selectors do not yet identify slot + channel, so this editor prevents creating an ambiguous second serial card until that routing UI is upgraded.");
 }
 
 fn change_chassis_model(
@@ -143,6 +153,16 @@ fn draw_slot_menu(
     for kind in S100InstalledCardKind::ALL {
         let selected = card.is_some_and(|card| card.kind() == kind);
         if ui.selectable_label(selected, kind.label()).clicked() {
+            if is_serial_kind(kind)
+                && hardware
+                    .serial_slots()
+                    .any(|(serial_slot, _)| serial_slot != slot)
+            {
+                app.status = "Cannot install a second serial card from the normal UI yet: the S-100 fabric supports it, but ASR-33/Text Terminal/TCP/COM cables do not identify slot + channel. Remove the existing serial card first or wait for slot-aware cable routing.".into();
+                ui.close();
+                return;
+            }
+
             let mut candidate = hardware;
             if kind == S100InstalledCardKind::Mits8080Cpu {
                 for cpu_slot in hardware.cpu_slots().collect::<Vec<_>>() {
@@ -190,10 +210,10 @@ fn draw_slot_menu(
                     "Compatibility RAM: {:04X}h + {} bytes · {} read wait(s)",
                     config.base_address, config.populated_bytes, config.read_wait_states
                 ));
-                ui.small("Non-historical migration card. Replace it with real MITS RAM boards for hardware-fidelity configurations.");
+                ui.small("Migration-only non-historical card. Replace it with real MITS RAM boards for a hardware-fidelity configuration.");
             }
             S100InstalledCardConfig::Mits8080Cpu => {
-                ui.small("Intel 8080 at the MITS board's authentic 2 MHz hardware clock. Fast/Cycle are execution engines, not different cards.");
+                ui.small("Intel 8080 at the MITS board's authentic 2 MHz hardware clock. Adaptive Full and Partial execute this same installed board.");
             }
         }
     }
@@ -455,6 +475,13 @@ fn commit_hardware(app: &mut RusTairApp, candidate: S100HardwareConfig, action: 
             app.status = format!("S-100 inventory rejected: {error:?}");
         }
     }
+}
+
+fn is_serial_kind(kind: S100InstalledCardKind) -> bool {
+    matches!(
+        kind,
+        S100InstalledCardKind::Mits88Sio | S100InstalledCardKind::Mits88TwoSio
+    )
 }
 
 fn default_card_for_kind(
