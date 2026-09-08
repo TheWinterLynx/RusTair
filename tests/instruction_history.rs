@@ -1,6 +1,6 @@
 use rustair::backend::BackendHost;
 use rustair::callstack8080::infer_call_stack_8080;
-use rustair::config::{RamInit, RamSize, SerialBoard};
+use rustair::config::{RamInit, RamSize, S100HardwareConfig};
 use rustair::trace8080::InstructionEffect8080;
 
 fn prepared(program: &[u8]) -> BackendHost {
@@ -69,8 +69,10 @@ fn adaptive_cycle_records_instruction_history() {
 #[test]
 fn adaptive_cycle_records_memory_and_io_effects() {
     let mut host = BackendHost::default();
-    host.configure_memory(RamSize::K1, RamInit::Zeroed);
-    host.configure_serial_board(SerialBoard::Sio88);
+    host.configure_s100_hardware(
+        S100HardwareConfig::default().validate().unwrap(),
+        RamInit::Zeroed,
+    );
     host.power(true);
     host.front_panel_reset();
     host.load_bytes(
