@@ -273,9 +273,10 @@ impl AltairBus {
 
     pub(crate) fn cpu_control_lines(&self) -> S100CpuControlLines {
         let signals = self.s100.signals();
+        let physical = self.memory.cycle_live_inputs();
         S100CpuControlLines {
             ready: signals.ready,
-            interrupt: signals.interrupt,
+            interrupt: physical.interrupt,
             hold: signals.hold,
             reset: signals.reset,
         }
@@ -355,13 +356,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn protection_is_per_1k_board() {
+    fn protection_is_scoped_to_the_historical_ram_card() {
         let mut bus = AltairBus::default();
         bus.set_protected(0x0410, true);
-        assert!(!bus.is_protected(0x03ff));
-        assert!(bus.is_protected(0x0400));
-        assert!(bus.is_protected(0x07ff));
-        assert!(!bus.is_protected(0x0800));
+        assert!(bus.is_protected(0x0000));
+        assert!(bus.is_protected(0x0fff));
+        assert!(!bus.is_protected(0x1000));
+        assert!(!bus.is_protected(0x1fff));
     }
 
     #[test]
