@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use rustair::backend::{BackendHost, BackendSerialPort};
-use rustair::config::{RamInit, RamSize, SerialBoard};
+use rustair::config::{RamInit, S100HardwareConfig};
 
 const ASR33_WINDOW_SOURCE: &str = include_str!("../src/app/ui/asr33_window.rs");
 
@@ -67,12 +67,15 @@ fn authentic_reader_waits_for_rx_shift_path_not_for_guest_to_empty_rdr() {
         "RDR occupancy must not become hidden host flow control"
     );
 
-    // Exercise the actual 88-2SIO receiver boundary through the unified
-    // Adaptive Cycle backend. Configure port 0 exactly like the authentic
-    // loader (11h = /16, 8N2, RTS LOW), then inject one tape character.
+    // Exercise the actual installed 88-2SIO receiver through the unified
+    // Adaptive Cycle backend. The historical 8800B starter inventory mounts a
+    // real 88-2SIO at its documented 10h..13h decode; no machine-wide serial
+    // selector exists beside that physical card.
     let mut machine = BackendHost::default();
-    machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-    machine.configure_serial_board(SerialBoard::TwoSio88);
+    let hardware = S100HardwareConfig::historical_8800b_18_slot_starter()
+        .validate()
+        .unwrap();
+    machine.configure_s100_hardware(hardware, RamInit::Zeroed);
     machine.power(true);
     machine.clear_serial();
     machine.debugger_output_port(0x10, 0x11);
