@@ -268,6 +268,18 @@ impl Memory {
         Ok(self.fabric.cpu_package_inputs())
     }
 
+    /// Re-resolve the current connector graph after host-side card state changes
+    /// such as elapsed UART time, modem inputs or debugger injection. No CPU pin
+    /// is changed and no interrupt is synthesized: the installed cards refresh
+    /// their cached drives and PINT/PRDY reach the CPU package through S-100.
+    pub(super) fn cycle_refresh_external_inputs(
+        &mut self,
+        display: DisplayControlLines,
+    ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        self.fabric.settle(display, &[])?;
+        Ok(self.fabric.cpu_package_inputs())
+    }
+
     pub(super) fn cycle_live_inputs(&self) -> Cpu8080Inputs { self.fabric.cpu_package_inputs() }
     pub(super) fn cycle_live_sample(&self) -> &S100BusSample { self.fabric.sample() }
     pub(super) fn cycle_latched_status_word(&self) -> u8 { self.fabric.cpu_latched_status_word() }
@@ -459,6 +471,13 @@ impl super::AltairBus {
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
         let display = self.cycle_display_control_lines();
         self.memory.cycle_drive_cpu_edge(pins, display)
+    }
+
+    pub(crate) fn cycle_refresh_external_s100_inputs(
+        &mut self,
+    ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        let display = self.cycle_display_control_lines();
+        self.memory.cycle_refresh_external_inputs(display)
     }
 
     pub(crate) fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
