@@ -38,6 +38,30 @@ impl Default for TerminalState {
 }
 
 impl TerminalState {
+    /// Batch due host presentation without charging each repaint as a new
+    /// character interval. The source contains only completed UART frames.
+    /// Empty input clears the epoch, so idle time cannot fund a future burst.
+    pub(super) fn receive_output(
+        &mut self,
+        now: Instant,
+        mut next_byte: impl FnMut() -> Option<u8>,
+    ) -> Option<Duration> {
+        let char_time = self.speed.char_time();
+        for _ in 0..1024 {
+            let due = self.tx_started.map_or(now, |last| last + char_time);
+            if due > now {
+                return Some(due.duration_since(now));
+            }
+            let Some(byte) = next_byte() else {
+                self.tx_started = None;
+                return None;
+            };
+            self.receive_byte(byte);
+            self.tx_started = Some(due);
+        }
+        Some(Duration::ZERO)
+    }
+
     pub(super) fn receive_byte(&mut self, byte: u8) {
         match byte & 0x7f {
             b'\r' => {
@@ -191,6 +215,26 @@ impl TerminalState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delayed_repaint_presents_all_due_characters_without_idle_credit() {
+        let mut terminal = TerminalState::default();
+        let now = Instant::now();
+        let char_time = terminal.speed.char_time();
+        assert!(!char_time.is_zero());
+        let mut source = VecDeque::from(vec![b'A'; 30]);
+        terminal.receive_output(now, || source.pop_front());
+        assert_eq!(terminal.output.len(), 1);
+        terminal.receive_output(now + char_time * 15, || source.pop_front());
+        assert_eq!(terminal.output.len(), 16);
+        terminal.receive_output(now + char_time * 15, || source.pop_front());
+        assert_eq!(terminal.output.len(), 16, "same host instant cannot spend time twice");
+        terminal.receive_output(now + char_time * 100, || source.pop_front());
+        assert_eq!(terminal.output.len(), 30);
+        source.extend([b'B'; 20]);
+        terminal.receive_output(now + char_time * 200, || source.pop_front());
+        assert_eq!(terminal.output.len(), 31, "idle intervals are not output credit");
+    }
 
     #[test]
     fn receive_coalesces_crlf_and_handles_backspace() {

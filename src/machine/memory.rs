@@ -67,6 +67,10 @@ impl Memory {
         self.fabric.advance_serial_time(t_states);
     }
 
+    pub(super) fn serial_timing_is_quiet(&self) -> bool {
+        self.fabric.serial_timing_is_quiet()
+    }
+
     pub(super) fn serial_receive(&self, port: usize, byte: u8) -> bool {
         self.fabric.serial_receive(port, byte)
     }

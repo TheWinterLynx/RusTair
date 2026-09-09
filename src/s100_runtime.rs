@@ -334,6 +334,10 @@ impl S100RuntimeFabric {
         }
     }
 
+    pub(crate) fn serial_timing_is_quiet(&self) -> bool {
+        self.serial.iter().all(|installed| installed.handle.timing_is_quiet())
+    }
+
     pub(crate) fn serial_receive(&self, port_index: usize, byte: u8) -> bool {
         self.serial_handle_for_port(port_index)
             .is_some_and(|handle| handle.receive(port_index, byte))

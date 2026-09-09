@@ -315,6 +315,10 @@ impl SioPort {
     }
 
     pub(in crate::machine) fn endpoint_tx_front(&self) -> Option<u8> { self.wire_tx.front().copied() }
+    pub(in crate::machine) fn timing_is_quiet(&self) -> bool {
+        self.rx_shift.is_none() && !self.rx_break_active
+            && self.tx_holding.is_none() && self.tx_shift.is_none()
+    }
     pub(in crate::machine) fn endpoint_tx_complete(&mut self) -> Option<u8> { self.wire_tx.pop_front() }
     pub(in crate::machine) fn endpoint_tx_pending_or_hardware_busy(&self) -> bool {
         !self.wire_tx.is_empty() || self.tx_holding.is_some() || self.tx_shift.is_some()

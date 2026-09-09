@@ -4,6 +4,10 @@ use crate::s100_runtime::DisplayControlLines;
 use super::AltairBus;
 
 impl AltairBus {
+    pub(crate) fn serial_timing_is_quiet(&self) -> bool {
+        self.memory.serial_timing_is_quiet()
+    }
+
     /// Host endpoints and card-local elapsed time mutate the same UART silicon
     /// installed on an S-100 card outside the just-resolved CPU edge. Resolve
     /// that newly dirty connector immediately so PINT/VI/PRDY observability

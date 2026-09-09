@@ -81,6 +81,10 @@ impl RuntimeSerialCardHandle {
         self.board
     }
 
+    pub(crate) fn timing_is_quiet(&self) -> bool {
+        self.state.borrow().serial_timing_is_quiet()
+    }
+
     #[cfg(test)]
     pub(crate) const fn base(&self) -> u8 {
         self.base

@@ -984,6 +984,62 @@ mod tests {
     use crate::config::{TwoSioAddressBlock, TwoSioInterruptWiring, TwoSioStraps};
 
     #[test]
+    fn cputest_with_migrated_32k_ram_and_undrained_output_uses_gui_slices() {
+        use crate::adaptive_metrics;
+        use crate::config::FastRamCompatibilityConfig;
+        use super::super::execution_frame::{CPU_FRAME_TIME, run_cpu_frame};
+
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(4)).unwrap();
+        hardware.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        hardware.set_slot(2, Some(S100InstalledCardConfig::FastRamCompatibility(
+            FastRamCompatibilityConfig::no_wait(0, 32768),
+        ))).unwrap();
+        hardware.set_slot(3, Some(S100InstalledCardConfig::Mits88TwoSio {
+            straps: TwoSioStraps::default(), interrupt_wiring: TwoSioInterruptWiring::default(),
+        })).unwrap();
+        let endpoint = cpu_diagnostics::DiagnosticSerialPort::Port1.resolve(hardware).unwrap();
+        let env = build_cpm_environment(endpoint, 0x7f00);
+        let mut machine = BackendHost::default();
+        machine.configure_s100_hardware(hardware, RamInit::Zeroed);
+        machine.power(true);
+        machine.set_running(false);
+        machine.reset();
+        machine.load_bytes(0, &env.page_zero);
+        machine.load_bytes(CPM_COM_LOAD_ADDRESS, ClassicDiagnostic::CpuTest.bytes());
+        machine.load_bytes(env.bdos_base, &env.bdos);
+        machine.begin_cpu_diagnostic_meter("CPUTEST.COM".into(), env.bdos_base, env.bdos.len(),
+            Some(ClassicDiagnostic::CpuTest.expected_instructions()),
+            Some(ClassicDiagnostic::CpuTest.expected_t_states()));
+        machine.set_running(true);
+        adaptive_metrics::begin_measurement();
+        let started = Instant::now();
+        let mut frame_times = Vec::new();
+        let mut executed = 0;
+        let result = loop {
+            let frame = Instant::now();
+            executed += run_cpu_frame(&mut machine, 1_000_000, CPU_FRAME_TIME);
+            frame_times.push(frame.elapsed());
+            if let Some(result) = machine.take_cpu_diagnostic_result() {
+                break result;
+            }
+            assert!(machine.running() && executed < 400_000_000);
+        };
+        let elapsed = started.elapsed();
+        let stats = adaptive_metrics::end_measurement();
+        assert!(reference_match(&result));
+        assert_eq!(stats.total_t_states(), executed);
+        assert!(stats.full_percent() > 99.0);
+        let mut output = Vec::new();
+        while let Some(byte) = machine.serial_tx_complete(BackendSerialPort::Port1) {
+            output.push(byte);
+        }
+        assert!(!output.is_empty());
+        frame_times.sort_unstable();
+        eprintln!("[GUI CPUTEST] {executed} T, {elapsed:.3?}, Full={:.2}%, {} frames, p95={:.3?}, max={:.3?}, {} retained output bytes; reference instructions={}, T={}",
+            stats.full_percent(), frame_times.len(), frame_times[frame_times.len() * 95 / 100], frame_times.last().unwrap(), output.len(), result.instructions, result.t_states);
+    }
+
+    #[test]
     fn embedded_classic_images_and_reference_totals_are_stable() {
         assert_eq!(ClassicDiagnostic::Preliminary.bytes().len(), 1024);
         assert_eq!(ClassicDiagnostic::Tst8080.bytes().len(), 1536);

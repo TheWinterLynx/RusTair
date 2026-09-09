@@ -67,15 +67,17 @@ impl eframe::App for RusTairApp {
             .budget(now, running, board.clock_hz(), speed);
 
         if running && budget != 0 {
-            let before_t_states = self.machine.intel8080_state().total_t_states;
-            self.machine.run_cycles(budget);
-            let after_t_states = self.machine.intel8080_state().total_t_states;
+            let executed = super::execution_frame::run_cpu_frame(
+                &mut self.machine, budget, super::execution_frame::CPU_FRAME_TIME,
+            );
+
+            if executed != 0 && executed < u64::from(budget) && self.machine.running() {
+                // A host deadline is a yield, not stopped time. Continue paying
+                // the exact retained clock debt on the next responsive frame.
+                ctx.request_repaint();
+            }
 
             if speed != EmulationSpeed::Unlimited {
-                let executed = match (before_t_states, after_t_states) {
-                    (Some(before), Some(after)) => after.saturating_sub(before),
-                    _ => u64::from(budget),
-                };
                 if executed == 0 {
                     self.execution_clock.discard_pending_debt();
                 } else {

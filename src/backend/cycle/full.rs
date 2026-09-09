@@ -617,8 +617,8 @@ impl CycleAccurateMachineBackend {
         let mut ranges: Vec<(u32, u32)> = Vec::new();
 
         for (_, card) in hardware.installed_cards() {
-            match card {
-                S100InstalledCardConfig::Mits8080Cpu => {}
+            let (start, end) = match card {
+                S100InstalledCardConfig::Mits8080Cpu => continue,
                 S100InstalledCardConfig::Ram(config)
                     if matches!(
                         config.model,
@@ -628,19 +628,26 @@ impl CycleAccurateMachineBackend {
                 {
                     let start = u32::from(config.base_address);
                     let end = start + config.populated_bytes as u32;
-                    if ranges
-                        .iter()
-                        .any(|&(other_start, other_end)| start < other_end && other_start < end)
-                    {
-                        return false;
-                    }
-                    ranges.push((start, end));
-                    saw_ram = true;
+                    (start, end)
+                }
+                // The migration card uses the same RuntimeRamCard storage,
+                // decode and protection path. Only its zero-wait configuration
+                // satisfies Full's static-memory timing proof.
+                S100InstalledCardConfig::FastRamCompatibility(config)
+                    if config.read_wait_states == 0 =>
+                {
+                    let start = u32::from(config.base_address);
+                    (start, start + config.populated_bytes as u32)
                 }
                 S100InstalledCardConfig::Mits88Sio(_)
-                | S100InstalledCardConfig::Mits88TwoSio { .. } => {}
+                | S100InstalledCardConfig::Mits88TwoSio { .. } => continue,
                 _ => return false,
+            };
+            if ranges.iter().any(|&(other_start, other_end)| start < other_end && other_start < end) {
+                return false;
             }
+            ranges.push((start, end));
+            saw_ram = true;
         }
         saw_ram
     }
@@ -660,10 +667,7 @@ impl CycleAccurateMachineBackend {
     }
 
     fn compiled_serial_timing_is_quiet(&self) -> bool {
-        self.machine.bus.serial_rx_line_idle()
-            && !self.machine.bus.tx_busy()
-            && self.machine.bus.serial_port1_rx_line_idle()
-            && !self.machine.bus.serial_port1_tx_busy()
+        self.machine.bus.serial_timing_is_quiet()
     }
 
     #[cfg(test)]
@@ -1319,5 +1323,19 @@ mod tests {
             .configure_s100_hardware_memory(overlap, RamInit::Zeroed)
             .unwrap();
         assert!(!overlapped.compiled_full_chassis_available());
+    }
+
+    #[test]
+    fn migration_ram_full_admission_preserves_waits_and_overlap_barriers() {
+        use crate::config::FastRamCompatibilityConfig;
+        let mut hardware = static_4k_hardware();
+        for (waits, base, admitted) in [(0, 0x4000, true), (1, 0x4000, false), (0, 0, false)] {
+            hardware.set_slot(3, Some(S100InstalledCardConfig::FastRamCompatibility(
+                FastRamCompatibilityConfig { base_address: base, populated_bytes: 4096, read_wait_states: waits },
+            ))).unwrap();
+            let mut backend = CycleAccurateMachineBackend::default();
+            backend.machine.bus.configure_s100_hardware_memory(hardware, RamInit::Zeroed).unwrap();
+            assert_eq!(backend.compiled_full_chassis_available(), admitted);
+        }
     }
 }

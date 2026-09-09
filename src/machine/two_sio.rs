@@ -243,6 +243,10 @@ impl TwoSioPort {
         self.wire_tx.front().copied()
     }
 
+    pub(super) fn timing_is_quiet(&self) -> bool {
+        self.rx_shift.is_none() && !self.rx_break_active && !self.acia.transmit_busy()
+    }
+
     /// Endpoint acknowledgement removes only a byte that has already completed
     /// on the emulated wire. It never changes TDR/TSR or TDRE.
     pub(super) fn endpoint_tx_complete(&mut self) -> Option<u8> {

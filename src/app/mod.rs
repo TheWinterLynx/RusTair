@@ -5,6 +5,7 @@ mod commands;
 mod cpu_diagnostics;
 mod embedded_cpu_diagnostics;
 mod execution_clock;
+mod execution_frame;
 mod external_com;
 mod external_serial;
 mod runtime;
@@ -478,8 +479,6 @@ impl RusTairApp {
     fn terminal_serial_rx_len(&mut self) -> usize { let c = self.terminal_connection(); self.serial_rx_len_at(c) }
     fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
     fn terminal_serial_tx_busy(&mut self) -> bool { let c = self.terminal_connection(); self.serial_tx_busy_at(c) }
-    fn terminal_serial_tx_front(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_front_at(c) }
-    fn terminal_serial_tx_complete(&mut self) -> Option<u8> { let c = self.terminal_connection(); self.serial_tx_complete_at(c) }
 
     fn service_disconnected_serial_ports(&mut self) {
         if self.config.machine.serial_board().is_none() {

@@ -524,6 +524,15 @@ impl IoDevices {
         }
     }
 
+    /// Completed wire output awaits host presentation only. It cannot change
+    /// UART registers or connectors as virtual time advances.
+    pub(super) fn serial_timing_is_quiet(&self) -> bool {
+        match self.serial_board {
+            SerialBoard::Sio88 => self.sio.timing_is_quiet(),
+            SerialBoard::TwoSio88 => self.two_sio.iter().all(|port| port.timing_is_quiet()),
+        }
+    }
+
     pub(super) fn port1_receive(&mut self, byte: u8) {
         if self.serial_board != SerialBoard::TwoSio88 {
             return;
