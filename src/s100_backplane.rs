@@ -249,20 +249,30 @@ impl S100CardDrive {
     }
 
     pub fn drive_address(&mut self, address: u16) {
-        for (bit, pin) in ADDRESS_PINS.iter().copied().enumerate() {
-            self.set_pin(pin, S100PinDrive::Driven(address & (1u16 << bit) != 0));
-        }
+        self.drive_bus(address, &ADDRESS_PINS, ADDRESS_PIN_MASK);
     }
 
     pub fn drive_data_out(&mut self, value: u8) {
-        for (bit, pin) in DATA_OUT_PINS.iter().copied().enumerate() {
-            self.set_pin(pin, S100PinDrive::Driven(value & (1u8 << bit) != 0));
-        }
+        self.drive_bus(u16::from(value), &DATA_OUT_PINS, DATA_OUT_PIN_MASK);
     }
 
     pub fn drive_data_in(&mut self, value: u8) {
-        for (bit, pin) in DATA_IN_PINS.iter().copied().enumerate() {
-            self.set_pin(pin, S100PinDrive::Driven(value & (1u8 << bit) != 0));
+        self.drive_bus(u16::from(value), &DATA_IN_PINS, DATA_IN_PIN_MASK);
+    }
+
+    #[inline]
+    fn drive_bus<const N: usize>(&mut self, value: u16, pins: &[u8; N], mask: PinMask) {
+        let mut high = [0; PIN_MASK_WORDS];
+        for (bit, pin) in pins.iter().copied().enumerate() {
+            high[pin as usize / 64] |= u64::from((value >> bit) & 1) << (pin % 64);
+        }
+        // These writers drive every contact in the bus strongly. Replace each
+        // plane once, preserving all unrelated contacts, rather than clearing
+        // and rewriting the same three mask words for each individual pin.
+        for word in 0..PIN_MASK_WORDS {
+            self.low[word] = (self.low[word] & !mask[word]) | (mask[word] & !high[word]);
+            self.high[word] = (self.high[word] & !mask[word]) | high[word];
+            self.open_collector_low[word] &= !mask[word];
         }
     }
 }
@@ -1155,6 +1165,44 @@ mod tests {
     use crate::s100::{S100CardClass, S100CardContact};
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn whole_bus_writers_match_individual_contacts_for_every_value_and_prior_drive() {
+        for previous in [
+            S100PinDrive::HighZ,
+            S100PinDrive::Driven(false),
+            S100PinDrive::Driven(true),
+            S100PinDrive::OpenCollectorLow,
+        ] {
+            let mut seed = S100CardDrive::new();
+            for pin in 1..=S100_CONTACT_COUNT as u8 {
+                seed.set_pin(pin, previous);
+            }
+            for value in 0..=u16::MAX {
+                let mut actual = seed;
+                let mut expected = seed;
+                actual.drive_address(value);
+                for bit in 0..16 {
+                    expected.drive_signal(S100Signal::Address(bit), value & (1 << bit) != 0);
+                }
+                assert_eq!(actual, expected, "address {value:04x}, prior {previous:?}");
+            }
+            for value in 0..=u8::MAX {
+                let mut actual = seed;
+                let mut expected = seed;
+                actual.drive_data_out(value);
+                for bit in 0..8 {
+                    expected.drive_signal(S100Signal::DataOut(bit), value & (1 << bit) != 0);
+                }
+                assert_eq!(actual, expected, "DO {value:02x}, prior {previous:?}");
+                actual.drive_data_in(value);
+                for bit in 0..8 {
+                    expected.drive_signal(S100Signal::DataIn(bit), value & (1 << bit) != 0);
+                }
+                assert_eq!(actual, expected, "DI {value:02x}, prior {previous:?}");
+            }
+        }
+    }
 
     const READY_OC: &[S100CardContact] = &[S100CardContact::new(
         S100Signal::Ready,
