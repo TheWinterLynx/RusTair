@@ -31,9 +31,19 @@ fn authentic_speed_label_comes_from_installed_board_clock() {
 
 #[test]
 fn embedded_cpu_tests_offer_real_x5_x10_and_unlimited_modes() {
-    assert!(EMBEDDED_DIAGNOSTICS.contains(
-        "enum DiagnosticRunSpeed { Authentic, X5, X10, Unlimited }"
-    ));
+    let speed_enum = EMBEDDED_DIAGNOSTICS
+        .split("enum DiagnosticRunSpeed {")
+        .nth(1)
+        .expect("DiagnosticRunSpeed enum")
+        .split('}')
+        .next()
+        .expect("DiagnosticRunSpeed body");
+    let variants = speed_enum
+        .split(',')
+        .map(str::trim)
+        .filter(|variant| !variant.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(variants, ["Authentic", "X5", "X10", "Unlimited"]);
     assert!(EMBEDDED_DIAGNOSTICS.contains("Self::X5 => EmulationSpeed::X5"));
     assert!(EMBEDDED_DIAGNOSTICS.contains("Self::X10 => EmulationSpeed::X10"));
     assert!(EMBEDDED_DIAGNOSTICS.contains("Self::Unlimited => EmulationSpeed::Unlimited"));
@@ -54,9 +64,10 @@ fn external_cpu_diagnostic_keeps_the_launch_speed_for_its_result() {
     assert!(APP.contains("cpu_diagnostic_run_speed_label: Option<String>"));
     assert!(RUNTIME.contains("self.cpu_diagnostic_run_speed_label.is_some()"));
     assert!(RUNTIME.contains("Speed locked while external CPU diagnostic runs: {speed}"));
-    assert!(EXTERNAL_DIAGNOSTICS.contains(
-        "self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());"
-    ));
+    assert!(
+        EXTERNAL_DIAGNOSTICS
+            .contains("self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());")
+    );
     assert!(EXTERNAL_DIAGNOSTICS.contains("self.cpu_diagnostic_run_speed_label.take()"));
     assert!(EXTERNAL_DIAGNOSTICS.contains("DIAGNOSTIC_RESULT_SPEED_ID"));
 }

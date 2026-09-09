@@ -4,8 +4,8 @@ use crate::config::{
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
 use crate::s100::{S100ContactRole, S100Signal};
 use crate::s100_backplane::{S100BackplaneError, S100BusSample};
-use crate::s100_runtime::{DisplayControlLines, RuntimeMemoryInspection, S100RuntimeFabric};
 pub(crate) use crate::s100_runtime::S100_OPEN_BUS_VALUE;
+use crate::s100_runtime::{DisplayControlLines, RuntimeMemoryInspection, S100RuntimeFabric};
 
 pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
@@ -71,13 +71,27 @@ impl Memory {
         self.fabric.serial_receive(port, byte)
     }
 
-    pub(super) fn serial_rx_empty(&self, port: usize) -> bool { self.fabric.serial_rx_empty(port) }
-    pub(super) fn serial_rx_len(&self, port: usize) -> usize { self.fabric.serial_rx_len(port) }
-    pub(super) fn serial_rx_line_idle(&self, port: usize) -> bool { self.fabric.serial_rx_line_idle(port) }
-    pub(super) fn serial_tx_busy(&self, port: usize) -> bool { self.fabric.serial_tx_busy(port) }
-    pub(super) fn serial_tx_front(&self, port: usize) -> Option<u8> { self.fabric.serial_tx_front(port) }
-    pub(super) fn serial_tx_complete(&self, port: usize) -> Option<u8> { self.fabric.serial_tx_complete(port) }
-    pub(super) fn clear_serial(&self) { self.fabric.clear_serial(); }
+    pub(super) fn serial_rx_empty(&self, port: usize) -> bool {
+        self.fabric.serial_rx_empty(port)
+    }
+    pub(super) fn serial_rx_len(&self, port: usize) -> usize {
+        self.fabric.serial_rx_len(port)
+    }
+    pub(super) fn serial_rx_line_idle(&self, port: usize) -> bool {
+        self.fabric.serial_rx_line_idle(port)
+    }
+    pub(super) fn serial_tx_busy(&self, port: usize) -> bool {
+        self.fabric.serial_tx_busy(port)
+    }
+    pub(super) fn serial_tx_front(&self, port: usize) -> Option<u8> {
+        self.fabric.serial_tx_front(port)
+    }
+    pub(super) fn serial_tx_complete(&self, port: usize) -> Option<u8> {
+        self.fabric.serial_tx_complete(port)
+    }
+    pub(super) fn clear_serial(&self) {
+        self.fabric.clear_serial();
+    }
 
     pub(super) fn serial_modem_lines(&self, port: usize) -> Option<(bool, bool, bool, bool)> {
         self.fabric.serial_modem_lines(port)
@@ -119,23 +133,45 @@ impl Memory {
         self.fabric.debugger_complete_serial_tx(port)
     }
 
-    pub(super) fn peek_io_port(&self, port: u8) -> u8 { self.fabric.peek_io_port(port) }
-    pub(super) fn debugger_input_port(&self, port: u8) -> u8 { self.fabric.debugger_input_port(port) }
+    pub(super) fn peek_io_port(&self, port: u8) -> u8 {
+        self.fabric.peek_io_port(port)
+    }
+    pub(super) fn debugger_input_port(&self, port: u8) -> u8 {
+        self.fabric.debugger_input_port(port)
+    }
     pub(super) fn debugger_output_port(&self, port: u8, value: u8) {
         self.fabric.debugger_output_port(port, value);
     }
-    pub(super) fn serial_vector_interrupt_requests(&self) -> u8 { self.fabric.serial_vector_interrupt_requests() }
-    pub(super) fn primary_serial_board(&self) -> Option<SerialBoard> { self.fabric.primary_serial_board() }
-    pub(super) fn primary_sio_hardware(&self) -> Option<SioHardwareConfig> { self.fabric.primary_sio_hardware() }
+    pub(super) fn serial_vector_interrupt_requests(&self) -> u8 {
+        self.fabric.serial_vector_interrupt_requests()
+    }
+    pub(super) fn primary_serial_board(&self) -> Option<SerialBoard> {
+        self.fabric.primary_serial_board()
+    }
+    pub(super) fn primary_sio_hardware(&self) -> Option<SioHardwareConfig> {
+        self.fabric.primary_sio_hardware()
+    }
     pub(super) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
         self.fabric.io_port_activity(port)
     }
-    pub(super) fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> { self.fabric.io_trace_snapshot() }
-    pub(super) fn io_trace_enabled(&self) -> bool { self.fabric.io_trace_enabled() }
-    pub(super) fn set_io_trace_enabled(&self, enabled: bool) { self.fabric.set_io_trace_enabled(enabled); }
-    pub(super) fn clear_io_trace(&self) { self.fabric.clear_io_trace(); }
+    pub(super) fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
+        self.fabric.io_trace_snapshot()
+    }
+    pub(super) fn io_trace_enabled(&self) -> bool {
+        self.fabric.io_trace_enabled()
+    }
+    pub(super) fn set_io_trace_enabled(&self, enabled: bool) {
+        self.fabric.set_io_trace_enabled(enabled);
+    }
+    pub(super) fn clear_io_trace(&self) {
+        self.fabric.clear_io_trace();
+    }
 
-    fn compatibility_hardware(&self, size: RamSize, profile: RamBoardProfile) -> S100HardwareConfig {
+    fn compatibility_hardware(
+        &self,
+        size: RamSize,
+        profile: RamBoardProfile,
+    ) -> S100HardwareConfig {
         let current = self.fabric.hardware();
         let serial_board = current.active_serial_board().unwrap_or(SerialBoard::Sio88);
         let sio_hardware = current.active_sio_hardware().unwrap_or_default();
@@ -168,7 +204,10 @@ impl Memory {
             slot.descriptor().is_some_and(|descriptor| {
                 descriptor.contacts.iter().any(|contact| {
                     contact.role == S100ContactRole::Input
-                        && matches!(contact.signal, S100Signal::Phi1 | S100Signal::Phi2 | S100Signal::Clock)
+                        && matches!(
+                            contact.signal,
+                            S100Signal::Phi1 | S100Signal::Phi2 | S100Signal::Clock
+                        )
                 })
             })
         })
@@ -187,7 +226,9 @@ impl Memory {
             && previous.inte == pins.inte
             && previous.wait == pins.wait
             && previous.hlda == pins.hlda;
-        if !same_non_phase { return false; }
+        if !same_non_phase {
+            return false;
+        }
 
         let phi1_rising = !previous.phi1 && pins.phi1 && !previous.phi2 && !pins.phi2;
         let phi1_falling = previous.phi1 && !pins.phi1 && !previous.phi2 && !pins.phi2;
@@ -224,10 +265,16 @@ impl Memory {
         Ok(())
     }
 
-    pub(super) fn hardware(&self) -> S100HardwareConfig { self.fabric.hardware() }
-    pub(super) fn inspect(&self, address: u16) -> RuntimeMemoryInspection { self.fabric.inspect_memory(address) }
+    pub(super) fn hardware(&self) -> S100HardwareConfig {
+        self.fabric.hardware()
+    }
+    pub(super) fn inspect(&self, address: u16) -> RuntimeMemoryInspection {
+        self.fabric.inspect_memory(address)
+    }
 
-    pub(super) fn mark_full_execution_desynced(&mut self) { self.full_execution_desynced = true; }
+    pub(super) fn mark_full_execution_desynced(&mut self) {
+        self.full_execution_desynced = true;
+    }
 
     pub(super) fn cycle_drive_cpu_edge(
         &mut self,
@@ -239,7 +286,9 @@ impl Memory {
             let phi1_rising = !previous.phi1 && pins.phi1 && !previous.phi2 && !pins.phi2;
             let status_latch_changes = phi1_rising
                 && pins.sync
-                && pins.data_out.is_some_and(|word| word != self.fabric.cpu_latched_status_word());
+                && pins
+                    .data_out
+                    .is_some_and(|word| word != self.fabric.cpu_latched_status_word());
             let can_elide = if phi1_rising {
                 !status_latch_changes && self.fabric.can_elide_phase_only_rising(display)?
             } else {
@@ -259,7 +308,9 @@ impl Memory {
             && physical_pins.address == Some(u16::MAX)
             && !physical_pins.wr_n
         {
-            if let Some(value) = physical_pins.data_out { self.basic32_probe_write = Some(value); }
+            if let Some(value) = physical_pins.data_out {
+                self.basic32_probe_write = Some(value);
+            }
             physical_pins.wr_n = true;
         }
         self.fabric.set_cpu_package_pins(physical_pins);
@@ -280,9 +331,15 @@ impl Memory {
         Ok(self.fabric.cpu_package_inputs())
     }
 
-    pub(super) fn cycle_live_inputs(&self) -> Cpu8080Inputs { self.fabric.cpu_package_inputs() }
-    pub(super) fn cycle_live_sample(&self) -> &S100BusSample { self.fabric.sample() }
-    pub(super) fn cycle_latched_status_word(&self) -> u8 { self.fabric.cpu_latched_status_word() }
+    pub(super) fn cycle_live_inputs(&self) -> Cpu8080Inputs {
+        self.fabric.cpu_package_inputs()
+    }
+    pub(super) fn cycle_live_sample(&self) -> &S100BusSample {
+        self.fabric.sample()
+    }
+    pub(super) fn cycle_latched_status_word(&self) -> u8 {
+        self.fabric.cpu_latched_status_word()
+    }
 
     /// Compatibility helper for old aggregate timing fixtures. Rebuild the
     /// compatibility card with the requested physical wait-state value while
@@ -309,7 +366,9 @@ impl Memory {
         (self.fabric.mapped_ram_card_count(address) != 0).then_some(self.board_profile)
     }
 
-    pub(super) fn installed_size(&self) -> usize { self.fabric.installed_ram_bytes() }
+    pub(super) fn installed_size(&self) -> usize {
+        self.fabric.installed_ram_bytes()
+    }
 
     pub(super) fn initialize(&mut self) {
         self.clear_transient_guards();
@@ -337,8 +396,12 @@ impl Memory {
         self.basic32_probe_write = None;
     }
 
-    pub(super) fn load(&mut self, address: u16, data: &[u8]) { let _ = self.fabric.load_bytes(address, data); }
-    pub(super) fn peek(&self, address: u16) -> Option<u8> { self.fabric.peek_unique_memory(address) }
+    pub(super) fn load(&mut self, address: u16, data: &[u8]) {
+        let _ = self.fabric.load_bytes(address, data);
+    }
+    pub(super) fn peek(&self, address: u16) -> Option<u8> {
+        self.fabric.peek_unique_memory(address)
+    }
 
     fn resolved_preview(&self, address: u16) -> u8 {
         let inspection = self.fabric.inspect_memory(address);
@@ -347,14 +410,20 @@ impl Memory {
             [driver] => driver.value,
             drivers => {
                 let first = drivers[0].value;
-                if drivers.iter().all(|driver| driver.value == first) { first } else { S100_OPEN_BUS_VALUE }
+                if drivers.iter().all(|driver| driver.value == first) {
+                    first
+                } else {
+                    S100_OPEN_BUS_VALUE
+                }
             }
         }
     }
 
     pub(super) fn preview_read(&self, address: u16) -> u8 {
         if address == u16::MAX && self.basic32_probe_guard {
-            if let Some(written) = self.basic32_probe_write { return written ^ 0xff; }
+            if let Some(written) = self.basic32_probe_write {
+                return written ^ 0xff;
+            }
         }
         self.resolved_preview(address)
     }
@@ -365,12 +434,19 @@ impl Memory {
         value: u8,
         respect_protection: bool,
     ) -> bool {
-        self.fabric.write_unique_memory(address, value, respect_protection)
+        self.fabric
+            .write_unique_memory(address, value, respect_protection)
     }
 
-    pub(super) fn clear_protection(&self) { self.fabric.clear_memory_protection(); }
-    pub(super) fn board_index(address: u16) -> Option<usize> { Some(address as usize / MEMORY_BOARD_SIZE) }
-    pub(super) fn is_protected(&self, address: u16) -> bool { self.fabric.memory_is_protected(address) }
+    pub(super) fn clear_protection(&self) {
+        self.fabric.clear_memory_protection();
+    }
+    pub(super) fn board_index(address: u16) -> Option<usize> {
+        Some(address as usize / MEMORY_BOARD_SIZE)
+    }
+    pub(super) fn is_protected(&self, address: u16) -> bool {
+        self.fabric.memory_is_protected(address)
+    }
 
     pub(super) fn set_protected(&mut self, address: u16, protected: bool) {
         let _ = self.fabric.set_unique_memory_protection(address, protected);
@@ -392,11 +468,19 @@ impl Memory {
     /// No CPU-to-RAM reference exists: Full calls the bus-owned fabric, and
     /// overlapping cards fall back to the generic electrical resolver.
     pub(super) fn read(&mut self, address: u16) -> u8 {
-        if let Some(value) = self.compatibility_read_override(address) { return value; }
+        if let Some(value) = self.compatibility_read_override(address) {
+            return value;
+        }
         match self.fabric.mapped_ram_card_count(address) {
             0 => S100_OPEN_BUS_VALUE,
-            1 => self.fabric.peek_unique_memory(address).unwrap_or(S100_OPEN_BUS_VALUE),
-            _ => self.fabric.fast_memory_read(address, 0x82).unwrap_or(S100_OPEN_BUS_VALUE),
+            1 => self
+                .fabric
+                .peek_unique_memory(address)
+                .unwrap_or(S100_OPEN_BUS_VALUE),
+            _ => self
+                .fabric
+                .fast_memory_read(address, 0x82)
+                .unwrap_or(S100_OPEN_BUS_VALUE),
         }
     }
 
@@ -411,8 +495,12 @@ impl Memory {
         }
         match self.fabric.mapped_ram_card_count(address) {
             0 => {}
-            1 => { let _ = self.fabric.write_unique_memory(address, value, true); }
-            _ => { let _ = self.fabric.fast_memory_write(address, value, 0x00); }
+            1 => {
+                let _ = self.fabric.write_unique_memory(address, value, true);
+            }
+            _ => {
+                let _ = self.fabric.fast_memory_write(address, value, 0x00);
+            }
         }
     }
 
@@ -425,9 +513,15 @@ impl Memory {
 }
 
 impl super::AltairBus {
-    pub fn peek_memory(&self, address: u16) -> Option<u8> { self.memory.peek(address) }
-    pub(crate) fn inspect_memory_mapping(&self, address: u16) -> RuntimeMemoryInspection { self.memory.inspect(address) }
-    pub(crate) fn preview_guest_memory(&self, address: u16) -> u8 { self.memory.preview_read(address) }
+    pub fn peek_memory(&self, address: u16) -> Option<u8> {
+        self.memory.peek(address)
+    }
+    pub(crate) fn inspect_memory_mapping(&self, address: u16) -> RuntimeMemoryInspection {
+        self.memory.inspect(address)
+    }
+    pub(crate) fn preview_guest_memory(&self, address: u16) -> u8 {
+        self.memory.preview_read(address)
+    }
 
     pub fn debugger_write_memory(
         &mut self,
@@ -435,7 +529,8 @@ impl super::AltairBus {
         value: u8,
         respect_protection: bool,
     ) -> bool {
-        self.memory.debugger_write(address, value, respect_protection)
+        self.memory
+            .debugger_write(address, value, respect_protection)
     }
 
     pub(crate) fn configure_s100_hardware_memory(
@@ -446,11 +541,21 @@ impl super::AltairBus {
         self.memory.configure_hardware(hardware, init)
     }
 
-    pub(crate) fn s100_hardware_memory(&self) -> S100HardwareConfig { self.memory.hardware() }
-    pub(crate) fn cycle_live_s100_inputs(&self) -> Cpu8080Inputs { self.memory.cycle_live_inputs() }
-    pub(crate) fn cycle_live_s100_sample(&self) -> &S100BusSample { self.memory.cycle_live_sample() }
-    pub(crate) fn cycle_live_s100_status_word(&self) -> u8 { self.memory.cycle_latched_status_word() }
-    pub(crate) fn cycle_mark_full_execution_desynced(&mut self) { self.memory.mark_full_execution_desynced(); }
+    pub(crate) fn s100_hardware_memory(&self) -> S100HardwareConfig {
+        self.memory.hardware()
+    }
+    pub(crate) fn cycle_live_s100_inputs(&self) -> Cpu8080Inputs {
+        self.memory.cycle_live_inputs()
+    }
+    pub(crate) fn cycle_live_s100_sample(&self) -> &S100BusSample {
+        self.memory.cycle_live_sample()
+    }
+    pub(crate) fn cycle_live_s100_status_word(&self) -> u8 {
+        self.memory.cycle_latched_status_word()
+    }
+    pub(crate) fn cycle_mark_full_execution_desynced(&mut self) {
+        self.memory.mark_full_execution_desynced();
+    }
 
     fn cycle_display_control_lines(&self) -> DisplayControlLines {
         let signals = self.s100.signals();
@@ -473,13 +578,6 @@ impl super::AltairBus {
         self.memory.cycle_drive_cpu_edge(pins, display)
     }
 
-    pub(crate) fn cycle_refresh_external_s100_inputs(
-        &mut self,
-    ) -> Result<Cpu8080Inputs, S100BackplaneError> {
-        let display = self.cycle_display_control_lines();
-        self.memory.cycle_refresh_external_inputs(display)
-    }
-
     pub(crate) fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
         self.memory.configure_board_profile(profile);
         self.s100.set_memory_ready_input(true);
@@ -493,7 +591,9 @@ impl super::AltairBus {
         self.s100.set_memory_ready_input(true);
     }
 
-    pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 { self.memory.cycle_read(address) }
+    pub(crate) fn cycle_read_memory(&mut self, address: u16) -> u8 {
+        self.memory.cycle_read(address)
+    }
 
     pub(crate) fn raw_s100_status_word(&self) -> u8 {
         let s = self.s100.signals();
@@ -507,14 +607,30 @@ impl super::AltairBus {
             | u8::from(s.int_ack)
     }
 
-    pub(crate) fn raw_s100_inte(&self) -> bool { self.s100.signals().inte }
-    pub(crate) fn raw_s100_prot(&self) -> bool { self.s100.signals().prot }
-    pub(crate) fn raw_s100_wait(&self) -> bool { self.s100.signals().wait }
-    pub(crate) fn raw_s100_hlda(&self) -> bool { self.s100.signals().hlda }
-    pub(crate) fn raw_s100_data_in(&self) -> Option<u8> { self.s100.signals().data_in }
-    pub(crate) fn raw_s100_data_out(&self) -> Option<u8> { self.s100.signals().data_out }
-    pub(crate) fn raw_cpu_data(&self) -> Option<u8> { self.s100.signals().cpu_data }
-    pub(crate) fn raw_panel_data(&self) -> u8 { self.s100.signals().panel_data }
+    pub(crate) fn raw_s100_inte(&self) -> bool {
+        self.s100.signals().inte
+    }
+    pub(crate) fn raw_s100_prot(&self) -> bool {
+        self.s100.signals().prot
+    }
+    pub(crate) fn raw_s100_wait(&self) -> bool {
+        self.s100.signals().wait
+    }
+    pub(crate) fn raw_s100_hlda(&self) -> bool {
+        self.s100.signals().hlda
+    }
+    pub(crate) fn raw_s100_data_in(&self) -> Option<u8> {
+        self.s100.signals().data_in
+    }
+    pub(crate) fn raw_s100_data_out(&self) -> Option<u8> {
+        self.s100.signals().data_out
+    }
+    pub(crate) fn raw_cpu_data(&self) -> Option<u8> {
+        self.s100.signals().cpu_data
+    }
+    pub(crate) fn raw_panel_data(&self) -> u8 {
+        self.s100.signals().panel_data
+    }
 
     pub(crate) fn cycle_drive_s100_t_state(
         &mut self,
@@ -528,7 +644,9 @@ impl super::AltairBus {
         wait: bool,
         hlda: bool,
     ) {
-        let protected = address.map(|address| self.memory.is_protected(address)).unwrap_or(false);
+        let protected = address
+            .map(|address| self.memory.is_protected(address))
+            .unwrap_or(false);
         self.s100.drive_cpu_t_state(
             address,
             cpu_data,
@@ -602,27 +720,31 @@ mod tests {
             ..DisplayControlLines::default()
         };
 
-        memory.cycle_drive_cpu_edge(
-            Cpu8080Pins {
-                phi1: true,
-                address: Some(0x0010),
-                data_out: Some(0x82),
-                sync: true,
-                wr_n: true,
-                ..Cpu8080Pins::default()
-            },
-            display,
-        ).unwrap();
-        let inputs = memory.cycle_drive_cpu_edge(
-            Cpu8080Pins {
-                phi2: true,
-                address: Some(0x0010),
-                dbin: true,
-                wr_n: true,
-                ..Cpu8080Pins::default()
-            },
-            display,
-        ).unwrap();
+        memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi1: true,
+                    address: Some(0x0010),
+                    data_out: Some(0x82),
+                    sync: true,
+                    wr_n: true,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
+        let inputs = memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi2: true,
+                    address: Some(0x0010),
+                    dbin: true,
+                    wr_n: true,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
 
         assert_eq!(inputs.data_in, 0x5a);
         assert_eq!(memory.peek(0x0010), Some(0x5a));
@@ -632,20 +754,26 @@ mod tests {
     #[test]
     fn lazy_full_execution_forces_first_partial_edge_back_through_real_fabric() {
         let mut memory = Memory::default();
-        let display = DisplayControlLines { ready: true, run: true, ..DisplayControlLines::default() };
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        };
         memory.mark_full_execution_desynced();
         assert!(memory.full_execution_desynced);
-        memory.cycle_drive_cpu_edge(
-            Cpu8080Pins {
-                phi1: true,
-                address: Some(0x0020),
-                data_out: Some(0x82),
-                sync: true,
-                wr_n: true,
-                ..Cpu8080Pins::default()
-            },
-            display,
-        ).unwrap();
+        memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi1: true,
+                    address: Some(0x0020),
+                    data_out: Some(0x82),
+                    sync: true,
+                    wr_n: true,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
         assert!(!memory.full_execution_desynced);
     }
 
@@ -654,17 +782,23 @@ mod tests {
         let mut memory = Memory::default();
         memory.configure(RamSize::K64, RamInit::Zeroed);
         assert!(memory.arm_basic32_full_memory_probe_guard());
-        let display = DisplayControlLines { ready: true, run: true, ..DisplayControlLines::default() };
-        memory.cycle_drive_cpu_edge(
-            Cpu8080Pins {
-                phi1: true,
-                address: Some(u16::MAX),
-                data_out: Some(0x37),
-                wr_n: false,
-                ..Cpu8080Pins::default()
-            },
-            display,
-        ).unwrap();
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..DisplayControlLines::default()
+        };
+        memory
+            .cycle_drive_cpu_edge(
+                Cpu8080Pins {
+                    phi1: true,
+                    address: Some(u16::MAX),
+                    data_out: Some(0x37),
+                    wr_n: false,
+                    ..Cpu8080Pins::default()
+                },
+                display,
+            )
+            .unwrap();
         assert_eq!(memory.peek(u16::MAX), Some(0));
         assert_eq!(memory.preview_read(u16::MAX), 0xc8);
     }

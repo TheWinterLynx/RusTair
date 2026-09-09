@@ -28,13 +28,13 @@ const CHECKSUM_LOADER_START: u16 = 0x0F00;
 const CHECKSUM_LOADER_END: u16 = 0x0FAD;
 
 const BASIC32_4K_88_SIO: [u8; 20] = [
-    0x21, 0xAE, 0x0F, 0x31, 0x12, 0x00, 0xDB, 0x00, 0x0F, 0xD8, 0xDB, 0x01, 0xBD, 0xC8,
-    0x2D, 0x77, 0xC0, 0xE9, 0x03, 0x00,
+    0x21, 0xAE, 0x0F, 0x31, 0x12, 0x00, 0xDB, 0x00, 0x0F, 0xD8, 0xDB, 0x01, 0xBD, 0xC8, 0x2D, 0x77,
+    0xC0, 0xE9, 0x03, 0x00,
 ];
 
 const BASIC32_4K_88_2SIO: [u8; 28] = [
-    0x3E, 0x03, 0xD3, 0x10, 0x3E, 0x11, 0xD3, 0x10, 0x21, 0xAE, 0x0F, 0x31, 0x1A, 0x00,
-    0xDB, 0x10, 0x0F, 0xD0, 0xDB, 0x11, 0xBD, 0xC8, 0x2D, 0x77, 0xC0, 0xE9, 0x0B, 0x00,
+    0x3E, 0x03, 0xD3, 0x10, 0x3E, 0x11, 0xD3, 0x10, 0x21, 0xAE, 0x0F, 0x31, 0x1A, 0x00, 0xDB, 0x10,
+    0x0F, 0xD0, 0xDB, 0x11, 0xBD, 0xC8, 0x2D, 0x77, 0xC0, 0xE9, 0x0B, 0x00,
 ];
 
 impl BootstrapDefinition {
@@ -572,11 +572,7 @@ fn bootstrap_instruction_text(
     (info.mnemonic.to_owned(), info.effect.to_owned())
 }
 
-fn bootstrap_switch_tooltip(
-    definition: BootstrapDefinition,
-    index: usize,
-    byte: u8,
-) -> String {
+fn bootstrap_switch_tooltip(definition: BootstrapDefinition, index: usize, byte: u8) -> String {
     let address = index as u16;
     let switch_value = u16::from(byte);
     let Some(info) = bootstrap_instruction_info(definition, index) else {
@@ -616,8 +612,7 @@ impl RusTairApp {
     pub(in crate::app) fn open_authentic_basic_loader(&mut self) {
         self.authentic_loader.window_open = true;
         self.status =
-            "Authentic BASIC 3.2 loader opened — BASIC will not be copied directly into RAM"
-                .into();
+            "Authentic BASIC 3.2 loader opened — BASIC will not be copied directly into RAM".into();
     }
 
     fn configure_bootstrap_switches(&mut self, value: u16, description: &str) {
@@ -670,13 +665,21 @@ impl RusTairApp {
         if panel_address != required_before {
             return Err(format!(
                 "{} for {address:04X}h expects the panel address to be {required_before:04X}h first; it is currently {panel_address:04X}h. Execute the preceding rows instead of silently repositioning the panel.",
-                if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" }
+                if deposit_next {
+                    "DEPOSIT NEXT"
+                } else {
+                    "DEPOSIT"
+                }
             ));
         }
 
         self.machine.deposit(deposit_next);
         let inspection = self.machine.inspect_memory_mapping(address);
-        let operation = if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" };
+        let operation = if deposit_next {
+            "DEPOSIT NEXT"
+        } else {
+            "DEPOSIT"
+        };
         match inspection.drivers.as_slice() {
             [] => Err(format!(
                 "{operation} bus cycle executed at {address:04X}h with {byte:02X}h, but no RAM card decoded the address."
@@ -1237,6 +1240,37 @@ mod tests {
     use super::*;
     use crate::config::{SioAddressPair, TwoSioAddressBlock};
 
+    fn install_test_serial_card(
+        machine: &mut BackendHost,
+        board: SerialBoard,
+        two_sio_straps: TwoSioStraps,
+    ) {
+        let mut hardware = machine.s100_hardware();
+        let serial_slots = hardware
+            .serial_slots()
+            .map(|(slot, _)| slot)
+            .collect::<Vec<_>>();
+        let target_slot = serial_slots
+            .first()
+            .copied()
+            .or_else(|| {
+                (1..=hardware.fitted_connectors()).find(|&slot| hardware.slot(slot).is_none())
+            })
+            .expect("Authentic Loader test needs one free S-100 connector");
+        for slot in serial_slots {
+            hardware.set_slot(slot, None).unwrap();
+        }
+        let card = match board {
+            SerialBoard::Sio88 => S100InstalledCardConfig::Mits88Sio(Default::default()),
+            SerialBoard::TwoSio88 => S100InstalledCardConfig::Mits88TwoSio {
+                straps: two_sio_straps,
+                interrupt_wiring: Default::default(),
+            },
+        };
+        hardware.set_slot(target_slot, Some(card)).unwrap();
+        machine.configure_s100_hardware(hardware.validate().unwrap(), RamInit::Zeroed);
+    }
+
     #[test]
     fn basic32_4k_bootstraps_keep_historical_leader_and_ports() {
         let sio = BootstrapDefinition::for_board(SerialBoard::Sio88);
@@ -1253,14 +1287,8 @@ mod tests {
             &[0x3E, 0x03, 0xD3, 0x10, 0x3E, 0x11, 0xD3, 0x10]
         );
         assert_eq!(&two_sio.bytes[8..11], &[0x21, 0xAE, 0x0F]);
-        assert!(two_sio
-            .bytes
-            .windows(2)
-            .any(|bytes| bytes == [0xDB, 0x10]));
-        assert!(two_sio
-            .bytes
-            .windows(2)
-            .any(|bytes| bytes == [0xDB, 0x11]));
+        assert!(two_sio.bytes.windows(2).any(|bytes| bytes == [0xDB, 0x10]));
+        assert!(two_sio.bytes.windows(2).any(|bytes| bytes == [0xDB, 0x11]));
         assert_eq!(two_sio.required_sense, 0x08);
     }
 
@@ -1274,13 +1302,14 @@ mod tests {
         assert_eq!(definition.data_port, 0x07);
         assert_eq!(resolved[0x07], 0x06);
         assert_eq!(resolved[0x0B], 0x07);
-        for (index, (&canonical, &actual)) in BASIC32_4K_88_SIO
-            .iter()
-            .zip(resolved.iter())
-            .enumerate()
+        for (index, (&canonical, &actual)) in
+            BASIC32_4K_88_SIO.iter().zip(resolved.iter()).enumerate()
         {
             if ![0x07, 0x0B].contains(&index) {
-                assert_eq!(actual, canonical, "non-port SIO byte changed at {index:02X}h");
+                assert_eq!(
+                    actual, canonical,
+                    "non-port SIO byte changed at {index:02X}h"
+                );
             }
         }
         assert!(bootstrap_switch_tooltip(definition, 6, resolved[6]).contains("IN $06"));
@@ -1302,10 +1331,8 @@ mod tests {
         assert_eq!(resolved[0x0F], 0x44);
         assert_eq!(resolved[0x13], 0x45);
 
-        for (index, (&canonical, &actual)) in BASIC32_4K_88_2SIO
-            .iter()
-            .zip(resolved.iter())
-            .enumerate()
+        for (index, (&canonical, &actual)) in
+            BASIC32_4K_88_2SIO.iter().zip(resolved.iter()).enumerate()
         {
             if ![0x03, 0x07, 0x0F, 0x13].contains(&index) {
                 assert_eq!(
@@ -1326,7 +1353,7 @@ mod tests {
         for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
             let mut machine = BackendHost::default();
             machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-            machine.configure_serial_board(board);
+            install_test_serial_card(&mut machine, board, TwoSioStraps::default());
             machine.power(true);
             machine.set_running(false);
 
@@ -1351,8 +1378,7 @@ mod tests {
         let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
         let mut machine = BackendHost::default();
         machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        machine.configure_two_sio_straps(straps);
+        install_test_serial_card(&mut machine, SerialBoard::TwoSio88, straps);
         machine.power(true);
         machine.set_running(false);
 
@@ -1392,7 +1418,7 @@ mod tests {
         for board in [SerialBoard::Sio88, SerialBoard::TwoSio88] {
             let mut machine = BackendHost::default();
             machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-            machine.configure_serial_board(board);
+            install_test_serial_card(&mut machine, board, TwoSioStraps::default());
             machine.power(true);
             machine.set_running(false);
 
@@ -1414,8 +1440,7 @@ mod tests {
             assert!(definition.pc_is_polling(machine.intel8080_state().pc));
 
             machine.set_io_trace_enabled(true);
-            let (_, _, leader_reads_before, _) =
-                machine.io_port_activity(definition.data_port);
+            let (_, _, leader_reads_before, _) = machine.io_port_activity(definition.data_port);
             machine.serial_receive(BackendSerialPort::Port0, 0xAE);
             if board == SerialBoard::TwoSio88 {
                 assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
@@ -1423,14 +1448,12 @@ mod tests {
             }
             for _ in 0..4_096 {
                 machine.run_cycles(64);
-                let (_, _, data_reads, _) =
-                    machine.io_port_activity(definition.data_port);
+                let (_, _, data_reads, _) = machine.io_port_activity(definition.data_port);
                 if data_reads > leader_reads_before {
                     break;
                 }
             }
-            let (_, _, leader_reads_after, _) =
-                machine.io_port_activity(definition.data_port);
+            let (_, _, leader_reads_after, _) = machine.io_port_activity(definition.data_port);
             assert!(
                 leader_reads_after > leader_reads_before,
                 "{board:?} never consumed the AEh leader through guest IN"
@@ -1451,8 +1474,7 @@ mod tests {
                 }
             }
             assert_eq!(machine.peek_memory(CHECKSUM_LOADER_END), Some(0x42));
-            let (_, _, payload_reads_after, _) =
-                machine.io_port_activity(definition.data_port);
+            let (_, _, payload_reads_after, _) = machine.io_port_activity(definition.data_port);
             assert!(
                 payload_reads_after > payload_reads_before,
                 "{board:?} stored the payload without a guest DATA-port IN"
@@ -1470,8 +1492,7 @@ mod tests {
         let definition = BootstrapDefinition::for_installed(SerialBoard::TwoSio88, straps);
         let mut machine = BackendHost::default();
         machine.configure_memory(RamSize::K4, RamInit::Zeroed);
-        machine.configure_serial_board(SerialBoard::TwoSio88);
-        machine.configure_two_sio_straps(straps);
+        install_test_serial_card(&mut machine, SerialBoard::TwoSio88, straps);
         machine.power(true);
         machine.set_running(false);
         install_via_front_panel(&mut machine, definition).unwrap();
@@ -1492,7 +1513,10 @@ mod tests {
         let (_, _, legacy_status_reads, _) = machine.io_port_activity(0x10);
         let (_, _, status_reads, _) = machine.io_port_activity(0x44);
         assert!(status_reads > 0, "readdressed bootstrap never polled 44h");
-        assert_eq!(legacy_status_reads, 0, "readdressed bootstrap still touched legacy 10h");
+        assert_eq!(
+            legacy_status_reads, 0,
+            "readdressed bootstrap still touched legacy 10h"
+        );
 
         let (_, _, data_reads_before, _) = machine.io_port_activity(0x45);
         machine.serial_receive(BackendSerialPort::Port0, 0xAE);
@@ -1505,8 +1529,14 @@ mod tests {
         }
         let (_, _, data_reads_after, _) = machine.io_port_activity(0x45);
         let (_, _, legacy_data_reads, _) = machine.io_port_activity(0x11);
-        assert!(data_reads_after > data_reads_before, "readdressed bootstrap never read 45h");
-        assert_eq!(legacy_data_reads, 0, "readdressed bootstrap still touched legacy 11h");
+        assert!(
+            data_reads_after > data_reads_before,
+            "readdressed bootstrap never read 45h"
+        );
+        assert_eq!(
+            legacy_data_reads, 0,
+            "readdressed bootstrap still touched legacy 11h"
+        );
     }
 
     #[test]

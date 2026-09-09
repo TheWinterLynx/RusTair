@@ -864,7 +864,7 @@ impl CycleAccurateMachineBackend {
         &mut self,
         t_state_budget: u32,
     ) -> BackendResult<()> {
-        self.machine.bus.refresh_interrupt_request_line();
+        self.machine.bus.settle_serial_connector_state();
         let lines = self.machine.bus.cpu_control_lines();
         if t_state_budget == 0
             || !self.machine.powered
@@ -944,7 +944,7 @@ impl CycleAccurateMachineBackend {
                 .bus
                 .advance_serial_hardware_time(deferred_serial_t_states);
         }
-        self.machine.bus.refresh_interrupt_request_line();
+        self.machine.bus.settle_serial_connector_state();
         self.fail_if_cpu_fault("service execution")
     }
 

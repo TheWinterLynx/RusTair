@@ -79,9 +79,6 @@ pub(super) struct S100Signals {
     /// Selected memory-card contribution to PRDY. Slow RAM may pull this low.
     pub memory_ready: bool,
     pub wait: bool,
-    /// PINT, S-100 pin 73. Internal booleans use `true` for asserted even
-    /// though the physical line is active-low on the original backplane.
-    pub interrupt: bool,
     pub hold: bool,
     pub hlda: bool,
     pub reset: bool,
@@ -119,7 +116,6 @@ impl Default for S100Signals {
             front_panel_ready: false,
             memory_ready: true,
             wait: false,
-            interrupt: false,
             hold: false,
             hlda: false,
             reset: false,
@@ -361,10 +357,8 @@ impl PanelLampIntegrator {
         } else {
             first_panel_data
         };
-        let first_mask = first_common_mask
-            | (u64::from(first_panel_data) << PACKED_DATA_SHIFT);
-        let latched_mask = latched_common_mask
-            | (u64::from(later_panel_data) << PACKED_DATA_SHIFT);
+        let first_mask = first_common_mask | (u64::from(first_panel_data) << PACKED_DATA_SHIFT);
+        let latched_mask = latched_common_mask | (u64::from(later_panel_data) << PACKED_DATA_SHIFT);
         if first_mask == latched_mask {
             self.add_weighted_mask(first_mask, accepted);
         } else {
@@ -555,10 +549,6 @@ impl S100BusState {
         self.recompute_ready();
     }
 
-    pub(super) fn set_interrupt_request(&mut self, asserted: bool) {
-        self.signals.interrupt = asserted;
-    }
-
     pub(super) fn set_hold(&mut self, hold: bool) {
         self.signals.hold = hold;
         if !hold {
@@ -641,11 +631,11 @@ impl S100BusState {
         self.signals.address = address;
         self.signals.prot = protected;
 
-        let first_common_mask = u64::from(address)
-            | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
+        let first_common_mask =
+            u64::from(address) | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
         self.signals.apply_status_word(status_word);
-        let latched_common_mask = u64::from(address)
-            | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
+        let latched_common_mask =
+            u64::from(address) | (u64::from(self.signals.lamp_mask()) << PACKED_LAMP_SHIFT);
         let final_panel_data = if reads_data_from_s100 {
             data
         } else {
@@ -952,12 +942,8 @@ impl super::AltairBus {
     #[inline]
     pub(crate) fn cycle_full_project_internal_t_states(&mut self, t_states: u32, inte: bool) {
         debug_assert!(self.s100.signals().ready, "Cycle Full requires READY high");
-        self.s100.drive_cycle_full_internal_t_states(
-            t_states,
-            inte,
-            true,
-            false,
-        );
+        self.s100
+            .drive_cycle_full_internal_t_states(t_states, inte, true, false);
     }
 }
 
@@ -1051,16 +1037,40 @@ mod tests {
         // Exact MemoryRead after a fetch: T1 still displays M1 status, T2 latches
         // 82h and starts showing the new DI byte, T3 retains both.
         expanded.drive_cpu_t_state(
-            Some(0x1234), Some(0x82), None, Some(0x82), None, false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0x82),
+            None,
+            Some(0x82),
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         expanded.drive_cpu_t_state(
-            None, Some(0x33), Some(0x33), None, Some(0x82), false, false,
-            true, false, false,
+            None,
+            Some(0x33),
+            Some(0x33),
+            None,
+            Some(0x82),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         expanded.drive_cpu_t_state(
-            None, Some(0x33), Some(0x33), None, None, false, false,
-            true, false, false,
+            None,
+            Some(0x33),
+            Some(0x33),
+            None,
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
 
         packed.drive_cycle_full_reconstructed_cpu_cycle(
@@ -1068,7 +1078,10 @@ mod tests {
         );
 
         assert_eq!(packed.lamps.total_weight, expanded.lamps.total_weight);
-        assert_eq!(packed.lamps.raw_duty_snapshot(), expanded.lamps.raw_duty_snapshot());
+        assert_eq!(
+            packed.lamps.raw_duty_snapshot(),
+            expanded.lamps.raw_duty_snapshot()
+        );
         assert_eq!(packed.signals().address, expanded.signals().address);
         assert_eq!(packed.signals().panel_data, expanded.signals().panel_data);
         assert_eq!(packed.signals().lamp_mask(), expanded.signals().lamp_mask());
@@ -1110,8 +1123,16 @@ mod tests {
     fn status_latch_changes_only_when_cpu_board_clocks_it() {
         let mut bus = S100BusState::default();
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0xa2), None, Some(0xa2), None, false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert!(!bus.signals().m1);
         assert!(!bus.signals().memr);
@@ -1125,18 +1146,37 @@ mod tests {
     fn intel_status_and_read_data_keep_cpu_di_do_domains_distinct() {
         let mut bus = S100BusState::default();
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         let t1 = bus.signals();
         assert_eq!(t1.cpu_data, Some(0xa2));
         assert_eq!(t1.data_in, None);
         assert_eq!(t1.data_out, Some(0xa2));
-        assert_eq!(t1.panel_data, 0x00, "status on CPU D/DO must not drive the DI-wired DATA lamps");
+        assert_eq!(
+            t1.panel_data, 0x00,
+            "status on CPU D/DO must not drive the DI-wired DATA lamps"
+        );
 
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0x56), Some(0x56), None, None, false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0x56),
+            Some(0x56),
+            None,
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         let read = bus.signals();
         assert_eq!(read.address, 0x1234);
@@ -1153,24 +1193,51 @@ mod tests {
     fn write_data_uses_do_and_does_not_replace_front_panel_di_value() {
         let mut bus = S100BusState::default();
         bus.drive_cpu_t_state(
-            Some(0x0100), Some(0x5a), Some(0x5a), None, Some(0x82), false, false,
-            true, false, false,
+            Some(0x0100),
+            Some(0x5a),
+            Some(0x5a),
+            None,
+            Some(0x82),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.signals().panel_data, 0x5a);
 
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0x00), None, Some(0x00), Some(0x00), false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0x00),
+            None,
+            Some(0x00),
+            Some(0x00),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0xaa), None, Some(0xaa), None, false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0xaa),
+            None,
+            Some(0xaa),
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         let write = bus.signals();
         assert_eq!(write.cpu_data, Some(0xaa));
         assert_eq!(write.data_in, None);
         assert_eq!(write.data_out, Some(0xaa));
-        assert_eq!(write.panel_data, 0x5a, "DO must not feed the DI-wired DATA lamps");
+        assert_eq!(
+            write.panel_data, 0x5a,
+            "DO must not feed the DI-wired DATA lamps"
+        );
         assert!(!write.memr);
         assert!(!write.wo);
     }
@@ -1179,8 +1246,16 @@ mod tests {
     fn t_state_path_samples_once_and_preserves_latched_status_on_internal_states() {
         let mut bus = S100BusState::default();
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.lamps.total_weight, 1);
         let fetch = bus.signals();
@@ -1188,7 +1263,9 @@ mod tests {
         assert_eq!(fetch.cpu_data, Some(0xa2));
         assert!(fetch.memr && fetch.m1 && fetch.wo);
 
-        bus.drive_cpu_t_state(None, None, None, None, None, false, false, true, false, false);
+        bus.drive_cpu_t_state(
+            None, None, None, None, None, false, false, true, false, false,
+        );
         assert_eq!(bus.lamps.total_weight, 2);
         let internal = bus.signals();
         assert_eq!(internal.address, 0x1234);
@@ -1202,22 +1279,43 @@ mod tests {
     fn hold_ack_releases_cpu_bus_and_clears_status_without_faking_panel_data() {
         let mut bus = S100BusState::default();
         bus.drive_cpu_t_state(
-            Some(0x4567), Some(0x82), None, Some(0x82), Some(0x82), false, false,
-            true, false, false,
+            Some(0x4567),
+            Some(0x82),
+            None,
+            Some(0x82),
+            Some(0x82),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         bus.drive_cpu_t_state(
-            Some(0x4567), Some(0x6c), Some(0x6c), None, None, false, false,
-            true, false, false,
+            Some(0x4567),
+            Some(0x6c),
+            Some(0x6c),
+            None,
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.signals().panel_data, 0x6c);
 
-        bus.drive_cpu_t_state(None, None, None, None, None, false, false, true, false, true);
+        bus.drive_cpu_t_state(
+            None, None, None, None, None, false, false, true, false, true,
+        );
         let s = bus.signals();
         assert_eq!(s.owner, BusOwner::None);
         assert_eq!(s.cpu_data, None);
         assert_eq!(s.data_in, None);
         assert_eq!(s.data_out, None);
-        assert_eq!(s.panel_data, 0x6c, "HLDA must not synthesize DATA lamp activity");
+        assert_eq!(
+            s.panel_data, 0x6c,
+            "HLDA must not synthesize DATA lamp activity"
+        );
         assert!(!s.memr && !s.m1 && !s.wo);
         assert!(s.hlda);
     }
@@ -1239,21 +1337,13 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_request_and_acknowledge_are_distinct_lines() {
+    fn interrupt_acknowledge_is_owned_by_the_cpu_status_latch() {
         let mut bus = S100BusState::default();
-        bus.set_interrupt_request(true);
-        assert!(bus.signals().interrupt);
         assert!(!bus.signals().int_ack);
-
-        bus.drive_cpu_t_state(
-            Some(0x0100), Some(0x23), None, Some(0x23), Some(0x23), false, false,
-            true, false, false,
-        );
-        assert!(bus.signals().interrupt, "level-sensitive PINT remains asserted until the device clears it");
+        bus.latch_cpu_status(0x23);
         assert!(bus.signals().int_ack);
-
-        bus.set_interrupt_request(false);
-        assert!(!bus.signals().interrupt);
+        bus.latch_cpu_status(0x22);
+        assert!(!bus.signals().int_ack);
     }
 
     #[test]
@@ -1285,7 +1375,10 @@ mod tests {
         assert!(running.run && running.ready && !running.wait);
         assert_eq!(running.owner, BusOwner::Cpu);
         assert_eq!(running.data_in, Some(0xa5));
-        assert_eq!(running.cpu_data, None, "no exact running CPU D sample exists before the first tick");
+        assert_eq!(
+            running.cpu_data, None,
+            "no exact running CPU D sample exists before the first tick"
+        );
 
         bus.set_run(false);
         bus.assert_front_panel_reset(false);
@@ -1322,26 +1415,58 @@ mod tests {
 
         // Status byte leaves the CPU through DO and must not change DATA LEDs.
         bus.drive_cpu_t_state(
-            Some(0x0000), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
-            true, false, false,
+            Some(0x0000),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.signals().panel_data, 0x3c);
 
         // Memory data on DI is the source that updates the physical DATA LEDs.
         bus.drive_cpu_t_state(
-            Some(0x0000), Some(0x7e), Some(0x7e), None, None, false, false,
-            true, false, false,
+            Some(0x0000),
+            Some(0x7e),
+            Some(0x7e),
+            None,
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.signals().panel_data, 0x7e);
 
         // A CPU write on DO must leave the last DI-derived lamp value alone.
         bus.drive_cpu_t_state(
-            Some(0x0001), Some(0x00), None, Some(0x00), Some(0x00), false, false,
-            true, false, false,
+            Some(0x0001),
+            Some(0x00),
+            None,
+            Some(0x00),
+            Some(0x00),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         bus.drive_cpu_t_state(
-            Some(0x0001), Some(0xa5), None, Some(0xa5), None, false, false,
-            true, false, false,
+            Some(0x0001),
+            Some(0xa5),
+            None,
+            Some(0xa5),
+            None,
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         assert_eq!(bus.signals().panel_data, 0x7e);
     }
@@ -1350,10 +1475,20 @@ mod tests {
     fn external_data_bus_is_released_during_hold_acknowledge() {
         let mut bus = S100BusState::default();
         bus.drive_cpu_t_state(
-            Some(0x1234), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
-            true, false, false,
+            Some(0x1234),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
-        bus.drive_cpu_t_state(None, None, None, None, None, false, false, true, false, true);
+        bus.drive_cpu_t_state(
+            None, None, None, None, None, false, false, true, false, true,
+        );
         let s = bus.signals();
         assert_eq!(s.cpu_data, None);
         assert_eq!(s.data_in, None);
@@ -1394,7 +1529,10 @@ mod reset_run_ready_tests {
         assert!(signals.run);
         assert!(signals.front_panel_ready);
         assert!(signals.ready);
-        assert!(!signals.wait, "WAIT is an 8080 output and is inactive during RESET");
+        assert!(
+            !signals.wait,
+            "WAIT is an 8080 output and is inactive during RESET"
+        );
     }
 
     #[test]

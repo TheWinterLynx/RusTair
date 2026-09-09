@@ -9,9 +9,9 @@ use crate::machine::{AltairChassis, Cycle8080S100Adapter};
 use crate::s100::S100Signal;
 
 use super::{
-    BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort, BusCpuPins,
-    BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, CpuState, EmulationEngine,
-    FrontPanelState, Intel8080State, MachineBackend,
+    BackendCapabilities, BackendError, BackendExecutionModel, BackendResult, BackendSerialPort,
+    BusCpuPins, BusStatusLines, BusTeachingAccuracy, BusTeachingSnapshot, CpuState,
+    EmulationEngine, FrontPanelState, Intel8080State, MachineBackend,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,9 +82,15 @@ impl Default for CycleAccurateMachineBackend {
 }
 
 impl CycleAccurateMachineBackend {
-    pub fn machine(&self) -> &AltairChassis { &self.machine }
-    pub fn machine_mut(&mut self) -> &mut AltairChassis { &mut self.machine }
-    pub fn cpu(&self) -> &Cpu8080Cycle { &self.cpu }
+    pub fn machine(&self) -> &AltairChassis {
+        &self.machine
+    }
+    pub fn machine_mut(&mut self) -> &mut AltairChassis {
+        &mut self.machine
+    }
+    pub fn cpu(&self) -> &Cpu8080Cycle {
+        &self.cpu
+    }
 
     pub(super) fn teaching_snapshot(&self) -> Option<BusTeachingSnapshot> {
         let tick = self.last_teaching_tick?;
@@ -363,16 +369,24 @@ impl CycleAccurateMachineBackend {
             let cpu_data = trace.pins.data_out.or_else(|| {
                 matches!(
                     trace.machine_cycle,
-                    MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead
+                    MachineCycle::InstructionFetch
+                        | MachineCycle::MemoryRead
+                        | MachineCycle::StackRead
                 )
                 .then_some(sampled_inputs.data_in)
             });
             (
                 status_word,
-                sample.signal_level(S100Signal::InterruptEnable).unwrap_or(false),
-                sample.signal_level(S100Signal::ProtectStatus).unwrap_or(false),
+                sample
+                    .signal_level(S100Signal::InterruptEnable)
+                    .unwrap_or(false),
+                sample
+                    .signal_level(S100Signal::ProtectStatus)
+                    .unwrap_or(false),
                 sample.signal_level(S100Signal::Wait).unwrap_or(false),
-                sample.signal_level(S100Signal::HoldAcknowledge).unwrap_or(false),
+                sample
+                    .signal_level(S100Signal::HoldAcknowledge)
+                    .unwrap_or(false),
                 cpu_data,
                 sample.data_in(),
                 sample.data_out(),
@@ -504,7 +518,9 @@ impl CycleAccurateMachineBackend {
                 break;
             }
         }
-        self.machine.bus.cycle_settle_memory_ready_after_panel_freeze();
+        self.machine
+            .bus
+            .cycle_settle_memory_ready_after_panel_freeze();
         self.refresh_teaching_visible_lamps();
     }
 
@@ -544,11 +560,7 @@ impl CycleAccurateMachineBackend {
         F: FnMut(&mut Self, CycleExecutionEvent) -> bool,
     {
         let lines = self.machine.bus.cpu_control_lines();
-        if t_state_budget == 0
-            || !self.machine.powered
-            || !self.machine.running
-            || lines.reset
-        {
+        if t_state_budget == 0 || !self.machine.powered || !self.machine.running || lines.reset {
             return Ok(());
         }
 
@@ -610,11 +622,8 @@ impl CycleAccurateMachineBackend {
         let start_cycle = self.cpu.machine_cycle();
         let start_index = self.cpu.machine_cycle_index();
         for _ in 0..32 {
-            let trace = self.tick_once_with_front_panel_data(
-                true,
-                front_panel_data,
-                record_instruction,
-            );
+            let trace =
+                self.tick_once_with_front_panel_data(true, front_panel_data, record_instruction);
             if trace.fault.is_some()
                 || self.machine_cycle_finished_since(start_cycle, start_index, &trace)
             {
@@ -634,8 +643,7 @@ impl CycleAccurateMachineBackend {
                 break;
             }
 
-            if self.cpu.t_state() == TState::T1
-                && self.cpu.machine_cycle().status_word().is_some()
+            if self.cpu.t_state() == TState::T1 && self.cpu.machine_cycle().status_word().is_some()
             {
                 let psync = self.tick_once_with_front_panel_data(true, None, true);
                 if psync.fault.is_some() {
@@ -666,7 +674,9 @@ impl CycleAccurateMachineBackend {
         if !saw_psync {
             self.machine.cycle_set_running(false);
         }
-        self.machine.bus.cycle_settle_memory_ready_after_panel_freeze();
+        self.machine
+            .bus
+            .cycle_settle_memory_ready_after_panel_freeze();
         self.refresh_teaching_visible_lamps();
     }
 
@@ -683,7 +693,9 @@ impl CycleAccurateMachineBackend {
                 }
             }
         }
-        self.machine.bus.cycle_settle_memory_ready_after_panel_freeze();
+        self.machine
+            .bus
+            .cycle_settle_memory_ready_after_panel_freeze();
         self.refresh_teaching_visible_lamps();
     }
 
@@ -771,8 +783,12 @@ impl CycleAccurateMachineBackend {
 }
 
 impl MachineBackend for CycleAccurateMachineBackend {
-    fn engine(&self) -> EmulationEngine { EmulationEngine::RustCycleAccurate8080 }
-    fn name(&self) -> &'static str { "RusTair cycle-accurate 8080" }
+    fn engine(&self) -> EmulationEngine {
+        EmulationEngine::RustCycleAccurate8080
+    }
+    fn name(&self) -> &'static str {
+        "RusTair cycle-accurate 8080"
+    }
 
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
@@ -787,9 +803,15 @@ impl MachineBackend for CycleAccurateMachineBackend {
         }
     }
 
-    fn execution_model(&self) -> BackendExecutionModel { BackendExecutionModel::HostDriven }
-    fn cpu_state(&mut self) -> BackendResult<CpuState> { Ok(self.snapshot_cpu()) }
-    fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> { Ok(self.snapshot_panel()) }
+    fn execution_model(&self) -> BackendExecutionModel {
+        BackendExecutionModel::HostDriven
+    }
+    fn cpu_state(&mut self) -> BackendResult<CpuState> {
+        Ok(self.snapshot_cpu())
+    }
+    fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> {
+        Ok(self.snapshot_panel())
+    }
 
     fn power(&mut self, on: bool) -> BackendResult<()> {
         self.power_with_historical_run_latch(on, false)
@@ -906,8 +928,14 @@ impl MachineBackend for CycleAccurateMachineBackend {
         self.stop_wait_park_pending = false;
         Ok(())
     }
-    fn assert_clear(&mut self) -> BackendResult<()> { self.machine.assert_front_panel_clear(); Ok(()) }
-    fn release_clear(&mut self) -> BackendResult<()> { self.machine.release_front_panel_clear(); Ok(()) }
+    fn assert_clear(&mut self) -> BackendResult<()> {
+        self.machine.assert_front_panel_clear();
+        Ok(())
+    }
+    fn release_clear(&mut self) -> BackendResult<()> {
+        self.machine.release_front_panel_clear();
+        Ok(())
+    }
 
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> {
         self.machine.bus.cycle_set_hold_request(hold);
@@ -932,7 +960,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
         );
         Ok(())
     }
-    fn switch_register(&mut self) -> BackendResult<u16> { Ok(self.machine.panel_switches()) }
+    fn switch_register(&mut self) -> BackendResult<u16> {
+        Ok(self.machine.panel_switches())
+    }
     fn set_switch_register(&mut self, value: u16) -> BackendResult<()> {
         let changed = self.machine.panel_switches() ^ value;
         for bit in 0..16 {
@@ -994,7 +1024,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
         value: u8,
         respect_protection: bool,
     ) -> BackendResult<bool> {
-        Ok(self.machine.bus.debugger_write_memory(address, value, respect_protection))
+        Ok(self
+            .machine
+            .bus
+            .debugger_write_memory(address, value, respect_protection))
     }
     fn load_bytes(&mut self, address: u16, bytes: &[u8]) -> BackendResult<()> {
         self.machine.bus.load(address, bytes);
@@ -1033,17 +1066,28 @@ mod tests {
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(7));
-        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu().machine_cycle(),
+            MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu().t_state(), TState::Tw);
-        assert!(backend.machine().wait_led(), "STEP must end on a CPU-generated TW/WAIT sample");
-        let teaching = backend.teaching_snapshot().expect("SINGLE STEP must publish its exact TW");
+        assert!(
+            backend.machine().wait_led(),
+            "STEP must end on a CPU-generated TW/WAIT sample"
+        );
+        let teaching = backend
+            .teaching_snapshot()
+            .expect("SINGLE STEP must publish its exact TW");
         assert_eq!(teaching.accuracy, BusTeachingAccuracy::Exact);
         assert_eq!(teaching.t_state, TState::Tw.into());
         assert_eq!(teaching.ready, Some(false));
         assert_eq!(teaching.pins.wait, Some(true));
         assert_eq!(teaching.pins.phi1, Some(false));
         assert_eq!(teaching.pins.phi2, Some(true));
-        assert_eq!((backend.cpu().pins().phi1, backend.cpu().pins().phi2), (false, false));
+        assert_eq!(
+            (backend.cpu().pins().phi1, backend.cpu().pins().phi2),
+            (false, false)
+        );
         assert_eq!(backend.machine().bus.raw_s100_phi1(), Some(false));
         assert_eq!(backend.machine().bus.raw_s100_phi2(), Some(false));
     }
@@ -1071,7 +1115,10 @@ mod tests {
         assert_eq!(after_operand.pc, 2);
         assert_eq!(after_operand.a, 0x5a);
         assert_eq!(after_operand.total_t_states, Some(12));
-        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu().machine_cycle(),
+            MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu().t_state(), TState::Tw);
         assert!(backend.machine().wait_led());
     }
@@ -1088,9 +1135,14 @@ mod tests {
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 1);
         assert_eq!(state.total_t_states, Some(13));
-        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu().machine_cycle(),
+            MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu().t_state(), TState::Tw);
-        let teaching = backend.teaching_snapshot().expect("internal timing must end at next exact PSYNC wait");
+        let teaching = backend
+            .teaching_snapshot()
+            .expect("internal timing must end at next exact PSYNC wait");
         assert_eq!(teaching.t_state, TState::Tw.into());
         assert_eq!(teaching.ready, Some(false));
         assert_eq!(teaching.pins.wait, Some(true));
@@ -1143,7 +1195,10 @@ mod tests {
 
         assert_eq!(backend.cpu().registers().pc, 0x0001);
         assert!(!backend.machine().running);
-        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu().machine_cycle(),
+            MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu().t_state(), TState::T1);
     }
 
@@ -1174,7 +1229,9 @@ mod tests {
         assert_eq!(state.pc, 5);
         assert_eq!(state.total_t_states, Some(33));
 
-        backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
+        backend
+            .commit_panel_activity(Duration::from_millis(16))
+            .unwrap();
         let panel = backend.front_panel_state().unwrap();
         assert_eq!(panel.address, 0x0005);
         assert_eq!(panel.data, 0x00);
@@ -1203,7 +1260,9 @@ mod tests {
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
         assert_eq!(backend.cpu().machine_cycle_index(), 2);
         assert_eq!(backend.cpu().t_state(), TState::Tw);
-        let teaching = backend.teaching_snapshot().expect("physical STOP must end on an exact TW");
+        let teaching = backend
+            .teaching_snapshot()
+            .expect("physical STOP must end on an exact TW");
         assert_eq!(teaching.t_state, TState::Tw.into());
         assert_eq!(teaching.pins.wait, Some(true));
         assert_eq!(teaching.ready, Some(false));
@@ -1261,9 +1320,14 @@ mod tests {
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.pc, 0x0123);
         assert_eq!(state.total_t_states, Some(before + 13));
-        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu().machine_cycle(),
+            MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu().t_state(), TState::Tw);
-        let teaching = backend.teaching_snapshot().expect("EXAMINE must end on a clocked TW sample");
+        let teaching = backend
+            .teaching_snapshot()
+            .expect("EXAMINE must end on a clocked TW sample");
         assert_eq!(teaching.accuracy, BusTeachingAccuracy::Exact);
         assert_eq!(teaching.t_state, TState::Tw.into());
         assert_eq!(teaching.ready, Some(false));
@@ -1280,9 +1344,14 @@ mod tests {
         backend.panel_examine(true).unwrap();
         let CpuState::Intel8080(next) = backend.cpu_state().unwrap();
         assert_eq!(next.pc, 0x0124);
-        assert_eq!(backend.cpu().machine_cycle(), MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu().machine_cycle(),
+            MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu().t_state(), TState::Tw);
-        let teaching = backend.teaching_snapshot().expect("EXAMINE NEXT must end on a clocked TW sample");
+        let teaching = backend
+            .teaching_snapshot()
+            .expect("EXAMINE NEXT must end on a clocked TW sample");
         assert_eq!(teaching.t_state, TState::Tw.into());
         assert_eq!(teaching.ready, Some(false));
         assert_eq!(teaching.pins.wait, Some(true));
@@ -1300,7 +1369,9 @@ mod tests {
 
         let _ = backend.tick_once_with_front_panel_data(true, Some(0xc3), false);
         let _ = backend.tick_once_with_front_panel_data(true, Some(0xc3), false);
-        let sample = backend.teaching_snapshot().expect("front-panel jam T2 sample");
+        let sample = backend
+            .teaching_snapshot()
+            .expect("front-panel jam T2 sample");
         assert_eq!(sample.t_state, TState::T2.into());
         assert_eq!(sample.cpu_data, Some(0xc3));
         assert_eq!(sample.s100_di, None);
@@ -1370,7 +1441,9 @@ mod tests {
         backend.service_execution(5).unwrap();
         assert!(backend.cpu().is_holding());
         assert!(backend.machine().bus.raw_s100_hlda());
-        backend.commit_panel_activity(Duration::from_millis(16)).unwrap();
+        backend
+            .commit_panel_activity(Duration::from_millis(16))
+            .unwrap();
         let held = backend.front_panel_state().unwrap();
         assert_eq!(held.lamps.hlda, 1.0);
 
@@ -1413,7 +1486,9 @@ mod tests {
         assert!(!backend.machine().bus.raw_s100_hlda());
         assert!(backend.machine().wait_led());
         assert_eq!(backend.cpu().t_state(), TState::Tw);
-        let teaching = backend.teaching_snapshot().expect("pending STOP must park on exact TW");
+        let teaching = backend
+            .teaching_snapshot()
+            .expect("pending STOP must park on exact TW");
         assert_eq!(teaching.pins.wait, Some(true));
         assert_eq!(teaching.ready, Some(false));
 
@@ -1421,32 +1496,47 @@ mod tests {
     }
 
     #[test]
-    fn cycle_backend_io_preview_does_not_consume_serial_before_t3() {
+    fn cycle_backend_io_read_consumes_once_on_physical_dbin_and_samples_on_t3() {
         let mut backend = CycleAccurateMachineBackend::default();
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
         backend.load_bytes(0, &[0xdb, 0x01]).unwrap();
         backend.machine.bus.debugger_output_port(0x00, 0x01);
-        backend.serial_receive(BackendSerialPort::Port0, b'R').unwrap();
+        backend
+            .serial_receive(BackendSerialPort::Port0, b'R')
+            .unwrap();
         assert!(!backend.machine().bus.cpu_control_lines().interrupt);
         backend.machine.bus.advance_serial_hardware_time(200_000);
         assert!(backend.machine().bus.cpu_control_lines().interrupt);
         backend.run().unwrap();
 
-        backend.service_execution(9).unwrap();
+        // Four fetch T-states + three immediate-read T-states + M3 T1.
+        // sINP is latched, but DBIN is not active yet: no UART read has happened.
+        backend.service_execution(8).unwrap();
         assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 1);
         assert!(backend.machine().bus.cpu_control_lines().interrupt);
 
+        // M3 T2 asserts DBIN. The physical read strobe is sINP && DBIN, so RDR
+        // is consumed here and the captured byte is driven on S-100 DI.
         backend.service_execution(1).unwrap();
         assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 0);
         assert!(!backend.machine().bus.cpu_control_lines().interrupt);
+        let t2 = backend.teaching_snapshot().expect("input T2 exact sample");
+        assert_eq!(t2.machine_cycle, MachineCycle::InputRead.into());
+        assert_eq!(t2.t_state, TState::T2.into());
+        assert_eq!(t2.s100_di, Some(b'R'));
+        assert_eq!(t2.s100_do, None);
+
+        // T3 samples the byte into A. Releasing DBIN must not read RDR twice.
+        backend.service_execution(1).unwrap();
+        assert_eq!(backend.serial_rx_len(BackendSerialPort::Port0).unwrap(), 0);
         let teaching = backend.teaching_snapshot().expect("input T3 exact sample");
         assert_eq!(teaching.machine_cycle, MachineCycle::InputRead.into());
         assert_eq!(teaching.t_state, TState::T3.into());
-        assert_eq!(teaching.interrupt, Some(true));
+        assert_eq!(teaching.interrupt, Some(false));
         assert_eq!(teaching.cpu_data, Some(b'R'));
-        assert_eq!(teaching.s100_di, Some(b'R'));
+        assert_eq!(teaching.s100_di, None);
         assert_eq!(teaching.s100_do, None);
         let CpuState::Intel8080(state) = backend.cpu_state().unwrap();
         assert_eq!(state.a, b'R');
@@ -1471,7 +1561,9 @@ mod tests {
         assert_eq!(backend.cpu().registers().pc, 0x0002);
         assert!(backend.cpu().interrupts_enabled());
 
-        backend.serial_receive(BackendSerialPort::Port0, b'I').unwrap();
+        backend
+            .serial_receive(BackendSerialPort::Port0, b'I')
+            .unwrap();
         backend.machine.bus.advance_serial_hardware_time(200_000);
         assert!(backend.machine().bus.cpu_control_lines().interrupt);
         backend.service_execution(1).unwrap();
@@ -1481,7 +1573,11 @@ mod tests {
         assert_eq!(t1.t_state, TState::T1.into());
         assert_eq!(t1.cpu_data, Some(0x23));
         assert_eq!(t1.s100_do, Some(0x23));
-        assert_eq!(t1.status.int_ack, Some(false), "8212 has not seen the SYNC+PHI1 latch edge yet");
+        assert_eq!(
+            t1.status.int_ack,
+            Some(false),
+            "8212 has not seen the SYNC+PHI1 latch edge yet"
+        );
         assert!(backend.machine().bus.raw_s100_psync());
         assert_eq!(t1.pins.inte, Some(false));
 
@@ -1519,7 +1615,9 @@ mod tests {
         assert!(backend.cpu().interrupts_enabled());
         assert_eq!(backend.cpu().registers().pc, 0x0002);
 
-        backend.serial_receive(BackendSerialPort::Port0, b'H').unwrap();
+        backend
+            .serial_receive(BackendSerialPort::Port0, b'H')
+            .unwrap();
         backend.machine.bus.advance_serial_hardware_time(200_000);
         assert!(backend.machine().bus.cpu_control_lines().interrupt);
         backend.service_execution(1).unwrap();
@@ -1555,9 +1653,15 @@ mod tests {
 
         let teaching = backend.teaching_snapshot().expect("exact teaching sample");
         let live = backend.machine().bus.cycle_live_s100_sample();
-        assert_eq!(teaching.status_word, Some(backend.machine().bus.cycle_live_s100_status_word()));
+        assert_eq!(
+            teaching.status_word,
+            Some(backend.machine().bus.cycle_live_s100_status_word())
+        );
         assert_eq!(teaching.s100_di, live.data_in());
         assert_eq!(teaching.s100_do, live.data_out());
-        assert_eq!(teaching.interrupt, Some(backend.machine().bus.cpu_control_lines().interrupt));
+        assert_eq!(
+            teaching.interrupt,
+            Some(backend.machine().bus.cpu_control_lines().interrupt)
+        );
     }
 }

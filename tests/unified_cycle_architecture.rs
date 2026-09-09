@@ -62,5 +62,22 @@ fn cpu8080_semantic_core_remains_internal_full_executor_not_a_second_backend() {
     assert!(!backend.contains("mod native;"));
     assert!(backend.contains("RustCycleAccurate8080"));
     assert!(!machine.contains("pub struct AltairMachine"));
-    assert!(!machine.contains("Cpu8080"));
+
+    // The instruction-level Cpu8080 core is allowed only inside Full. Do not
+    // reject the distinct Cpu8080Cycle name (or comments that mention it): the
+    // architecture invariant is that machine/chassis code owns no Cpu8080
+    // instance, field, import or constructor of its own.
+    for forbidden in [
+        "use crate::cpu8080::Cpu8080;",
+        "use crate::cpu8080::{Cpu8080",
+        "pub struct Cpu8080",
+        "cpu: Cpu8080",
+        "Cpu8080::new(",
+        "Cpu8080::default(",
+    ] {
+        assert!(
+            !machine.contains(forbidden),
+            "machine layer regained semantic Cpu8080 ownership via {forbidden:?}",
+        );
+    }
 }

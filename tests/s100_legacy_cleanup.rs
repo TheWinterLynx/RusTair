@@ -11,6 +11,10 @@ const SERIAL_BUS: &str = include_str!("../src/machine/serial_bus.rs");
 const BACKEND: &str = include_str!("../src/backend/mod.rs");
 const CYCLE_HOST: &str = include_str!("../src/backend/cycle_host.rs");
 const PARTIAL: &str = include_str!("../src/backend/cycle/partial_impl.rs");
+const FULL: &str = include_str!("../src/backend/cycle/full.rs");
+const LIB: &str = include_str!("../src/lib.rs");
+const AUTHENTIC_LOADER: &str = include_str!("../src/app/authentic_loader.rs");
+const PANEL_BUS: &str = include_str!("../src/machine/panel_bus.rs");
 
 #[test]
 fn migrated_aggregate_hardware_state_does_not_survive_in_machine_config() {
@@ -51,7 +55,10 @@ fn old_hardware_keys_are_read_only_migration_inputs() {
         "\"machine.two_sio_port0_irq\"",
         "\"machine.two_sio_port1_irq\"",
     ] {
-        assert!(PERSISTENCE.contains(key), "legacy migration parser lost {key}");
+        assert!(
+            PERSISTENCE.contains(key),
+            "legacy migration parser lost {key}"
+        );
     }
     assert!(PERSISTENCE.contains("S100HardwareConfig::from_legacy_globals("));
 
@@ -126,7 +133,9 @@ fn memory_has_one_physical_s100_runtime_representation() {
     assert!(MEMORY.contains("S100RuntimeFabric"));
     assert!(MEMORY.contains("S100HardwareConfig::from_legacy_globals("));
     assert!(MEMORY.contains("compatibility S-100 assembly"));
-    assert!(MEMORY.contains("Physical RAM and I/O cards drive PRDY through the live backplane"));
+    assert!(MEMORY.contains("self.fabric.settle(display, &[])?;"));
+    assert!(MEMORY.contains("Ok(self.fabric.cpu_package_inputs())"));
+    assert!(MEMORY.contains("cycle_refresh_external_inputs("));
 }
 
 #[test]
@@ -162,8 +171,28 @@ fn partial_has_no_aggregate_execution_fallback() {
         "cycle_output_port(",
         "refresh_interrupt_request_line",
     ] {
-        assert!(!PARTIAL.contains(forbidden), "aggregate Partial fallback returned: {forbidden}");
-        assert!(!SERIAL_BUS.contains(forbidden), "serial bus compatibility shim returned: {forbidden}");
-        assert!(!MACHINE_MOD.contains(forbidden), "machine bus compatibility shim returned: {forbidden}");
+        assert!(
+            !PARTIAL.contains(forbidden),
+            "aggregate Partial fallback returned: {forbidden}"
+        );
+        assert!(
+            !SERIAL_BUS.contains(forbidden),
+            "serial bus compatibility shim returned: {forbidden}"
+        );
+        assert!(
+            !MACHINE_MOD.contains(forbidden),
+            "machine bus compatibility shim returned: {forbidden}"
+        );
     }
+    assert!(!FULL.contains("refresh_interrupt_request_line"));
+    assert!(SERIAL_BUS.contains("settle_serial_connector_state"));
+    assert!(FULL.contains("settle_serial_connector_state"));
+}
+
+#[test]
+fn deleted_serial_test_facades_and_panel_pint_setter_cannot_return() {
+    assert!(!LIB.contains("backend_test_compat"));
+    assert!(!AUTHENTIC_LOADER.contains(".configure_serial_board("));
+    assert!(!AUTHENTIC_LOADER.contains(".configure_two_sio_straps("));
+    assert!(!PANEL_BUS.contains("set_interrupt_request("));
 }

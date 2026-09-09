@@ -34,8 +34,12 @@ fn mits_1k_opcode_fetch_emits_exactly_two_tw_states() {
         BusTState::T3,
         BusTState::T4,
     ]);
+    // T1 still exposes the raw 8080 status byte on DO; the MITS CPU-board 8212
+    // latches sMEMR on the following T2 PHI1 edge. The selected 1K RAM therefore
+    // pulls PRDY low from T2 onward, keeping it low through the first TW. READY
+    // rises on the second TW sampling edge, which exits the processor to T3.
     assert_eq!(ready, vec![
-        Some(false),
+        Some(true),
         Some(false),
         Some(false),
         Some(true),

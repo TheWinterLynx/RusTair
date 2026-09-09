@@ -12,13 +12,12 @@ use rand::RngCore;
 
 use crate::config::{FastRamCompatibilityConfig, RamInit};
 use crate::s100::{
-    S100Card, S100CardDescriptor, S100Signal, FAST_RAM_COMPATIBILITY,
-    MITS_1K_STATIC_RAM,
+    FAST_RAM_COMPATIBILITY, MITS_1K_STATIC_RAM, S100Card, S100CardDescriptor, S100Signal,
 };
 use crate::s100_backplane::{S100BusSample, S100CardDrive, S100ElectricalCard};
 use crate::s100_memory::{
-    S100RamBoardModel, S100RamCardConfig, S100RamTimingModel, MITS_88_16MCD,
-    MITS_88_16MCS, MITS_88_4MCD, MITS_88_4MCS, MITS_88_S4K,
+    MITS_88_4MCD, MITS_88_4MCS, MITS_88_16MCD, MITS_88_16MCS, MITS_88_S4K, S100RamBoardModel,
+    S100RamCardConfig, S100RamTimingModel,
 };
 
 const LEGACY_COMPATIBILITY_PROTECTION_UNIT: usize = 1024;
@@ -311,7 +310,10 @@ impl RuntimeRamCard {
         init: RamInit,
     ) -> Result<(Self, RuntimeRamHandle), crate::s100_memory::S100RamConfigError> {
         let config = config.validate()?;
-        Ok(Self::from_config(RuntimeRamConfig::Historical(config), init))
+        Ok(Self::from_config(
+            RuntimeRamConfig::Historical(config),
+            init,
+        ))
     }
 
     pub fn compatibility(
@@ -319,7 +321,10 @@ impl RuntimeRamCard {
         init: RamInit,
     ) -> Result<(Self, RuntimeRamHandle), crate::config::S100HardwareConfigError> {
         let config = config.validate()?;
-        Ok(Self::from_config(RuntimeRamConfig::Compatibility(config), init))
+        Ok(Self::from_config(
+            RuntimeRamConfig::Compatibility(config),
+            init,
+        ))
     }
 
     fn from_config(config: RuntimeRamConfig, init: RamInit) -> (Self, RuntimeRamHandle) {
@@ -364,7 +369,9 @@ impl S100ElectricalCard for RuntimeRamCard {
         let sync_rising = sync && !state.previous_sync;
         let clock_rising = clock && !state.previous_clock;
 
-        state.selected_offset = sample.address().and_then(|address| state.offset_for(address));
+        state.selected_offset = sample
+            .address()
+            .and_then(|address| state.offset_for(address));
         let memory_read = state.selected_offset.is_some()
             && sample.signal_level(S100Signal::MemoryRead) == Some(true);
 
@@ -395,7 +402,10 @@ impl S100ElectricalCard for RuntimeRamCard {
             // second condition models that same-edge propagation without asking
             // the RAM card to predict the CPU status byte before it exists.
             state.wait_clocks_remaining = fixed_waits;
-        } else if clock_rising && state.wait_clocks_remaining != 0 {
+        } else if clock_rising && !sync && state.wait_clocks_remaining != 0 {
+            // The status/SYNC phase loads the wait generator. Its coincident CLOC
+            // edge is not one of the inserted TW intervals: READY is first sampled
+            // in T2, then each following CLOC consumes one requested wait.
             state.wait_clocks_remaining -= 1;
         }
 
@@ -476,7 +486,10 @@ mod tests {
         card.observe_s100(&observed);
         let resolved = backplane.resolve_drive_sets(&[master, card.drive_s100()]);
         assert_eq!(resolved.data_in(), Some(0xa5));
-        assert!(matches!(handle.config(), RuntimeRamConfig::Compatibility(_)));
+        assert!(matches!(
+            handle.config(),
+            RuntimeRamConfig::Compatibility(_)
+        ));
     }
 
     #[test]
@@ -519,9 +532,19 @@ mod tests {
         let master = read_drive(0x0010, false, false);
         let observed = backplane.resolve_drive_sets(&[master.clone()]);
         card.observe_s100(&observed);
-        assert_eq!(backplane.resolve_drive_sets(&[master.clone(), card.drive_s100()]).data_in(), Some(0));
+        assert_eq!(
+            backplane
+                .resolve_drive_sets(&[master.clone(), card.drive_s100()])
+                .data_in(),
+            Some(0)
+        );
 
         assert!(handle.write_byte(0x0010, 0x5a, false));
-        assert_eq!(backplane.resolve_drive_sets(&[master, card.drive_s100()]).data_in(), Some(0x5a));
+        assert_eq!(
+            backplane
+                .resolve_drive_sets(&[master, card.drive_s100()])
+                .data_in(),
+            Some(0x5a)
+        );
     }
 }
