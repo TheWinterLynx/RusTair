@@ -879,7 +879,7 @@ impl CycleAccurateMachineBackend {
     pub(super) fn service_execution_compiled(&mut self, t_state_budget: u32) -> BackendResult<()> {
         self.machine.bus.settle_serial_connector_state();
         let lines = self.machine.bus.cpu_control_lines();
-        if t_state_budget == 0 || !self.machine.powered || !self.machine.running || lines.reset {
+        if t_state_budget == 0 || !self.machine.powered || !self.machine.running() || lines.reset {
             return self.fail_if_cpu_fault("service execution");
         }
 
@@ -889,7 +889,7 @@ impl CycleAccurateMachineBackend {
         let mut deferred_serial_t_states = 0u64;
         let mut partial_start_t = None;
         let mut partial_reason = None;
-        while remaining != 0 && self.machine.running {
+        while remaining != 0 && self.machine.running() {
             // Full may only start at an instruction boundary, and all dynamic
             // electrical blockers are re-evaluated at that boundary. In
             // particular an exact Partial OUT can make a UART active inside this

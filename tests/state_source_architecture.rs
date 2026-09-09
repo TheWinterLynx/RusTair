@@ -115,12 +115,51 @@ fn cycle_memory_configuration_uses_the_live_chassis_bus() {
 }
 
 #[test]
+fn chassis_run_state_is_derived_from_canonical_s100_latch() {
+    let chassis_struct = CHASSIS
+        .split("pub struct AltairChassis")
+        .nth(1)
+        .expect("AltairChassis declaration")
+        .split("impl Default for AltairChassis")
+        .next()
+        .expect("AltairChassis body");
+    assert!(
+        !chassis_struct.contains("running: bool"),
+        "AltairChassis must not store a second RUN latch"
+    );
+    assert!(CHASSIS.contains("fn running(&self) -> bool"));
+    assert!(CHASSIS.contains("self.bus.run_latched()"));
+    assert!(MACHINE.contains("fn run_latched(&self) -> bool"));
+    assert!(MACHINE.contains("self.s100.signals().run"));
+
+    let reset_assert = PANEL_BUS
+        .split("fn assert_front_panel_reset")
+        .nth(1)
+        .expect("RESET assert implementation")
+        .split("fn release_front_panel_reset")
+        .next()
+        .expect("RESET assert body");
+    let reset_release = PANEL_BUS
+        .split("fn release_front_panel_reset")
+        .nth(1)
+        .expect("RESET release implementation")
+        .split("fn drive_power_on_state")
+        .next()
+        .expect("RESET release body");
+    assert!(reset_assert.contains("let run = self.signals.run;"));
+    assert!(reset_release.contains("let run = self.signals.run;"));
+    assert!(!reset_assert.contains("self.signals.run = run;"));
+    assert!(!reset_release.contains("self.signals.run = run;"));
+    assert!(!PANEL_BUS.contains("assert_front_panel_reset(&mut self, run: bool)"));
+}
+
+#[test]
 fn state_source_documentation_matches_unified_cycle_architecture() {
     let doc = include_str!("../docs/STATE_SOURCES.md");
     assert!(doc.contains("single Adaptive Cycle execution engine"));
     assert!(doc.contains("CycleAccurateMachineBackend::cpu"));
     assert!(doc.contains("CPU-free `AltairChassis`"));
-    assert!(doc.contains("RUN latch duplication"));
+    assert!(doc.contains("RUN latch duplication is resolved"));
     assert!(doc.contains("Backend encapsulation"));
     assert!(doc.contains("There is no `sync_machine_cpu()` path"));
     assert!(doc.contains("previous `AltairBus::cpu_inte` duplicate has already been removed"));

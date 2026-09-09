@@ -759,7 +759,8 @@ impl S100BusState {
     /// Electrical state while the physical RESET switch is held. MITS' 1975
     /// checkout procedure specifies all ADDRESS/DATA lamps on and all status
     /// lamps off for this phase.
-    pub(super) fn assert_front_panel_reset(&mut self, run: bool) {
+    pub(super) fn assert_front_panel_reset(&mut self) {
+        let run = self.signals.run;
         self.signals.reset = true;
         self.signals.owner = BusOwner::FrontPanel;
         self.signals.address = 0xffff;
@@ -776,7 +777,6 @@ impl S100BusState {
         // PRESET/RESET belongs to the processor input path and does not clear
         // the original Display/Control RUN/STOP R-S latch. PRDY therefore still
         // follows RUN while RESET is physically held.
-        self.signals.run = run;
         self.signals.front_panel_ready = run;
         self.signals.memory_ready = true;
         self.signals.ready = run;
@@ -795,8 +795,8 @@ impl S100BusState {
         data: u8,
         protected: bool,
         inte: bool,
-        run: bool,
     ) {
+        let run = self.signals.run;
         self.signals.reset = false;
         self.signals.owner = BusOwner::Cpu;
         self.signals.address = address;
@@ -806,7 +806,6 @@ impl S100BusState {
         self.signals.panel_data = data;
         self.signals.prot = protected;
         self.signals.inte = inte;
-        self.signals.run = run;
         self.signals.psync = false;
         self.signals.pdbin = !run;
         self.signals.pwr_n = true;
@@ -1030,7 +1029,8 @@ mod tests {
         let mut expanded = S100BusState::default();
         let mut packed = S100BusState::default();
         for bus in [&mut expanded, &mut packed] {
-            bus.release_front_panel_reset(0, 0x5a, false, false, true);
+            bus.set_run(true);
+            bus.release_front_panel_reset(0, 0x5a, false, false);
             bus.lamps.clear_activity();
         }
 
@@ -1323,7 +1323,7 @@ mod tests {
     #[test]
     fn front_panel_reset_is_not_reported_as_cpu_package_bus_drive() {
         let mut bus = S100BusState::default();
-        bus.assert_front_panel_reset(false);
+        bus.assert_front_panel_reset();
         let s = bus.signals();
         assert_eq!(s.owner, BusOwner::FrontPanel);
         assert_eq!(s.address, 0xffff);
@@ -1366,11 +1366,11 @@ mod tests {
     fn reset_preserves_run_latch_and_changes_ready_on_release() {
         let mut bus = S100BusState::default();
         bus.set_run(true);
-        bus.assert_front_panel_reset(true);
+        bus.assert_front_panel_reset();
         assert!(bus.signals().run);
         assert!(bus.signals().ready);
         assert!(!bus.signals().wait);
-        bus.release_front_panel_reset(0, 0xa5, false, false, true);
+        bus.release_front_panel_reset(0, 0xa5, false, false);
         let running = bus.signals();
         assert!(running.run && running.ready && !running.wait);
         assert_eq!(running.owner, BusOwner::Cpu);
@@ -1381,10 +1381,10 @@ mod tests {
         );
 
         bus.set_run(false);
-        bus.assert_front_panel_reset(false);
+        bus.assert_front_panel_reset();
         assert!(!bus.signals().ready);
         assert!(!bus.signals().wait);
-        bus.release_front_panel_reset(0, 0xa5, false, false, false);
+        bus.release_front_panel_reset(0, 0xa5, false, false);
         let stopped = bus.signals();
         assert!(!stopped.run && !stopped.ready && stopped.wait);
         assert!(stopped.memr && stopped.m1 && stopped.wo);
@@ -1396,7 +1396,7 @@ mod tests {
     #[test]
     fn front_panel_deposit_drives_cpu_d_and_do_without_overwriting_di_display() {
         let mut bus = S100BusState::default();
-        bus.release_front_panel_reset(0x0100, 0x33, false, false, false);
+        bus.release_front_panel_reset(0x0100, 0x33, false, false);
         bus.drive_front_panel_deposit(0x0100, 0xa5, false, false);
         let s = bus.signals();
         assert_eq!(s.cpu_data, Some(0xa5));
@@ -1523,7 +1523,8 @@ mod reset_run_ready_tests {
     #[test]
     fn run_latch_keeps_prdy_released_while_reset_is_held() {
         let mut bus = S100BusState::default();
-        bus.assert_front_panel_reset(true);
+        bus.set_run(true);
+        bus.assert_front_panel_reset();
         let signals = bus.signals();
         assert!(signals.reset);
         assert!(signals.run);
@@ -1538,7 +1539,7 @@ mod reset_run_ready_tests {
     #[test]
     fn stopped_latch_keeps_prdy_low_while_reset_is_held() {
         let mut bus = S100BusState::default();
-        bus.assert_front_panel_reset(false);
+        bus.assert_front_panel_reset();
         let signals = bus.signals();
         assert!(signals.reset);
         assert!(!signals.run);

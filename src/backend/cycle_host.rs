@@ -193,7 +193,7 @@ impl CycleHostBackend {
             .map_or(0, |p| current.saturating_sub(p));
         self.last_panel_commit_cpu_t_states = Some(current);
         let powered = self.inner.machine().powered;
-        let running = self.inner.machine().running;
+        let running = self.inner.machine().running();
         let reset = self.inner.machine().bus.cpu_control_lines().reset;
         let parked = powered && (!running || reset || self.inner.cpu().is_holding());
         if !parked {
@@ -231,7 +231,7 @@ impl CycleHostBackend {
             BusMachineCycle::ResetAsserted
         } else if !self.teaching_reset_seen {
             BusMachineCycle::PowerOnUndefined
-        } else if machine.running {
+        } else if machine.running() {
             BusMachineCycle::ResetReleasedRunning
         } else {
             BusMachineCycle::ResetReleasedStopped
@@ -321,7 +321,7 @@ impl CycleHostBackend {
     fn debugger_step_one_t_state(&mut self) -> BackendResult<()> {
         let lines = self.inner.machine().bus.cpu_control_lines();
         if !self.inner.machine().powered
-            || self.inner.machine().running
+            || self.inner.machine().running()
             || lines.reset
             || lines.hold
             || self.inner.cpu().is_halted()
@@ -338,7 +338,7 @@ impl CycleHostBackend {
     fn debugger_step_one_machine_cycle(&mut self) -> BackendResult<()> {
         let lines = self.inner.machine().bus.cpu_control_lines();
         if !self.inner.machine().powered
-            || self.inner.machine().running
+            || self.inner.machine().running()
             || lines.reset
             || lines.hold
             || self.inner.cpu().is_halted()
@@ -370,7 +370,7 @@ impl CycleHostBackend {
     fn debugger_step_one_instruction(&mut self) -> BackendResult<()> {
         let lines = self.inner.machine().bus.cpu_control_lines();
         if !self.inner.machine().powered
-            || self.inner.machine().running
+            || self.inner.machine().running()
             || lines.reset
             || lines.hold
             || self.inner.cpu().is_halted()

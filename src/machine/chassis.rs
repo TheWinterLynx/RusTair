@@ -13,8 +13,6 @@ use super::{AltairBus, CpuDiagnosticResult, PanelLampSnapshot};
 pub struct AltairChassis {
     pub bus: AltairBus,
     pub powered: bool,
-    /// Physical Display/Control RUN/STOP R-S latch.
-    pub running: bool,
     stop_switch_asserted: bool,
     run_switch_asserted: bool,
 }
@@ -24,7 +22,6 @@ impl Default for AltairChassis {
         Self {
             bus: AltairBus::default(),
             powered: false,
-            running: false,
             stop_switch_asserted: false,
             run_switch_asserted: false,
         }
@@ -34,6 +31,11 @@ impl Default for AltairChassis {
 impl AltairChassis {
     pub fn installed_ram_bytes(&self) -> usize {
         self.bus.installed_ram_bytes()
+    }
+
+    /// Q output of the physical Display/Control RUN/STOP R-S latch.
+    pub(crate) fn running(&self) -> bool {
+        self.powered && self.bus.run_latched()
     }
 
     pub fn configure_memory_board_profile(&mut self, profile: RamBoardProfile) {
@@ -142,14 +144,12 @@ impl AltairChassis {
             self.bus.clear_protection();
             self.bus.clear_transient_memory_guards();
             self.bus.clear_serial();
-            self.running = run;
             self.bus.set_run(run);
             self.bus.sync_cpu_inte(cpu_inte);
             self.bus.set_hlda(false);
             self.bus.panel.set_address_latch(cpu_address);
             self.bus.drive_power_on_state(cpu_address, run);
         } else {
-            self.running = false;
             self.bus.clear_serial();
             self.bus.initialize_memory();
             self.bus.power_off_s100();
@@ -167,7 +167,7 @@ impl AltairChassis {
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(false);
         self.bus.set_hlda(false);
-        self.bus.assert_front_panel_reset_bus(self.running);
+        self.bus.assert_front_panel_reset_bus();
     }
 
     /// Release physical RESET using the processor guarantees visible after
@@ -179,14 +179,14 @@ impl AltairChassis {
         let address = self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(false);
         self.bus.set_hlda(false);
-        self.bus.release_front_panel_reset_bus(address, self.running);
+        self.bus.release_front_panel_reset_bus(address);
     }
 
     /// Integrate optical lamp persistence from chassis state plus the exact
     /// core's externally supplied HALT truth.
     pub(crate) fn cycle_commit_panel_activity(&mut self, dt: Duration, cpu_halted: bool) {
         let dynamic = self.powered
-            && self.running
+            && self.running()
             && !cpu_halted
             && !self.bus.hlda()
             && !self.bus.reset_asserted();
@@ -203,7 +203,7 @@ impl AltairChassis {
         cpu_holding: bool,
     ) {
         if !self.powered
-            || self.running
+            || self.running()
             || self.bus.reset_asserted()
             || self.bus.hold_requested()
             || cpu_halted
@@ -223,7 +223,6 @@ impl AltairChassis {
         if !self.powered || self.bus.reset_asserted() {
             return;
         }
-        self.running = run;
         self.bus.set_run(run);
         self.bus.cycle_set_ready_input(run);
         if !run {
@@ -234,7 +233,6 @@ impl AltairChassis {
 
     fn cycle_set_run_latch_during_reset(&mut self) {
         debug_assert!(self.powered && self.bus.reset_asserted());
-        self.running = true;
         self.bus.set_run(true);
         self.bus.cycle_set_ready_input(true);
     }
@@ -268,7 +266,7 @@ impl AltairChassis {
     /// first real synchronization opportunity after the processor can drive it.
     pub(crate) fn cycle_capture_pending_stop_at_psync(&mut self) -> bool {
         if self.powered
-            && self.running
+            && self.running()
             && self.stop_switch_asserted
             && !self.bus.reset_asserted()
         {

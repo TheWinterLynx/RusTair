@@ -243,6 +243,10 @@ impl AltairBus {
         self.s100.set_run(run);
     }
 
+    fn run_latched(&self) -> bool {
+        self.s100.signals().run
+    }
+
     fn hold_requested(&self) -> bool {
         self.s100.signals().hold
     }
@@ -317,17 +321,17 @@ impl AltairBus {
             .drive_power_on_state(address, data, protected, inte, run);
     }
 
-    fn assert_front_panel_reset_bus(&mut self, run: bool) {
+    fn assert_front_panel_reset_bus(&mut self) {
         self.s100.set_memory_ready_input(true);
-        self.s100.assert_front_panel_reset(run);
+        self.s100.assert_front_panel_reset();
     }
 
-    fn release_front_panel_reset_bus(&mut self, address: u16, run: bool) {
+    fn release_front_panel_reset_bus(&mut self, address: u16) {
         let data = self.memory.preview_read(address);
         let protected = self.memory.is_protected(address);
         let inte = self.s100.signals().inte;
         self.s100
-            .release_front_panel_reset(address, data, protected, inte, run);
+            .release_front_panel_reset(address, data, protected, inte);
     }
 
     fn set_ext_clear(&mut self, asserted: bool) {

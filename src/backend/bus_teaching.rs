@@ -212,7 +212,7 @@ impl BusChassisSource for AltairChassis {
         self.powered
     }
     fn running(&self) -> bool {
-        self.running
+        self.running()
     }
     fn bus(&self) -> &AltairBus {
         &self.bus

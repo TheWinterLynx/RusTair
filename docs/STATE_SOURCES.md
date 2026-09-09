@@ -106,15 +106,16 @@ raw electrical behaviour:
   the synchronization path for electrically sensitive instructions and boundaries.
 - The previous `AltairBus::cpu_inte` duplicate has already been removed: canonical
   INTE is stored in `S100BusState::signals.inte`.
+- **RUN latch duplication is resolved.** `S100BusState::signals.run` is the one
+  Display/Control R-S latch Q. `AltairChassis::running()` derives from that physical
+  state, and RESET reads the existing latch rather than receiving and rewriting a
+  chassis-side copy.
 
 ## Remaining source-of-truth / structural debt
 
-1. **RUN latch duplication.** `AltairChassis::running` and `S100Signals::run` are kept
-   synchronized. The physical S-100 RUN latch should ultimately be the canonical
-   storage location, with host-facing `running` derived from it.
-2. **Backend encapsulation.** Concrete backend/chassis escape hatches still exist in
+1. **Backend encapsulation.** Concrete backend/chassis escape hatches still exist in
    parts of the codebase. The application should increasingly depend on common
    backend contracts and capabilities rather than concrete machine/CPU/bus types.
-3. **Compatibility facades.** Some aggregate memory/configuration helpers remain for
+2. **Compatibility facades.** Some aggregate memory/configuration helpers remain for
    historical configuration and tests. They must not become alternate guest-visible
    RAM, UART or CPU state authorities.

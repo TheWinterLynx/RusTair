@@ -160,7 +160,7 @@ impl CycleAccurateMachineBackend {
     fn snapshot_panel(&self) -> FrontPanelState {
         FrontPanelState {
             powered: self.machine.powered,
-            running: self.machine.running,
+            running: self.machine.running(),
             switches: self.machine.panel_switches(),
             address: self.machine.address_leds(),
             data: self.machine.data_leds(),
@@ -527,7 +527,7 @@ impl CycleAccurateMachineBackend {
     pub(super) fn debugger_step_t_state_exact(&mut self) -> BackendResult<()> {
         let lines = self.machine.bus.cpu_control_lines();
         if !self.machine.powered
-            || self.machine.running
+            || self.machine.running()
             || lines.reset
             || lines.hold
             || self.cpu.is_halted()
@@ -560,12 +560,12 @@ impl CycleAccurateMachineBackend {
         F: FnMut(&mut Self, CycleExecutionEvent) -> bool,
     {
         let lines = self.machine.bus.cpu_control_lines();
-        if t_state_budget == 0 || !self.machine.powered || !self.machine.running || lines.reset {
+        if t_state_budget == 0 || !self.machine.powered || !self.machine.running() || lines.reset {
             return Ok(());
         }
 
         for _ in 0..t_state_budget {
-            if !self.machine.running {
+            if !self.machine.running() {
                 break;
             }
 
@@ -575,7 +575,7 @@ impl CycleAccurateMachineBackend {
                     self.refresh_teaching_visible_lamps();
                     break;
                 }
-                if !self.machine.running {
+                if !self.machine.running() {
                     break;
                 }
             }
@@ -702,7 +702,7 @@ impl CycleAccurateMachineBackend {
     fn front_panel_controls_available(&self) -> bool {
         let lines = self.machine.bus.cpu_control_lines();
         self.machine.powered
-            && !self.machine.running
+            && !self.machine.running()
             && !lines.reset
             && !lines.hold
             && !self.cpu.is_halted()
@@ -849,7 +849,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
     fn step(&mut self) -> BackendResult<()> {
         self.fail_if_cpu_fault("single step")?;
         let lines = self.machine.bus.cpu_control_lines();
-        if self.machine.powered && !self.machine.running && !lines.reset && !lines.hold {
+        if self.machine.powered && !self.machine.running() && !lines.reset && !lines.hold {
             self.run_one_machine_cycle();
             self.park_single_step_at_next_psync_wait();
         }
@@ -858,9 +858,9 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
     fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
         let lines = self.machine.bus.cpu_control_lines();
-        if self.machine.powered && self.machine.running && !lines.reset {
+        if self.machine.powered && self.machine.running() && !lines.reset {
             for _ in 0..t_state_budget {
-                if !self.machine.running {
+                if !self.machine.running() {
                     break;
                 }
                 let ready = self.machine.bus.cycle_front_panel_ready_input();
@@ -885,10 +885,10 @@ impl MachineBackend for CycleAccurateMachineBackend {
     }
 
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
-        let was_running = self.machine.running;
+        let was_running = self.machine.running();
         if !run
             && self.machine.powered
-            && self.machine.running
+            && self.machine.running()
             && !self.cpu.is_halted()
             && !self.cpu.is_holding()
         {
@@ -900,7 +900,7 @@ impl MachineBackend for CycleAccurateMachineBackend {
 
         if !run
             && was_running
-            && !self.machine.running
+            && !self.machine.running()
             && !self.cpu.is_halted()
             && !self.cpu.is_holding()
         {
@@ -1194,7 +1194,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(backend.cpu().registers().pc, 0x0001);
-        assert!(!backend.machine().running);
+        assert!(!backend.machine().running());
         assert_eq!(
             backend.cpu().machine_cycle(),
             MachineCycle::InstructionFetch
@@ -1254,7 +1254,7 @@ mod tests {
         backend.service_execution(2).unwrap();
         assert_eq!(backend.cpu().t_state(), TState::T3);
         backend.assert_run_stop(false).unwrap();
-        assert!(!backend.machine().running);
+        assert!(!backend.machine().running());
         assert!(!backend.machine().bus.cpu_control_lines().ready);
         assert!(backend.machine().wait_led());
         assert_eq!(backend.cpu().machine_cycle(), MachineCycle::MemoryRead);
@@ -1473,7 +1473,7 @@ mod tests {
         assert!(backend.machine().bus.raw_s100_hlda());
 
         backend.assert_run_stop(false).unwrap();
-        assert!(backend.machine().running);
+        assert!(backend.machine().running());
         assert!(backend.cpu().is_holding());
         assert!(backend.machine().bus.raw_s100_hlda());
 
@@ -1482,7 +1482,7 @@ mod tests {
         backend.service_execution(8).unwrap();
 
         assert!(!backend.cpu().is_holding());
-        assert!(!backend.machine().running);
+        assert!(!backend.machine().running());
         assert!(!backend.machine().bus.raw_s100_hlda());
         assert!(backend.machine().wait_led());
         assert_eq!(backend.cpu().t_state(), TState::Tw);
