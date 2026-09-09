@@ -143,30 +143,34 @@ impl Mits8080CpuBoardState {
     }
 
     fn drive_address(&mut self) {
+        if !self.address_disabled {
+            if let Some(address) = self.pins.address {
+                // The compact S100CardDrive writer uses the pre-indexed physical
+                // address pins directly. This is electrically identical to the
+                // per-signal loop but avoids sixteen enum->pin lookups on the
+                // hottest package-side transition.
+                self.cached_drive.drive_address(address);
+                return;
+            }
+        }
         for bit in 0..16 {
-            let level = if self.address_disabled {
-                None
-            } else {
-                self.pins
-                    .address
-                    .map(|address| address & (1u16 << bit) != 0)
-            };
             self.cached_drive
-                .drive_tristate(S100Signal::Address(bit), level);
+                .drive_tristate(S100Signal::Address(bit), None);
         }
     }
 
     fn drive_data_out(&mut self) {
+        if !self.data_out_disabled {
+            if let Some(value) = self.pins.data_out {
+                // Same connector pins and tri-state ownership; only the host-side
+                // encoding path is compacted.
+                self.cached_drive.drive_data_out(value);
+                return;
+            }
+        }
         for bit in 0..8 {
-            let level = if self.data_out_disabled {
-                None
-            } else {
-                self.pins
-                    .data_out
-                    .map(|value| value & (1u8 << bit) != 0)
-            };
             self.cached_drive
-                .drive_tristate(S100Signal::DataOut(bit), level);
+                .drive_tristate(S100Signal::DataOut(bit), None);
         }
     }
 
