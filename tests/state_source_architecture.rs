@@ -1,3 +1,4 @@
+const BACKEND: &str = include_str!("../src/backend/mod.rs");
 const CYCLE: &str = include_str!("../src/backend/cycle.rs");
 const CYCLE_PARTIAL: &str = include_str!("../src/backend/cycle/partial_impl.rs");
 const CYCLE_FULL: &str = include_str!("../src/backend/cycle/full.rs");
@@ -38,7 +39,10 @@ fn canonical_raw_s100_accessors_read_signals_not_panel_lamp_snapshot() {
         "raw_s100_wait",
         "raw_s100_hlda",
     ] {
-        assert!(MEMORY.contains(accessor), "missing raw S-100 accessor {accessor}");
+        assert!(
+            MEMORY.contains(accessor),
+            "missing raw S-100 accessor {accessor}"
+        );
     }
     assert!(MEMORY.contains("self.s100.signals()"));
 }
@@ -71,9 +75,18 @@ fn cycle_has_no_cpu_mirror_or_architectural_state_sync_path() {
 fn cycle_physically_owns_cpu_free_chassis_with_one_cpu_authority() {
     assert!(CHASSIS.contains("pub struct AltairChassis"));
     assert!(CHASSIS.contains("pub bus: AltairBus"));
-    assert!(!CHASSIS.contains("Cpu8080Cycle"), "physical chassis must not embed the CPU core");
-    assert!(!CHASSIS.contains("Deref"), "chassis ownership must remain explicit");
-    assert!(!CHASSIS.contains("DerefMut"), "chassis ownership must remain explicit");
+    assert!(
+        !CHASSIS.contains("Cpu8080Cycle"),
+        "physical chassis must not embed the CPU core"
+    );
+    assert!(
+        !CHASSIS.contains("Deref"),
+        "chassis ownership must remain explicit"
+    );
+    assert!(
+        !CHASSIS.contains("DerefMut"),
+        "chassis ownership must remain explicit"
+    );
 
     assert!(
         CYCLE_PARTIAL.contains("use crate::machine::{AltairChassis,"),
@@ -89,7 +102,10 @@ fn cycle_physically_owns_cpu_free_chassis_with_one_cpu_authority() {
     );
 
     assert!(MACHINE.contains("pub use chassis::AltairChassis"));
-    assert!(!MACHINE.contains("pub cpu:"), "machine module must not expose a second CPU owner");
+    assert!(
+        !MACHINE.contains("pub cpu:"),
+        "machine module must not expose a second CPU owner"
+    );
 }
 
 #[test]
@@ -112,4 +128,11 @@ fn state_source_documentation_matches_unified_cycle_architecture() {
         !doc.contains("two Rust engines"),
         "documentation must not resurrect the removed multi-engine architecture"
     );
+}
+
+#[test]
+fn backend_contract_never_fabricates_a_reconstructed_bus_sample() {
+    assert!(!BACKEND.contains("BusTeachingSnapshot::reconstructed(engine, panel, cpu)"));
+    assert!(BACKEND.contains("fn bus_teaching_snapshot"));
+    assert!(BACKEND.contains("Ok(None)"));
 }

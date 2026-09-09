@@ -5,21 +5,17 @@
 //! backplane resolver itself remains card-agnostic.
 
 use crate::config::{
-    RamInit, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
-    MAX_S100_SLOTS,
+    MAX_S100_SLOTS, RamInit, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
 };
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
 use crate::machine::RuntimeSerialCardHandle;
 use crate::s100::S100Signal;
 use crate::s100_backplane::{
-    s100_slot_mask, S100Backplane, S100BackplaneError, S100BusSample, S100CardDrive,
-    S100SlotMask,
+    S100Backplane, S100BackplaneError, S100BusSample, S100CardDrive, S100SlotMask, s100_slot_mask,
 };
 use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use crate::s100_io::S100IoDecodeIndex;
-use crate::s100_io_card::{
-    S100IoCardAdapter, MITS_88_2SIO_IO_CARD, MITS_88_SIO_IO_CARD,
-};
+use crate::s100_io_card::{MITS_88_2SIO_IO_CARD, MITS_88_SIO_IO_CARD, S100IoCardAdapter};
 use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle};
 
 pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
@@ -147,10 +143,7 @@ pub struct S100RuntimeFabric {
 }
 
 impl S100RuntimeFabric {
-    pub fn new(
-        hardware: S100HardwareConfig,
-        init: RamInit,
-    ) -> Result<Self, S100RuntimeBuildError> {
+    pub fn new(hardware: S100HardwareConfig, init: RamInit) -> Result<Self, S100RuntimeBuildError> {
         let hardware = hardware
             .validate()
             .map_err(S100RuntimeBuildError::InvalidHardware)?;
@@ -290,62 +283,101 @@ impl S100RuntimeFabric {
             .map(|installed| installed.handle.clone())
     }
 
+    /// Resolve an aggregate host channel only when exactly one installed card
+    /// can own it. Physical S-100 I/O decode remains parallel and may legitimately
+    /// contain several responders; host endpoints must never silently pick the
+    /// first card from that inventory.
     fn serial_handle_for_port(&self, port_index: usize) -> Option<&RuntimeSerialCardHandle> {
-        self.serial.iter().map(|installed| &installed.handle)
-            .find(|handle| handle.supports_port(port_index))
+        let mut handles = self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
+            .filter(|handle| handle.supports_port(port_index));
+        let handle = handles.next()?;
+        handles.next().is_none().then_some(handle)
+    }
+
+    fn unique_sio_handle(&self) -> Option<&RuntimeSerialCardHandle> {
+        let mut handles = self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
+            .filter(|handle| handle.sio_hardware().is_some());
+        let handle = handles.next()?;
+        handles.next().is_none().then_some(handle)
     }
 
     pub(crate) fn primary_serial_board(&self) -> Option<crate::config::SerialBoard> {
-        self.serial.first().map(|installed| installed.handle.board())
+        let mut installed = self.serial.iter();
+        let card = installed.next()?;
+        installed.next().is_none().then_some(card.handle.board())
     }
 
     pub(crate) fn primary_sio_hardware(&self) -> Option<crate::config::SioHardwareConfig> {
-        self.serial.iter().find_map(|installed| installed.handle.sio_hardware())
+        self.unique_sio_handle()
+            .and_then(RuntimeSerialCardHandle::sio_hardware)
     }
 
     fn serial_handle_for_data_port(&self, port: u8) -> Option<&RuntimeSerialCardHandle> {
-        self.serial.iter().map(|installed| &installed.handle)
-            .find(|handle| handle.data_port_matches(port))
+        let mut handles = self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
+            .filter(|handle| handle.data_port_matches(port));
+        let handle = handles.next()?;
+        handles.next().is_none().then_some(handle)
     }
 
     pub(crate) fn advance_serial_time(&self, t_states: u64) {
-        for installed in &self.serial { installed.handle.advance_t_states(t_states); }
+        for installed in &self.serial {
+            installed.handle.advance_t_states(t_states);
+        }
     }
 
     pub(crate) fn serial_receive(&self, port_index: usize, byte: u8) -> bool {
-        self.serial_handle_for_port(port_index).is_some_and(|handle| handle.receive(port_index, byte))
+        self.serial_handle_for_port(port_index)
+            .is_some_and(|handle| handle.receive(port_index, byte))
     }
 
     pub(crate) fn serial_rx_empty(&self, port_index: usize) -> bool {
-        self.serial_handle_for_port(port_index).map_or(true, |handle| handle.rx_empty(port_index))
+        self.serial_handle_for_port(port_index)
+            .map_or(true, |handle| handle.rx_empty(port_index))
     }
 
     pub(crate) fn serial_rx_len(&self, port_index: usize) -> usize {
-        self.serial_handle_for_port(port_index).map_or(0, |handle| handle.rx_len(port_index))
+        self.serial_handle_for_port(port_index)
+            .map_or(0, |handle| handle.rx_len(port_index))
     }
 
     pub(crate) fn serial_rx_line_idle(&self, port_index: usize) -> bool {
-        self.serial_handle_for_port(port_index).map_or(true, |handle| handle.rx_line_idle(port_index))
+        self.serial_handle_for_port(port_index)
+            .map_or(true, |handle| handle.rx_line_idle(port_index))
     }
 
     pub(crate) fn serial_tx_busy(&self, port_index: usize) -> bool {
-        self.serial_handle_for_port(port_index).is_some_and(|handle| handle.tx_busy(port_index))
+        self.serial_handle_for_port(port_index)
+            .is_some_and(|handle| handle.tx_busy(port_index))
     }
 
     pub(crate) fn serial_tx_front(&self, port_index: usize) -> Option<u8> {
-        self.serial_handle_for_port(port_index).and_then(|handle| handle.tx_front(port_index))
+        self.serial_handle_for_port(port_index)
+            .and_then(|handle| handle.tx_front(port_index))
     }
 
     pub(crate) fn serial_tx_complete(&self, port_index: usize) -> Option<u8> {
-        self.serial_handle_for_port(port_index).and_then(|handle| handle.tx_complete(port_index))
+        self.serial_handle_for_port(port_index)
+            .and_then(|handle| handle.tx_complete(port_index))
     }
 
     pub(crate) fn clear_serial(&self) {
-        for installed in &self.serial { installed.handle.clear(); }
+        for installed in &self.serial {
+            installed.handle.clear();
+        }
     }
 
     pub(crate) fn serial_modem_lines(&self, port_index: usize) -> Option<(bool, bool, bool, bool)> {
-        self.serial_handle_for_port(port_index).and_then(|handle| handle.modem_lines(port_index))
+        self.serial_handle_for_port(port_index)
+            .and_then(|handle| handle.modem_lines(port_index))
     }
 
     pub(crate) fn set_serial_modem_inputs(&self, port_index: usize, cts: bool, dcd: bool) -> bool {
@@ -359,42 +391,46 @@ impl S100RuntimeFabric {
     }
 
     pub(crate) fn sio_handshake_lines(&self) -> Option<(bool, bool, bool, bool, bool, bool)> {
-        self.serial.iter().map(|installed| &installed.handle)
-            .find(|handle| handle.board() == crate::config::SerialBoard::Sio88)
+        self.unique_sio_handle()
             .and_then(RuntimeSerialCardHandle::sio_handshake_lines)
     }
 
     pub(crate) fn pulse_sio_input_device_ready(&self) -> bool {
-        self.serial.iter().map(|installed| &installed.handle)
-            .find(|handle| handle.board() == crate::config::SerialBoard::Sio88)
+        self.unique_sio_handle()
             .is_some_and(RuntimeSerialCardHandle::pulse_sio_input_device_ready)
     }
 
     pub(crate) fn pulse_sio_output_device_ready(&self) -> bool {
-        self.serial.iter().map(|installed| &installed.handle)
-            .find(|handle| handle.board() == crate::config::SerialBoard::Sio88)
+        self.unique_sio_handle()
             .is_some_and(RuntimeSerialCardHandle::pulse_sio_output_device_ready)
     }
 
     pub(crate) fn debugger_inject_serial_rx(&self, port: u8, byte: u8) -> bool {
-        self.serial_handle_for_data_port(port).is_some_and(|handle| handle.debugger_inject_rx(port, byte))
+        self.serial_handle_for_data_port(port)
+            .is_some_and(|handle| handle.debugger_inject_rx(port, byte))
     }
 
     pub(crate) fn debugger_clear_serial_rx(&self, port: u8) -> bool {
-        self.serial_handle_for_data_port(port).is_some_and(|handle| handle.debugger_clear_rx(port))
+        self.serial_handle_for_data_port(port)
+            .is_some_and(|handle| handle.debugger_clear_rx(port))
     }
 
     pub(crate) fn debugger_clear_serial_tx(&self, port: u8) -> bool {
-        self.serial_handle_for_data_port(port).is_some_and(|handle| handle.debugger_clear_tx(port))
+        self.serial_handle_for_data_port(port)
+            .is_some_and(|handle| handle.debugger_clear_tx(port))
     }
 
     pub(crate) fn debugger_complete_serial_tx(&self, port: u8) -> Option<u8> {
-        self.serial_handle_for_data_port(port).and_then(|handle| handle.debugger_complete_tx(port))
+        self.serial_handle_for_data_port(port)
+            .and_then(|handle| handle.debugger_complete_tx(port))
     }
 
     pub(crate) fn peek_io_port(&self, port: u8) -> u8 {
         let mut value = None;
-        for handle in self.serial.iter().map(|installed| &installed.handle)
+        for handle in self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
             .filter(|handle| handle.decodes_port(port))
         {
             let candidate = handle.peek_input(port);
@@ -409,7 +445,10 @@ impl S100RuntimeFabric {
 
     pub(crate) fn debugger_input_port(&self, port: u8) -> u8 {
         let mut value = None;
-        for handle in self.serial.iter().map(|installed| &installed.handle)
+        for handle in self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
             .filter(|handle| handle.decodes_port(port))
         {
             let candidate = handle.debugger_input(port);
@@ -423,7 +462,10 @@ impl S100RuntimeFabric {
     }
 
     pub(crate) fn debugger_output_port(&self, port: u8, value: u8) {
-        for handle in self.serial.iter().map(|installed| &installed.handle)
+        for handle in self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
             .filter(|handle| handle.decodes_port(port))
         {
             handle.debugger_output(port, value);
@@ -438,12 +480,19 @@ impl S100RuntimeFabric {
 
     pub(crate) fn io_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
         let mut result = (None, None, 0u64, 0u64);
-        for handle in self.serial.iter().map(|installed| &installed.handle)
+        for handle in self
+            .serial
+            .iter()
+            .map(|installed| &installed.handle)
             .filter(|handle| handle.decodes_port(port))
         {
             let activity = handle.io_port_activity(port);
-            if activity.0.is_some() { result.0 = activity.0; }
-            if activity.1.is_some() { result.1 = activity.1; }
+            if activity.0.is_some() {
+                result.0 = activity.0;
+            }
+            if activity.1.is_some() {
+                result.1 = activity.1;
+            }
             result.2 = result.2.saturating_add(activity.2);
             result.3 = result.3.saturating_add(activity.3);
         }
@@ -452,19 +501,27 @@ impl S100RuntimeFabric {
 
     pub(crate) fn io_trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
         let mut events = Vec::new();
-        for installed in &self.serial { events.extend(installed.handle.io_trace_snapshot()); }
+        for installed in &self.serial {
+            events.extend(installed.handle.io_trace_snapshot());
+        }
         events.sort_unstable_by_key(|event| event.0);
         events
     }
 
     pub(crate) fn io_trace_enabled(&self) -> bool {
-        self.serial.iter().any(|installed| installed.handle.io_trace_enabled())
+        self.serial
+            .iter()
+            .any(|installed| installed.handle.io_trace_enabled())
     }
     pub(crate) fn set_io_trace_enabled(&self, enabled: bool) {
-        for installed in &self.serial { installed.handle.set_io_trace_enabled(enabled); }
+        for installed in &self.serial {
+            installed.handle.set_io_trace_enabled(enabled);
+        }
     }
     pub(crate) fn clear_io_trace(&self) {
-        for installed in &self.serial { installed.handle.clear_io_trace(); }
+        for installed in &self.serial {
+            installed.handle.clear_io_trace();
+        }
     }
 
     pub fn set_cpu_package_pins(&mut self, pins: Cpu8080Pins) {
@@ -579,10 +636,8 @@ impl S100RuntimeFabric {
 
         for _ in 0..DIGITAL_SETTLE_DELTAS {
             let change = if extra_drives.is_empty() {
-                self.backplane.resolve_cached_selected_drives(
-                    selected,
-                    std::slice::from_ref(&display_drive),
-                )
+                self.backplane
+                    .resolve_cached_selected_drives(selected, std::slice::from_ref(&display_drive))
             } else {
                 let mut chassis = Vec::with_capacity(extra_drives.len() + 1);
                 chassis.push(display_drive);
@@ -591,9 +646,7 @@ impl S100RuntimeFabric {
                     .resolve_cached_selected_drives(selected, &chassis)
             };
 
-            let changed_drives = self
-                .backplane
-                .observe_changed_cards(change, 0, selected)?;
+            let changed_drives = self.backplane.observe_changed_cards(change, 0, selected)?;
 
             let next_display_drive = display.drive(self.backplane.sample());
             let display_changed = next_display_drive != display_drive;
@@ -918,17 +971,9 @@ impl S100RuntimeFabric {
             .sum()
     }
 
-    pub fn write_unique_memory(
-        &self,
-        address: u16,
-        value: u8,
-        respect_protection: bool,
-    ) -> bool {
+    pub fn write_unique_memory(&self, address: u16, value: u8, respect_protection: bool) -> bool {
         self.unique_ram_for_address(address)
-            .map(|ram| {
-                ram.handle
-                    .write_byte(address, value, respect_protection)
-            })
+            .map(|ram| ram.handle.write_byte(address, value, respect_protection))
             .unwrap_or(false)
     }
 
@@ -976,8 +1021,7 @@ mod tests {
     use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
     fn simple_hardware() -> S100HardwareConfig {
-        let mut config =
-            S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
         config
             .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
             .unwrap();
@@ -985,10 +1029,7 @@ mod tests {
             .set_slot(
                 2,
                 Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(
-                        S100RamBoardModel::Mits4KStatic88_4Mcs,
-                        0,
-                    ),
+                    S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
                 )),
             )
             .unwrap();
@@ -1000,7 +1041,9 @@ mod tests {
         config
             .set_slot(
                 3,
-                Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+                Some(S100InstalledCardConfig::Mits88Sio(
+                    SioHardwareConfig::default(),
+                )),
             )
             .unwrap();
         config
@@ -1017,16 +1060,23 @@ mod tests {
 
     fn sio_hardware(config: SioHardwareConfig) -> S100HardwareConfig {
         let mut hardware = simple_hardware();
-        hardware.set_slot(3, Some(S100InstalledCardConfig::Mits88Sio(config))).unwrap();
+        hardware
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88Sio(config)))
+            .unwrap();
         hardware
     }
 
     fn two_sio_hardware(wiring: crate::config::TwoSioInterruptWiring) -> S100HardwareConfig {
         let mut hardware = simple_hardware();
-        hardware.set_slot(3, Some(S100InstalledCardConfig::Mits88TwoSio {
-            straps: crate::config::TwoSioStraps::default(),
-            interrupt_wiring: wiring,
-        })).unwrap();
+        hardware
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps: crate::config::TwoSioStraps::default(),
+                    interrupt_wiring: wiring,
+                }),
+            )
+            .unwrap();
         hardware
     }
 
@@ -1076,9 +1126,18 @@ mod tests {
         assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'R'));
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
 
-        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(3)), Some(false));
-        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(5)), Some(false));
-        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true));
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::VectorInterrupt(3)),
+            Some(false)
+        );
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::VectorInterrupt(5)),
+            Some(false)
+        );
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::InterruptRequest),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1093,12 +1152,18 @@ mod tests {
         assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'I'));
 
         fabric.fast_io_write(config.address.status(), 0x02).unwrap();
-        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true),
-            "enabling only the disconnected output source must not assert PINT");
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::InterruptRequest),
+            Some(true),
+            "enabling only the disconnected output source must not assert PINT"
+        );
 
         fabric.fast_io_write(config.address.status(), 0x01).unwrap();
-        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(false),
-            "the independently enabled input source must assert its PINT wiring");
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::InterruptRequest),
+            Some(false),
+            "the independently enabled input source must assert its PINT wiring"
+        );
 
         config.interrupt_wiring = SioInterruptWiring {
             input: SioInterruptTarget::Disconnected,
@@ -1106,7 +1171,9 @@ mod tests {
         };
         let mut output_fabric =
             S100RuntimeFabric::new(sio_hardware(config), RamInit::Zeroed).unwrap();
-        output_fabric.fast_io_write(config.address.status(), 0x02).unwrap();
+        output_fabric
+            .fast_io_write(config.address.status(), 0x02)
+            .unwrap();
         assert_eq!(
             output_fabric
                 .sample()
@@ -1129,12 +1196,18 @@ mod tests {
         fabric.fast_io_write(config.address.status(), 0x01).unwrap();
         assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'R'));
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
-        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true),
-            "COM2502 RDA must not fabricate the Rev0 external-ready request");
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::InterruptRequest),
+            Some(true),
+            "COM2502 RDA must not fabricate the Rev0 external-ready request"
+        );
 
         assert!(fabric.pulse_sio_input_device_ready());
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
-        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(false));
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::InterruptRequest),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1151,24 +1224,41 @@ mod tests {
         assert!(fabric.debugger_inject_serial_rx(0x13, b'B'));
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
 
-        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(2)), Some(false));
-        assert_eq!(fabric.sample().signal_level(S100Signal::VectorInterrupt(6)), Some(false));
-        assert_eq!(fabric.sample().signal_level(S100Signal::InterruptRequest), Some(true));
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::VectorInterrupt(2)),
+            Some(false)
+        );
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::VectorInterrupt(6)),
+            Some(false)
+        );
+        assert_eq!(
+            fabric.sample().signal_level(S100Signal::InterruptRequest),
+            Some(true)
+        );
     }
 
     #[test]
     fn overlapping_physical_serial_cards_both_consume_read_and_contend() {
         let config = SioHardwareConfig::default();
         let mut hardware = sio_hardware(config);
-        hardware.set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(config))).unwrap();
+        hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(config)))
+            .unwrap();
         let mut fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
         let first = fabric.serial_handle_for_slot(3).unwrap();
         let second = fabric.serial_handle_for_slot(4).unwrap();
         assert!(first.debugger_inject_rx(config.address.data(), 0x00));
         assert!(second.debugger_inject_rx(config.address.data(), 0xff));
 
-        assert_eq!(fabric.fast_io_read(config.address.data()).unwrap(), S100_OPEN_BUS_VALUE);
-        assert!(first.rx_empty(0) && second.rx_empty(0), "both selected cards must perform the read");
+        assert_eq!(
+            fabric.fast_io_read(config.address.data()).unwrap(),
+            S100_OPEN_BUS_VALUE
+        );
+        assert!(
+            first.rx_empty(0) && second.rx_empty(0),
+            "both selected cards must perform the read"
+        );
         for bit in 0..8 {
             assert!(fabric.sample().signal_is_contended(S100Signal::DataIn(bit)));
         }
@@ -1178,7 +1268,9 @@ mod tests {
     fn elapsed_emulated_time_reaches_every_installed_serial_card() {
         let config = SioHardwareConfig::default();
         let mut hardware = sio_hardware(config);
-        hardware.set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(config))).unwrap();
+        hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(config)))
+            .unwrap();
         let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
         let first = fabric.serial_handle_for_slot(3).unwrap();
         let second = fabric.serial_handle_for_slot(4).unwrap();
@@ -1303,7 +1395,11 @@ mod tests {
         let stopped = DisplayControlLines::default();
         fabric.settle(stopped, &[]).unwrap();
         assert!(fabric.can_elide_phase_only_rising(stopped).unwrap());
-        let running = DisplayControlLines { ready: true, run: true, ..stopped };
+        let running = DisplayControlLines {
+            ready: true,
+            run: true,
+            ..stopped
+        };
         assert!(!fabric.can_elide_phase_only_rising(running).unwrap());
     }
 
@@ -1357,6 +1453,101 @@ mod tests {
     fn fast_unmapped_read_keeps_only_cpu_in_transaction_and_returns_open_bus() {
         let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
         assert_eq!(fabric.fast_memory_slot_mask(0x3000), s100_slot_mask(1));
-        assert_eq!(fabric.fast_memory_read(0x3000, 0x82).unwrap(), S100_OPEN_BUS_VALUE);
+        assert_eq!(
+            fabric.fast_memory_read(0x3000, 0x82).unwrap(),
+            S100_OPEN_BUS_VALUE
+        );
+    }
+}
+
+#[cfg(test)]
+mod aggregate_host_authority_tests {
+    use super::*;
+    use crate::config::{SioHardwareConfig, TwoSioInterruptWiring, TwoSioStraps};
+
+    fn two_serial_cards(
+        first: S100InstalledCardConfig,
+        second: S100InstalledCardConfig,
+    ) -> S100HardwareConfig {
+        let mut hardware = S100HardwareConfig::default();
+        let existing = hardware
+            .serial_slots()
+            .map(|(slot, _)| slot)
+            .collect::<Vec<_>>();
+        for slot in existing {
+            hardware.set_slot(slot, None).unwrap();
+        }
+        let mut free = (1..=hardware.fitted_connectors())
+            .filter(|&slot| hardware.slot(slot).is_none())
+            .take(2)
+            .collect::<Vec<_>>();
+        // The stock four-connector chassis is full apart from the serial slot.
+        // This fixture needs two serial cards, so free one non-CPU connector
+        // rather than assuming a larger chassis or silently changing its model.
+        if free.len() < 2 {
+            for slot in 1..=hardware.fitted_connectors() {
+                if free.contains(&slot)
+                    || matches!(
+                        hardware.slot(slot),
+                        Some(S100InstalledCardConfig::Mits8080Cpu)
+                    )
+                {
+                    continue;
+                }
+                hardware.set_slot(slot, None).unwrap();
+                free.push(slot);
+                if free.len() == 2 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            free.len(),
+            2,
+            "fixture requires two physical serial connectors"
+        );
+        hardware.set_slot(free[0], Some(first)).unwrap();
+        hardware.set_slot(free[1], Some(second)).unwrap();
+        hardware.validate().unwrap()
+    }
+
+    #[test]
+    fn host_serial_channels_require_unique_physical_card_identity() {
+        let hardware = two_serial_cards(
+            S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()),
+            S100InstalledCardConfig::Mits88TwoSio {
+                straps: TwoSioStraps::default(),
+                interrupt_wiring: TwoSioInterruptWiring::default(),
+            },
+        );
+        let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+
+        assert_eq!(fabric.primary_serial_board(), None);
+        assert!(
+            !fabric.serial_receive(0, b'A'),
+            "Port0 is ambiguous across two physical cards"
+        );
+        assert_eq!(fabric.serial_rx_len(0), 0);
+
+        assert!(
+            fabric.serial_receive(1, b'B'),
+            "only the 88-2SIO owns host Port1"
+        );
+        assert_eq!(fabric.serial_rx_len(1), 1);
+    }
+
+    #[test]
+    fn debugger_data_port_tools_refuse_overlapped_uart_identity() {
+        let sio = SioHardwareConfig::default();
+        let data_port = sio.address.data();
+        let hardware = two_serial_cards(
+            S100InstalledCardConfig::Mits88Sio(sio),
+            S100InstalledCardConfig::Mits88Sio(sio),
+        );
+        let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
+
+        assert_eq!(fabric.primary_sio_hardware(), None);
+        assert!(!fabric.debugger_inject_serial_rx(data_port, b'X'));
+        assert!(!fabric.debugger_clear_serial_rx(data_port));
     }
 }

@@ -7,8 +7,8 @@ use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Pins};
 use crate::machine::AltairBus;
 use crate::s100_memory::S100RamBoardModel;
 
-use super::CycleAccurateMachineBackend;
 use super::super::BackendResult;
+use super::CycleAccurateMachineBackend;
 
 /// No supported Intel 8080 instruction exceeds 18 T-states without external
 /// wait states (XTHL is the longest). The compiled chassis below admits only
@@ -53,10 +53,8 @@ struct FullPanelHistogramEntry {
     weight: u32,
 }
 
-const EMPTY_FULL_PANEL_HISTOGRAM_ENTRY: FullPanelHistogramEntry = FullPanelHistogramEntry {
-    key: 0,
-    weight: 0,
-};
+const EMPTY_FULL_PANEL_HISTOGRAM_ENTRY: FullPanelHistogramEntry =
+    FullPanelHistogramEntry { key: 0, weight: 0 };
 
 #[derive(Clone, Copy)]
 struct PendingPanelCycle {
@@ -597,7 +595,9 @@ impl Bus for FullInstructionBus<'_> {
     }
 
     #[inline]
-    fn take_wait_states(&mut self) -> u32 { 0 }
+    fn take_wait_states(&mut self) -> u32 {
+        0
+    }
 
     #[inline]
     fn instruction_complete(&mut self, address: u16, _opcode: u8, t_states: u32) {
@@ -818,12 +818,24 @@ impl CycleAccurateMachineBackend {
         remaining: u32,
         full_window_blocker: Option<AdaptiveFallbackReason>,
     ) -> AdaptiveFallbackReason {
-        if let Some(reason) = full_window_blocker { return reason; }
-        if remaining < FULL_EXECUTION_MAX_T_STATES { return AdaptiveFallbackReason::BudgetTail; }
-        if !self.at_instruction_boundary() { return AdaptiveFallbackReason::NotInstructionBoundary; }
-        if self.stop_wait_park_pending { return AdaptiveFallbackReason::StopWaitPending; }
-        if self.cpu_fault.is_some() { return AdaptiveFallbackReason::CpuFault; }
-        if self.machine.bus.cpu_control_lines().reset { return AdaptiveFallbackReason::Reset; }
+        if let Some(reason) = full_window_blocker {
+            return reason;
+        }
+        if remaining < FULL_EXECUTION_MAX_T_STATES {
+            return AdaptiveFallbackReason::BudgetTail;
+        }
+        if !self.at_instruction_boundary() {
+            return AdaptiveFallbackReason::NotInstructionBoundary;
+        }
+        if self.stop_wait_park_pending {
+            return AdaptiveFallbackReason::StopWaitPending;
+        }
+        if self.cpu_fault.is_some() {
+            return AdaptiveFallbackReason::CpuFault;
+        }
+        if self.machine.bus.cpu_control_lines().reset {
+            return AdaptiveFallbackReason::Reset;
+        }
 
         let opcode = self
             .machine
@@ -843,11 +855,15 @@ impl CycleAccurateMachineBackend {
         partial_reason: &mut Option<AdaptiveFallbackReason>,
         end_t: u64,
     ) {
-        let Some(start_t) = partial_start_t.take() else { return; };
+        let Some(start_t) = partial_start_t.take() else {
+            return;
+        };
         let elapsed = end_t.saturating_sub(start_t);
         adaptive_metrics::record_partial_span(
             elapsed,
-            partial_reason.take().unwrap_or(AdaptiveFallbackReason::FullWindowUnavailable),
+            partial_reason
+                .take()
+                .unwrap_or(AdaptiveFallbackReason::FullWindowUnavailable),
         );
     }
 
@@ -860,17 +876,10 @@ impl CycleAccurateMachineBackend {
         self.record_partial_metrics_span_until(partial_start_t, partial_reason, end_t);
     }
 
-    pub(super) fn service_execution_compiled(
-        &mut self,
-        t_state_budget: u32,
-    ) -> BackendResult<()> {
+    pub(super) fn service_execution_compiled(&mut self, t_state_budget: u32) -> BackendResult<()> {
         self.machine.bus.settle_serial_connector_state();
         let lines = self.machine.bus.cpu_control_lines();
-        if t_state_budget == 0
-            || !self.machine.powered
-            || !self.machine.running
-            || lines.reset
-        {
+        if t_state_budget == 0 || !self.machine.powered || !self.machine.running || lines.reset {
             return self.fail_if_cpu_fault("service execution");
         }
 
@@ -905,7 +914,10 @@ impl CycleAccurateMachineBackend {
                     &mut partial_reason,
                     before_full_t,
                 );
-                let completed = self.cpu.completed_instructions().saturating_sub(before_completed);
+                let completed = self
+                    .cpu
+                    .completed_instructions()
+                    .saturating_sub(before_completed);
                 adaptive_metrics::record_full_window(completed, elapsed);
                 if serial_clocked {
                     deferred_serial_t_states = deferred_serial_t_states.saturating_add(elapsed);
@@ -915,7 +927,8 @@ impl CycleAccurateMachineBackend {
 
             if partial_start_t.is_none() {
                 partial_start_t = Some(self.cpu.total_t_states());
-                partial_reason = Some(self.compiled_full_fallback_reason(remaining, full_window_blocker));
+                partial_reason =
+                    Some(self.compiled_full_fallback_reason(remaining, full_window_blocker));
             }
 
             if deferred_serial_t_states != 0 {
@@ -964,8 +977,7 @@ mod tests {
     use crate::s100_memory::S100RamCardConfig;
 
     fn static_4k_hardware() -> S100HardwareConfig {
-        let mut hardware =
-            S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
         hardware
             .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
             .unwrap();
@@ -973,10 +985,7 @@ mod tests {
             .set_slot(
                 2,
                 Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(
-                        S100RamBoardModel::Mits4KStatic88_4Mcs,
-                        0,
-                    ),
+                    S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
                 )),
             )
             .unwrap();
@@ -1009,9 +1018,7 @@ mod tests {
         backend.power(true).unwrap();
         backend.assert_reset().unwrap();
         backend.release_reset().unwrap();
-        backend
-            .load_bytes(0, &[0x2a, 0x10, 0x00])
-            .unwrap();
+        backend.load_bytes(0, &[0x2a, 0x10, 0x00]).unwrap();
         backend.load_bytes(0x0010, &[0x5a, 0xa5]).unwrap();
         backend.run().unwrap();
         assert!(backend.compiled_full_chassis_available());
@@ -1024,7 +1031,10 @@ mod tests {
         assert_eq!((registers.h, registers.l), (0xa5, 0x5a));
         assert_eq!(registers.pc, 3);
         assert_eq!(backend.cpu.total_t_states(), 16);
-        assert_eq!(backend.cpu.machine_cycle(), crate::cpu8080_cycle::MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu.machine_cycle(),
+            crate::cpu8080_cycle::MachineCycle::InstructionFetch
+        );
         assert_eq!(backend.cpu.t_state(), crate::cpu8080_cycle::TState::T1);
         assert!(backend.last_teaching_tick.is_none());
 
@@ -1035,7 +1045,10 @@ mod tests {
     #[test]
     fn compiled_full_read_cache_invalidates_on_guest_write() {
         let mut backend = prepare_static_backend(&[0x00]);
-        backend.machine.bus.debugger_write_memory(0x0020, 0x11, false);
+        backend
+            .machine
+            .bus
+            .debugger_write_memory(0x0020, 0x11, false);
         let mut full_bus = FullInstructionBus::new(&mut backend.machine.bus, false);
         assert_eq!(full_bus.guest_read(0x0020), 0x11);
         full_bus.write(0x0020, 0x5a);
@@ -1061,7 +1074,10 @@ mod tests {
         backend.service_execution_compiled(14_000).unwrap();
         assert_eq!(backend.cpu.total_t_states(), 14_000);
         assert!(backend.cpu.completed_instructions().saturating_sub(before) > 1_000);
-        assert_eq!(backend.cpu.machine_cycle(), crate::cpu8080_cycle::MachineCycle::InstructionFetch);
+        assert_eq!(
+            backend.cpu.machine_cycle(),
+            crate::cpu8080_cycle::MachineCycle::InstructionFetch
+        );
     }
 
     #[test]
@@ -1115,20 +1131,48 @@ mod tests {
             adaptive_metrics::begin_measurement();
             compiled.service_execution_compiled(BUDGET).unwrap();
             let stats = adaptive_metrics::end_measurement();
-            assert_eq!(stats.full_t_states, 11, "PUSH {opcode:02x} must be exactly one 11T Full instruction");
-            assert_eq!(stats.partial_t_states, 7, "remaining budget must rejoin exact Partial");
-            assert_eq!(stats.fallbacks.opcode_barrier, 0, "PUSH {opcode:02x} must not be a Full barrier");
+            assert_eq!(
+                stats.full_t_states, 11,
+                "PUSH {opcode:02x} must be exactly one 11T Full instruction"
+            );
+            assert_eq!(
+                stats.partial_t_states, 7,
+                "remaining budget must rejoin exact Partial"
+            );
+            assert_eq!(
+                stats.fallbacks.opcode_barrier, 0,
+                "PUSH {opcode:02x} must not be a Full barrier"
+            );
 
             for _ in 0..BUDGET {
                 let ready = partial.machine.bus.cycle_front_panel_ready_input();
                 let trace = partial.tick_once(ready);
-                assert!(trace.fault.is_none(), "PUSH {opcode:02x} Partial oracle faulted");
+                assert!(
+                    trace.fault.is_none(),
+                    "PUSH {opcode:02x} Partial oracle faulted"
+                );
             }
 
-            assert_eq!(compiled.cpu.total_t_states(), partial.cpu.total_t_states(), "PUSH {opcode:02x} T-states");
-            assert_eq!(compiled.cpu.registers(), partial.cpu.registers(), "PUSH {opcode:02x} registers");
-            assert_eq!(compiled.machine.bus.peek_memory(STACK_LO), partial.machine.bus.peek_memory(STACK_LO), "PUSH {opcode:02x} stack low byte");
-            assert_eq!(compiled.machine.bus.peek_memory(STACK_HI), partial.machine.bus.peek_memory(STACK_HI), "PUSH {opcode:02x} stack high byte");
+            assert_eq!(
+                compiled.cpu.total_t_states(),
+                partial.cpu.total_t_states(),
+                "PUSH {opcode:02x} T-states"
+            );
+            assert_eq!(
+                compiled.cpu.registers(),
+                partial.cpu.registers(),
+                "PUSH {opcode:02x} registers"
+            );
+            assert_eq!(
+                compiled.machine.bus.peek_memory(STACK_LO),
+                partial.machine.bus.peek_memory(STACK_LO),
+                "PUSH {opcode:02x} stack low byte"
+            );
+            assert_eq!(
+                compiled.machine.bus.peek_memory(STACK_HI),
+                partial.machine.bus.peek_memory(STACK_HI),
+                "PUSH {opcode:02x} stack high byte"
+            );
             assert_eq!(
                 compiled.machine.bus.raw_panel_lamp_duty(),
                 partial.machine.bus.raw_panel_lamp_duty(),
@@ -1211,9 +1255,15 @@ mod tests {
         let stats = adaptive_metrics::end_measurement();
 
         assert_eq!(stats.total_t_states(), u64::from(BUDGET));
-        assert_eq!(stats.full_t_states, 7, "only MVI may execute in Full before OUT activates the UART");
+        assert_eq!(
+            stats.full_t_states, 7,
+            "only MVI may execute in Full before OUT activates the UART"
+        );
         assert_eq!(stats.partial_t_states, u64::from(BUDGET - 7));
-        assert!(backend.machine.bus.tx_busy(), "110-baud transmitter must still be active after only 1000 T-states");
+        assert!(
+            backend.machine.bus.tx_busy(),
+            "110-baud transmitter must still be active after only 1000 T-states"
+        );
     }
 
     #[test]
@@ -1227,10 +1277,7 @@ mod tests {
             .set_slot(
                 2,
                 Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(
-                        S100RamBoardModel::Mits1KStatic88Mcs,
-                        0,
-                    ),
+                    S100RamCardConfig::fully_populated(S100RamBoardModel::Mits1KStatic88Mcs, 0),
                 )),
             )
             .unwrap();
@@ -1261,10 +1308,7 @@ mod tests {
             .set_slot(
                 3,
                 Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(
-                        S100RamBoardModel::Mits4KStatic88_4Mcs,
-                        0,
-                    ),
+                    S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
                 )),
             )
             .unwrap();

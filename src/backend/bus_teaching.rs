@@ -160,7 +160,9 @@ pub struct BusStatusLines {
 
 impl BusStatusLines {
     pub fn from_status_word(word: Option<u8>) -> Self {
-        let Some(word) = word else { return Self::default(); };
+        let Some(word) = word else {
+            return Self::default();
+        };
         Self {
             memr: Some(word & 0x80 != 0),
             inp: Some(word & 0x40 != 0),
@@ -206,12 +208,24 @@ pub(crate) trait BusChassisSource {
 }
 
 impl BusChassisSource for AltairChassis {
-    fn powered(&self) -> bool { self.powered }
-    fn running(&self) -> bool { self.running }
-    fn bus(&self) -> &AltairBus { &self.bus }
-    fn ext_clear_asserted(&self) -> bool { self.ext_clear_asserted() }
-    fn address_leds(&self) -> u16 { self.address_leds() }
-    fn panel_lamps(&self) -> PanelLampSnapshot { self.panel_lamps() }
+    fn powered(&self) -> bool {
+        self.powered
+    }
+    fn running(&self) -> bool {
+        self.running
+    }
+    fn bus(&self) -> &AltairBus {
+        &self.bus
+    }
+    fn ext_clear_asserted(&self) -> bool {
+        self.ext_clear_asserted()
+    }
+    fn address_leds(&self) -> u16 {
+        self.address_leds()
+    }
+    fn panel_lamps(&self) -> PanelLampSnapshot {
+        self.panel_lamps()
+    }
 }
 
 impl BusChassisSnapshot {
@@ -316,17 +330,29 @@ impl BusTeachingSnapshot {
         let CpuState::Intel8080(cpu) = cpu;
         let instruction_address = Some(cpu.pc);
         let total_t_states = cpu.total_t_states;
-        let panel_data = if panel.powered { Some(panel.data) } else { None };
+        let panel_data = if panel.powered {
+            Some(panel.data)
+        } else {
+            None
+        };
         let current_chassis = Some(BusChassisSnapshot::reconstructed(engine, panel));
         Self {
             accuracy: BusTeachingAccuracy::Reconstructed,
             engine,
             instruction_address,
             opcode: None,
-            machine_cycle: if panel.powered { BusMachineCycle::Unknown } else { BusMachineCycle::PowerOff },
+            machine_cycle: if panel.powered {
+                BusMachineCycle::Unknown
+            } else {
+                BusMachineCycle::PowerOff
+            },
             machine_cycle_index: None,
             t_state: BusTState::Unknown,
-            address: if panel.powered { Some(panel.address) } else { None },
+            address: if panel.powered {
+                Some(panel.address)
+            } else {
+                None
+            },
             data: panel_data,
             cpu_data: None,
             s100_di: None,

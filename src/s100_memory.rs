@@ -5,11 +5,12 @@
 //! those identities explicit so the chassis can eventually persist an actual
 //! slot inventory instead of one aggregate `RamSize` plus a global timing mode.
 
+use crate::config::RamInit;
 use crate::s100::{
-    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole,
-    S100Signal, MITS_1K_STATIC_RAM,
+    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
 };
 use crate::s100_backplane::{S100BusSample, S100CardDrive, S100ElectricalCard};
+use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamHandle};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100RamBoardModel {
@@ -73,9 +74,7 @@ impl S100RamBoardModel {
 
     pub const fn valid_population(self, bytes: usize) -> bool {
         match self {
-            Self::Mits1KStatic88Mcs => {
-                bytes >= 256 && bytes <= 1024 && bytes % 256 == 0
-            }
+            Self::Mits1KStatic88Mcs => bytes >= 256 && bytes <= 1024 && bytes % 256 == 0,
             _ => bytes == self.capacity_bytes(),
         }
     }
@@ -103,9 +102,9 @@ impl S100RamBoardModel {
 
     pub const fn refresh_model(self) -> S100RamRefreshModel {
         match self {
-            Self::Mits1KStatic88Mcs
-            | Self::Mits4KStatic88_4Mcs
-            | Self::Mits16KStatic88_16Mcs => S100RamRefreshModel::None,
+            Self::Mits1KStatic88Mcs | Self::Mits4KStatic88_4Mcs | Self::Mits16KStatic88_16Mcs => {
+                S100RamRefreshModel::None
+            }
             Self::Mits4KDynamic88_4Mcd => S100RamRefreshModel::CpuClockEvery32,
             Self::Mits4KSynchronous88S4K => S100RamRefreshModel::CpuSynchronous,
             Self::Mits16KDynamic88_16Mcd => S100RamRefreshModel::OnBoardCrystal,
@@ -125,9 +124,7 @@ impl S100RamBoardModel {
     pub const fn supports_front_panel_protect(self) -> bool {
         matches!(
             self,
-            Self::Mits1KStatic88Mcs
-                | Self::Mits4KDynamic88_4Mcd
-                | Self::Mits4KStatic88_4Mcs
+            Self::Mits1KStatic88Mcs | Self::Mits4KDynamic88_4Mcd | Self::Mits4KStatic88_4Mcs
         )
     }
 }
@@ -174,7 +171,11 @@ impl S100RamCardConfig {
         base_address: u16,
         populated_bytes: usize,
     ) -> Self {
-        Self { model, base_address, populated_bytes }
+        Self {
+            model,
+            base_address,
+            populated_bytes,
+        }
     }
 
     pub fn validate(self) -> Result<Self, S100RamConfigError> {
@@ -211,125 +212,76 @@ impl S100RamCardConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100RamConfigError {
-    MisalignedBase { base_address: u16, required_granularity: usize },
+    MisalignedBase {
+        base_address: u16,
+        required_granularity: usize,
+    },
     AddressWindowExceeds64K,
-    InvalidPopulation { model: S100RamBoardModel, populated_bytes: usize },
+    InvalidPopulation {
+        model: S100RamBoardModel,
+        populated_bytes: usize,
+    },
 }
 
 pub struct S100RamCard {
     config: S100RamCardConfig,
-    bytes: Vec<u8>,
-    protected: bool,
-    selected_offset: Option<usize>,
-    memory_read: bool,
-    wait_clocks_remaining: u8,
-    previous_sync: bool,
-    previous_clock: bool,
+    runtime: RuntimeRamCard,
+    handle: RuntimeRamHandle,
 }
 
 impl S100RamCard {
+    /// Public compatibility facade over the one authoritative runtime RAM card.
+    /// Keeping this historical constructor does not create a second storage,
+    /// protection or PRDY timing implementation.
     pub fn new(config: S100RamCardConfig) -> Result<Self, S100RamConfigError> {
         let config = config.validate()?;
+        let (runtime, handle) = RuntimeRamCard::historical(config, RamInit::Zeroed)?;
         Ok(Self {
-            bytes: vec![0; config.populated_bytes],
             config,
-            protected: false,
-            selected_offset: None,
-            memory_read: false,
-            wait_clocks_remaining: 0,
-            previous_sync: false,
-            previous_clock: false,
+            runtime,
+            handle,
         })
     }
 
-    pub fn config(&self) -> S100RamCardConfig { self.config }
-    pub fn model(&self) -> S100RamBoardModel { self.config.model }
-    pub fn is_protected(&self) -> bool { self.protected }
+    pub fn config(&self) -> S100RamCardConfig {
+        self.config
+    }
+
+    pub fn model(&self) -> S100RamBoardModel {
+        self.config.model
+    }
+
+    pub fn is_protected(&self) -> bool {
+        self.handle.is_protected(self.config.base_address)
+    }
 
     pub fn set_protected(&mut self, protected: bool) -> bool {
-        if !self.model().supports_front_panel_protect() { return false; }
-        self.protected = protected;
-        true
+        self.handle
+            .set_protected(self.config.base_address, protected)
     }
 
     pub fn read_byte(&self, address: u16) -> Option<u8> {
-        if !self.config.populated_address_contains(address) { return None; }
-        Some(self.bytes[address.wrapping_sub(self.config.base_address) as usize])
+        self.handle.read_byte(address)
     }
 
     pub fn write_byte(&mut self, address: u16, value: u8) -> bool {
-        if self.protected || !self.config.populated_address_contains(address) { return false; }
-        let offset = address.wrapping_sub(self.config.base_address) as usize;
-        self.bytes[offset] = value;
-        true
-    }
-
-    fn fixed_read_waits(&self) -> u8 {
-        match self.model().timing_model() {
-            S100RamTimingModel::FixedReadWaits(waits) => waits,
-            _ => 0,
-        }
+        self.handle.write_byte(address, value, true)
     }
 }
 
 impl S100Card for S100RamCard {
     fn s100_descriptor(&self) -> &'static S100CardDescriptor {
-        match self.model() {
-            S100RamBoardModel::Mits1KStatic88Mcs => &MITS_1K_STATIC_RAM,
-            S100RamBoardModel::Mits4KDynamic88_4Mcd => &MITS_88_4MCD,
-            S100RamBoardModel::Mits4KSynchronous88S4K => &MITS_88_S4K,
-            S100RamBoardModel::Mits4KStatic88_4Mcs => &MITS_88_4MCS,
-            S100RamBoardModel::Mits16KStatic88_16Mcs => &MITS_88_16MCS,
-            S100RamBoardModel::Mits16KDynamic88_16Mcd => &MITS_88_16MCD,
-        }
+        self.runtime.s100_descriptor()
     }
 }
 
 impl S100ElectricalCard for S100RamCard {
     fn observe_s100(&mut self, sample: &S100BusSample) {
-        let sync = sample.signal_level(S100Signal::Sync) == Some(true);
-        let clock = sample.signal_level(S100Signal::Clock) == Some(true);
-        let sync_rising = sync && !self.previous_sync;
-        let clock_rising = clock && !self.previous_clock;
-
-        self.selected_offset = sample.address().and_then(|address| {
-            self.config
-                .populated_address_contains(address)
-                .then_some(address.wrapping_sub(self.config.base_address) as usize)
-        });
-        self.memory_read = self.selected_offset.is_some()
-            && sample.signal_level(S100Signal::MemoryRead) == Some(true);
-
-        if let (Some(address), Some(value)) = (sample.address(), sample.data_out()) {
-            if sample.signal_level(S100Signal::MemoryWrite) == Some(true) {
-                self.write_byte(address, value);
-            }
-        }
-
-        let fixed_waits = self.fixed_read_waits();
-        if !self.memory_read || fixed_waits == 0 {
-            self.wait_clocks_remaining = 0;
-        } else if sync_rising {
-            self.wait_clocks_remaining = fixed_waits;
-        } else if clock_rising && self.wait_clocks_remaining != 0 {
-            self.wait_clocks_remaining -= 1;
-        }
-
-        self.previous_sync = sync;
-        self.previous_clock = clock;
+        self.runtime.observe_s100(sample);
     }
 
     fn drive_s100(&self) -> S100CardDrive {
-        let mut drive = S100CardDrive::new();
-        if self.memory_read {
-            if let Some(offset) = self.selected_offset {
-                drive.drive_data_in(self.bytes[offset]);
-            }
-        }
-        if self.wait_clocks_remaining != 0 {
-            drive.pull_low(S100Signal::Ready, true);
-        }
-        drive
+        self.runtime.drive_s100()
     }
 }
 
@@ -399,9 +351,10 @@ const MCS4_CONTACTS: &[S100CardContact] = memory_contacts!(
     S100CardContact::new(S100Signal::ProtectStatus, S100ContactRole::TriStateOutput),
 );
 const MCS16_CONTACTS: &[S100CardContact] = memory_contacts!();
-const MCD16_CONTACTS: &[S100CardContact] = memory_contacts!(
-    S100CardContact::new(S100Signal::Clock, S100ContactRole::Input),
-);
+const MCD16_CONTACTS: &[S100CardContact] = memory_contacts!(S100CardContact::new(
+    S100Signal::Clock,
+    S100ContactRole::Input
+),);
 
 pub static MITS_88_4MCD: S100CardDescriptor = S100CardDescriptor {
     key: "mits-88-4mcd",
@@ -475,51 +428,43 @@ mod tests {
     #[test]
     fn original_one_k_board_accepts_historical_256_byte_population_steps() {
         for bytes in [256, 512, 768, 1024] {
-            assert!(S100RamCardConfig::with_population(
-                S100RamBoardModel::Mits1KStatic88Mcs,
-                0x0400,
-                bytes,
-            )
-            .validate()
-            .is_ok());
+            assert!(
+                S100RamCardConfig::with_population(
+                    S100RamBoardModel::Mits1KStatic88Mcs,
+                    0x0400,
+                    bytes,
+                )
+                .validate()
+                .is_ok()
+            );
         }
         assert!(matches!(
-            S100RamCardConfig::with_population(
-                S100RamBoardModel::Mits1KStatic88Mcs,
-                0,
-                128,
-            )
-            .validate(),
+            S100RamCardConfig::with_population(S100RamBoardModel::Mits1KStatic88Mcs, 0, 128,)
+                .validate(),
             Err(S100RamConfigError::InvalidPopulation { .. })
         ));
     }
 
     #[test]
     fn address_straps_use_each_historical_boards_decode_quantum() {
-        assert!(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits1KStatic88Mcs,
-            0x0400,
-        )
-        .validate()
-        .is_ok());
-        assert!(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits4KStatic88_4Mcs,
-            0x1000,
-        )
-        .validate()
-        .is_ok());
-        assert!(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits16KStatic88_16Mcs,
-            0x4000,
-        )
-        .validate()
-        .is_ok());
+        assert!(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits1KStatic88Mcs, 0x0400,)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x1000,)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits16KStatic88_16Mcs, 0x4000,)
+                .validate()
+                .is_ok()
+        );
         assert!(matches!(
-            S100RamCardConfig::fully_populated(
-                S100RamBoardModel::Mits16KStatic88_16Mcs,
-                0x1000,
-            )
-            .validate(),
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits16KStatic88_16Mcs, 0x1000,)
+                .validate(),
             Err(S100RamConfigError::MisalignedBase { .. })
         ));
     }
@@ -558,10 +503,8 @@ mod tests {
 
     #[test]
     fn overlapping_ram_straps_surface_real_di_contention() {
-        let config = S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits4KStatic88_4Mcs,
-            0x0000,
-        );
+        let config =
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000);
         let mut a = S100RamCard::new(config).unwrap();
         let mut b = S100RamCard::new(config).unwrap();
         a.write_byte(0x0010, 0x00);
@@ -572,11 +515,7 @@ mod tests {
         let observed = backplane.resolve_drive_sets(&[master.clone()]);
         a.observe_s100(&observed);
         b.observe_s100(&observed);
-        let resolved = backplane.resolve_drive_sets(&[
-            master,
-            a.drive_s100(),
-            b.drive_s100(),
-        ]);
+        let resolved = backplane.resolve_drive_sets(&[master, a.drive_s100(), b.drive_s100()]);
         assert!((0..8).all(|bit| resolved.signal_is_contended(S100Signal::DataIn(bit))));
     }
 

@@ -53,25 +53,43 @@ fn idle_serial_wall_clock_has_one_scheduler_owner() {
         "fn service_idle_chassis_clock",
         "fn invalidate_partial_trace_for_external_memory_change",
     );
-    assert!(host_service.contains("let covered = self.last_panel_commit_cpu_t_states"));
-    assert!(host_service.contains("let parked = powered && (!running || reset || self.inner.cpu().is_holding())"));
+    // Guard the semantic ownership graph rather than rustfmt's exact line wrapping.
+    assert!(host_service.contains("let covered"));
+    assert!(host_service.contains("last_panel_commit_cpu_t_states"));
+    assert!(host_service.contains("current.saturating_sub"));
+    assert!(host_service.contains("let parked"));
+    assert!(host_service.contains("powered"));
+    assert!(host_service.contains("!running"));
+    assert!(host_service.contains("reset"));
+    assert!(host_service.contains("is_holding()"));
     assert!(host_service.contains("due.saturating_sub(covered)"));
-    assert!(host_service.contains("advance_serial_hardware_time(missing)"));
+    assert_eq!(
+        host_service.matches("advance_serial_hardware_time").count(),
+        1,
+        "idle wall-clock catch-up must advance serial hardware exactly once",
+    );
+    assert_eq!(
+        CYCLE_HOST_SOURCE
+            .matches("advance_serial_hardware_time")
+            .count(),
+        1,
+        "CycleHostBackend must have one wall-clock serial scheduler owner",
+    );
 
     let host_commit = function_body(
         CYCLE_HOST_SOURCE,
         "fn commit_panel_activity",
         "fn assert_run_stop",
     );
-    assert!(host_commit.contains("self.service_idle_chassis_clock(dt)"));
-    assert!(host_commit.contains("self.inner.commit_panel_activity(dt)"));
+    assert!(host_commit.contains("service_idle_chassis_clock"));
+    assert!(host_commit.contains("commit_panel_activity(dt)"));
 
     let chassis_commit = function_body(
         CHASSIS_SOURCE,
         "fn cycle_commit_panel_activity",
         "fn cycle_front_panel_set_memory_protection",
     );
-    assert!(chassis_commit.contains("self.bus.commit_panel_activity(dt, dynamic)"));
+    assert!(chassis_commit.contains("commit_panel_activity(dt, dynamic)"));
     assert!(!chassis_commit.contains("advance_serial_hardware_time"));
     assert!(!chassis_commit.contains("CLOCK_HZ"));
 }
