@@ -125,6 +125,11 @@ pub struct S100RuntimeFabric {
     /// repeated identical request with no pending CPU/UART connector transition
     /// is already the physically resolved bus and can return immediately.
     last_settled_display: Option<DisplayControlLines>,
+    /// Cached physical Display/Control connector drive. All panel-owned outputs
+    /// remain constant while `DisplayControlLines` is unchanged; only MWRT also
+    /// depends on the currently resolved pWR/sOUT pair. Reusing this exact drive
+    /// avoids rebuilding the same eight connector pins at every digital delta.
+    display_drive_cache: Option<(DisplayControlLines, bool, S100CardDrive)>,
     /// True when the CPU board's cached connector drive has changed since the
     /// last real resolver pass. Phase-only Cycle edges may intentionally stack
     /// here until the next electrically observable edge.
@@ -241,6 +246,7 @@ impl S100RuntimeFabric {
             serial,
             externally_mutable_slots,
             last_settled_display: None,
+            display_drive_cache: None,
             cpu_connector_pending: false,
             memory_responders,
             ram_by_slot,
@@ -593,6 +599,31 @@ impl S100RuntimeFabric {
             != 0)
     }
 
+    /// Return the exact Display/Control connector drive for the current resolved
+    /// pWR/sOUT state. Panel-owned outputs are persistent electrical state, so a
+    /// stable panel only needs the MWRT bit reconsidered between causal deltas.
+    #[inline]
+    fn cached_display_drive(&mut self, display: DisplayControlLines) -> S100CardDrive {
+        let sample = self.backplane.sample();
+        let pwr_asserted = sample.signal_level(S100Signal::Write) == Some(false);
+        let sout = sample.signal_level(S100Signal::Out) == Some(true);
+        let memory_write = pwr_asserted && !sout;
+
+        if let Some((cached_display, cached_memory_write, mut drive)) = self.display_drive_cache {
+            if cached_display == display {
+                if cached_memory_write != memory_write {
+                    drive.drive_signal(S100Signal::MemoryWrite, memory_write);
+                    self.display_drive_cache = Some((display, memory_write, drive));
+                }
+                return drive;
+            }
+        }
+
+        let drive = display.drive(sample);
+        self.display_drive_cache = Some((display, memory_write, drive));
+        drive
+    }
+
     /// Prove that a PHI1 synchronization edge carries no new non-clock
     /// information from outside the CPU package. The caller separately proves
     /// that installed cards do not consume PHI1/PHI2/CLOC and that the 8212
@@ -636,7 +667,7 @@ impl S100RuntimeFabric {
             return Ok(self.backplane.sample());
         }
 
-        let mut display_drive = display.drive(self.backplane.sample());
+        let mut display_drive = self.cached_display_drive(display);
 
         for _ in 0..DIGITAL_SETTLE_DELTAS {
             let change = if extra_drives.is_empty() {
@@ -652,7 +683,7 @@ impl S100RuntimeFabric {
 
             let changed_drives = self.backplane.observe_changed_cards(change, 0, selected)?;
 
-            let next_display_drive = display.drive(self.backplane.sample());
+            let next_display_drive = self.cached_display_drive(display);
             let display_changed = next_display_drive != display_drive;
             display_drive = next_display_drive;
 
@@ -691,7 +722,7 @@ impl S100RuntimeFabric {
             self.backplane.refresh_cached_drives(externally_dirty)?;
         }
 
-        let display_drive = display.drive(self.backplane.sample());
+        let display_drive = self.cached_display_drive(display);
         let change = self
             .backplane
             .resolve_cached_selected_drives(selected, &[display_drive]);
@@ -716,7 +747,7 @@ impl S100RuntimeFabric {
         if refresh != 0 {
             self.backplane.refresh_cached_drives(refresh)?;
         }
-        let display_drive = display.drive(self.backplane.sample());
+        let display_drive = self.cached_display_drive(display);
         let _ = self
             .backplane
             .resolve_cached_selected_drives(selected, &[display_drive]);
@@ -1366,6 +1397,30 @@ mod tests {
         let drive = DisplayControlLines::default().drive(&sample);
         let resolved = fabric.backplane().resolve_drive_sets(&[drive]);
         assert_eq!(resolved.signal_level(S100Signal::MemoryWrite), Some(true));
+    }
+
+    #[test]
+    fn cached_display_control_drive_is_identical_to_direct_drive() {
+        let mut fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
+        let display = DisplayControlLines {
+            ready: true,
+            run: true,
+            protect: true,
+            ..DisplayControlLines::default()
+        };
+
+        for (write_high, out_high) in [(true, false), (false, false), (false, true), (true, true)] {
+            let mut source = S100CardDrive::new();
+            source.drive_signal(S100Signal::Write, write_high);
+            source.drive_signal(S100Signal::Out, out_high);
+            let sample = fabric.backplane.resolve_drive_sets(&[source]);
+            fabric.backplane
+                .resolve_selected_drives(0, &[source])
+                .unwrap();
+            let direct = display.drive(&sample);
+            let cached = fabric.cached_display_drive(display);
+            assert_eq!(cached, direct);
+        }
     }
 
     #[test]
