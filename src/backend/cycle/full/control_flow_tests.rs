@@ -178,6 +178,50 @@ fn stale_memr_t1_uses_new_address_data_before_next_status_latches() {
 }
 
 #[test]
+fn compiled_full_di_matches_forced_partial_inte_and_panel_exactly() {
+    // Establish INTE through the authoritative Partial EI-delay sequence first,
+    // then compare a single four-T-state DI executed by Full against Partial.
+    // DI changes the flip-flop only after its T4 sample, so all four DI T-states
+    // must retain the old INTE lamp duty while the following boundary is low.
+    let program = [0xfb, 0x00, 0xf3, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let mut compiled = prepare_static_backend(&program);
+    let mut partial = prepare_static_backend(&program);
+
+    for backend in [&mut compiled, &mut partial] {
+        for _ in 0..8 {
+            let ready = backend.machine.bus.cycle_front_panel_ready_input();
+            assert!(backend.tick_once(ready).fault.is_none());
+        }
+        assert!(backend.cpu.interrupts_enabled());
+        assert!(backend.machine.bus.raw_s100_inte());
+        assert_eq!(backend.cpu.registers().pc, 2);
+    }
+
+    let opcode = compiled
+        .compiled_full_opcode(FULL_EXECUTION_MAX_T_STATES, true)
+        .expect("DI must be admitted at a clean Full boundary");
+    assert_eq!(opcode, 0xf3);
+    assert_eq!(compiled.execute_compiled_full_instruction(opcode), Some(4));
+
+    for _ in 0..4 {
+        let ready = partial.machine.bus.cycle_front_panel_ready_input();
+        assert!(partial.tick_once(ready).fault.is_none());
+    }
+
+    assert_eq!(compiled.cpu.total_t_states(), partial.cpu.total_t_states());
+    assert_eq!(compiled.cpu.registers(), partial.cpu.registers());
+    assert!(!compiled.cpu.interrupts_enabled());
+    assert_eq!(
+        compiled.machine.bus.raw_panel_lamp_duty(),
+        partial.machine.bus.raw_panel_lamp_duty(),
+        "DI Full must preserve the T4-delayed INTE lamp duty"
+    );
+    assert_eq!(compiled.machine.bus.raw_s100_inte(), partial.machine.bus.raw_s100_inte());
+    assert_eq!(compiled.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_status_word());
+    assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
+}
+
+#[test]
 #[ignore = "diagnostic trace for Full-to-Partial Rcc rejoin"]
 fn trace_rz_not_taken_full_to_partial_panel_rejoin() {
     let program = [0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
