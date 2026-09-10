@@ -2,6 +2,7 @@ param([string]$Executable = 'target/release/deps/cpu8080_adaptive_classic_diagno
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -30,37 +31,50 @@ public static class CpuSample {
     using(var p=Process.Start(start)) {
      var output=p.StandardOutput.ReadToEndAsync(); var error=p.StandardError.ReadToEndAsync();
      Thread.Sleep(100);
-     if(!SymInitialize(p.Handle,System.IO.Path.GetDirectoryName(exe),true)) throw new Exception("SymInitialize: "+Marshal.GetLastWin32Error());
+     IntPtr processHandle;
+     try { processHandle=p.Handle; } catch(InvalidOperationException) { p.WaitForExit(); Console.WriteLine("ROUND "+round+" exit="+p.ExitCode); Console.WriteLine(error.Result); if(p.ExitCode!=0) throw new Exception(output.Result); continue; }
+     if(!SymInitialize(processHandle,System.IO.Path.GetDirectoryName(exe),true)) throw new Exception("SymInitialize: "+Marshal.GetLastWin32Error());
      IntPtr thread=IntPtr.Zero;
      try {
       int iteration=0;
-      while(!p.HasExited) {
+      while(true) {
+       try { if(p.HasExited) break; } catch(InvalidOperationException) { break; }
        if(iteration++%50==0) {
-        if(thread!=IntPtr.Zero) CloseHandle(thread);
-        p.Refresh();
+        if(thread!=IntPtr.Zero) { CloseHandle(thread); thread=IntPtr.Zero; }
         ProcessThread hottest=null;
-        foreach(ProcessThread candidate in p.Threads) {
-         try { if(hottest==null || candidate.TotalProcessorTime>hottest.TotalProcessorTime) hottest=candidate; } catch(InvalidOperationException) {}
-        }
-        thread=hottest==null ? IntPtr.Zero : OpenThread(0x4a,false,(uint)hottest.Id);
+        try {
+         p.Refresh();
+         foreach(ProcessThread candidate in p.Threads) {
+          try { if(hottest==null || candidate.TotalProcessorTime>hottest.TotalProcessorTime) hottest=candidate; }
+          catch(InvalidOperationException) {}
+          catch(Win32Exception) {}
+         }
+        } catch(InvalidOperationException) { break; }
+          catch(Win32Exception) { break; }
+        if(hottest!=null) {
+         try { thread=OpenThread(0x4a,false,(uint)hottest.Id); }
+         catch(InvalidOperationException) { thread=IntPtr.Zero; }
        }
        ulong ip=0;
-       if(thread!=IntPtr.Zero && SuspendThread(thread)!=uint.MaxValue) {
-        try {
-         Marshal.WriteInt32(context,48,0x100001);
-         if(GetThreadContext(thread,context)) ip=(ulong)Marshal.ReadInt64(context,248); else failures++;
-        } finally { ResumeThread(thread); }
+       if(thread!=IntPtr.Zero) {
+        uint suspended=SuspendThread(thread);
+        if(suspended!=uint.MaxValue) {
+         try {
+          Marshal.WriteInt32(context,48,0x100001);
+          if(GetThreadContext(thread,context)) ip=(ulong)Marshal.ReadInt64(context,248); else failures++;
+         } finally { ResumeThread(thread); }
+        } else failures++;
        } else failures++;
        if(ip!=0) {
         Marshal.WriteInt32(symbol,0,88); Marshal.WriteInt32(symbol,80,1024);
         ulong displacement;
-        string name=SymFromAddr(p.Handle,ip,out displacement,symbol) ? Marshal.PtrToStringAnsi(IntPtr.Add(symbol,84),Marshal.ReadInt32(symbol,76)) : "0x"+ip.ToString("x");
+        string name=SymFromAddr(processHandle,ip,out displacement,symbol) ? Marshal.PtrToStringAnsi(IntPtr.Add(symbol,84),Marshal.ReadInt32(symbol,76)) : "0x"+ip.ToString("x");
         if(!counts.ContainsKey(name)) counts[name]=0;
         counts[name]++; samples++;
        }
        Thread.Sleep(1);
       }
-     } finally { if(thread!=IntPtr.Zero) CloseHandle(thread); SymCleanup(p.Handle); }
+     } finally { if(thread!=IntPtr.Zero) CloseHandle(thread); SymCleanup(processHandle); }
      p.WaitForExit();
      Console.WriteLine("ROUND "+round+" exit="+p.ExitCode);
      Console.WriteLine(error.Result);
