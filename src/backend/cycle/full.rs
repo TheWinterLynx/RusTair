@@ -9,6 +9,9 @@ use crate::machine::{AltairBus, FullPanelDuty};
 #[cfg(test)]
 #[path = "full/panel_histogram_reference.rs"]
 mod panel_histogram_reference;
+#[cfg(test)]
+#[path = "full/control_flow_tests.rs"]
+mod control_flow_tests;
 use crate::s100_memory::S100RamBoardModel;
 
 use super::super::BackendResult;
@@ -282,6 +285,46 @@ impl<'a> FullInstructionBus<'a> {
         protected
     }
 
+    /// The 8212 status latch changes one PHI1 after ADDRESS. If its old state
+    /// still asserts sMEMR, a selected RAM card can therefore drive DI for the
+    /// *new* address during T1 before the new machine-cycle status is latched.
+    /// The front-panel DATA lamps are on S-100 DI, so Full must precharge their
+    /// retained byte to that physical value rather than blindly carrying the
+    /// previous cycle's DATA through T1.
+    #[inline]
+    fn prime_t1_read_data_if_stale_memr(&mut self, address: u16, guest_value: u8) {
+        if self.panel.latched_status & 0x80 == 0 {
+            return;
+        }
+
+        // FFFFh may be subject to the BASIC compatibility CPU-data override;
+        // that override never drives S-100 DI, so use the physical RAM byte.
+        if address == u16::MAX {
+            if let Some(physical) = self.bus.peek_memory(address) {
+                self.panel.panel_data = physical;
+            }
+            return;
+        }
+
+        // A non-FF guest value proves a mapped responder in every admitted Full
+        // chassis. For FFh only, distinguish a real mapped FF byte from high-Z;
+        // high-Z must retain the previous DATA-lamp byte.
+        if guest_value != 0xff || self.bus.peek_memory(address).is_some() {
+            self.panel.panel_data = guest_value;
+        }
+    }
+
+    /// Write cycles need the same stale-sMEMR T1 behavior, but DATA at that
+    /// instant is the RAM byte that existed before MWRT, never the CPU write byte.
+    #[inline]
+    fn prime_t1_prewrite_data_if_stale_memr(&mut self, address: u16) {
+        if self.panel.latched_status & 0x80 != 0 {
+            if let Some(previous) = self.bus.peek_memory(address) {
+                self.panel.panel_data = previous;
+            }
+        }
+    }
+
     #[inline]
     fn project_machine_cycle(
         &mut self,
@@ -319,7 +362,8 @@ impl<'a> FullInstructionBus<'a> {
     /// Some 8080 families have internal T-states interleaved between external
     /// machine cycles. These must be placed at the exact boundary rather than
     /// left for `instruction_complete`, whose residual belongs after the final
-    /// external transfer. PUSH has one such T5 immediately after M1.
+    /// external transfer. PUSH, CALL/Ccc, Rcc and RST have one such T5
+    /// immediately after M1.
     #[inline]
     fn project_interleaved_internal_t_states(&mut self, t_states: u32) {
         if t_states == 0 {
@@ -337,11 +381,17 @@ impl<'a> FullInstructionBus<'a> {
 
     #[inline]
     fn project_opcode_fetch(&mut self, address: u16, opcode: u8) {
+        self.prime_t1_read_data_if_stale_memr(address, opcode);
         self.project_machine_cycle(address, opcode, 0xa2, 4, true, false);
-        // Intel 8080 PUSH is M1(T1-T4), internal T5, then two 3T stack writes.
-        // The instruction-level semantic core exposes only the two writes, so
-        // Full must place that T5 here before either StackWrite is projected.
-        if opcode & 0xcf == 0xc5 {
+        // The semantic core exposes external transfers through Bus callbacks;
+        // these families extend M1 through an internal T5 before the following
+        // operand/stack transfer, so that T-state belongs here, not at the end.
+        let post_m1_t5 = opcode & 0xcf == 0xc5 // PUSH rp / PUSH PSW
+            || opcode & 0xcf == 0xcd // CALL plus DD/ED/FD silicon aliases
+            || opcode & 0xc7 == 0xc4 // conditional CALL
+            || opcode & 0xc7 == 0xc0 // conditional RET
+            || opcode & 0xc7 == 0xc7; // RST
+        if post_m1_t5 {
             self.project_interleaved_internal_t_states(1);
         }
     }
@@ -364,12 +414,14 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn read(&mut self, address: u16) -> u8 {
         let value = self.guest_read(address);
+        self.prime_t1_read_data_if_stale_memr(address, value);
         self.project_machine_cycle(address, value, 0x82, 3, true, false);
         value
     }
 
     #[inline]
     fn write(&mut self, address: u16, value: u8) {
+        self.prime_t1_prewrite_data_if_stale_memr(address);
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x00, 3, false, true);
@@ -405,25 +457,17 @@ impl Bus for FullInstructionBus<'_> {
     #[inline]
     fn stack_read(&mut self, address: u16) -> u8 {
         let value = self.guest_read(address);
+        self.prime_t1_read_data_if_stale_memr(address, value);
         self.project_machine_cycle(address, value, 0x86, 3, true, false);
         value
     }
 
     #[inline]
     fn stack_write(&mut self, address: u16, value: u8) {
-        // During T1 the package has already moved ADDRESS to the new stack
-        // location, but the MITS 8212 does not latch the StackWrite status until
-        // the following PHI1. If the previous latched status still asserts
-        // sMEMR (PUSH follows its M1 fetch), mapped RAM therefore drives the old
-        // byte at the new stack address onto S-100 DI for this one T-state. The
-        // front-panel DATA lamps capture that DI before the write occurs. High-Z
-        // on an unmapped address must retain the previous panel byte rather than
-        // fabricate the CPU's FFh open-bus value.
-        if self.panel.latched_status & 0x80 != 0 {
-            if let Some(previous) = self.bus.peek_memory(address) {
-                self.panel.panel_data = previous;
-            }
-        }
+        // ADDRESS moves before the 8212 latches StackWrite. If stale sMEMR is
+        // still high in T1, RAM drives the pre-write byte onto DI for that one
+        // T-state; high-Z retains the previous front-panel DATA byte.
+        self.prime_t1_prewrite_data_if_stale_memr(address);
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x04, 3, false, true);
