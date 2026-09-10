@@ -67,16 +67,14 @@ fn cpm_bdos_return(cpu: &mut Cpu8080, bus: &ProfileBus) {
     cpu.pc = lo | (hi << 8);
 }
 
+// Keep this list synchronized with Cpu8080Cycle::full_opcode_class_supported.
+// These are the instruction classes that still force the production Adaptive
+// executor back through the exact T-state path at an instruction boundary.
 fn current_full_barrier_name(opcode: u8) -> Option<&'static str> {
     Some(match opcode {
-        0x09 => "DAD B",
-        0x19 => "DAD D",
-        0x29 => "DAD H",
-        0x39 => "DAD SP",
         0x76 => "HLT",
         0xc0 => "RNZ",
         0xc4 => "CNZ",
-        0xc5 => "PUSH B",
         0xc7 => "RST 0",
         0xc8 => "RZ",
         0xcc => "CZ",
@@ -85,28 +83,28 @@ fn current_full_barrier_name(opcode: u8) -> Option<&'static str> {
         0xd0 => "RNC",
         0xd3 => "OUT",
         0xd4 => "CNC",
-        0xd5 => "PUSH D",
         0xd7 => "RST 2",
         0xd8 => "RC",
         0xdb => "IN",
         0xdc => "CC",
+        0xdd => "CALL*",
         0xdf => "RST 3",
         0xe0 => "RPO",
         0xe3 => "XTHL",
         0xe4 => "CPO",
-        0xe5 => "PUSH H",
         0xe7 => "RST 4",
         0xe8 => "RPE",
         0xec => "CPE",
+        0xed => "CALL*",
         0xef => "RST 5",
         0xf0 => "RP",
         0xf3 => "DI",
         0xf4 => "CP",
-        0xf5 => "PUSH PSW",
         0xf7 => "RST 6",
         0xf8 => "RM",
         0xfb => "EI",
         0xfc => "CM",
+        0xfd => "CALL*",
         0xff => "RST 7",
         _ => return None,
     })
