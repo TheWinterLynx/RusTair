@@ -140,6 +140,7 @@ impl Cpu8080Cycle {
                 | Instruction::Pchl
                 | Instruction::Xchg
                 | Instruction::Sphl
+                | Instruction::Di
         )
     }
 
@@ -148,8 +149,8 @@ impl Cpu8080Cycle {
     /// schedule can currently be reconstructed without a mid-instruction event.
     ///
     /// The stateful T-state engine remains the `partial` oracle. I/O, HLT,
-    /// delayed interrupt-enable transitions and XTHL stay on that path until
-    /// their synchronization/special-cycle schedules are represented explicitly.
+    /// delayed EI transitions and XTHL stay on that path until their
+    /// synchronization/special-cycle schedules are represented explicitly.
     #[cfg(test)]
     pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
         self.full_execution_boundary_ready() && Self::full_opcode_class_supported(opcode)
@@ -404,14 +405,39 @@ mod tests {
     }
 
     #[test]
-    fn full_executor_rejects_io_halt_and_pending_ei_without_touching_bus() {
+    fn full_di_disables_inte_in_four_t_states() {
+        struct DiBus {
+            memory: [u8; 1],
+            inte_change: Option<bool>,
+        }
+        impl Bus for DiBus {
+            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
+            fn write(&mut self, _address: u16, _value: u8) {}
+            fn set_inte(&mut self, enabled: bool) { self.inte_change = Some(enabled); }
+        }
+
+        let mut cpu = Cpu8080Cycle::new();
+        cpu.inte = true;
+        cpu.pins.inte = true;
+        let mut bus = DiBus { memory: [0xf3], inte_change: None };
+
+        assert_eq!(cpu.execute_full_instruction(&mut bus, 0xf3), Some(4));
+        assert!(!cpu.interrupts_enabled());
+        assert!(!cpu.pins().inte);
+        assert_eq!(cpu.total_t_states(), 4);
+        assert_eq!(cpu.completed_instructions(), 1);
+        assert_eq!(bus.inte_change, Some(false));
+    }
+
+    #[test]
+    fn full_executor_rejects_io_halt_and_ei_without_touching_bus() {
         struct CountingBus(usize);
         impl Bus for CountingBus {
             fn read(&mut self, _address: u16) -> u8 { self.0 += 1; 0 }
             fn write(&mut self, _address: u16, _value: u8) { self.0 += 1; }
         }
 
-        for opcode in [0xdb, 0xd3, 0x76, 0xfb, 0xf3] {
+        for opcode in [0xdb, 0xd3, 0x76, 0xfb] {
             let mut cpu = Cpu8080Cycle::new();
             let mut bus = CountingBus(0);
             assert_eq!(cpu.execute_full_instruction(&mut bus, opcode), None);
