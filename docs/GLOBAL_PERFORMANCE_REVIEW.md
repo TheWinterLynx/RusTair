@@ -45,8 +45,31 @@ headroom; any cache experiment must target host hit-path work instead.
 
 ## Experiment status
 
-Boundary-pin materialization candidate prepared; focused tests and release
-measurement are running. No performance claim or final disposition yet.
+Boundary candidate `11fbc87` passed 10 focused Full tests. Its new 12-case test
+covers empty windows, ordinary/stack reads and writes, opcode fetch, internal
+tails, earlier overwritten transfers and INTE changes after the final transfer.
+All five paired CPUTEST runs passed canonical assertions and favored it:
+
+| Pair | Baseline seconds | Boundary seconds |
+| --- | ---: | ---: |
+| 1 | 1.593 | 1.572 |
+| 2 (candidate first) | 1.662 | 1.556 |
+| 3 | 1.612 | 1.601 |
+| 4 (candidate first) | 1.679 | 1.640 |
+| 5 | 1.708 | 1.602 |
+| Median | 1.662 | 1.601 |
+
+This is a preliminary 3.8% throughput improvement with overlapping ranges;
+repeat in a three-way comparison before the final disposition. Evidence:
+`target/global-review-boundary-paired.log`; exact default release executable
+retained as `target/global-review-boundary.exe`.
+
+Second experiment: pack each read-cache entry into one u32 (16-bit address tag
+above 8-bit data, invalid tag outside the whole address space). Capacity remains
+64 four-byte entries, with identical hash, window reset, physical miss dispatch
+and write invalidation. This targets hit-path comparisons, not cache hit rate.
+Focused tests and real-workload comparison are pending. Keep/revert it based on
+incremental performance versus the boundary-only executable, not baseline alone.
 
 ## Commands / reproduction
 

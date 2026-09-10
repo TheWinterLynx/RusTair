@@ -22,17 +22,11 @@ const FULL_PROTECTION_CACHE_ENTRIES: usize = 64;
 const FULL_PANEL_HISTOGRAM_ENTRIES: usize = 256;
 
 #[derive(Clone, Copy)]
-struct FullReadCacheEntry {
-    address: u16,
-    value: u8,
-    valid: bool,
-}
+struct FullReadCacheEntry(u32);
 
-const EMPTY_FULL_READ_CACHE_ENTRY: FullReadCacheEntry = FullReadCacheEntry {
-    address: 0,
-    value: 0,
-    valid: false,
-};
+// Address occupies bits 8..23, data bits 0..7. The invalid tag is outside
+// the entire 16-bit address space, including FFFFh; entries remain four bytes.
+const EMPTY_FULL_READ_CACHE_ENTRY: FullReadCacheEntry = FullReadCacheEntry(u32::MAX);
 
 #[derive(Clone, Copy)]
 struct FullProtectionCacheEntry {
@@ -379,23 +373,19 @@ impl<'a> FullInstructionBus<'a> {
     fn guest_read(&mut self, address: u16) -> u8 {
         let index = Self::read_cache_index(address);
         let cached = self.read_cache[index];
-        if cached.valid && cached.address == address {
-            return cached.value;
+        if cached.0 >> 8 == u32::from(address) {
+            return cached.0 as u8;
         }
         let value = self.bus.cycle_full_guest_read(address);
-        self.read_cache[index] = FullReadCacheEntry {
-            address,
-            value,
-            valid: true,
-        };
+        self.read_cache[index] = FullReadCacheEntry((u32::from(address) << 8) | u32::from(value));
         value
     }
 
     #[inline]
     fn invalidate_guest_read(&mut self, address: u16) {
         let index = Self::read_cache_index(address);
-        if self.read_cache[index].valid && self.read_cache[index].address == address {
-            self.read_cache[index].valid = false;
+        if self.read_cache[index].0 >> 8 == u32::from(address) {
+            self.read_cache[index] = EMPTY_FULL_READ_CACHE_ENTRY;
         }
     }
 
@@ -1063,6 +1053,30 @@ mod tests {
 
         backend.service_execution_compiled(1).unwrap();
         assert_eq!(backend.cpu.total_t_states(), 17);
+    }
+
+    #[test]
+    fn full_read_cache_keeps_conflicting_addresses_and_open_bus_distinct() {
+        let mut backend = prepare_static_backend(&[0x12]);
+        backend.load_bytes(0x0041, &[0x34]).unwrap();
+        backend.load_bytes(0x0fff, &[0x56]).unwrap();
+        let mut bus = FullInstructionBus::new(&mut backend.machine.bus, false);
+        assert_eq!(FullInstructionBus::read_cache_index(0), FullInstructionBus::read_cache_index(0x41));
+        for _ in 0..3 {
+            // Alternating conflicts must resolve the installed RAM each time;
+            // repeated reads exercise hits, including the FFFFh open bus tag.
+            for (address, expected) in [(0xffff, 0xff), (0, 0x12), (0x41, 0x34), (0x0fff, 0x56)] {
+                assert_eq!(bus.guest_read(address), expected);
+                assert_eq!(bus.guest_read(address), expected);
+            }
+        }
+        bus.write(0, 0xa5);
+        assert_eq!(bus.guest_read(0), 0xa5);
+        bus.stack_write(0x41, 0x5a);
+        assert_eq!(bus.guest_read(0x41), 0x5a);
+        assert_eq!(bus.guest_read(0), 0xa5);
+        assert_eq!(bus.guest_read(0xffff), 0xff);
+        bus.finish();
     }
 
     #[test]
