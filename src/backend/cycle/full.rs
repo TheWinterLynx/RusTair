@@ -69,20 +69,10 @@ struct PendingPanelCycle {
 /// order at the final boundary. That preserves both its one-T-state 8212 latch
 /// delay and the exact final S-100 presentation state, while all older states are
 /// accumulated as independent byte-duty counts in the canonical integrator.
-#[derive(Clone, Copy)]
-struct PanelPredecessor {
-    address: u16,
-    data: u8,
-    status: u8,
-    protected: bool,
-    inte: bool,
-}
-
 struct FullPanelActivity {
     duty: FullPanelDuty,
     latched_status: u8,
     panel_data: u8,
-    latest_committed: Option<PanelPredecessor>,
     pending: Option<PendingPanelCycle>,
 }
 
@@ -92,46 +82,11 @@ impl FullPanelActivity {
             duty: FullPanelDuty::new(),
             latched_status: bus.raw_s100_status_word(),
             panel_data: bus.raw_panel_data(),
-            latest_committed: None,
             pending: None,
         }
     }
 
-    fn flush_duty(&mut self, bus: &mut AltairBus) {
-        let Some(PanelPredecessor { address, data, status, protected, inte }) = self.latest_committed.take() else { return; };
-        // Reserve the real predecessor's final sample for canonical replay.
-        // All earlier on-times can be folded independently by lamp group.
-        self.duty.remove_sample(address, data, status, protected, inte);
-        bus.cycle_full_merge_panel_duty(&self.duty);
-        bus.cycle_drive_s100_t_state(
-            Some(address), Some(data), Some(data), None, Some(status),
-            inte, true, false, false,
-        );
-        debug_assert_eq!(bus.raw_s100_prot(), protected);
-        self.duty = FullPanelDuty::new();
-    }
-
     #[inline]
-    fn commit_pending(&mut self) {
-        let Some(pending) = self.pending.take() else { return; };
-        let total = pending.t_states + pending.internal_tail;
-        let later_data = if pending.reads_data { pending.data } else { pending.first_data };
-        self.duty.record_cycle(
-            pending.address, pending.first_data, later_data,
-            pending.first_status, pending.status_word,
-            pending.protected, pending.inte, total,
-        );
-        let (data, status) = if total > 1 {
-            (later_data, pending.status_word)
-        } else {
-            (pending.first_data, pending.first_status)
-        };
-        self.latest_committed = Some(PanelPredecessor {
-            address: pending.address, data, status,
-            protected: pending.protected, inte: pending.inte,
-        });
-    }
-
     fn project_machine_cycle(
         &mut self,
         address: u16,
@@ -146,16 +101,18 @@ impl FullPanelActivity {
         debug_assert!(t_states >= 1);
         debug_assert!(!(reads_data && writes_data));
 
-        // Once another external machine cycle starts, the previous one can no
-        // longer be the final presentation boundary and is safe to coalesce.
-        self.commit_pending();
-
         let first_data = self.panel_data;
         let first_status = self.latched_status;
         self.latched_status = status_word;
         if reads_data {
             self.panel_data = data;
         }
+        // Record immediately while cycle fields and constant weights are in
+        // hand. Only the final cycle is removed and replayed at window exit.
+        self.duty.record_cycle(
+            address, first_data, self.panel_data, first_status, status_word,
+            protected, inte, t_states,
+        );
         self.pending = Some(PendingPanelCycle {
             address,
             data,
@@ -179,19 +136,22 @@ impl FullPanelActivity {
             .pending
             .as_mut()
             .expect("internal Full T-states require a preceding machine cycle");
-        pending.internal_tail = pending.internal_tail.saturating_add(t_states);
+        pending.internal_tail += t_states;
+        self.duty.record_tail(pending.address, self.panel_data, pending.status_word,
+            pending.protected, pending.inte, t_states);
     }
 
     fn finish(&mut self, bus: &mut AltairBus) {
-        let Some(pending) = self.pending.take() else {
-            self.flush_duty(bus);
-            return;
-        };
-
-        // Every state before the final machine cycle may be replayed in any order
-        // for raw duty, but end with the true predecessor so the canonical helper
-        // sees exactly the 8212/panel DATA state that existed before final T1.
-        self.flush_duty(bus);
+        let Some(pending) = self.pending.take() else { return; };
+        self.duty.remove_cycle(
+            pending.address, pending.first_data, self.panel_data,
+            pending.first_status, pending.status_word, pending.protected,
+            pending.inte, pending.t_states + pending.internal_tail,
+        );
+        bus.cycle_full_merge_panel_duty(&self.duty);
+        // Prior time is already integrated. Restore the retained latch inputs
+        // without inventing a sample, then replay the final physical cycle.
+        bus.cycle_full_prepare_panel_latch(pending.first_data, pending.first_status);
         bus.cycle_full_project_panel_cycle(
             pending.address,
             pending.data,

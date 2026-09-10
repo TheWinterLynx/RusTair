@@ -295,14 +295,30 @@ impl FullPanelDuty {
         self.total += total;
     }
 
-    pub(crate) fn remove_sample(&mut self, address: u16, data: u8, status: u8, prot: bool, inte: bool) {
-        self.bytes[0][address as u8 as usize] -= 1;
-        self.bytes[1][(address >> 8) as usize] -= 1;
-        self.bytes[2][data as usize] -= 1;
-        self.bytes[3][status as usize] -= 1;
-        self.prot -= u32::from(prot);
-        self.inte -= u32::from(inte);
-        self.total -= 1;
+    #[inline]
+    pub(crate) fn record_tail(&mut self, address: u16, data: u8, status: u8, prot: bool, inte: bool, weight: u32) {
+        self.bytes[0][address as u8 as usize] += weight;
+        self.bytes[1][(address >> 8) as usize] += weight;
+        self.bytes[2][data as usize] += weight;
+        self.bytes[3][status as usize] += weight;
+        self.prot += u32::from(prot) * weight;
+        self.inte += u32::from(inte) * weight;
+        self.total += weight;
+    }
+
+    pub(crate) fn remove_cycle(
+        &mut self, address: u16, first_data: u8, later_data: u8,
+        first_status: u8, later_status: u8, prot: bool, inte: bool, total: u32,
+    ) {
+        self.bytes[0][address as u8 as usize] -= total;
+        self.bytes[1][(address >> 8) as usize] -= total;
+        self.bytes[2][first_data as usize] -= 1;
+        self.bytes[2][later_data as usize] -= total - 1;
+        self.bytes[3][first_status as usize] -= 1;
+        self.bytes[3][later_status as usize] -= total - 1;
+        self.prot -= u32::from(prot) * total;
+        self.inte -= u32::from(inte) * total;
+        self.total -= total;
     }
 }
 
@@ -949,6 +965,11 @@ impl super::AltairBus {
     /// clipped chronological samples must continue through exact Partial.
     pub(crate) fn cycle_full_panel_capacity(&self, budget: u32) -> bool {
         self.s100.lamps.total_weight.checked_add(u64::from(budget)).is_some()
+    }
+
+    pub(crate) fn cycle_full_prepare_panel_latch(&mut self, data: u8, status: u8) {
+        self.s100.signals.panel_data = data;
+        self.s100.signals.apply_status_word(status);
     }
 
     pub(crate) fn cycle_full_merge_panel_duty(&mut self, duty: &FullPanelDuty) {
