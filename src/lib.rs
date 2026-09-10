@@ -26,6 +26,7 @@ pub mod s100_runtime;
 pub mod s100_runtime_ram;
 pub mod trace8080;
 pub(crate) mod embedded_assets;
+pub(crate) mod full_boundary_reconcile;
 pub(crate) mod mc6850;
 
 #[cfg(test)]
