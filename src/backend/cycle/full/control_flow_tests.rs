@@ -181,11 +181,25 @@ fn stale_memr_t1_uses_new_address_data_before_next_status_latches() {
 fn compiled_full_di_matches_forced_partial_inte_and_panel_exactly() {
     // Establish INTE through the authoritative Partial EI-delay sequence first,
     // then compare a single four-T-state DI executed by Full against Partial.
-    // DI changes the flip-flop only after its T4 sample, so all four DI T-states
-    // must retain the old INTE lamp duty while the following boundary is low.
+    // Seed both machines identically because Altair power-on programmer-visible
+    // registers are intentionally undefined/random and are unrelated to DI.
     let program = [0xfb, 0x00, 0xf3, 0x00, 0x00, 0x00, 0x00, 0x00];
     let mut compiled = prepare_static_backend(&program);
     let mut partial = prepare_static_backend(&program);
+    let registers = Registers {
+        a: 0x5a,
+        b: 0x12,
+        c: 0x34,
+        d: 0x56,
+        e: 0x78,
+        h: 0x9a,
+        l: 0xbc,
+        f: 0xd6,
+        sp: 0x0800,
+        pc: 0,
+    };
+    compiled.cpu.set_registers(registers);
+    partial.cpu.set_registers(registers);
 
     for backend in [&mut compiled, &mut partial] {
         for _ in 0..8 {
