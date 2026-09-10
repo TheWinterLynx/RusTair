@@ -54,6 +54,7 @@ public static class CpuSample {
         if(hottest!=null) {
          try { thread=OpenThread(0x4a,false,(uint)hottest.Id); }
          catch(InvalidOperationException) { thread=IntPtr.Zero; }
+        }
        }
        ulong ip=0;
        if(thread!=IntPtr.Zero) {
