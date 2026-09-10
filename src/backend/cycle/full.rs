@@ -329,7 +329,6 @@ fn full_opcode_table() -> &'static [bool; 256] {
 struct FullInstructionBus<'a> {
     bus: &'a mut AltairBus,
     inte: bool,
-    boundary_pins: Cpu8080Pins,
     projected_t_states: u32,
     last_projected_address: Option<u16>,
     panel: FullPanelActivity,
@@ -341,8 +340,6 @@ struct FullInstructionBus<'a> {
 
 impl<'a> FullInstructionBus<'a> {
     fn new(bus: &'a mut AltairBus, inte: bool) -> Self {
-        let mut boundary_pins = Cpu8080Pins::default();
-        boundary_pins.inte = inte;
         let panel = FullPanelActivity::new(bus);
         // PROT can only be produced by installed memory hardware that physically
         // implements the front-panel protection latch. Compile that inventory
@@ -362,7 +359,6 @@ impl<'a> FullInstructionBus<'a> {
         Self {
             bus,
             inte,
-            boundary_pins,
             projected_t_states: 0,
             last_projected_address: None,
             panel,
@@ -477,38 +473,6 @@ impl<'a> FullInstructionBus<'a> {
     }
 
     #[inline]
-    fn remember_read_boundary(&mut self, address: u16) {
-        self.boundary_pins = Cpu8080Pins {
-            phi1: false,
-            phi2: false,
-            address: Some(address),
-            data_out: None,
-            sync: false,
-            dbin: false,
-            wr_n: true,
-            inte: self.inte,
-            wait: false,
-            hlda: false,
-        };
-    }
-
-    #[inline]
-    fn remember_write_boundary(&mut self, address: u16, value: u8) {
-        self.boundary_pins = Cpu8080Pins {
-            phi1: false,
-            phi2: false,
-            address: Some(address),
-            data_out: Some(value),
-            sync: false,
-            dbin: false,
-            wr_n: false,
-            inte: self.inte,
-            wait: false,
-            hlda: false,
-        };
-    }
-
-    #[inline]
     fn prime_opcode_fetch(&mut self, address: u16, opcode: u8) {
         debug_assert!(self.prefetched_opcode.is_none());
         self.prefetched_opcode = Some((address, opcode));
@@ -523,12 +487,19 @@ impl<'a> FullInstructionBus<'a> {
         if opcode & 0xcf == 0xc5 {
             self.project_interleaved_internal_t_states(1);
         }
-        self.remember_read_boundary(address);
     }
 
     fn finish(mut self) -> Cpu8080Pins {
+        // The retained final machine cycle already owns the address/write data.
+        // Materialize package pins only when Full rejoins the physical boundary.
+        let mut pins = Cpu8080Pins { inte: self.inte, ..Cpu8080Pins::default() };
+        if let Some(pending) = self.panel.pending.as_ref() {
+            pins.address = Some(pending.address);
+            pins.data_out = pending.writes_data.then_some(pending.data);
+            pins.wr_n = !pending.writes_data;
+        }
         self.panel.finish(self.bus);
-        self.boundary_pins
+        pins
     }
 }
 
@@ -537,7 +508,6 @@ impl Bus for FullInstructionBus<'_> {
     fn read(&mut self, address: u16) -> u8 {
         let value = self.guest_read(address);
         self.project_machine_cycle(address, value, 0x82, 3, true, false);
-        self.remember_read_boundary(address);
         value
     }
 
@@ -546,7 +516,6 @@ impl Bus for FullInstructionBus<'_> {
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x00, 3, false, true);
-        self.remember_write_boundary(address, value);
     }
 
     fn input(&mut self, _port: u8) -> u8 {
@@ -560,7 +529,6 @@ impl Bus for FullInstructionBus<'_> {
     fn set_inte(&mut self, enabled: bool) {
         self.inte = enabled;
         self.bus.cycle_full_set_inte(enabled);
-        self.boundary_pins.inte = enabled;
     }
 
     #[inline]
@@ -581,7 +549,6 @@ impl Bus for FullInstructionBus<'_> {
     fn stack_read(&mut self, address: u16) -> u8 {
         let value = self.guest_read(address);
         self.project_machine_cycle(address, value, 0x86, 3, true, false);
-        self.remember_read_boundary(address);
         value
     }
 
@@ -603,7 +570,6 @@ impl Bus for FullInstructionBus<'_> {
         self.bus.cycle_full_guest_write(address, value);
         self.invalidate_guest_read(address);
         self.project_machine_cycle(address, value, 0x04, 3, false, true);
-        self.remember_write_boundary(address, value);
     }
 
     fn halt_ack(&mut self, _address: u16, _opcode: u8) {
@@ -1029,6 +995,39 @@ mod tests {
         backend.release_reset().unwrap();
         backend.run().unwrap();
         backend
+    }
+
+    #[test]
+    fn full_final_pins_match_last_transfer_and_current_inte() {
+        for transfer in 0..6 {
+            for inte in [false, true] {
+                let mut backend = prepare_static_backend(&[0]);
+                let mut bus = FullInstructionBus::new(&mut backend.machine.bus, !inte);
+                let mut expected = Cpu8080Pins { inte, ..Cpu8080Pins::default() };
+                if transfer != 0 {
+                    // Earlier traffic must not leak into the final boundary.
+                    bus.write(0x0100, 0x81);
+                    bus.read(0x0200);
+                    match transfer {
+                        1 => { bus.read(0x0300); }
+                        2 => { bus.stack_read(0x0300); }
+                        3 => { bus.opcode_fetch(0x0300); }
+                        4 => bus.write(0x0300, 0x5a),
+                        5 => bus.stack_write(0x0300, 0x5a),
+                        _ => unreachable!(),
+                    }
+                    bus.project_internal_tail(2);
+                    expected.address = Some(0x0300);
+                    if transfer >= 4 {
+                        expected.data_out = Some(0x5a);
+                        expected.wr_n = false;
+                    }
+                }
+                // INTE may change after the last external transfer.
+                bus.set_inte(inte);
+                assert_eq!(bus.finish(), expected, "transfer={transfer}, INTE={inte}");
+            }
+        }
     }
 
     #[test]
