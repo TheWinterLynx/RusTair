@@ -68,8 +68,96 @@ Second experiment: pack each read-cache entry into one u32 (16-bit address tag
 above 8-bit data, invalid tag outside the whole address space). Capacity remains
 64 four-byte entries, with identical hash, window reset, physical miss dispatch
 and write invalidation. This targets hit-path comparisons, not cache hit rate.
-Focused tests and real-workload comparison are pending. Keep/revert it based on
-incremental performance versus the boundary-only executable, not baseline alone.
+Candidate `97914c2` passed all 11 focused Full tests. The new cache test uses
+installed physical RAM for colliding addresses, repeated hits, ordinary/stack
+write invalidation and FFFFh open-bus reads.
+
+## Final performance measurements
+
+Seven three-way rounds, rotating execution order, same affinity/flags and no
+concurrent compilation. `cache` means boundary plus packed-cache changes.
+
+| Round | Baseline (s) | Boundary (s) | Boundary + cache (s) |
+| --- | ---: | ---: | ---: |
+| 0 | 1.632 | 1.610 | 1.569 |
+| 1 | 1.612 | 1.603 | 1.566 |
+| 2 | 1.638 | 1.620 | 1.586 |
+| 3 | 1.633 | 1.577 | 1.558 |
+| 4 | 1.629 | 1.591 | 1.549 |
+| 5 | 1.642 | 1.599 | 1.602 |
+| 6 | 1.619 | 1.588 | 1.569 |
+| Median time | **1.632** | **1.599** | **1.569** |
+| Median reported MHz | **156.84** | **160.09** | **163.19** |
+| Time range | 1.612-1.642 | 1.577-1.620 | 1.549-1.602 |
+
+Boundary throughput improved 2.1%; cache added 1.9%; combined throughput
+improved **4.0%** (3.9% less elapsed time). Baseline and combined time ranges
+do not overlap in this series. Boundary won 7/7 comparisons with baseline;
+cache won 6/7 comparisons with boundary. All 21 runs passed exact diagnostic
+counts. Full remained 255,006,828 T, Partial 993,172 T, Full instructions
+33,928,708, Full windows/Partial entries 32,037, opcode barriers 29,488 and
+budget tails 2,549. Evidence: `target/global-review-three-way.log`.
+
+Because the cache increment is small, an independent eight-pair confirmation
+alternated boundary/cache order (no excluded samples):
+
+| Pair | Boundary (s) | Boundary + cache (s) |
+| --- | ---: | ---: |
+| 1 | 1.615 | 1.686 |
+| 2 | 1.601 | 1.580 |
+| 3 | 1.596 | 1.571 |
+| 4 | 1.615 | 1.565 |
+| 5 | 1.654 | 1.579 |
+| 6 | 1.598 | 1.584 |
+| 7 | 1.597 | 1.558 |
+| 8 | 1.594 | 1.553 |
+| Median | 1.5995 | 1.575 |
+
+All 16 runs passed. Cache won 7/8 pairs; median incremental throughput gain
+was 1.6%. The slow first cache run is retained. Together with the three-way
+series, this supports a modest repeatable gain, not a claim of a large cache
+bottleneck. Evidence: `target/global-review-cache-paired.log`.
+
+Disposition: **keep both isolated changes**; final broad validation passed.
+No temporary production instrumentation or semantic CPU changes were needed.
+These are full-system CPUTEST results, not inferred microbenchmark speedups;
+other workloads and GUI responsiveness were not measured.
+
+## Correctness and rejected/deferred candidates
+
+Focused Full tests: 10 passed after boundary change, 11 after cache change.
+Existing Full/Partial raw-duty/internal-T5/PUSH equivalence, window rejoin,
+physical memory, serial timing and admission-barrier tests remain intact.
+The new final-pin test checks exact `Cpu8080Pins` equality for 12 cases.
+CPUTEST passed 50 runs: 3 initial baseline, 10 boundary comparison, 21 three-way
+and 16 cache confirmation. All builds/tests use `RUSTFLAGS=-Dwarnings`.
+`cargo test --locked --all-targets`: **694 passed, zero failed, 12 existing
+ignored tests**. No tests were weakened/deleted/newly ignored.
+`cargo build --locked --release`: passed with warnings denied.
+`git diff --check`: passed.
+
+Fidelity: final package pins are derived from the existing retained physical
+transfer and current INTE; all chronological panel projection/replay stays
+unchanged. The read cache still resets at every Full window and misses/writes
+reach the same bus-owned installed RAM. Full/Partial admission, READY/WAIT,
+IRQ/HOLD/HLDA, tri-state, contention, open-collector and timing are untouched.
+
+- Reject increasing cache capacity/hit rate as the next experiment: supplied
+  99.23% hits leave little headroom, while the hit-path experiment showed an
+  actual smaller host cost that can be reduced.
+- Defer generic `fast_memory_read` resolver tuning: current Full's unique RAM
+  miss path does not use it; its 188 ns microprofile is not Full hit-path cost.
+- Defer per-window register copy/chassis allocation: frequency is much lower
+  than the measured per-transfer opportunities; no timing claim is made.
+- Defer prefetch Option elimination: requires a shared semantic-step API change
+  and another correctness surface; two local candidates already show a win.
+- Preserve diagnostic normalization/completion: optimizing away observations
+  would make the CPUTEST comparison invalid. Its remaining branch cost is not
+  quantified here.
+- Highest-confidence follow-up: review the already validated internal-tail
+  coalescing commit `94ece76` from `agent/performance-full-overhead-audit` against
+  current main. It is absent from this base; this review does not silently merge
+  that branch or claim its earlier gain as a new result.
 
 ## Commands / reproduction
 
@@ -98,3 +186,19 @@ foreach ($round in 1..5) {
 Never compile concurrently with timed runs. Generated executables/logs stay in
 `target`; tables and conclusions are committed here. Final validation requires
 `cargo test --locked --all-targets` and `cargo build --locked --release`.
+
+For the three-way table, retain the Cargo executable from revisions `1690583`,
+`11fbc87` and `97914c2` as baseline/boundary/cache, respectively. The measured
+loop used seven rounds `0..6`, selecting
+`@('baseline','boundary','cache')[($round + $offset) % 3]` for offsets `0..2`.
+The confirmation used eight alternating boundary/cache pairs. The full-system
+command for the current branch, independent of retained local executables, is:
+
+```powershell
+$env:RUSTFLAGS='-Dwarnings'; cargo test --locked --release --test cpu8080_adaptive_classic_diagnostics full_system_runs_cputest_with_reference_totals -- --ignored --nocapture --test-threads=1
+```
+
+Ordered checkpoints: `283f8aa` baseline/audit, `11fbc87` boundary experiment and
+equivalence test, `97914c2` packed-cache experiment/test and initial results;
+the final documentation commit records the completed comparisons/validation.
+All work remains on the review branch; nothing was merged into main.
