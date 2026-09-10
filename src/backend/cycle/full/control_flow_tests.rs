@@ -105,7 +105,8 @@ fn compiled_full_control_flow_t5_families_match_forced_partial_exactly() {
             "{name} budget tail"
         );
         assert_eq!(
-            stats.fallbacks.opcode_barrier, 0,
+            stats.fallbacks.opcode_barrier,
+            0,
             "{name} must not be a Full barrier"
         );
 
@@ -174,4 +175,34 @@ fn stale_memr_t1_uses_new_address_data_before_next_status_latches() {
         partial.machine.bus.raw_panel_lamp_duty()
     );
     assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
+}
+
+#[test]
+#[ignore = "diagnostic trace for Full-to-Partial Rcc rejoin"]
+fn trace_rz_not_taken_full_to_partial_panel_rejoin() {
+    let program = [0xc8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    let registers = Registers {
+        f: 0x02,
+        sp: 0x0800,
+        pc: 0,
+        ..Registers::default()
+    };
+
+    let mut partial = prepare_static_backend(&program);
+    partial.cpu.set_registers(registers);
+    println!("PARTIAL initial pc={:04x} panel={:02x} status={:02x}", partial.cpu.registers().pc, partial.machine.bus.raw_panel_data(), partial.machine.bus.raw_s100_status_word());
+    for n in 1..=6 {
+        let ready = partial.machine.bus.cycle_front_panel_ready_input();
+        let trace = partial.tick_once(ready);
+        println!("PARTIAL t{n} trace={:?}/M{} {:?} pc={:04x} addr={:?} panel={:02x} status={:02x} di={:?}", trace.machine_cycle, trace.machine_cycle_index, trace.t_state, partial.cpu.registers().pc, trace.pins.address, partial.machine.bus.raw_panel_data(), partial.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_data_in());
+    }
+
+    let mut compiled = prepare_static_backend(&program);
+    compiled.cpu.set_registers(registers);
+    let opcode = compiled.compiled_full_opcode(FULL_EXECUTION_MAX_T_STATES, true).unwrap();
+    let elapsed = compiled.execute_compiled_full_instruction(opcode).unwrap();
+    println!("FULL after instruction elapsed={elapsed} pc={:04x} panel={:02x} status={:02x} pins={:?}", compiled.cpu.registers().pc, compiled.machine.bus.raw_panel_data(), compiled.machine.bus.raw_s100_status_word(), compiled.cpu.pins());
+    let ready = compiled.machine.bus.cycle_front_panel_ready_input();
+    let trace = compiled.tick_once(ready);
+    println!("FULL->PARTIAL next trace={:?}/M{} {:?} pc={:04x} addr={:?} panel={:02x} status={:02x} di={:?}", trace.machine_cycle, trace.machine_cycle_index, trace.t_state, compiled.cpu.registers().pc, trace.pins.address, compiled.machine.bus.raw_panel_data(), compiled.machine.bus.raw_s100_status_word(), compiled.machine.bus.raw_s100_data_in());
 }
