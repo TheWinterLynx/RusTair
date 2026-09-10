@@ -130,7 +130,11 @@ impl Cpu8080Cycle {
                 | Instruction::AluImmediate { .. }
                 | Instruction::Jump
                 | Instruction::JumpConditional(_)
+                | Instruction::Call
+                | Instruction::CallConditional(_)
                 | Instruction::Ret
+                | Instruction::RetConditional(_)
+                | Instruction::Rst(_)
                 | Instruction::Pop(_)
                 | Instruction::Push(_)
                 | Instruction::Pchl
@@ -144,9 +148,8 @@ impl Cpu8080Cycle {
     /// schedule can currently be reconstructed without a mid-instruction event.
     ///
     /// The stateful T-state engine remains the `partial` oracle. I/O, HLT,
-    /// delayed interrupt-enable transitions and instruction families with extra
-    /// non-bus cycles interleaved between external cycles stay on that path until
-    /// their compiled schedules are added explicitly.
+    /// delayed interrupt-enable transitions and XTHL stay on that path until
+    /// their synchronization/special-cycle schedules are represented explicitly.
     #[cfg(test)]
     pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
         self.full_execution_boundary_ready() && Self::full_opcode_class_supported(opcode)
