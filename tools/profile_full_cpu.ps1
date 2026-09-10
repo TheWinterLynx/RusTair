@@ -1,4 +1,8 @@
-param([string]$Executable = 'target/release/deps/cpu8080_adaptive_classic_diagnostics-83b175c2e7d580c9.exe')
+param(
+ [string]$Executable = 'target/release/deps/cpu8080_adaptive_classic_diagnostics-83b175c2e7d580c9.exe',
+ [string]$TestName = 'full_system_runs_cputest_with_reference_totals',
+ [int]$Rounds = 5
+)
 Add-Type -TypeDefinition @"
 using System;
 using System.Collections.Generic;
@@ -18,15 +22,15 @@ public static class CpuSample {
  [DllImport("dbghelp.dll")] static extern bool SymCleanup(IntPtr process);
  [DllImport("winmm.dll")] static extern uint timeBeginPeriod(uint period);
  [DllImport("winmm.dll")] static extern uint timeEndPeriod(uint period);
- public static void Run(string exe) {
+ public static void Run(string exe, string testName, int rounds) {
   var counts = new Dictionary<string,int>(); int samples=0, failures=0;
   IntPtr allocation=Marshal.AllocHGlobal(1250);
   IntPtr context=new IntPtr((allocation.ToInt64()+15)&~15L);
   IntPtr symbol=Marshal.AllocHGlobal(1112);
   timeBeginPeriod(1);
   try {
-   for(int round=0; round<5; round++) {
-    var start=new ProcessStartInfo(exe, "full_system_runs_cputest_with_reference_totals --ignored --nocapture --test-threads=1");
+   for(int round=0; round<rounds; round++) {
+    var start=new ProcessStartInfo(exe, testName+" --ignored --nocapture --test-threads=1");
     start.UseShellExecute=false; start.CreateNoWindow=true; start.RedirectStandardOutput=true; start.RedirectStandardError=true;
     using(var p=Process.Start(start)) {
      var output=p.StandardOutput.ReadToEndAsync(); var error=p.StandardError.ReadToEndAsync();
@@ -88,4 +92,4 @@ public static class CpuSample {
  }
 }
 "@
-[CpuSample]::Run((Resolve-Path -LiteralPath $Executable).Path)
+[CpuSample]::Run((Resolve-Path -LiteralPath $Executable).Path, $TestName, $Rounds)
