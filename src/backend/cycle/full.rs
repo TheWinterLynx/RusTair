@@ -334,6 +334,7 @@ struct FullInstructionBus<'a> {
     last_projected_address: Option<u16>,
     panel: FullPanelActivity,
     read_cache: [FullReadCacheEntry; FULL_READ_CACHE_ENTRIES],
+    protection_possible: bool,
     protection_cache: [FullProtectionCacheEntry; FULL_PROTECTION_CACHE_ENTRIES],
     prefetched_opcode: Option<(u16, u8)>,
 }
@@ -343,6 +344,21 @@ impl<'a> FullInstructionBus<'a> {
         let mut boundary_pins = Cpu8080Pins::default();
         boundary_pins.inte = inte;
         let panel = FullPanelActivity::new(bus);
+        // PROT can only be produced by installed memory hardware that physically
+        // implements the front-panel protection latch. Compile that inventory
+        // property once for this Full window. Compatibility RAM stays
+        // conservative because it intentionally preserves the legacy protection
+        // behavior even though it is not a historical card model.
+        let protection_possible = bus
+            .s100_hardware_memory()
+            .installed_cards()
+            .any(|(_, card)| match card {
+                S100InstalledCardConfig::Ram(config) => {
+                    config.model.supports_front_panel_protect()
+                }
+                S100InstalledCardConfig::FastRamCompatibility(_) => true,
+                _ => false,
+            });
         Self {
             bus,
             inte,
@@ -351,6 +367,7 @@ impl<'a> FullInstructionBus<'a> {
             last_projected_address: None,
             panel,
             read_cache: [EMPTY_FULL_READ_CACHE_ENTRY; FULL_READ_CACHE_ENTRIES],
+            protection_possible,
             protection_cache: [EMPTY_FULL_PROTECTION_CACHE_ENTRY; FULL_PROTECTION_CACHE_ENTRIES],
             prefetched_opcode: None,
         }
@@ -394,6 +411,9 @@ impl<'a> FullInstructionBus<'a> {
 
     #[inline]
     fn protected(&mut self, address: u16) -> bool {
+        if !self.protection_possible {
+            return false;
+        }
         let index = Self::protection_cache_index(address);
         let cached = self.protection_cache[index];
         if cached.valid && cached.address == address {
