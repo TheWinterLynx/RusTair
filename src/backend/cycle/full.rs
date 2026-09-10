@@ -60,6 +60,7 @@ struct PendingPanelCycle {
     first_status: u8,
     protected: bool,
     internal_tail: u32,
+    internal_tail_inte: bool,
 }
 
 /// Window-local exact front-panel accumulator. Full execution has already proven
@@ -128,10 +129,11 @@ impl FullPanelActivity {
             first_status,
             protected,
             internal_tail: 0,
+            internal_tail_inte: inte,
         });
     }
 
-    fn project_internal_tail(&mut self, t_states: u32) {
+    fn project_internal_tail(&mut self, t_states: u32, inte: bool) {
         if t_states == 0 {
             return;
         }
@@ -139,9 +141,22 @@ impl FullPanelActivity {
             .pending
             .as_mut()
             .expect("internal Full T-states require a preceding machine cycle");
+        if pending.internal_tail != 0 {
+            debug_assert_eq!(
+                pending.internal_tail_inte, inte,
+                "one retained internal tail cannot cross an INTE transition"
+            );
+        }
         pending.internal_tail += t_states;
-        self.duty.record_tail(pending.address, self.panel_data, pending.status_word,
-            pending.protected, pending.inte, t_states);
+        pending.internal_tail_inte = inte;
+        self.duty.record_tail(
+            pending.address,
+            self.panel_data,
+            pending.status_word,
+            pending.protected,
+            inte,
+            t_states,
+        );
     }
 
     fn finish(&mut self, bus: &mut AltairBus) {
@@ -149,8 +164,20 @@ impl FullPanelActivity {
         self.duty.remove_cycle(
             pending.address, pending.first_data, self.panel_data,
             pending.first_status, pending.status_word, pending.protected,
-            pending.inte, pending.t_states + pending.internal_tail,
+            pending.inte, pending.t_states,
         );
+        if pending.internal_tail != 0 {
+            self.duty.remove_cycle(
+                pending.address,
+                self.panel_data,
+                self.panel_data,
+                pending.status_word,
+                pending.status_word,
+                pending.protected,
+                pending.internal_tail_inte,
+                pending.internal_tail,
+            );
+        }
         bus.cycle_full_merge_panel_duty(&self.duty);
         // Prior time is already integrated. Restore the retained latch inputs
         // without inventing a sample, then replay the final physical cycle.
@@ -165,7 +192,10 @@ impl FullPanelActivity {
             pending.inte,
         );
         if pending.internal_tail != 0 {
-            bus.cycle_full_project_internal_t_states(pending.internal_tail, pending.inte);
+            bus.cycle_full_project_internal_t_states(
+                pending.internal_tail,
+                pending.internal_tail_inte,
+            );
         }
     }
 }
@@ -356,7 +386,7 @@ impl<'a> FullInstructionBus<'a> {
             debug_assert_eq!(t_states, 0);
             return;
         }
-        self.panel.project_internal_tail(t_states);
+        self.panel.project_internal_tail(t_states, self.inte);
     }
 
     /// Some 8080 families have internal T-states interleaved between external
@@ -382,7 +412,19 @@ impl<'a> FullInstructionBus<'a> {
     #[inline]
     fn project_opcode_fetch(&mut self, address: u16, opcode: u8) {
         self.prime_t1_read_data_if_stale_memr(address, opcode);
-        self.project_machine_cycle(address, opcode, 0xa2, 4, true, false);
+        // DI changes the processor's INTE output during M1 T4. T1-T3 therefore
+        // retain the old level; `set_inte(false)` runs before instruction_complete,
+        // whose one residual T-state is then projected as the exact internal T4
+        // with INTE low. Other fetches keep the established four-state projection.
+        let external_fetch_t_states = if opcode == 0xf3 { 3 } else { 4 };
+        self.project_machine_cycle(
+            address,
+            opcode,
+            0xa2,
+            external_fetch_t_states,
+            true,
+            false,
+        );
         // The semantic core exposes external transfers through Bus callbacks;
         // these families extend M1 through an internal T5 before the following
         // operand/stack transfer, so that T-state belongs here, not at the end.
@@ -922,7 +964,7 @@ mod tests {
                 marginal.project_machine_cycle(address, data, status, states, reads, writes, false, inte);
                 histogram.project_machine_cycle(&mut reference.machine.bus, address, data, status, states, reads, writes, false, inte);
                 let tail = if cycle == 500 { 1_000_000 } else { random % 3 };
-                marginal.project_internal_tail(tail);
+                marginal.project_internal_tail(tail, inte);
                 histogram.project_internal_tail(tail);
             }
             marginal.finish(&mut actual.machine.bus);
