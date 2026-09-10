@@ -276,7 +276,17 @@ impl Memory {
         self.fabric.inspect_memory(address)
     }
 
-    pub(super) fn mark_full_execution_desynced(&mut self) {
+    pub(super) fn mark_full_execution_desynced(
+        &mut self,
+        boundary_pins: Cpu8080Pins,
+        latched_status_word: u8,
+    ) {
+        crate::full_boundary_reconcile::FullCpuBoundaryReconcile::reconcile_full_cpu_boundary(
+            &mut self.fabric,
+            boundary_pins,
+            latched_status_word,
+        );
+        self.last_cycle_pins = boundary_pins;
         self.full_execution_desynced = true;
     }
 
@@ -558,7 +568,18 @@ impl super::AltairBus {
         self.memory.cycle_latched_status_word()
     }
     pub(crate) fn cycle_mark_full_execution_desynced(&mut self) {
-        self.memory.mark_full_execution_desynced();
+        let signals = self.s100.signals();
+        debug_assert!(!signals.wait && !signals.hlda);
+        let boundary_pins = Cpu8080Pins {
+            address: Some(signals.address),
+            data_out: signals.data_out,
+            wr_n: signals.data_out.is_none(),
+            inte: signals.inte,
+            ..Cpu8080Pins::default()
+        };
+        let latched_status_word = self.raw_s100_status_word();
+        self.memory
+            .mark_full_execution_desynced(boundary_pins, latched_status_word);
     }
 
     fn cycle_display_control_lines(&self) -> DisplayControlLines {
@@ -763,8 +784,14 @@ mod tests {
             run: true,
             ..DisplayControlLines::default()
         };
-        memory.mark_full_execution_desynced();
+        let boundary = Cpu8080Pins {
+            address: Some(0x0010),
+            wr_n: true,
+            ..Cpu8080Pins::default()
+        };
+        memory.mark_full_execution_desynced(boundary, 0x82);
         assert!(memory.full_execution_desynced);
+        assert_eq!(memory.cycle_latched_status_word(), 0x82);
         memory
             .cycle_drive_cpu_edge(
                 Cpu8080Pins {
