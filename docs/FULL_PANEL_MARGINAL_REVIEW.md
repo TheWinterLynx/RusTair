@@ -60,4 +60,19 @@ observations, not another CPU/RAM/bus state. Final folding must use the canonica
 panel integrator and preserve all weights, latch delay, retained DATA and final
 pins. Near integrator saturation, conservatively retain Partial execution.
 
-Implementation, equivalence tests and uninstrumented measurements pending.
+Candidate implemented. Four distributions now replace the composite histogram;
+address weight is added once per cycle, first/later DATA and STATUS preserve the
+8212 delay, and the existing predecessor/final cycle is replayed canonically.
+Package pins continue to come from the retained final transfer. No RAM/card path
+or semantic CPU code changed.
+
+Focused validation passed with warnings denied: all 12 Full-path tests, plus
+the canonical marginal-counter test. The test-only original histogram is kept
+unchanged as an independent observer oracle. Eight seeded sequences of 1,000
+varied read/write/fetch/stack cycles, including large internal tails, matched
+raw duty, final status and retained DATA. All 256 status bytes and INTE/PROT
+combinations match the canonical integrator's exact integer counter planes.
+Admission at the u64 integrator-capacity boundary is tested conservatively.
+
+Uninstrumented release measurement and full validation are pending. Do not yet
+claim a speedup or that the raised target has been achieved.

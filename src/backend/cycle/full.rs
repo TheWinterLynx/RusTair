@@ -4,7 +4,11 @@ use crate::adaptive_metrics::{self, AdaptiveFallbackReason};
 use crate::config::S100InstalledCardConfig;
 use crate::cpu8080::Bus;
 use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Pins};
-use crate::machine::AltairBus;
+use crate::machine::{AltairBus, FullPanelDuty};
+
+#[cfg(test)]
+#[path = "full/panel_histogram_reference.rs"]
+mod panel_histogram_reference;
 use crate::s100_memory::S100RamBoardModel;
 
 use super::super::BackendResult;
@@ -19,7 +23,6 @@ use super::CycleAccurateMachineBackend;
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 const FULL_READ_CACHE_ENTRIES: usize = 64;
 const FULL_PROTECTION_CACHE_ENTRIES: usize = 64;
-const FULL_PANEL_HISTOGRAM_ENTRIES: usize = 256;
 
 #[derive(Clone, Copy)]
 struct FullReadCacheEntry(u32);
@@ -42,15 +45,6 @@ const EMPTY_FULL_PROTECTION_CACHE_ENTRY: FullProtectionCacheEntry = FullProtecti
 };
 
 #[derive(Clone, Copy)]
-struct FullPanelHistogramEntry {
-    key: u64,
-    weight: u32,
-}
-
-const EMPTY_FULL_PANEL_HISTOGRAM_ENTRY: FullPanelHistogramEntry =
-    FullPanelHistogramEntry { key: 0, weight: 0 };
-
-#[derive(Clone, Copy)]
 struct PendingPanelCycle {
     address: u16,
     data: u8,
@@ -59,8 +53,9 @@ struct PendingPanelCycle {
     reads_data: bool,
     writes_data: bool,
     inte: bool,
-    first_key: u64,
-    later_key: u64,
+    first_data: u8,
+    first_status: u8,
+    protected: bool,
     internal_tail: u32,
 }
 
@@ -73,148 +68,72 @@ struct PendingPanelCycle {
 /// We retain the newest machine cycle separately and replay it in chronological
 /// order at the final boundary. That preserves both its one-T-state 8212 latch
 /// delay and the exact final S-100 presentation state, while all older states are
-/// coalesced by key and materialized only once per distinct state.
+/// accumulated as independent byte-duty counts in the canonical integrator.
+#[derive(Clone, Copy)]
+struct PanelPredecessor {
+    address: u16,
+    data: u8,
+    status: u8,
+    protected: bool,
+    inte: bool,
+}
+
 struct FullPanelActivity {
-    entries: [FullPanelHistogramEntry; FULL_PANEL_HISTOGRAM_ENTRIES],
-    used: usize,
+    duty: FullPanelDuty,
     latched_status: u8,
     panel_data: u8,
-    latest_committed_key: Option<u64>,
+    latest_committed: Option<PanelPredecessor>,
     pending: Option<PendingPanelCycle>,
 }
 
 impl FullPanelActivity {
     fn new(bus: &AltairBus) -> Self {
         Self {
-            entries: [EMPTY_FULL_PANEL_HISTOGRAM_ENTRY; FULL_PANEL_HISTOGRAM_ENTRIES],
-            used: 0,
+            duty: FullPanelDuty::new(),
             latched_status: bus.raw_s100_status_word(),
             panel_data: bus.raw_panel_data(),
-            latest_committed_key: None,
+            latest_committed: None,
             pending: None,
         }
     }
 
-    #[inline]
-    fn state_key(
-        address: u16,
-        panel_data: u8,
-        status_word: u8,
-        protected: bool,
-        inte: bool,
-    ) -> u64 {
-        u64::from(address)
-            | (u64::from(panel_data) << 16)
-            | (u64::from(status_word) << 24)
-            | (u64::from(protected) << 32)
-            | (u64::from(inte) << 33)
-    }
-
-    #[inline]
-    fn key_index(key: u64) -> usize {
-        let mixed = key ^ (key >> 17) ^ (key >> 37);
-        (mixed as usize).wrapping_mul(0x9e37_79b1) & (FULL_PANEL_HISTOGRAM_ENTRIES - 1)
-    }
-
-    fn replay_entry(bus: &mut AltairBus, entry: FullPanelHistogramEntry) {
-        if entry.weight == 0 {
-            return;
-        }
-        let address = entry.key as u16;
-        let panel_data = (entry.key >> 16) as u8;
-        let status_word = (entry.key >> 24) as u8;
-        let expected_protected = entry.key & (1u64 << 32) != 0;
-        let inte = entry.key & (1u64 << 33) != 0;
-
-        // This is presentation-only replay into the canonical duty integrator.
-        // It does not enter the physical connector resolver or clock a card.
+    fn flush_duty(&mut self, bus: &mut AltairBus) {
+        let Some(PanelPredecessor { address, data, status, protected, inte }) = self.latest_committed.take() else { return; };
+        // Reserve the real predecessor's final sample for canonical replay.
+        // All earlier on-times can be folded independently by lamp group.
+        self.duty.remove_sample(address, data, status, protected, inte);
+        bus.cycle_full_merge_panel_duty(&self.duty);
         bus.cycle_drive_s100_t_state(
-            Some(address),
-            Some(panel_data),
-            Some(panel_data),
-            None,
-            Some(status_word),
-            inte,
-            true,
-            false,
-            false,
+            Some(address), Some(data), Some(data), None, Some(status),
+            inte, true, false, false,
         );
-        debug_assert_eq!(bus.raw_s100_prot(), expected_protected);
-        if entry.weight > 1 {
-            bus.cycle_full_project_internal_t_states(entry.weight - 1, inte);
-        }
+        debug_assert_eq!(bus.raw_s100_prot(), protected);
+        self.duty = FullPanelDuty::new();
     }
 
-    fn flush_histogram(&mut self, bus: &mut AltairBus, preferred_last: Option<u64>) {
-        if self.used == 0 {
-            return;
-        }
-
-        let mut preferred = None;
-        for entry in &mut self.entries {
-            if entry.weight == 0 {
-                continue;
-            }
-            let current = *entry;
-            *entry = EMPTY_FULL_PANEL_HISTOGRAM_ENTRY;
-            if Some(current.key) == preferred_last {
-                preferred = Some(current);
-            } else {
-                Self::replay_entry(bus, current);
-            }
-        }
-        if let Some(entry) = preferred {
-            Self::replay_entry(bus, entry);
-        }
-        self.used = 0;
-    }
-
-    fn add_histogram(&mut self, bus: &mut AltairBus, key: u64, weight: u32) {
-        if weight == 0 {
-            return;
-        }
-
-        loop {
-            let start = Self::key_index(key);
-            for probe in 0..FULL_PANEL_HISTOGRAM_ENTRIES {
-                let index = (start + probe) & (FULL_PANEL_HISTOGRAM_ENTRIES - 1);
-                let entry = &mut self.entries[index];
-                if entry.weight == 0 {
-                    *entry = FullPanelHistogramEntry { key, weight };
-                    self.used += 1;
-                    self.latest_committed_key = Some(key);
-                    return;
-                }
-                if entry.key == key {
-                    entry.weight = entry.weight.saturating_add(weight);
-                    self.latest_committed_key = Some(key);
-                    return;
-                }
-            }
-
-            // The table contains only completed chronological activity. Flush it
-            // with the latest state last so the canonical S-100 presentation is
-            // still a valid predecessor for whatever Full records next.
-            self.flush_histogram(bus, self.latest_committed_key);
-        }
-    }
-
-    fn commit_pending(&mut self, bus: &mut AltairBus) {
-        let Some(pending) = self.pending.take() else {
-            return;
+    #[inline]
+    fn commit_pending(&mut self) {
+        let Some(pending) = self.pending.take() else { return; };
+        let total = pending.t_states + pending.internal_tail;
+        let later_data = if pending.reads_data { pending.data } else { pending.first_data };
+        self.duty.record_cycle(
+            pending.address, pending.first_data, later_data,
+            pending.first_status, pending.status_word,
+            pending.protected, pending.inte, total,
+        );
+        let (data, status) = if total > 1 {
+            (later_data, pending.status_word)
+        } else {
+            (pending.first_data, pending.first_status)
         };
-        self.add_histogram(bus, pending.first_key, 1);
-        if pending.t_states > 1 {
-            self.add_histogram(bus, pending.later_key, pending.t_states - 1);
-        }
-        if pending.internal_tail != 0 {
-            self.add_histogram(bus, pending.later_key, pending.internal_tail);
-        }
+        self.latest_committed = Some(PanelPredecessor {
+            address: pending.address, data, status,
+            protected: pending.protected, inte: pending.inte,
+        });
     }
 
     fn project_machine_cycle(
         &mut self,
-        bus: &mut AltairBus,
         address: u16,
         data: u8,
         status_word: u8,
@@ -229,26 +148,14 @@ impl FullPanelActivity {
 
         // Once another external machine cycle starts, the previous one can no
         // longer be the final presentation boundary and is safe to coalesce.
-        self.commit_pending(bus);
+        self.commit_pending();
 
-        let first_key = Self::state_key(
-            address,
-            self.panel_data,
-            self.latched_status,
-            protected,
-            inte,
-        );
+        let first_data = self.panel_data;
+        let first_status = self.latched_status;
         self.latched_status = status_word;
         if reads_data {
             self.panel_data = data;
         }
-        let later_key = Self::state_key(
-            address,
-            self.panel_data,
-            self.latched_status,
-            protected,
-            inte,
-        );
         self.pending = Some(PendingPanelCycle {
             address,
             data,
@@ -257,8 +164,9 @@ impl FullPanelActivity {
             reads_data,
             writes_data,
             inte,
-            first_key,
-            later_key,
+            first_data,
+            first_status,
+            protected,
             internal_tail: 0,
         });
     }
@@ -276,14 +184,14 @@ impl FullPanelActivity {
 
     fn finish(&mut self, bus: &mut AltairBus) {
         let Some(pending) = self.pending.take() else {
-            self.flush_histogram(bus, self.latest_committed_key);
+            self.flush_duty(bus);
             return;
         };
 
         // Every state before the final machine cycle may be replayed in any order
         // for raw duty, but end with the true predecessor so the canonical helper
         // sees exactly the 8212/panel DATA state that existed before final T1.
-        self.flush_histogram(bus, self.latest_committed_key);
+        self.flush_duty(bus);
         bus.cycle_full_project_panel_cycle(
             pending.address,
             pending.data,
@@ -426,7 +334,6 @@ impl<'a> FullInstructionBus<'a> {
     ) {
         let protected = self.protected(address);
         self.panel.project_machine_cycle(
-            self.bus,
             address,
             data,
             status_word,
@@ -700,6 +607,7 @@ impl CycleAccurateMachineBackend {
         full_window: bool,
     ) -> Option<u64> {
         if !full_window
+            || !self.machine.bus.cycle_full_panel_capacity(*remaining)
             || *remaining < FULL_EXECUTION_MAX_T_STATES
             || !self.at_instruction_boundary()
             || self.stop_wait_park_pending
@@ -985,6 +893,40 @@ mod tests {
         backend.release_reset().unwrap();
         backend.run().unwrap();
         backend
+    }
+
+    #[test]
+    fn marginal_panel_duty_matches_original_histogram_and_final_state() {
+        for seed in 0..8u32 {
+            let mut actual = prepare_static_backend(&[0]);
+            let mut reference = prepare_static_backend(&[0]);
+            let mut marginal = FullPanelActivity::new(&actual.machine.bus);
+            let mut histogram = panel_histogram_reference::FullPanelActivity::new(&reference.machine.bus);
+            let mut random = seed + 1;
+            for cycle in 0..1000 {
+                random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                let address = ((random >> 8) as u16) & 0x0fff;
+                let data = random as u8;
+                let (status, states, reads, writes) = match cycle % 5 {
+                    0 => (0xa2, 4, true, false),
+                    1 => (0x82, 3, true, false),
+                    2 => (0x86, 3, true, false),
+                    3 => (0x00, 3, false, true),
+                    _ => (0x04, 3, false, true),
+                };
+                let inte = random & 0x100 != 0;
+                marginal.project_machine_cycle(address, data, status, states, reads, writes, false, inte);
+                histogram.project_machine_cycle(&mut reference.machine.bus, address, data, status, states, reads, writes, false, inte);
+                let tail = if cycle == 500 { 1_000_000 } else { random % 3 };
+                marginal.project_internal_tail(tail);
+                histogram.project_internal_tail(tail);
+            }
+            marginal.finish(&mut actual.machine.bus);
+            histogram.finish(&mut reference.machine.bus);
+            assert_eq!(actual.machine.bus.raw_panel_lamp_duty(), reference.machine.bus.raw_panel_lamp_duty(), "seed={seed}");
+            assert_eq!(actual.machine.bus.raw_s100_status_word(), reference.machine.bus.raw_s100_status_word());
+            assert_eq!(actual.machine.bus.raw_panel_data(), reference.machine.bus.raw_panel_data());
+        }
     }
 
     #[test]

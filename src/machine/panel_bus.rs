@@ -262,6 +262,50 @@ impl PanelLampSnapshot {
     }
 }
 
+/// Window-local marginal on-times of the same Full bus observations. Each
+/// lamp depends on one bit only; correlations between groups do not affect duty.
+pub(crate) struct FullPanelDuty {
+    bytes: [[u32; 256]; 4],
+    inte: u32,
+    prot: u32,
+    total: u32,
+}
+
+impl FullPanelDuty {
+    pub(crate) fn new() -> Self {
+        Self { bytes: [[0; 256]; 4], inte: 0, prot: 0, total: 0 }
+    }
+
+    #[inline]
+    pub(crate) fn record_cycle(
+        &mut self, address: u16, first_data: u8, later_data: u8,
+        first_status: u8, later_status: u8, protected: bool, inte: bool, total: u32,
+    ) {
+        // A Full window cannot exceed its u32 T-state budget. Consequently no
+        // individual bin or the total can overflow, even at the maximum budget.
+        debug_assert!(total != 0);
+        self.bytes[0][address as u8 as usize] += total;
+        self.bytes[1][(address >> 8) as usize] += total;
+        self.bytes[2][first_data as usize] += 1;
+        self.bytes[2][later_data as usize] += total - 1;
+        self.bytes[3][first_status as usize] += 1;
+        self.bytes[3][later_status as usize] += total - 1;
+        self.prot += u32::from(protected) * total;
+        self.inte += u32::from(inte) * total;
+        self.total += total;
+    }
+
+    pub(crate) fn remove_sample(&mut self, address: u16, data: u8, status: u8, prot: bool, inte: bool) {
+        self.bytes[0][address as u8 as usize] -= 1;
+        self.bytes[1][(address >> 8) as usize] -= 1;
+        self.bytes[2][data as usize] -= 1;
+        self.bytes[3][status as usize] -= 1;
+        self.prot -= u32::from(prot);
+        self.inte -= u32::from(inte);
+        self.total -= 1;
+    }
+}
+
 struct PanelLampIntegrator {
     /// Bit-sliced unsigned counters. Bit N of every plane is one binary digit of
     /// the accumulated ON time for packed lamp N. A normal Cycle sample with
@@ -901,6 +945,33 @@ impl S100BusState {
 }
 
 impl super::AltairBus {
+    /// Full declines a window near the canonical integrator's saturation bound:
+    /// clipped chronological samples must continue through exact Partial.
+    pub(crate) fn cycle_full_panel_capacity(&self, budget: u32) -> bool {
+        self.s100.lamps.total_weight.checked_add(u64::from(budget)).is_some()
+    }
+
+    pub(crate) fn cycle_full_merge_panel_duty(&mut self, duty: &FullPanelDuty) {
+        let lamps = &mut self.s100.lamps;
+        assert!(lamps.total_weight.checked_add(u64::from(duty.total)).is_some());
+        for (group, bins) in duty.bytes.iter().enumerate() {
+            for (value, &weight) in bins.iter().enumerate() {
+                if weight == 0 { continue; }
+                let mask = if group < 3 {
+                    (value as u64) << (group * 8)
+                } else {
+                    let mut signals = S100Signals::default();
+                    signals.apply_status_word(value as u8);
+                    signals.packed_lamp_activity()
+                };
+                lamps.add_weighted_mask(mask, u64::from(weight));
+            }
+        }
+        lamps.add_weighted_mask(1 << (PACKED_LAMP_SHIFT + LAMP_INTE), u64::from(duty.inte));
+        lamps.add_weighted_mask(1 << (PACKED_LAMP_SHIFT + LAMP_PROT), u64::from(duty.prot));
+        lamps.total_weight += u64::from(duty.total);
+    }
+
     /// Electrical duty accumulated from CPU-board/S-100 samples. This is not the
     /// optically filtered value drawn by the UI and is safe for diagnostics and
     /// deterministic fidelity tests.
@@ -971,6 +1042,32 @@ fn bits8(value: u8) -> [f32; 8] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn full_marginal_counts_match_canonical_samples_for_every_status_byte() {
+        let mut bus = super::super::AltairBus::default();
+        let mut reference = super::PanelLampIntegrator::default();
+        let mut duty = super::FullPanelDuty::new();
+        for value in 0..=255u16 {
+            let weight = u32::from(value) + 1;
+            let address = value | ((255 - value) << 8);
+            let data = (value as u8).rotate_left(3);
+            let mut signals = super::S100Signals::default();
+            signals.address = address;
+            signals.panel_data = data;
+            signals.apply_status_word(value as u8);
+            signals.prot = value & 1 != 0;
+            signals.inte = value & 2 != 0;
+            reference.sample(&signals, weight);
+            duty.record_cycle(address, data, data, value as u8, value as u8, signals.prot, signals.inte, weight);
+        }
+        bus.cycle_full_merge_panel_duty(&duty);
+        assert_eq!(bus.s100.lamps.on_count_planes, reference.on_count_planes);
+        assert_eq!(bus.s100.lamps.total_weight, reference.total_weight);
+        bus.s100.lamps.total_weight = u64::MAX - 18;
+        assert!(bus.cycle_full_panel_capacity(18));
+        assert!(!bus.cycle_full_panel_capacity(19));
+    }
+
     use super::*;
 
     #[test]

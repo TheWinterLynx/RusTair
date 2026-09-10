@@ -20,6 +20,7 @@ pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
+pub(crate) use panel_bus::FullPanelDuty;
 pub(crate) use serial_card::RuntimeSerialCardHandle;
 
 pub const CLOCK_HZ: u32 = 2_000_000;
