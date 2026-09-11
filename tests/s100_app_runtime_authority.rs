@@ -1,5 +1,6 @@
 const APP_SOURCE: &str = include_str!("../src/app/mod.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
+const MAIN_MENU_SOURCE: &str = include_str!("../src/app/ui/main_menu.rs");
 const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
 const S100_UI_SOURCE: &str = include_str!("../src/app/ui/s100_hardware.rs");
 const MACHINE_CONFIG_SOURCE: &str = include_str!("../src/config/machine.rs");
@@ -65,15 +66,21 @@ fn machine_config_has_no_second_cpu_ram_or_serial_hardware_authority() {
 
 #[test]
 fn memory_menu_cannot_recreate_an_aggregate_runtime_topology() {
-    assert!(!RUNTIME_SOURCE.contains("for ram_size in RamSize::ALL"));
-    assert!(!RUNTIME_SOURCE.contains("self.apply_memory_configuration("));
-    assert!(!RUNTIME_SOURCE.contains("self.apply_memory_board_profile("));
-    assert!(RUNTIME_SOURCE.contains("Board type, base address, population and timing come only from Configuration → S-100 Chassis / Cards"));
+    for source in [RUNTIME_SOURCE, MAIN_MENU_SOURCE] {
+        assert!(!source.contains("for ram_size in RamSize::ALL"));
+        assert!(!source.contains("apply_memory_configuration("));
+        assert!(!source.contains("apply_memory_board_profile("));
+    }
+    assert!(MAIN_MENU_SOURCE.contains(
+        "Board type, address, population and timing are configured in Machine → S-100 Hardware."
+    ));
+    assert!(MAIN_MENU_SOURCE.contains("S-100 Hardware…"));
 }
 
 #[test]
 fn serial_hardware_has_no_duplicate_configuration_menu() {
     assert!(!RUNTIME_SOURCE.contains("ui.menu_button(\"Serial board\""));
+    assert!(!MAIN_MENU_SOURCE.contains("ui.menu_button(\"Serial board\""));
     assert!(!APP_SOURCE.contains("fn apply_serial_board_configuration"));
     assert!(!APP_SOURCE.contains("fn apply_two_sio_straps"));
     assert!(!APP_SOURCE.contains("fn apply_two_sio_interrupt_wiring"));
