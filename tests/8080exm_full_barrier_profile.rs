@@ -67,18 +67,16 @@ fn cpm_bdos_return(cpu: &mut Cpu8080, bus: &ProfileBus) {
     cpu.pc = lo | (hi << 8);
 }
 
-// Keep this list synchronized with Cpu8080Cycle::full_opcode_class_supported.
-// These are the instruction classes that still force the production Adaptive
-// executor back through the exact T-state path at an instruction boundary.
-// CALL/Ccc, Rcc, RST and DI are now Full-capable; EI remains a barrier until its
-// one-instruction delayed enable and interrupt revalidation are represented.
+// Keep this list synchronized with production Adaptive admission. CALL/Ccc,
+// Rcc, RST and DI are ordinary Full-capable instructions. EI is not in the
+// generic classifier, but 8080EXM's measured EI->LHLD pair is now admitted by
+// the guarded fidelity path, so it is not a production barrier for this workload.
 fn current_full_barrier_name(opcode: u8) -> Option<&'static str> {
     Some(match opcode {
         0x76 => "HLT",
         0xd3 => "OUT",
         0xdb => "IN",
         0xe3 => "XTHL",
-        0xfb => "EI",
         _ => return None,
     })
 }
