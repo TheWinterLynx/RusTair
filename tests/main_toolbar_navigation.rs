@@ -5,8 +5,9 @@ const UI_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
 #[test]
 fn main_menu_uses_six_clear_top_level_sections() {
     for section in ["File", "Machine", "Peripherals", "View", "Tools", "Settings"] {
+        let needle = format!("ui.menu_button(\"{section}\"");
         assert!(
-            MENU_SOURCE.contains(&format!("ui.menu_button(\"{section}\"")),
+            MENU_SOURCE.contains(needle.as_str()),
             "missing top-level menu section {section}"
         );
     }
@@ -37,7 +38,16 @@ fn view_owns_operator_terminal_and_visual_windows() {
     assert!(MENU_SOURCE.contains("ASR-33 Teletype"));
     assert!(MENU_SOURCE.contains("Text Terminal"));
     assert!(MENU_SOURCE.contains("LED Appearance…"));
-    assert!(!MENU_SOURCE.contains("File\", |ui| {\n        if ui.button(\"Front Panel Operator"));
+
+    let file_section = MENU_SOURCE
+        .split("fn draw_file_menu")
+        .nth(1)
+        .expect("file menu function")
+        .split("fn draw_machine_menu")
+        .next()
+        .expect("file menu body");
+    assert!(!file_section.contains("Front Panel Operator"));
+    assert!(!file_section.contains("CPU Diagnostics"));
 }
 
 #[test]
