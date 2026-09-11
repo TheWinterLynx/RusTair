@@ -5,6 +5,12 @@
 //! whose intervening electrical states are proven not to affect installed
 //! hardware. Both operate on the same CPU state, Altair chassis and S-100 cards.
 
+// Temporary on the EI-fidelity experiment only: the paired EI path assigns
+// bookkeeping immediately after EI and then overwrites it with the required
+// delayed successor before the window can commit. Keep this lint scoped to Full
+// so the semantic/electrical oracles can run; remove it together with those two
+// dead assignments before any benchmark or merge candidate is declared green.
+#[allow(unused_assignments)]
 mod full;
 
 include!("cycle/partial_impl.rs");
