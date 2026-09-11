@@ -433,7 +433,7 @@ impl<'a> FullInstructionBus<'a> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn project_machine_cycle(
         &mut self,
         address: u16,
