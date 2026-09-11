@@ -29,6 +29,12 @@ fn retired_backend_surface_is_absent() {
 #[test]
 fn retired_backend_artifacts_and_build_scaffolding_are_absent() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = include_str!("../Cargo.toml");
+    assert!(!manifest.contains("simh-ffi"), "retired FFI feature must not be advertised");
+    if let Ok(build_script) = std::fs::read_to_string(root.join("build.rs")) {
+        assert!(!build_script.contains("simh_frontpanel"), "retired native linkage must not return");
+        assert!(!build_script.contains("RUSTAIR_SIMH_FRONTPANEL_DIR"));
+    }
     for path in [
         "SIMH-backend",
         "src/backend/simh",
