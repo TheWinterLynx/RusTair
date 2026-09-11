@@ -954,19 +954,6 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    pub fn fast_read_wait_states(&self, address: u16) -> u8 {
-        let mut responders = self.memory_responder_mask(address);
-        let mut waits = 0u8;
-        while responders != 0 {
-            let slot = responders.trailing_zeros() as usize + 1;
-            responders &= responders - 1;
-            if let Some(ram) = self.ram_for_slot(slot) {
-                waits = waits.max(ram.handle.config().read_wait_states());
-            }
-        }
-        waits
-    }
-
     pub fn inspect_memory(&self, address: u16) -> RuntimeMemoryInspection {
         let responder_mask = self.memory_responder_mask(address);
         let mut responders = responder_mask;

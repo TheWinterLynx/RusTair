@@ -680,9 +680,6 @@ impl BackendHost {
     pub fn from_engine(engine: EmulationEngine) -> Result<Self, BackendCreateError> {
         create_backend(engine).map(Self::new)
     }
-    pub fn adaptive_cycle() -> Self {
-        Self::default()
-    }
     pub fn engine(&self) -> EmulationEngine {
         self.backend.engine()
     }
@@ -797,10 +794,6 @@ impl BackendHost {
     }
     pub fn release_front_panel_clear(&mut self) {
         Self::call(self.backend.release_clear());
-    }
-    pub fn clear_io(&mut self) {
-        self.assert_front_panel_clear();
-        self.release_front_panel_clear();
     }
     pub fn request_hold(&mut self, hold: bool) {
         Self::call(self.backend.request_hold(hold));

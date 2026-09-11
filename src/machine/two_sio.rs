@@ -3,9 +3,8 @@ use std::collections::VecDeque;
 use crate::mc6850::{Mc6850, Parity};
 
 /// Physical baud-generator tap selected by the 88-2SIO board strap. The MITS
-/// manual exposes these eight taps independently for each ACIA. The complete set
-/// is retained here before the Configuration UI wires all physical strap choices.
-#[allow(dead_code)]
+/// manual exposes these eight taps independently for each ACIA. Configuration
+/// maps every strap choice to its corresponding physical tap in `card_baud_tap`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TwoSioBaudTap {
     Baud110,
