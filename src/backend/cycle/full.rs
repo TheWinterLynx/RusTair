@@ -12,6 +12,9 @@ mod panel_histogram_reference;
 #[cfg(test)]
 #[path = "full/control_flow_tests.rs"]
 mod control_flow_tests;
+#[cfg(test)]
+#[path = "full/ei_tests.rs"]
+mod ei_tests;
 use crate::s100_memory::S100RamBoardModel;
 
 use super::super::BackendResult;
@@ -24,6 +27,10 @@ use super::CycleAccurateMachineBackend;
 /// excludes IN/OUT, so reserving 18 T-states still guarantees we never overshoot
 /// the caller's exact budget.
 const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
+const EI_OPCODE: u8 = 0xfb;
+const LHLD_OPCODE: u8 = 0x2a;
+const EI_LHLD_T_STATES: u32 = 20;
+const EI_LHLD_GUARDED_T_STATES: u32 = EI_LHLD_T_STATES + FULL_EXECUTION_MAX_T_STATES;
 const FULL_READ_CACHE_ENTRIES: usize = 64;
 const FULL_PROTECTION_CACHE_ENTRIES: usize = 64;
 
@@ -133,6 +140,46 @@ impl FullPanelActivity {
         });
     }
 
+    /// EI makes INTE effective on the final T-state of the following
+    /// instruction. Full has already projected that successor's final external
+    /// cycle with the old INTE level when the semantic core calls `set_inte`.
+    /// Shorten that retained cycle by one T-state; `instruction_complete` then
+    /// projects the exact same ADDRESS/DATA/status lamp state as a one-T tail
+    /// using the new INTE level. The production EI admission rule guarantees a
+    /// later Full machine cycle is projected before window exit, so this
+    /// presentation-only split can never become an externally visible boundary.
+    fn reserve_final_external_t_state_for_inte_transition(&mut self) {
+        let panel_data = self.panel_data;
+        let mut pending = self
+            .pending
+            .expect("delayed EI transition requires a preceding external cycle");
+        debug_assert_eq!(pending.internal_tail, 0);
+        debug_assert!(pending.t_states >= 2);
+
+        self.duty.remove_cycle(
+            pending.address,
+            pending.first_data,
+            panel_data,
+            pending.first_status,
+            pending.status_word,
+            pending.protected,
+            pending.inte,
+            pending.t_states,
+        );
+        pending.t_states -= 1;
+        self.duty.record_cycle(
+            pending.address,
+            pending.first_data,
+            panel_data,
+            pending.first_status,
+            pending.status_word,
+            pending.protected,
+            pending.inte,
+            pending.t_states,
+        );
+        self.pending = Some(pending);
+    }
+
     fn project_internal_tail(&mut self, t_states: u32, inte: bool) {
         if t_states == 0 {
             return;
@@ -216,6 +263,35 @@ fn full_opcode_table() -> &'static [bool; 256] {
     })
 }
 
+/// EI is deliberately not a normal Full-supported opcode. The only admitted
+/// form is the measured 8080EXM pair EI -> LHLD, and even that pair requires:
+/// - no already-asserted PINT while INTE is low,
+/// - enough budget for EI + LHLD + one ordinary Full instruction, and
+/// - an ordinary supported opcode immediately after LHLD.
+///
+/// The guard instruction is not a performance trick: it guarantees that the
+/// synthetic split used solely for the final LHLD T-state's INTE lamp duty is
+/// consumed inside the same Full window and can never become a physical rejoin
+/// boundary. If any premise is false, exact Partial remains authoritative.
+#[inline]
+fn full_ei_lhld_pair_is_safe(
+    bus: &AltairBus,
+    address: u16,
+    remaining: u32,
+    opcode_table: &[bool; 256],
+) -> bool {
+    if remaining < EI_LHLD_GUARDED_T_STATES || bus.cpu_control_lines().interrupt {
+        return false;
+    }
+    if bus.peek_memory(address.wrapping_add(1)) != Some(LHLD_OPCODE) {
+        return false;
+    }
+    let guard_opcode = bus
+        .peek_memory(address.wrapping_add(4))
+        .unwrap_or(0xff);
+    opcode_table[guard_opcode as usize]
+}
+
 /// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
 /// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
 /// expensive connector graph remains lazy until an actual synchronization
@@ -231,6 +307,7 @@ struct FullInstructionBus<'a> {
     protection_possible: bool,
     protection_cache: [FullProtectionCacheEntry; FULL_PROTECTION_CACHE_ENTRIES],
     prefetched_opcode: Option<(u16, u8)>,
+    delayed_ei_transition_armed: bool,
 }
 
 impl<'a> FullInstructionBus<'a> {
@@ -261,6 +338,7 @@ impl<'a> FullInstructionBus<'a> {
             protection_possible,
             protection_cache: [EMPTY_FULL_PROTECTION_CACHE_ENTRY; FULL_PROTECTION_CACHE_ENTRIES],
             prefetched_opcode: None,
+            delayed_ei_transition_armed: false,
         }
     }
 
@@ -410,6 +488,12 @@ impl<'a> FullInstructionBus<'a> {
     }
 
     #[inline]
+    fn arm_delayed_ei_transition(&mut self) {
+        debug_assert!(!self.delayed_ei_transition_armed);
+        self.delayed_ei_transition_armed = true;
+    }
+
+    #[inline]
     fn project_opcode_fetch(&mut self, address: u16, opcode: u8) {
         self.prime_t1_read_data_if_stale_memr(address, opcode);
         // DI changes the processor's INTE output during M1 T4. T1-T3 therefore
@@ -439,6 +523,7 @@ impl<'a> FullInstructionBus<'a> {
     }
 
     fn finish(mut self) -> Cpu8080Pins {
+        debug_assert!(!self.delayed_ei_transition_armed);
         // The retained final machine cycle already owns the address/write data.
         // Materialize package pins only when Full rejoins the physical boundary.
         let mut pins = Cpu8080Pins { inte: self.inte, ..Cpu8080Pins::default() };
@@ -478,6 +563,19 @@ impl Bus for FullInstructionBus<'_> {
     }
 
     fn set_inte(&mut self, enabled: bool) {
+        if enabled && self.delayed_ei_transition_armed {
+            // `Cpu8080::step` calls this after the delayed successor has executed
+            // but before its instruction_complete callback. Move exactly one
+            // T-state from that successor's final external cycle into the
+            // residual tail so its INTE lamp level changes on the authentic last
+            // T-state. If INTE was already high there is no electrical edge.
+            if !self.inte {
+                self.panel.reserve_final_external_t_state_for_inte_transition();
+                debug_assert!(self.projected_t_states != 0);
+                self.projected_t_states = self.projected_t_states.saturating_sub(1);
+            }
+            self.delayed_ei_transition_armed = false;
+        }
         self.inte = enabled;
         self.bus.cycle_full_set_inte(enabled);
     }
@@ -668,12 +766,20 @@ impl CycleAccurateMachineBackend {
         }
 
         let opcode_table = full_opcode_table();
+        let first_address = self.cpu.registers().pc;
         let first_opcode = self
             .machine
             .bus
-            .peek_memory(self.cpu.registers().pc)
+            .peek_memory(first_address)
             .unwrap_or(0xff);
-        if !opcode_table[first_opcode as usize] {
+        let first_is_safe_ei_pair = first_opcode == EI_OPCODE
+            && full_ei_lhld_pair_is_safe(
+                &self.machine.bus,
+                first_address,
+                *remaining,
+                opcode_table,
+            );
+        if !opcode_table[first_opcode as usize] && !first_is_safe_ei_pair {
             return None;
         }
 
@@ -691,6 +797,62 @@ impl CycleAccurateMachineBackend {
             while *remaining >= FULL_EXECUTION_MAX_T_STATES {
                 let opcode_address = full.pc;
                 let opcode = full_bus.guest_read(opcode_address);
+
+                if opcode == EI_OPCODE {
+                    if !full_ei_lhld_pair_is_safe(
+                        &*full_bus.bus,
+                        opcode_address,
+                        *remaining,
+                        opcode_table,
+                    ) {
+                        break;
+                    }
+
+                    // Execute EI itself. It leaves INTE unchanged and arms the
+                    // semantic core's one-instruction delay.
+                    full_bus.prime_opcode_fetch(opcode_address, opcode);
+                    last_address = opcode_address;
+                    let ei_elapsed = full.step(&mut full_bus);
+                    debug_assert!(full_bus.prefetched_opcode.is_none());
+                    debug_assert_eq!(ei_elapsed, 4);
+                    debug_assert!(ei_elapsed <= *remaining);
+                    *remaining -= ei_elapsed;
+                    completed = completed.saturating_add(1);
+                    last_elapsed = ei_elapsed;
+
+                    // The measured EXM successor is LHLD. Arm only this step so
+                    // Bus::set_inte(true) can place the delayed edge on LHLD's
+                    // exact final T-state instead of changing the whole cycle.
+                    let successor_address = full.pc;
+                    let successor = full_bus.guest_read(successor_address);
+                    debug_assert_eq!(successor, LHLD_OPCODE);
+                    full_bus.arm_delayed_ei_transition();
+                    full_bus.prime_opcode_fetch(successor_address, successor);
+                    last_address = successor_address;
+                    let successor_elapsed = full.step(&mut full_bus);
+                    debug_assert!(full_bus.prefetched_opcode.is_none());
+                    debug_assert!(!full_bus.delayed_ei_transition_armed);
+                    debug_assert_eq!(successor_elapsed, 16);
+                    debug_assert!(successor_elapsed <= *remaining);
+                    *remaining -= successor_elapsed;
+                    completed = completed.saturating_add(1);
+                    last_elapsed = successor_elapsed;
+
+                    // PINT was proven low before the pair and the admitted Full
+                    // chassis has no asynchronous transition while its serial
+                    // timing is quiet. LHLD is memory-only, so the request line
+                    // cannot legitimately rise inside these 20 T-states.
+                    debug_assert!(
+                        !full_bus.bus.cpu_control_lines().interrupt,
+                        "PINT changed inside a supposedly quiescent EI-LHLD Full pair"
+                    );
+
+                    // The safety predicate reserved at least one normal Full
+                    // instruction after LHLD. Continue immediately so the
+                    // presentation-only final-T split cannot become a rejoin.
+                    continue;
+                }
+
                 if !opcode_table[opcode as usize] {
                     break;
                 }
