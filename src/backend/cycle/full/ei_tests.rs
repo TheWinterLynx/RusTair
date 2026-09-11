@@ -107,7 +107,7 @@ fn compiled_full_ei_lhld_keeps_delay_and_continues_same_window_when_pint_is_low(
 }
 
 #[test]
-fn compiled_full_ei_lhld_rejoins_before_pending_pint_can_be_skipped() {
+fn pending_pint_keeps_ei_lhld_entirely_on_exact_partial() {
     const BUDGET: u32 = 21;
     let program = [0xfb, 0x2a, 0x10, 0x00, 0x00, 0xc3, 0x04, 0x00];
     let (hardware, sio) = static_4k_with_pint_sio();
@@ -115,9 +115,9 @@ fn compiled_full_ei_lhld_rejoins_before_pending_pint_can_be_skipped() {
     let mut partial = prepare_backend(hardware, &program);
 
     // Complete a receive character directly in the real installed 88-SIO UART.
-    // RDA drives the board's configured input IRQ pad to S-100 PINT while INTE
-    // is still low, so EI itself is legal but the request must be recognized at
-    // the exact boundary after LHLD enables INTE.
+    // RDA drives the configured input IRQ pad to PINT while INTE is still low.
+    // The optimized path deliberately declines EI in this state: Partial owns
+    // EI, the entire delayed LHLD successor and the exact following INTA edge.
     assert!(compiled
         .machine
         .bus
@@ -140,9 +140,9 @@ fn compiled_full_ei_lhld_rejoins_before_pending_pint_can_be_skipped() {
         assert!(trace.fault.is_none());
     }
 
-    assert_eq!(stats.full_t_states, 20, "only the exact EI+LHLD pair may stay Full");
-    assert_eq!(stats.partial_t_states, 1, "the very next T-state must return to Partial");
-    assert_eq!(stats.fallbacks.interrupt_pending, 1);
+    assert_eq!(stats.full_t_states, 0, "pending PINT must conservatively reject Full EI");
+    assert_eq!(stats.partial_t_states, u64::from(BUDGET));
+    assert_eq!(stats.fallbacks.opcode_barrier, 1);
     assert_eq!(compiled.cpu.machine_cycle(), MachineCycle::InterruptAck);
     assert_eq!(compiled.cpu.machine_cycle(), partial.cpu.machine_cycle());
     assert_eq!(compiled.cpu.t_state(), partial.cpu.t_state());
@@ -151,7 +151,7 @@ fn compiled_full_ei_lhld_rejoins_before_pending_pint_can_be_skipped() {
     assert_eq!(
         compiled.machine.bus.raw_panel_lamp_duty(),
         partial.machine.bus.raw_panel_lamp_duty(),
-        "pending PINT rejoin must preserve exact panel duty through INTA T1",
+        "pending-PINT Partial ownership must preserve exact panel duty through INTA T1",
     );
     assert_eq!(compiled.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_status_word());
     assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
