@@ -41,7 +41,7 @@ The app layer owns UI/application state and asks the backend to operate the mach
 | File | Mission and characteristics |
 | --- | --- |
 | `src/app/mod.rs` | App module root and `RusTairApp` definition. Creates the eframe/WGPU window, owns host/application state (config, `BackendHost`, serial router, terminal/ASR controllers, audio, execution clock, UI assets) and defines shared constants/helpers. This is the composition root of the desktop application. |
-| `src/app/runtime.rs` | Implements `eframe::App::update`. Per GUI frame it loads/synchronizes configuration, computes execution budget, runs the backend, services serial/peripheral workflows and renders top-level menus/windows. Important boundary between wall-clock/UI time and emulated time. |
+| `src/app/runtime.rs` | Implements `eframe::App::update`. Per GUI frame it loads/synchronizes configuration, computes execution budget, runs the backend, services serial/peripheral workflows, delegates top-level navigation to the UI module and renders status/tool viewports. Important boundary between wall-clock/UI time and emulated time. |
 | `src/app/execution_clock.rs` | Converts host elapsed time into guest T-state credit/debt for Authentic/5×/10× modes. Keeps guest board clock concept separate from host execution speed. |
 | `src/app/execution_frame.rs` | Executes a backend budget in responsive chunks/deadlines. Contains the Unlimited scheduling policy that avoids repaint-rate throughput caps while preserving UI responsiveness. |
 | `src/app/commands.rs` | Application-level user commands/actions that coordinate backend and UI state. Keeps command workflows out of drawing code. |
@@ -65,6 +65,7 @@ These files draw or operate UI tools. They should consume backend snapshots/cont
 | File | Mission and characteristics |
 | --- | --- |
 | `src/app/ui/mod.rs` | UI module root. Declares/re-exports the individual windows/panels and shared UI helpers. |
+| `src/app/ui/main_menu.rs` | Canonical top-level navigation. Organizes File/Machine/Peripherals/View/Tools/Settings, launches the existing windows and routes configuration actions without owning emulation state. Keeps navigation policy out of the frame scheduler/runtime loop. |
 | `src/app/ui/assets.rs` | Loads egui textures/fonts and other visual assets used by the application. Presentation only. |
 | `src/app/ui/front_panel.rs` | Main photographic Altair front-panel rendering: lamps, panel layout and user interaction hooks. Raw lamp/control truth comes from backend/machine snapshots. |
 | `src/app/ui/front_panel_assets.rs` | Front-panel artwork/texture/layout asset helpers. Keeps image selection/asset details out of panel logic. |
@@ -80,6 +81,7 @@ These files draw or operate UI tools. They should consume backend snapshots/cont
 | `src/app/ui/memory_viewer.rs` | RAM/memory inspection and debugger-oriented mutation UI. Must inspect/mutate the same mounted physical RAM storage through backend APIs, not a copied memory image. |
 | `src/app/ui/s100_memory_inspection.rs` | S-100-specific memory inspection presentation: responders, overlaps, protection/card ownership details. Useful for diagnosing decode/physical RAM topology. |
 | `src/app/ui/s100_hardware.rs` | Physical chassis/card configuration UI. Slot changes are validated and require POWER OFF because this represents real card installation/straps. |
+| `src/app/ui/s100_hardware_editor.rs` | Dedicated S-100 hardware viewport. Presents a slot inventory alongside the existing physical chassis/card editor and delegates all mutations to the same validated `s100_hardware` path; it must never become a second hardware authority. |
 | `src/app/ui/io_inspector.rs` | Displays guest I/O and host serial/network trace observations for troubleshooting serial/card traffic. Opening the inspector may enable capture but must not alter guest semantics. |
 | `src/app/ui/asr33.rs` | ASR-33 drawing and interaction helpers for the integrated teletype presentation. |
 | `src/app/ui/asr33_window.rs` | ASR-33 dedicated window/layout and operator controls. |
