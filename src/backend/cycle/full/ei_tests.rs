@@ -115,21 +115,22 @@ fn pending_pint_keeps_ei_lhld_entirely_on_exact_partial() {
     let mut compiled = prepare_backend(hardware, &program);
     let mut partial = prepare_backend(hardware, &program);
 
-    // Complete a receive character directly in the real installed 88-SIO UART.
-    // RDA drives the configured input IRQ pad to PINT while INTE is still low.
-    // The optimized path deliberately declines EI in this state: Partial owns
-    // EI, the entire delayed LHLD successor and the exact following INTA edge.
-    assert!(compiled
-        .machine
-        .bus
-        .debugger_inject_serial_rx(sio.address.data(), b'I'));
-    assert!(partial
-        .machine
-        .bus
-        .debugger_inject_serial_rx(sio.address.data(), b'I'));
-    assert!(compiled.machine.bus.cpu_control_lines().interrupt);
-    assert!(partial.machine.bus.cpu_control_lines().interrupt);
-    assert!(!compiled.cpu.interrupts_enabled());
+    // The 88-SIO IRQ pad is only a physical route; software must also enable
+    // the board's input interrupt source. Do that through the real control/status
+    // register before making RDA active with an injected receive character.
+    for backend in [&mut compiled, &mut partial] {
+        backend
+            .machine
+            .bus
+            .debugger_output_port(sio.address.status(), 0x01);
+        assert!(!backend.machine.bus.cpu_control_lines().interrupt);
+        assert!(backend
+            .machine
+            .bus
+            .debugger_inject_serial_rx(sio.address.data(), b'I'));
+        assert!(backend.machine.bus.cpu_control_lines().interrupt);
+        assert!(!backend.cpu.interrupts_enabled());
+    }
 
     adaptive_metrics::begin_measurement();
     compiled.service_execution_compiled(BUDGET).unwrap();
