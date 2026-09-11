@@ -1,5 +1,6 @@
 const APP: &str = include_str!("../src/app/mod.rs");
 const RUNTIME: &str = include_str!("../src/app/runtime.rs");
+const MAIN_MENU: &str = include_str!("../src/app/ui/main_menu.rs");
 const EXECUTION_CLOCK: &str = include_str!("../src/app/execution_clock.rs");
 const CONFIG: &str = include_str!("../src/config/machine.rs");
 const S100_HARDWARE: &str = include_str!("../src/config/s100_hardware.rs");
@@ -52,13 +53,15 @@ fn cpu_diagnostics_report_execution_mode_without_a_fixed_reference_clock() {
 
 #[test]
 fn ui_reports_board_processor_and_board_clock_separately() {
-    assert!(RUNTIME.contains("Installed CPU board: {}"));
-    assert!(RUNTIME.contains("let cpu = board.cpu_model();"));
-    assert!(RUNTIME.contains("board.clock_hz() as f32 / 1_000_000.0"));
-    assert!(
-        !RUNTIME.contains("cpu.clock_hz()"),
-        "processor identity must not own board-level clock configuration"
-    );
+    assert!(MAIN_MENU.contains("Installed CPU board: {}"));
+    assert!(MAIN_MENU.contains("let cpu = board.cpu_model();"));
+    assert!(MAIN_MENU.contains("board.clock_hz() as f32 / 1_000_000.0"));
+    for source in [RUNTIME, MAIN_MENU] {
+        assert!(
+            !source.contains("cpu.clock_hz()"),
+            "processor identity must not own board-level clock configuration"
+        );
+    }
 }
 
 #[test]
