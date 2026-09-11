@@ -9,8 +9,8 @@ The current machine therefore has two distinct axes:
 ```text
 Physical machine                    Emulator implementation
 ----------------                    -----------------------
-MITS 8080 CPU Board                 Rust Fast 8080
-        |                     or     Rust Cycle Accurate 8080
+MITS 8080 CPU Board                 Adaptive Cycle 8080
+        |                            Full / Partial strategies
         v
 Intel 8080 @ 2 MHz
         |
@@ -18,7 +18,7 @@ Intel 8080 @ 2 MHz
 S-100 chassis / RAM / serial boards / front panel
 ```
 
-Fast and Cycle Accurate do not represent two different CPU boards. They are two implementations of the same installed MITS 8080 board.
+Full and Partial are internal execution strategies for the same installed MITS 8080 board. Partial is the exact electrical oracle; Full preserves equivalent timing, architectural state, physical card effects, panel duty and synchronization boundaries under its admission proof.
 
 ## Current code contract
 
@@ -26,9 +26,9 @@ Fast and Cycle Accurate do not represent two different CPU boards. They are two 
 
 `CpuBoard` identifies the physical S-100 CPU board. Today it contains only `Mits8080` and owns the board-level processor mapping and authentic clock rate.
 
-`MachineConfig::cpu_board()` exposes the installed-board view while preserving the existing `machine.cpu_model=intel8080` persistence format. This compatibility bridge is intentionally temporary: when a second real CPU board exists, persistence should migrate to an explicit board key.
+`MachineConfig::s100_hardware` owns the installed slot inventory. `S100HardwareConfig::active_cpu_board()` resolves the CPU-board identity from that inventory. Persistence writes `machine.s100_hardware`; old aggregate keys are read only for migration, and the legacy `machine.cpu_model` selector is ignored because only the MITS 8080 board is supported.
 
-Runtime scheduling already resolves the installed CPU board and derives the authentic execution budget from `CpuBoard::clock_hz()`. The application therefore no longer assumes that every supported CPU board runs at 2 MHz. The only remaining 2 MHz clock outside `CpuBoard` is a diagnostic normalization reference for classic Intel 8080 test reports; it does not drive machine execution.
+Runtime scheduling resolves the installed CPU board and derives the authentic execution budget from `CpuBoard::clock_hz()`. Host speed selection changes how quickly virtual time advances, not the installed board clock. Unlimited uses the host-time deadline in `run_cpu_frame`; it is not capped by the former fixed budget per repaint.
 
 Do not add dormant processor or board variants merely to reserve names. A new variant belongs in production only when its core/board integration exists.
 
@@ -43,8 +43,8 @@ AltairChassis / S-100 bus
 |
 +-- MITS 8080 CPU Board
 |   +-- Intel 8080
-|       +-- Rust Fast 8080
-|       +-- Rust Cycle Accurate 8080
+|       +-- Adaptive Cycle 8080
+|           +-- Full / Partial strategies
 |
 +-- historical Z80 S-100 CPU Board
     +-- Zilog Z80
@@ -63,7 +63,7 @@ A Z80 CPU board is not a SIMH backend and must not reintroduce the removed SIMH 
 6. Implement the board adapter between Z80 CPU signals and the existing S-100 electrical authority. Front-panel/S-100 state must continue to come from the bus, not from UI-side projections.
 7. Preserve the existing chassis, RAM boards, serial boards and front-panel model when swapping CPU boards where historically/electrically compatible.
 8. Require POWER OFF for CPU-board replacement. Do not migrate live registers or hidden execution state between boards.
-9. Migrate persistence from the legacy `machine.cpu_model` key to an explicit `machine.cpu_board` key while continuing to read old Intel-8080 configurations safely.
+9. Extend the physical S-100 slot codec for the selected board while preserving existing inventory files and legacy Intel-8080 configuration migration.
 10. Add engine/board compatibility checks so an 8080-only execution engine cannot be selected for a Z80 board and vice versa.
 11. Add Z80-specific CPU state/debugger/disassembly support only as part of the real core integration; do not restore a placeholder `Z80State` in advance.
 12. Validate reset, WAIT/READY behaviour, HOLD/HLDA or equivalent bus-master interactions, interrupts, I/O cycles, memory cycles and front-panel observations against the selected board documentation.

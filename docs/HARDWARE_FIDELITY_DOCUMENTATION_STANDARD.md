@@ -46,9 +46,9 @@ Explain which Rust types own each piece of physical state and why. Include a phy
 
 Include short, current snippets that demonstrate the implementation contract. Snippets should be small enough to remain maintainable and must name the source file and symbol. Prefer snippets that encode an invariant rather than large copied functions.
 
-### Fast versus Cycle Accurate
+### Adaptive Full versus Partial
 
-Document separately what each engine can claim. Cycle Accurate may claim exact T-state/pin sequencing only where it truly samples those signals. Fast may reconstruct total elapsed T-states and guest-visible behavior but must not be described as pin-exact when it cannot expose sub-instruction events.
+Document the two strategies over the same physical machine. Partial is the exact T-state/pin oracle. Full is admitted only where intermediate physical effects are proven unable to affect behavior; it must preserve exact timing, CPU/card state, bus-derived panel duty and re-entry into Partial. Distinguish exact captured samples from equivalent Full accounting. Historical Fast/Cycle comparisons must be explicitly labeled as historical, not presented as current engines or validation.
 
 ### Peripheral / host boundary
 
@@ -90,7 +90,7 @@ From this point forward, a hardware item may move to `PASS` only when all of the
 - primary-source behavior has been identified;
 - the physical-to-software ownership model is documented;
 - implementation snippets are included;
-- relevant Fast/Cycle differences are documented;
+- relevant Full/Partial admission, observation and synchronization constraints are documented;
 - focused regressions exist;
 - a user-observable validation procedure is documented wherever practical;
 - the normal local suite is green after the change;

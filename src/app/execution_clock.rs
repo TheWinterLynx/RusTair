@@ -5,8 +5,8 @@ use crate::config::EmulationSpeed;
 /// One emulated T-state is represented as one billion fixed-point units so
 /// nanosecond host intervals can be accumulated without losing fractional
 /// cycles. Positive balance means the guest is behind wall clock; a small
-/// negative balance is intentional when the Fast backend finishes an
-/// instruction a few T-states past the requested budget.
+/// negative balance records any executed T-states beyond the available host-time
+/// credit; subsequent elapsed time repays it.
 const T_STATE_UNITS: i128 = 1_000_000_000;
 const AUTHENTIC_CHUNK_T_STATES: u32 = 40_000;
 // Unlimited is host-deadline limited by `run_cpu_frame`, not repaint-count
@@ -113,9 +113,9 @@ impl ExecutionClock {
         available.min(max_chunk)
     }
 
-    /// Subtract the T-states the selected backend actually executed, not merely
-    /// the requested budget. This preserves Fast-backend whole-instruction
-    /// overshoot as a small negative balance that subsequent wall time repays.
+    /// Subtract the T-states Adaptive Cycle actually executed. Accounting uses
+    /// the observed total rather than assuming the requested budget was consumed;
+    /// any negative balance is repaid by subsequent elapsed host time.
     pub(super) fn record_executed(&mut self, executed_t_states: u64) {
         let consumed = i128::from(executed_t_states).saturating_mul(T_STATE_UNITS);
         self.balance_units = self.balance_units.saturating_sub(consumed);

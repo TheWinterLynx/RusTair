@@ -144,13 +144,14 @@ impl Cpu8080Cycle {
         )
     }
 
-    /// MAME-style `full` execution is legal only at a clean instruction
+    /// Single-instruction Full execution is legal only at a clean instruction
     /// boundary and only for instruction families whose external machine-cycle
     /// schedule can currently be reconstructed without a mid-instruction event.
     ///
-    /// The stateful T-state engine remains the `partial` oracle. I/O, HLT,
-    /// delayed EI transitions and XTHL stay on that path until their
-    /// synchronization/special-cycle schedules are represented explicitly.
+    /// The stateful T-state engine remains the Partial oracle. This test helper
+    /// uses the ordinary opcode classifier, which excludes I/O, HLT, EI and XTHL.
+    /// Production Full windows separately admit the guarded EI -> LHLD sequence
+    /// in `backend::cycle::full`, including its exact delayed INTE transition.
     #[cfg(test)]
     pub(crate) fn full_execution_opcode_supported(&self, opcode: u8) -> bool {
         self.full_execution_boundary_ready() && Self::full_opcode_class_supported(opcode)

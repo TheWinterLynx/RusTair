@@ -1,5 +1,7 @@
 # RusTair base hardware fidelity closeout
 
+> Historical validation record: hardware descriptions, source references and original results are preserved. Fast/Cycle engine comparisons, engine replacement and former API/file names below describe that earlier implementation. Current production uses one Adaptive Cycle engine with Full/Partial strategies and the installed S-100 card inventory; see [current ownership](STATE_SOURCES.md) and the [backend contract](../src/backend/README.md). The former `src/machine/io_devices.rs` implementation now lives in `src/machine/serial_devices.rs`.
+
 Status: **CLOSED — all base-hardware items in this ledger are PASS.**
 
 Closeout branch: `agent/base-hardware-fidelity-closeout`.

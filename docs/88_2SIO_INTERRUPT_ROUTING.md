@@ -1,5 +1,7 @@
 # MITS 88-2SIO interrupt routing
 
+> Historical validation record: hardware descriptions, source references and original results are preserved. Fast/Cycle engine comparisons, engine replacement and former API/file names below describe that earlier implementation. Current production uses one Adaptive Cycle engine with Full/Partial strategies and the installed S-100 card inventory; see [current ownership](STATE_SOURCES.md) and the [backend contract](../src/backend/README.md). The former `src/machine/io_devices.rs` implementation now lives in `src/machine/serial_devices.rs`.
+
 Status: **PASS — DI/EI routing, PINT separation, raw VI boundary, persistence and UI locally validated.**
 
 Parent: `docs/88_2SIO_MC6850_HARDWARE_FIDELITY.md`.

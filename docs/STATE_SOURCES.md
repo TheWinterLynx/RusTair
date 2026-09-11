@@ -49,11 +49,13 @@ operations that require processor state are completed by the backend-owned
   an execution engine or create a second processor object.
 - Memory configuration reaches the live chassis bus/runtime fabric rather than a
   processor-owning machine helper.
-- There is no `sync_machine_cpu()` path and no architectural-state copy between
-  separate CPU implementations.
-- Full execution uses the semantic facilities of the same 8080 core as an internal
-  acceleration strategy and commits back into that same authoritative core. It is not
-  a second backend.
+- There is no `sync_machine_cpu()` path or persistent CPU mirror. At Full window
+  entry, `begin_full_execution_window` exports the boundary registers into a
+  transient `Cpu8080` semantic executor. `commit_full_execution_window` imports
+  its completed state into `Cpu8080Cycle` at exit.
+- Full and Partial share one architectural-state authority: the semantic executor
+  owns it during a Full window, and `Cpu8080Cycle` owns it at synchronization
+  boundaries. Physical RAM and devices remain in the same S-100 fabric throughout.
 
 Therefore processor ownership is unambiguous:
 

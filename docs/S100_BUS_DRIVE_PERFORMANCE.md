@@ -1,5 +1,7 @@
 # S-100 connector bus encoding performance
 
+> Historical performance investigation. Branches, profiles, results and pending work below describe the recorded revisions, not current production. Later changes include control-flow/DI/EI fidelity and forced projection inlining (`b15512e`). Retained `target/` executables and logs are local artifacts, not repository dependencies; rerun the maintained benchmarks for current results.
+
 Baseline: `2184186` (updated `main`). Scope: `S100CardDrive` address/data writers.
 
 ## Finding and change

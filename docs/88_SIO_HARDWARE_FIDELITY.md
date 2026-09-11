@@ -1,5 +1,7 @@
 # MITS 88-SIO hardware fidelity
 
+> Historical validation record: hardware descriptions, source references and original results are preserved. Fast/Cycle engine comparisons, engine replacement and former API/file names below describe that earlier implementation. Current production uses one Adaptive Cycle engine with Full/Partial strategies and the installed S-100 card inventory; see [current ownership](STATE_SOURCES.md) and the [backend contract](../src/backend/README.md). The former `src/machine/io_devices.rs` implementation now lives in `src/machine/serial_devices.rs`.
+
 Status: **PASS — receive-BREAK correction plus focused and full local validation green on 2026-09-02.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.

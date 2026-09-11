@@ -6,7 +6,9 @@ RusTair has one Intel 8080 execution engine: **Adaptive Cycle**.
 engine may execute a proven whole-instruction **Full** window or fall back to the
 edge-by-edge **Partial** electrical oracle, but those are internal strategies over
 the same processor, chassis, RAM and serial-card state. They are not selectable
-backends and no state is copied between them.
+backends. A Full window exports the boundary registers into a transient semantic
+executor and commits them back once at window exit; no independent machine or
+persistent CPU mirror is maintained.
 
 ## Runtime ownership
 
@@ -30,7 +32,8 @@ CycleHostBackend                    host scheduling/debugger facade
 | Registers / flags / PC / SP | `CycleAccurateMachineBackend::cpu` (`Cpu8080Cycle`) |
 | INTE / HALT / exact T-state count | `Cpu8080Cycle` |
 | Exact machine cycle / T-state / package pins | `Cpu8080Cycle` |
-| Physical chassis power and RUN/STOP state | `AltairChassis` |
+| Physical chassis power | `AltairChassis` |
+| RUN/STOP latch | `S100BusState::signals.run`; `AltairChassis::running()` derives from it |
 | RAM / installed S-100 cards | live `S100RuntimeFabric` reached through `AltairBus` |
 | UART state | installed/live serial-card instance; aggregate compatibility routing never owns a second guest-visible UART |
 | Raw S-100 electrical/status state | canonical `S100BusState` |
@@ -107,8 +110,8 @@ an alternate topology from those fields.
 
 ## Remaining structural debt
 
-- `AltairChassis::running` and the S-100 RUN signal are still synchronized storage;
-  eventually the physical bus latch should be the sole canonical value.
+- RUN/STOP already derives from the physical bus latch; the former chassis-side
+  RUN mirror is gone and must not be reintroduced.
 - `CycleHostBackend` still contains debugger/scheduling policy around the concrete
   Adaptive Cycle backend. That facade must remain policy-only and must not acquire
   duplicate CPU, RAM or UART state.

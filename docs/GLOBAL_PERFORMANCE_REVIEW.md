@@ -1,5 +1,7 @@
 # Focused runtime performance review
 
+> Historical performance investigation. Branches, profiles, results and pending work below describe the recorded revisions, not current production. Later changes include control-flow/DI/EI fidelity and forced projection inlining (`b15512e`). Retained `target/` executables and logs are local artifacts, not repository dependencies; rerun the maintained benchmarks for current results.
+
 Branch: `agent/codex-global-performance-review`, from fetched `main` at
 `1690583`. No main edits/merges or GitHub Actions. Existing branches and local
 untracked logs are preserved.

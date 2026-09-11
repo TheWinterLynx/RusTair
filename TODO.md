@@ -48,7 +48,7 @@ Performance work must not weaken electrical or timing fidelity.
 ## P1 — Adaptive Full coverage
 
 - [ ] Extend Full only one instruction family at a time with exact differential/front-panel tests.
-- [ ] Prioritize remaining high-frequency barriers in 8080EXM (conditional CALL/RET and other measured families).
+- [ ] Re-measure remaining barriers before choosing another Full coverage change; conditional CALL/RET, DI and guarded EI -> LHLD are already supported.
 - [ ] Preserve exact synchronization boundaries for I/O, interrupts, HOLD/HLDA, RESET, HLT and any instruction whose physical schedule is not representable by Full.
 - [ ] Re-run classic diagnostics and panel-duty differential tests after each coverage expansion.
 

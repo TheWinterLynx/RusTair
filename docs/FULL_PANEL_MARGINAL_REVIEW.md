@@ -1,5 +1,7 @@
 # Larger Full runtime optimization investigation
 
+> Historical performance investigation. Branches, profiles, results and pending work below describe the recorded revisions, not current production. Later changes include control-flow/DI/EI fidelity and forced projection inlining (`b15512e`). Retained `target/` executables and logs are local artifacts, not repository dependencies; rerun the maintained benchmarks for current results.
+
 The user raised the target to 50-100% throughput improvement. The earlier 4%
 result is preserved separately and does not meet that target. Baseline for this
 investigation: `0a4402e` on `agent/codex-global-performance-review`.
