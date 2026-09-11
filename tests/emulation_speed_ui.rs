@@ -1,5 +1,5 @@
 const APP: &str = include_str!("../src/app/mod.rs");
-const RUNTIME: &str = include_str!("../src/app/runtime.rs");
+const MAIN_MENU: &str = include_str!("../src/app/ui/main_menu.rs");
 const EMBEDDED_DIAGNOSTICS: &str = include_str!("../src/app/embedded_cpu_diagnostics.rs");
 const EXTERNAL_DIAGNOSTICS: &str = include_str!("../src/app/cpu_diagnostics.rs");
 
@@ -18,15 +18,17 @@ fn new_emulator_speed_selector_exposes_only_supported_user_choices() {
     assert!(choices.contains("EmulationSpeed::X10"));
     assert!(choices.contains("EmulationSpeed::Unlimited"));
     assert!(!choices.contains("EmulationSpeed::X2"));
-    assert!(RUNTIME.contains("ui.label(\"Emulator speed\")"));
+    assert!(MAIN_MENU.contains("ui.menu_button(\"Host Execution Speed\""));
 }
 
 #[test]
 fn authentic_speed_label_comes_from_installed_board_clock() {
     assert!(APP.contains("Authentic hardware clock — {:.1} MHz"));
     assert!(APP.contains("board.clock_hz() as f32 / 1_000_000.0"));
-    assert!(RUNTIME.contains("emulation_speed_label(speed, board)"));
-    assert!(RUNTIME.contains("Authentic hardware clock: {:.1} MHz"));
+    assert!(MAIN_MENU.contains("emulation_speed_label(speed, board)"));
+    assert!(MAIN_MENU.contains("board.clock_hz() as f32 / 1_000_000.0"));
+    assert!(MAIN_MENU.contains("Hardware clock: {:.1} MHz"));
+    assert!(!MAIN_MENU.contains("cpu.clock_hz()"));
 }
 
 #[test]
@@ -62,8 +64,8 @@ fn cpu_diagnostic_results_report_execution_mode_not_fixed_two_mhz() {
 #[test]
 fn external_cpu_diagnostic_keeps_the_launch_speed_for_its_result() {
     assert!(APP.contains("cpu_diagnostic_run_speed_label: Option<String>"));
-    assert!(RUNTIME.contains("self.cpu_diagnostic_run_speed_label.is_some()"));
-    assert!(RUNTIME.contains("Speed locked while external CPU diagnostic runs: {speed}"));
+    assert!(MAIN_MENU.contains("app.cpu_diagnostic_run_speed_label.is_some()"));
+    assert!(MAIN_MENU.contains("Locked while external CPU diagnostic runs: {speed}"));
     assert!(
         EXTERNAL_DIAGNOSTICS
             .contains("self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());")
