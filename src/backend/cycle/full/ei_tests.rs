@@ -72,8 +72,9 @@ fn prepare_backend(hardware: S100HardwareConfig, program: &[u8]) -> CycleAccurat
 #[test]
 fn compiled_full_ei_lhld_keeps_delay_and_continues_same_window_when_pint_is_low() {
     const BUDGET: u32 = 40;
-    // EI (4T), LHLD 0010h (16T), NOP (4T), JMP 0004h (10T), then a
-    // six-T budget tail. If EI fragments Full, this cannot remain one window.
+    // EI (4T), LHLD 0010h (16T) and the required guard NOP (4T) stay in one
+    // Full window. The remaining 16T fall below Full's conservative 18T reserve
+    // and therefore rejoin exact Partial before the following JMP.
     let program = [0xfb, 0x2a, 0x10, 0x00, 0x00, 0xc3, 0x04, 0x00];
     let hardware = static_4k_hardware();
     let mut compiled = prepare_backend(hardware, &program);
@@ -90,8 +91,8 @@ fn compiled_full_ei_lhld_keeps_delay_and_continues_same_window_when_pint_is_low(
     }
 
     assert_eq!(stats.full_windows, 1, "EI->LHLD with PINT low must not fragment Full");
-    assert_eq!(stats.full_t_states, 34);
-    assert_eq!(stats.partial_t_states, 6);
+    assert_eq!(stats.full_t_states, 24);
+    assert_eq!(stats.partial_t_states, 16);
     assert_eq!(stats.fallbacks.opcode_barrier, 0);
     assert!(compiled.cpu.interrupts_enabled());
     assert_eq!(compiled.cpu.total_t_states(), partial.cpu.total_t_states());
