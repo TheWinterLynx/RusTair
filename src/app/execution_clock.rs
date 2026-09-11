@@ -9,7 +9,10 @@ use crate::config::EmulationSpeed;
 /// instruction a few T-states past the requested budget.
 const T_STATE_UNITS: i128 = 1_000_000_000;
 const AUTHENTIC_CHUNK_T_STATES: u32 = 40_000;
-const UNLIMITED_CHUNK_T_STATES: u32 = 1_000_000;
+// Unlimited is host-deadline limited by `run_cpu_frame`, not repaint-count
+// limited. A large budget lets one UI update use its entire host-time slice;
+// the old 1,000,000-T cap accidentally throttled Unlimited to ~60 MHz at 60 Hz.
+pub(super) const UNLIMITED_CHUNK_T_STATES: u32 = 32_000_000;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ExecutionClock {
@@ -61,7 +64,8 @@ impl ExecutionClock {
     /// change from one known rate to another starts a fresh epoch at `now`; the
     /// preceding host interval cannot be attributed safely to either rate and
     /// is not replayed at the new one. Unlimited remains detached from wall
-    /// clock and simply supplies one bounded chunk per repaint.
+    /// clock and supplies a deliberately large budget; the host-time deadline in
+    /// `run_cpu_frame` remains the responsiveness authority.
     pub(super) fn budget(
         &mut self,
         now: Instant,
@@ -264,13 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn unlimited_is_not_wall_clock_throttled() {
+    fn unlimited_is_host_deadline_limited_not_one_million_t_states_per_repaint() {
         let t0 = Instant::now();
         let mut clock = ExecutionClock::new(t0);
         assert_eq!(
             clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Unlimited),
             UNLIMITED_CHUNK_T_STATES
         );
+        assert!(UNLIMITED_CHUNK_T_STATES > 1_000_000);
         let much_later = t0 + Duration::from_secs(5);
         assert_eq!(
             clock.budget(much_later, true, TWO_MHZ, EmulationSpeed::Unlimited),
