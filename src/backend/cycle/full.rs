@@ -811,14 +811,12 @@ impl CycleAccurateMachineBackend {
                     // Execute EI itself. It leaves INTE unchanged and arms the
                     // semantic core's one-instruction delay.
                     full_bus.prime_opcode_fetch(opcode_address, opcode);
-                    last_address = opcode_address;
                     let ei_elapsed = full.step(&mut full_bus);
                     debug_assert!(full_bus.prefetched_opcode.is_none());
                     debug_assert_eq!(ei_elapsed, 4);
                     debug_assert!(ei_elapsed <= *remaining);
                     *remaining -= ei_elapsed;
                     completed = completed.saturating_add(1);
-                    last_elapsed = ei_elapsed;
 
                     // The measured EXM successor is LHLD. Arm only this step so
                     // Bus::set_inte(true) can place the delayed edge on LHLD's
