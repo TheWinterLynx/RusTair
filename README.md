@@ -77,11 +77,33 @@ Compatibility workarounds are explicit and opt-in. Historical bugs or awkward ha
 - `src/cpu8080_cycle/` — authoritative T-state-accurate Intel 8080 core.
 - `src/cpu8080.rs` — validated instruction-level semantic executor used by internal Full windows.
 - `src/machine/` — CPU-independent Altair chassis, front-panel state and runtime card façades.
-- `src/s100_*` / `src/s100/` — S-100 contacts, backplane, CPU/I/O/RAM cards and live runtime fabric.
+- `src/s100_*` — S-100 contacts, backplane, CPU/I/O/RAM cards and live runtime fabric.
 - `src/config/` — physical hardware and application configuration.
 - `src/io/` — external serial transports and cable routing.
 - `src/peripherals/asr33/` — ASR-33 model.
 - `tests/` — architecture, fidelity, UI-structure, differential and classic diagnostic regression tests.
+
+## Developer documentation
+
+New contributors should start with [`CONTRIBUTING.md`](CONTRIBUTING.md). The complete developer documentation index is [`docs/README.md`](docs/README.md).
+
+Key documents:
+
+- [`docs/DEVELOPER_GUIDE.md`](docs/DEVELOPER_GUIDE.md) — from-zero Rust/emulation/Altair onboarding.
+- [`docs/GLOSSARY.md`](docs/GLOSSARY.md) — Rust, Intel 8080, S-100 and project terminology.
+- [`docs/EMULATION_ARCHITECTURE.md`](docs/EMULATION_ARCHITECTURE.md) — current runtime architecture and state ownership.
+- [`docs/ARCHITECTURAL_INVARIANTS.md`](docs/ARCHITECTURAL_INVARIANTS.md) — non-negotiable architecture/fidelity rules for contributors and reviewers.
+- [`docs/RUNTIME_FLOWS.md`](docs/RUNTIME_FLOWS.md) — end-to-end execution, memory, serial, panel and configuration flows.
+- [`docs/SUPPORT_AND_LIMITATIONS.md`](docs/SUPPORT_AND_LIMITATIONS.md) — implemented scope, deliberate non-claims and known limitations.
+- [`docs/SUBSYSTEM_REVIEW_MAP.md`](docs/SUBSYSTEM_REVIEW_MAP.md) — source/tests/docs to inspect for each subsystem before making a change.
+- [`docs/SOURCE_REFERENCE.md`](docs/SOURCE_REFERENCE.md) — mission and characteristics of every Rust source file under `src/`.
+- [`docs/TEST_REFERENCE.md`](docs/TEST_REFERENCE.md) — mission of every Rust integration-test source under `tests/`.
+- [`docs/REPOSITORY_REFERENCE.md`](docs/REPOSITORY_REFERENCE.md) — root files, assets, tools, workflows, licenses and generated paths.
+- [`docs/BUILD_AND_TOOLCHAIN.md`](docs/BUILD_AND_TOOLCHAIN.md) — Cargo/Rust profiles, dependencies and build tooling.
+- [`docs/CODING_CONVENTIONS.md`](docs/CODING_CONVENTIONS.md) — project-specific Rust and architecture conventions.
+- [`docs/TESTING_GUIDE.md`](docs/TESTING_GUIDE.md) — fidelity/test strategy, oracles and commands.
+- [`docs/EXTENDING_RUSTAIR.md`](docs/EXTENDING_RUSTAIR.md) — recipes for adding hardware/features safely.
+- [`docs/DEBUGGING_AND_PERFORMANCE.md`](docs/DEBUGGING_AND_PERFORMANCE.md) — debugger, tracing, profiling and performance methodology.
 
 ## Runtime assets
 
