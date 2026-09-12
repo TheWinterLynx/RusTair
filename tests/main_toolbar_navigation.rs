@@ -5,6 +5,11 @@ const ASR33_WINDOW_SOURCE: &str = include_str!("../src/app/ui/asr33_window.rs");
 const TERMINAL_WINDOW_SOURCE: &str = include_str!("../src/app/ui/terminal.rs");
 const EXTERNAL_TCP_SOURCE: &str = include_str!("../src/app/external_serial.rs");
 const EXTERNAL_COM_SOURCE: &str = include_str!("../src/app/external_com.rs");
+const DEBUGGER_SOURCE: &str = include_str!("../src/app/ui/debugger_controls.rs");
+const LOOP_INSPECTOR_SOURCE: &str = include_str!("../src/app/ui/loop_inspector.rs");
+const MEMORY_ACTIVITY_SOURCE: &str = include_str!("../src/app/ui/memory_activity.rs");
+const BUS_TEACHER_SOURCE: &str = include_str!("../src/app/ui/bus_teacher.rs");
+const S100_EDITOR_SOURCE: &str = include_str!("../src/app/ui/s100_hardware_editor.rs");
 
 #[test]
 fn main_menu_uses_six_clear_top_level_sections() {
@@ -128,6 +133,45 @@ fn auxiliary_status_bars_share_the_readable_small_text_policy() {
     assert!(EXTERNAL_COM_SOURCE.contains("TopBottomPanel::bottom(\"external-com-status\")"));
     assert!(EXTERNAL_COM_SOURCE.contains("ui.small(self.external_com_status_text())"));
     assert!(UI_SOURCE.contains("egui::FontId::new(14.0, egui::FontFamily::Proportional)"));
+}
+
+#[test]
+fn resizable_tool_windows_wrap_controls_and_scroll_real_tables() {
+    assert!(TERMINAL_WINDOW_SOURCE.contains("TopBottomPanel::top(\"terminal-menu\")"));
+    assert!(TERMINAL_WINDOW_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
+    assert!(
+        !TERMINAL_WINDOW_SOURCE.contains("egui::MenuBar::new()"),
+        "Text Terminal must wrap like ASR-33 instead of clipping a rigid menu bar"
+    );
+    assert!(ASR33_WINDOW_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
+
+    assert!(DEBUGGER_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
+    assert!(DEBUGGER_SOURCE.contains(
+        "egui::ScrollArea::both().id_salt(\"debugger-watchpoint-list\")"
+    ));
+    assert!(DEBUGGER_SOURCE.contains(".with_min_inner_size([680.0, 620.0])"));
+
+    assert!(LOOP_INSPECTOR_SOURCE.contains("egui::ScrollArea::both()"));
+    assert!(LOOP_INSPECTOR_SOURCE.contains(".with_min_inner_size([560.0, 360.0])"));
+
+    assert!(MEMORY_ACTIVITY_SOURCE.contains("memory-activity-table-scroll"));
+    assert!(MEMORY_ACTIVITY_SOURCE.contains("egui::ScrollArea::both()"));
+    assert!(MEMORY_ACTIVITY_SOURCE.contains(".with_min_inner_size([760.0, 480.0])"));
+
+    assert!(BUS_TEACHER_SOURCE.contains(
+        "const BUS_TEACHER_TWO_COLUMN_MIN_WIDTH: f32 = 1160.0;"
+    ));
+    assert!(BUS_TEACHER_SOURCE.contains(
+        "if ui.available_width() >= BUS_TEACHER_TWO_COLUMN_MIN_WIDTH"
+    ));
+    assert!(BUS_TEACHER_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
+    assert!(
+        !BUS_TEACHER_SOURCE.contains(".exact_height(38.0)"),
+        "T-state Teacher header must grow when its wrapped controls need another row"
+    );
+
+    assert!(S100_EDITOR_SOURCE.contains(".width_range(190.0..=360.0)"));
+    assert!(S100_EDITOR_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
 }
 
 #[test]
