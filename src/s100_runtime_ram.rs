@@ -21,6 +21,8 @@ use crate::s100_memory::{
 };
 
 const LEGACY_COMPATIBILITY_PROTECTION_UNIT: usize = 1024;
+const S4K_REFRESH_DIVIDER: u16 = 32;
+const DYNAMIC_REFRESH_ROWS: u8 = 64;
 
 type RamDriveSignature = (Option<u8>, bool, bool);
 
@@ -99,9 +101,18 @@ struct RuntimeRamState {
     wait_clocks_remaining: u8,
     previous_sync: bool,
     previous_clock: bool,
+    previous_phi2: bool,
+    previous_m1: bool,
     previous_memory_read: bool,
     previous_protect: bool,
     previous_unprotect: bool,
+    refresh_clock_count: u16,
+    refresh_pending: bool,
+    refresh_active: bool,
+    refresh_collision_waits: u8,
+    refresh_row: u8,
+    refresh_cycles: u64,
+    m1_phi2_count: u8,
     /// Physical connector output is persistent state. Rebuilding eight DI pins
     /// plus PRDY/PROT on every observation was pure host work when those outputs
     /// had not changed. Keep the exact drive latched just like the CPU board.
@@ -123,9 +134,18 @@ impl RuntimeRamState {
             wait_clocks_remaining: 0,
             previous_sync: false,
             previous_clock: false,
+            previous_phi2: false,
+            previous_m1: false,
             previous_memory_read: false,
             previous_protect: false,
             previous_unprotect: false,
+            refresh_clock_count: 0,
+            refresh_pending: false,
+            refresh_active: false,
+            refresh_collision_waits: 0,
+            refresh_row: 0,
+            refresh_cycles: 0,
+            m1_phi2_count: 0,
             cached_drive: S100CardDrive::new(),
         };
         state.rebuild_cached_drive();
@@ -185,6 +205,99 @@ impl RuntimeRamState {
         true
     }
 
+    fn complete_refresh_cycle(&mut self) {
+        self.refresh_pending = false;
+        self.refresh_cycles = self.refresh_cycles.saturating_add(1);
+        self.refresh_row = (self.refresh_row + 1) % DYNAMIC_REFRESH_ROWS;
+    }
+
+    fn historical_model(&self) -> Option<S100RamBoardModel> {
+        self.config.historical_model()
+    }
+
+    fn advance_refresh_timing(
+        &mut self,
+        sync: bool,
+        sync_rising: bool,
+        clock_rising: bool,
+        phi2_rising: bool,
+        m1: bool,
+        m1_rising: bool,
+        run: bool,
+        halt_ack: bool,
+    ) {
+        match self.historical_model() {
+            Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
+                let S100RamTimingModel::RefreshCollision {
+                    interval_clocks,
+                    min_waits,
+                    max_waits,
+                } = S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_model()
+                else {
+                    unreachable!("88-4MCD must retain refresh-collision timing")
+                };
+
+                let mut became_due_on_this_clock = false;
+                if clock_rising {
+                    self.refresh_clock_count += 1;
+                    if self.refresh_clock_count >= interval_clocks {
+                        self.refresh_clock_count = 0;
+                        self.refresh_pending = true;
+                        became_due_on_this_clock = true;
+                    }
+                }
+
+                if sync_rising {
+                    self.refresh_active = self.refresh_pending;
+                    if self.refresh_active {
+                        // MITS documents one or two waits when a selected access
+                        // collides with refresh. The phase relationship decides
+                        // which case: a refresh already pending before SYNC has
+                        // one interval left; the 32nd CLOC arriving with SYNC
+                        // occupies both documented wait intervals.
+                        self.refresh_collision_waits = if became_due_on_this_clock {
+                            max_waits
+                        } else {
+                            min_waits
+                        };
+                        self.complete_refresh_cycle();
+                    } else {
+                        self.refresh_collision_waits = 0;
+                    }
+                } else if !sync && self.previous_sync && self.wait_clocks_remaining == 0 {
+                    self.refresh_active = false;
+                    self.refresh_collision_waits = 0;
+                }
+            }
+            Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
+                if m1_rising {
+                    self.m1_phi2_count = 0;
+                }
+                if phi2_rising {
+                    self.refresh_clock_count += 1;
+                    if self.refresh_clock_count >= S4K_REFRESH_DIVIDER {
+                        self.refresh_clock_count = 0;
+                        self.refresh_pending = true;
+                    }
+                    if m1 {
+                        self.m1_phi2_count = self.m1_phi2_count.saturating_add(1);
+                    }
+
+                    // The 88-S4K hides refresh in the fourth T-state of M1 while
+                    // RUNning. In STOP/HLTA its control logic does not wait for
+                    // another instruction fetch; refresh proceeds from PHI2 and
+                    // never asserts PRDY.
+                    let hidden_m1_slot = run && m1 && self.m1_phi2_count >= 4;
+                    let parked_refresh_slot = (!run || halt_ack) && self.refresh_pending;
+                    if self.refresh_pending && (hidden_m1_slot || parked_refresh_slot) {
+                        self.complete_refresh_cycle();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[inline]
     fn drive_signature(&self) -> RamDriveSignature {
         let data_in = if self.memory_read {
@@ -225,9 +338,18 @@ impl RuntimeRamState {
         self.wait_clocks_remaining = 0;
         self.previous_sync = false;
         self.previous_clock = false;
+        self.previous_phi2 = false;
+        self.previous_m1 = false;
         self.previous_memory_read = false;
         self.previous_protect = false;
         self.previous_unprotect = false;
+        self.refresh_clock_count = 0;
+        self.refresh_pending = false;
+        self.refresh_active = false;
+        self.refresh_collision_waits = 0;
+        self.refresh_row = 0;
+        self.refresh_cycles = 0;
+        self.m1_phi2_count = 0;
     }
 }
 
@@ -364,21 +486,41 @@ impl S100ElectricalCard for RuntimeRamCard {
         let before = state.drive_signature();
         let sync = sample.signal_level(S100Signal::Sync) == Some(true);
         let clock = sample.signal_level(S100Signal::Clock) == Some(true);
+        let phi2 = sample.signal_level(S100Signal::Phi2) == Some(true);
+        let m1 = sample.signal_level(S100Signal::M1) == Some(true);
+        let run = sample.signal_level(S100Signal::Run) == Some(true);
+        let halt_ack = sample.signal_level(S100Signal::HaltAcknowledge) == Some(true);
         let protect = sample.signal_level(S100Signal::Protect) == Some(true);
         let unprotect = sample.signal_level(S100Signal::Unprotect) == Some(true);
         let sync_rising = sync && !state.previous_sync;
         let clock_rising = clock && !state.previous_clock;
+        let phi2_rising = phi2 && !state.previous_phi2;
+        let m1_rising = m1 && !state.previous_m1;
 
         state.selected_offset = sample
             .address()
             .and_then(|address| state.offset_for(address));
         let memory_read = state.selected_offset.is_some()
             && sample.signal_level(S100Signal::MemoryRead) == Some(true);
+        let memory_write = state.selected_offset.is_some()
+            && sample.signal_level(S100Signal::MemoryWrite) == Some(true);
+        let memory_access = memory_read || memory_write;
+
+        state.advance_refresh_timing(
+            sync,
+            sync_rising,
+            clock_rising,
+            phi2_rising,
+            m1,
+            m1_rising,
+            run,
+            halt_ack,
+        );
 
         // The Display/Control board generates MWRT. A selected RAM card sees the
         // resulting bus line; it does not infer writes from CPU package state.
         if let (Some(address), Some(value)) = (sample.address(), sample.data_out()) {
-            if sample.signal_level(S100Signal::MemoryWrite) == Some(true) {
+            if memory_write {
                 let _ = state.write_byte_raw(address, value, true);
             }
         }
@@ -394,25 +536,49 @@ impl S100ElectricalCard for RuntimeRamCard {
             }
         }
 
-        let fixed_waits = state.config.read_wait_states();
-        if !memory_read || fixed_waits == 0 {
-            state.wait_clocks_remaining = 0;
-        } else if sync_rising || (!state.previous_memory_read && sync) {
-            // sMEMR is produced by the CPU-board 8212 *after* SYNC+PHI1. The
-            // second condition models that same-edge propagation without asking
-            // the RAM card to predict the CPU status byte before it exists.
-            state.wait_clocks_remaining = fixed_waits;
-        } else if clock_rising && !sync && state.wait_clocks_remaining != 0 {
-            // The status/SYNC phase loads the wait generator. Its coincident CLOC
-            // edge is not one of the inserted TW intervals: READY is first sampled
-            // in T2, then each following CLOC consumes one requested wait.
-            state.wait_clocks_remaining -= 1;
+        match state
+            .historical_model()
+            .map(S100RamBoardModel::timing_model)
+            .unwrap_or(S100RamTimingModel::FixedReadWaits(state.config.read_wait_states()))
+        {
+            S100RamTimingModel::FixedReadWaits(fixed_waits) => {
+                if !memory_read || fixed_waits == 0 {
+                    state.wait_clocks_remaining = 0;
+                } else if sync_rising || (!state.previous_memory_read && sync) {
+                    // sMEMR is produced by the CPU-board 8212 *after* SYNC+PHI1.
+                    // The second condition models that same-edge propagation without
+                    // asking the RAM card to predict the CPU status byte before it exists.
+                    state.wait_clocks_remaining = fixed_waits;
+                } else if clock_rising && !sync && state.wait_clocks_remaining != 0 {
+                    // The status/SYNC phase loads the wait generator. Its coincident
+                    // CLOC edge is not one of the inserted TW intervals.
+                    state.wait_clocks_remaining -= 1;
+                }
+            }
+            S100RamTimingModel::RefreshCollision { .. } => {
+                if state.refresh_active && memory_access && state.wait_clocks_remaining == 0 {
+                    state.wait_clocks_remaining = state.refresh_collision_waits;
+                } else if clock_rising && !sync && state.wait_clocks_remaining != 0 {
+                    state.wait_clocks_remaining -= 1;
+                    if state.wait_clocks_remaining == 0 {
+                        state.refresh_active = false;
+                        state.refresh_collision_waits = 0;
+                    }
+                } else if !state.refresh_active && !memory_access {
+                    state.wait_clocks_remaining = 0;
+                }
+            }
+            S100RamTimingModel::NoWait => {
+                state.wait_clocks_remaining = 0;
+            }
         }
 
         state.memory_read = memory_read;
         state.previous_memory_read = memory_read;
         state.previous_sync = sync;
         state.previous_clock = clock;
+        state.previous_phi2 = phi2;
+        state.previous_m1 = m1;
         state.previous_protect = protect;
         state.previous_unprotect = unprotect;
         state.refresh_cached_drive_if_changed(before);
@@ -437,6 +603,43 @@ mod tests {
         drive.drive_signal(S100Signal::Sync, sync);
         drive.drive_signal(S100Signal::Clock, clock);
         drive
+    }
+
+    fn observe(card: &mut RuntimeRamCard, drive: S100CardDrive) -> S100CardDrive {
+        let backplane = S100Backplane::new(0);
+        let observed = backplane.resolve_drive_sets(&[drive.clone()]);
+        card.observe_s100(&observed);
+        backplane.resolve_drive_sets(&[drive, card.drive_s100()])
+    }
+
+    fn clock_pulse(card: &mut RuntimeRamCard, address: u16) {
+        let _ = observe(card, read_drive(address, false, false));
+        let _ = observe(card, read_drive(address, false, true));
+        let _ = observe(card, read_drive(address, false, false));
+    }
+
+    fn s4k_drive(address: u16, phi2: bool, m1: bool, run: bool, halt_ack: bool) -> S100CardDrive {
+        let mut drive = S100CardDrive::new();
+        drive.drive_address(address);
+        drive.drive_signal(S100Signal::MemoryRead, true);
+        drive.drive_signal(S100Signal::MemoryWrite, false);
+        drive.drive_signal(S100Signal::Phi2, phi2);
+        drive.drive_signal(S100Signal::M1, m1);
+        drive.drive_signal(S100Signal::Run, run);
+        drive.drive_signal(S100Signal::HaltAcknowledge, halt_ack);
+        drive
+    }
+
+    fn s4k_phi2_pulse(
+        card: &mut RuntimeRamCard,
+        address: u16,
+        m1: bool,
+        run: bool,
+        halt_ack: bool,
+    ) {
+        let _ = observe(card, s4k_drive(address, false, m1, run, halt_ack));
+        let _ = observe(card, s4k_drive(address, true, m1, run, halt_ack));
+        let _ = observe(card, s4k_drive(address, false, m1, run, halt_ack));
     }
 
     #[test]
@@ -546,5 +749,94 @@ mod tests {
                 .data_in(),
             Some(0x5a)
         );
+    }
+
+    #[test]
+    fn four_mcd_refresh_is_invisible_until_a_selected_access_collides() {
+        let (mut card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..32 {
+            clock_pulse(&mut card, 0x5000);
+        }
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
+
+        let unselected_sync = read_drive(0x5000, true, false);
+        let resolved = observe(&mut card, unselected_sync);
+        assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+
+        for _ in 0..32 {
+            clock_pulse(&mut card, 0x0010);
+        }
+        let selected_sync = read_drive(0x0010, true, false);
+        let resolved = observe(&mut card, selected_sync);
+        assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(handle.state.borrow().refresh_cycles, 2);
+    }
+
+    #[test]
+    fn four_mcd_collision_releases_prdy_after_documented_wait_window() {
+        let (mut card, _handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..32 {
+            clock_pulse(&mut card, 0x0010);
+        }
+        let resolved = observe(&mut card, read_drive(0x0010, true, false));
+        assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
+
+        let _ = observe(&mut card, read_drive(0x0010, false, false));
+        let first = observe(&mut card, read_drive(0x0010, false, true));
+        assert_eq!(first.signal_level(S100Signal::Ready), Some(false));
+        let _ = observe(&mut card, read_drive(0x0010, false, false));
+        let second = observe(&mut card, read_drive(0x0010, false, true));
+        assert_eq!(second.signal_level(S100Signal::Ready), Some(true));
+    }
+
+    #[test]
+    fn s4k_refresh_is_hidden_in_m1_and_never_pulls_prdy() {
+        let (mut card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..S4K_REFRESH_DIVIDER {
+            s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+        }
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
+
+        for _ in 0..4 {
+            let resolved = observe(&mut card, s4k_drive(0x0010, true, true, true, false));
+            assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
+            let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, false));
+        }
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
+    }
+
+    #[test]
+    fn s4k_pending_refresh_completes_while_cpu_is_stopped() {
+        let (mut card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..S4K_REFRESH_DIVIDER {
+            s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+        }
+        assert!(handle.state.borrow().refresh_pending);
+        s4k_phi2_pulse(&mut card, 0x0010, false, false, false);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
     }
 }
