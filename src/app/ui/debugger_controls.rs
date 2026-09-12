@@ -168,7 +168,7 @@ impl RusTairApp {
             let halted = cpu.halted.unwrap_or(false);
             let stopped_for_step = powered && !running && !halted;
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong("8080 DEBUGGER");
                 ui.separator();
                 ui.label(format!("Core: {}", self.machine.engine().label()));
@@ -228,7 +228,7 @@ impl RusTairApp {
             ui.separator();
             super::collapsible_section(ui, "Execution controls", true, |ui| {
                 let width = ui.available_width();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.add_enabled(powered && !running && !halted, egui::Button::new("Continue")).clicked() {
                         self.machine.set_running(true);
                         state.message = Some("Execution resumed.".into());
@@ -270,7 +270,7 @@ impl RusTairApp {
 
             ui.separator();
             super::collapsible_section(ui, "Run to address", true, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let response = ui.add_sized([90.0, 24.0], egui::TextEdit::singleline(&mut state.run_to_input).font(egui::TextStyle::Monospace).char_limit(6));
                     if response.changed() { Self::sanitize_debug_address_input(&mut state.run_to_input); }
                     if ui.add_enabled(powered && !halted, egui::Button::new("Run to")).clicked() {
@@ -290,7 +290,7 @@ impl RusTairApp {
             ui.separator();
             super::collapsible_section(ui, "Execute breakpoints", true, |ui| {
                 let width = ui.available_width();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let response = ui.add_sized([90.0, 24.0], egui::TextEdit::singleline(&mut state.breakpoint_input).font(egui::TextStyle::Monospace).char_limit(6));
                     if response.changed() { Self::sanitize_debug_address_input(&mut state.breakpoint_input); }
                     if ui.button("Add").clicked() {
@@ -344,7 +344,7 @@ impl RusTairApp {
             ui.separator();
             super::collapsible_section(ui, "Memory watchpoints", true, |ui| {
                 let width = ui.available_width();
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     let response = ui.add_sized([90.0, 24.0], egui::TextEdit::singleline(&mut state.watchpoint_input).font(egui::TextStyle::Monospace).char_limit(6));
                     if response.changed() { Self::sanitize_debug_address_input(&mut state.watchpoint_input); }
                     for (access, label) in [
@@ -381,7 +381,7 @@ impl RusTairApp {
                         if watchpoints.is_empty() {
                             ui.small("No memory watchpoints.");
                         } else {
-                            egui::ScrollArea::vertical().id_salt("debugger-watchpoint-list").auto_shrink([false, false]).show(ui, |ui| {
+                            egui::ScrollArea::both().id_salt("debugger-watchpoint-list").auto_shrink([false, false]).show(ui, |ui| {
                                 for (address, access) in watchpoints {
                                     let inspection = self.machine.inspect_memory_mapping(address);
                                     ui.horizontal(|ui| {
@@ -426,7 +426,7 @@ impl RusTairApp {
         let execution_address = current_instruction_address(self);
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong("INFERRED 8080 CALL STACK");
                 ui.separator();
                 ui.monospace(format!("PC=${:04X} EXEC=${execution_address:04X} SP=${:04X}", cpu.pc, cpu.sp));
@@ -457,7 +457,7 @@ impl RusTairApp {
                 if inferred.frames.is_empty() {
                     ui.label("No live call frames can be proven from the retained trace.");
                 } else {
-                    egui::ScrollArea::vertical().id_salt("debugger-inferred-call-stack").show(ui, |ui| {
+                    egui::ScrollArea::both().id_salt("debugger-inferred-call-stack").auto_shrink([false, false]).show(ui, |ui| {
                         for (depth, frame) in inferred.frames.iter().enumerate().rev() {
                             let kind = match frame.kind { CallKind8080::Call => "CALL", CallKind8080::Restart => "RST" };
                             ui.horizontal(|ui| {
@@ -466,7 +466,7 @@ impl RusTairApp {
                                 ui.add_sized([132.0, 20.0], egui::Label::new(egui::RichText::new(format!("${:04X} -> ${:04X}", frame.call_site, frame.target)).monospace()));
                                 ui.add_sized([112.0, 20.0], egui::Label::new(egui::RichText::new(format!("return ${:04X}", frame.return_address)).monospace()));
                                 ui.add_sized([142.0, 20.0], egui::Label::new(egui::RichText::new(format!("SP after ${:04X}", frame.stack_pointer_after_push)).monospace()));
-                                ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new(format!("trace #{}", frame.sequence)).small()));
+                                ui.add_sized([96.0, 20.0], egui::Label::new(egui::RichText::new(format!("trace #{}", frame.sequence)).small()));
                             });
                         }
                     });
@@ -504,7 +504,7 @@ impl RusTairApp {
             egui::ViewportBuilder::default()
                 .with_title("RusTair - Intel 8080 Call Stack")
                 .with_inner_size([760.0, 500.0])
-                .with_min_inner_size([600.0, 360.0])
+                .with_min_inner_size([520.0, 360.0])
                 .with_resizable(true),
             |stack_ctx, _class| {
                 self.draw_call_stack_viewport_contents(stack_ctx);
@@ -522,7 +522,7 @@ impl RusTairApp {
                 egui::ViewportBuilder::default()
                     .with_title("RusTair - Intel 8080 Debugger")
                     .with_inner_size([900.0, 780.0])
-                    .with_min_inner_size([760.0, 620.0])
+                    .with_min_inner_size([680.0, 620.0])
                     .with_resizable(true),
                 |debugger_ctx, _class| {
                     self.draw_debugger_controls_viewport_contents(debugger_ctx, &mut state);
