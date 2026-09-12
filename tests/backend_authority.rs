@@ -17,10 +17,9 @@ fn static_4k_hardware() -> S100HardwareConfig {
     hardware
         .set_slot(
             2,
-            Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                S100RamBoardModel::Mits4KStatic88_4Mcs,
-                0,
-            ))),
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
+            )),
         )
         .unwrap();
     hardware.validate().unwrap()
@@ -42,12 +41,16 @@ fn cycle_step_machine_cycle(backend: &mut CycleAccurateMachineBackend) {
                 || backend.cpu().is_halted()
                 || backend.cpu().is_holding())
         {
-            backend.halt().expect("logical machine-cycle stop must succeed");
+            backend
+                .halt()
+                .expect("logical machine-cycle stop must succeed");
             return;
         }
     }
 
-    backend.halt().expect("logical machine-cycle stop must succeed");
+    backend
+        .halt()
+        .expect("logical machine-cycle stop must succeed");
     panic!("cycle backend did not finish one machine cycle");
 }
 
@@ -128,19 +131,8 @@ fn cycle_chassis_controls_use_exact_cpu_and_physical_bus_state() {
 #[test]
 fn adaptive_cycle_matches_forced_partial_oracle_for_same_t_state_budget() {
     let program = [
-        0x31, 0x00, 0x03,
-        0x01, 0x00, 0x00,
-        0x11, 0x00, 0x00,
-        0x21, 0x00, 0x02,
-        0xaf,
-        0x3e, 0x12,
-        0x06, 0x34,
-        0x80,
-        0x77,
-        0x4e,
-        0x0c,
-        0x79,
-        0xc3, 0x13, 0x00,
+        0x31, 0x00, 0x03, 0x01, 0x00, 0x00, 0x11, 0x00, 0x00, 0x21, 0x00, 0x02, 0xaf, 0x3e, 0x12,
+        0x06, 0x34, 0x80, 0x77, 0x4e, 0x0c, 0x79, 0xc3, 0x13, 0x00,
     ];
     const BUDGET: u32 = 14_000;
 
@@ -165,7 +157,10 @@ fn adaptive_cycle_matches_forced_partial_oracle_for_same_t_state_budget() {
     assert_eq!(adaptive.cpu().total_t_states(), u64::from(BUDGET));
     assert_eq!(partial.cpu().total_t_states(), u64::from(BUDGET));
     assert_eq!(intel_state(&mut adaptive), intel_state(&mut partial));
-    assert_eq!(adaptive.peek_memory(0x0200).unwrap(), partial.peek_memory(0x0200).unwrap());
+    assert_eq!(
+        adaptive.peek_memory(0x0200).unwrap(),
+        partial.peek_memory(0x0200).unwrap()
+    );
     assert_eq!(
         adaptive.machine().bus.raw_panel_lamp_duty(),
         partial.machine().bus.raw_panel_lamp_duty(),

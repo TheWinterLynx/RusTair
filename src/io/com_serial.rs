@@ -1,16 +1,14 @@
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
-use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, StopBits};
 
-use crate::config::{
-    ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig,
-};
+use crate::config::{ComDataBits, ComFlowControl, ComParity, ComStopBits, ExternalComConfig};
 
 const WORKER_TIMEOUT: Duration = Duration::from_millis(15);
 const WORKER_TX_QUEUE: usize = 4096;
@@ -85,7 +83,10 @@ enum WorkerEvent {
     Rx(Vec<u8>),
     /// Host API semantics: booleans mean the RS-232 signal is asserted. The
     /// app converts these to MC6850 TTL pin levels, whose active state is LOW.
-    ModemPins { cts_asserted: bool, dcd_asserted: bool },
+    ModemPins {
+        cts_asserted: bool,
+        dcd_asserted: bool,
+    },
     Error(String),
     Closed,
 }
@@ -268,7 +269,10 @@ impl ComSerialTransport {
                         }
                     }
                 }
-                WorkerEvent::ModemPins { cts_asserted, dcd_asserted } => {
+                WorkerEvent::ModemPins {
+                    cts_asserted,
+                    dcd_asserted,
+                } => {
                     self.modem_pins_asserted = Some((cts_asserted, dcd_asserted));
                 }
                 WorkerEvent::Error(error) => {
@@ -498,7 +502,11 @@ fn run_worker(
                     }
                 }
                 Ok(WorkerCommand::SetBreak(active)) => {
-                    let result = if active { port.set_break() } else { port.clear_break() };
+                    let result = if active {
+                        port.set_break()
+                    } else {
+                        port.clear_break()
+                    };
                     if let Err(error) = result {
                         let action = if active { "assert" } else { "clear" };
                         let _ = event_tx.send(WorkerEvent::Error(format!(
@@ -526,7 +534,10 @@ fn run_worker(
             let pins = (cts_asserted, dcd_asserted);
             if last_modem_pins != Some(pins) {
                 if event_tx
-                    .send(WorkerEvent::ModemPins { cts_asserted, dcd_asserted })
+                    .send(WorkerEvent::ModemPins {
+                        cts_asserted,
+                        dcd_asserted,
+                    })
                     .is_err()
                 {
                     break;
@@ -538,7 +549,10 @@ fn run_worker(
         match port.read(&mut buffer) {
             Ok(0) => {}
             Ok(count) => {
-                if event_tx.send(WorkerEvent::Rx(buffer[..count].to_vec())).is_err() {
+                if event_tx
+                    .send(WorkerEvent::Rx(buffer[..count].to_vec()))
+                    .is_err()
+                {
                     break;
                 }
             }

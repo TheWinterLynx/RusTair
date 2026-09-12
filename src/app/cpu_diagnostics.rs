@@ -221,12 +221,7 @@ fn build_cpm_diagnostic_environment(
     bdos.extend_from_slice(&[0xe1, 0xd1, 0xc1, 0xf1, 0xc9]);
     debug_assert_eq!(bdos.len(), PUTC_OFFSET as usize);
     bdos.push(0x47);
-    bdos.extend_from_slice(&[
-        0xdb,
-        endpoint.status_port,
-        0xe6,
-        ready_mask,
-    ]);
+    bdos.extend_from_slice(&[0xdb, endpoint.status_port, 0xe6, ready_mask]);
     append_abs(&mut bdos, wait_branch, poll_addr);
     bdos.extend_from_slice(&[0x78, 0xd3, endpoint.data_port, 0xc9]);
     debug_assert_eq!(bdos.len(), 0x37);
@@ -359,20 +354,23 @@ impl RusTairApp {
                     format_count(result.t_states)
                 ),
             };
-            let speed_label = self.cpu_diagnostic_run_speed_label.take().unwrap_or_else(|| {
-                emulation_speed_label(
-                    self.config.preferences.emulation_speed,
-                    configured_cpu_board(self),
-                )
-            });
+            let speed_label = self
+                .cpu_diagnostic_run_speed_label
+                .take()
+                .unwrap_or_else(|| {
+                    emulation_speed_label(
+                        self.config.preferences.emulation_speed,
+                        configured_cpu_board(self),
+                    )
+                });
             ctx.data_mut(|data| {
                 data.insert_temp(id, result);
                 data.insert_temp(speed_id, speed_label);
             });
         }
 
-        let Some(result) = ctx
-            .data(|data| data.get_temp::<crate::machine::CpuDiagnosticResult>(id))
+        let Some(result) =
+            ctx.data(|data| data.get_temp::<crate::machine::CpuDiagnosticResult>(id))
         else {
             return;
         };
@@ -633,10 +631,7 @@ mod tests {
         assert_eq!(&env.page_zero[0..3], &[0xc3, 0x80, 0x00]);
         assert_eq!(&env.page_zero[5..8], &[0xc3, 0x00, 0xff]);
         assert_eq!(&env.page_zero[0x80..0x83], &[0x31, 0x00, 0xff]);
-        assert_eq!(
-            &env.page_zero[0x83..0x88],
-            &[0x3e, 0x76, 0x32, 0x00, 0x00]
-        );
+        assert_eq!(&env.page_zero[0x83..0x88], &[0x3e, 0x76, 0x32, 0x00, 0x00]);
         assert_eq!(&env.page_zero[0x88..0x8b], &[0xc3, 0x00, 0x01]);
         assert_eq!(env.bdos_base, 0xff00);
         assert_eq!(env.bdos.len(), 0x37);
@@ -656,13 +651,13 @@ mod tests {
 
     #[test]
     fn putc_uses_88_sio_busy_semantics() {
-        let env = build_cpm_diagnostic_environment(
-            endpoint(SerialBoard::Sio88, 0, 0x00, 0x01),
-            0x1f00,
-        );
+        let env =
+            build_cpm_diagnostic_environment(endpoint(SerialBoard::Sio88, 0, 0x00, 0x01), 0x1f00);
         assert_eq!(
             &env.bdos[0x2b..0x37],
-            &[0x47, 0xdb, 0x00, 0xe6, 0xc0, 0xc2, 0x2c, 0x1f, 0x78, 0xd3, 0x01, 0xc9]
+            &[
+                0x47, 0xdb, 0x00, 0xe6, 0xc0, 0xc2, 0x2c, 0x1f, 0x78, 0xd3, 0x01, 0xc9
+            ]
         );
     }
 
@@ -678,20 +673,22 @@ mod tests {
         );
         assert_eq!(
             &p0.bdos[0x2b..0x37],
-            &[0x47, 0xdb, 0x10, 0xe6, 0x02, 0xca, 0x2c, 0x7f, 0x78, 0xd3, 0x11, 0xc9]
+            &[
+                0x47, 0xdb, 0x10, 0xe6, 0x02, 0xca, 0x2c, 0x7f, 0x78, 0xd3, 0x11, 0xc9
+            ]
         );
         assert_eq!(
             &p1.bdos[0x2b..0x37],
-            &[0x47, 0xdb, 0x12, 0xe6, 0x02, 0xca, 0x2c, 0x7f, 0x78, 0xd3, 0x13, 0xc9]
+            &[
+                0x47, 0xdb, 0x12, 0xe6, 0x02, 0xca, 0x2c, 0x7f, 0x78, 0xd3, 0x13, 0xc9
+            ]
         );
     }
 
     #[test]
     fn readdressed_serial_card_changes_only_mini_bdos_io_operands() {
-        let sio = build_cpm_diagnostic_environment(
-            endpoint(SerialBoard::Sio88, 0, 0x06, 0x07),
-            0x1f00,
-        );
+        let sio =
+            build_cpm_diagnostic_environment(endpoint(SerialBoard::Sio88, 0, 0x06, 0x07), 0x1f00);
         assert_eq!(sio.bdos[0x2d], 0x06);
         assert_eq!(sio.bdos[0x35], 0x07);
 
@@ -725,10 +722,7 @@ mod tests {
         assert_eq!(resolved.board, SerialBoard::TwoSio88);
         assert_eq!(resolved.status_port, 0x46);
         assert_eq!(resolved.data_port, 0x47);
-        assert_eq!(
-            resolved.label(),
-            "Slot 5 · 88-2SIO Port 1 [46h/47h]"
-        );
+        assert_eq!(resolved.label(), "Slot 5 · 88-2SIO Port 1 [46h/47h]");
     }
 
     #[test]

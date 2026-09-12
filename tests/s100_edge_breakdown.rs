@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
 use rustair::cpu8080_cycle::Cpu8080Pins;
-use rustair::s100_backplane::{s100_slot_mask, S100Backplane};
+use rustair::s100_backplane::{S100Backplane, s100_slot_mask};
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -61,10 +61,7 @@ fn hardware() -> S100HardwareConfig {
         .set_slot(
             RAM_SLOT,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
             )),
         )
         .unwrap();
@@ -171,7 +168,10 @@ fn profile_s100_active_edge_breakdown() {
                 .unwrap(),
         );
     }
-    report("E  package mutation + generic CPU cache refresh", start.elapsed());
+    report(
+        "E  package mutation + generic CPU cache refresh",
+        start.elapsed(),
+    );
 
     // F. Add the active incremental electrical resolve, but deliberately do not
     // wake RAM/CPU inputs yet. E -> F approximates the cost of changing resolved
@@ -219,15 +219,16 @@ fn profile_s100_active_edge_breakdown() {
     for i in 0..ITER {
         let address = if i & 1 == 0 { 0x0122 } else { 0x0123 };
         fabric.set_cpu_package_pins(address_pins(address));
-        checksum ^= fabric
-            .settle(d, &[])
-            .unwrap()
-            .data_in_or(0xff);
+        checksum ^= fabric.settle(d, &[]).unwrap().data_in_or(0xff);
     }
     black_box(checksum);
     report("H  production fabric CPU update + settle", start.elapsed());
 
     println!();
-    println!("Read the deltas between adjacent rows; do not subtract timings from different runs as if they were exact accounting.");
-    println!("B and H are the production RuntimeFabric boundaries. E/F/G expose internal causal stages using the public backplane API.");
+    println!(
+        "Read the deltas between adjacent rows; do not subtract timings from different runs as if they were exact accounting."
+    );
+    println!(
+        "B and H are the production RuntimeFabric boundaries. E/F/G expose internal causal stages using the public backplane API."
+    );
 }

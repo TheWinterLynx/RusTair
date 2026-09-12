@@ -69,7 +69,6 @@ pub const KEYS: &[Key] = &[
     Key::centered(KeyKind::Character(":*"), 2202.0, 2023.0, W, H),
     Key::centered(KeyKind::Character("-="), 2358.0, 2023.0, W, H),
     Key::centered(KeyKind::HereIs, 2517.0, 2023.0, W, H),
-
     Key::centered(KeyKind::Escape, 546.0, 2190.0, W, H),
     Key::centered(KeyKind::Character("Q"), 705.0, 2190.0, W, H),
     Key::centered(KeyKind::Character("W"), 857.0, 2190.0, W, H),
@@ -83,7 +82,6 @@ pub const KEYS: &[Key] = &[
     Key::centered(KeyKind::Character("P@"), 2131.0, 2190.0, W, H),
     Key::centered(KeyKind::LineFeed, 2287.0, 2190.0, W, H),
     Key::centered(KeyKind::CarriageReturn, 2443.0, 2190.0, W, H),
-
     Key::centered(KeyKind::Control, 573.0, 2358.0, MOD_W, MOD_H),
     Key::centered(KeyKind::Character("A"), 732.0, 2358.0, W, H),
     Key::centered(KeyKind::Character("S"), 895.0, 2358.0, W, H),
@@ -98,7 +96,6 @@ pub const KEYS: &[Key] = &[
     Key::centered(KeyKind::Delete, 2350.0, 2358.0, W, H),
     Key::centered(KeyKind::Repeat, 2518.0, 2358.0, W, H),
     Key::centered(KeyKind::Break, 2683.0, 2358.0, W, H),
-
     Key::centered(KeyKind::Shift, 643.0, 2530.0, MOD_W, MOD_H),
     Key::centered(KeyKind::Character("Z"), 803.0, 2530.0, W, H),
     Key::centered(KeyKind::Character("X"), 969.0, 2530.0, W, H),
@@ -111,7 +108,6 @@ pub const KEYS: &[Key] = &[
     Key::centered(KeyKind::Character(".>"), 2109.0, 2530.0, W, H),
     Key::centered(KeyKind::Character("/?"), 2267.0, 2530.0, W, H),
     Key::centered(KeyKind::Shift, 2429.0, 2530.0, MOD_W, MOD_H),
-
     Key::new(KeyKind::Space, 1220.0, 2652.0, 671.0, 120.0),
 ];
 
@@ -169,7 +165,10 @@ mod tests {
 
     #[test]
     fn shift_and_control_match_asr33() {
-        assert_eq!(key_to_byte(KeyKind::Character("K["), true, false), Some(b'['));
+        assert_eq!(
+            key_to_byte(KeyKind::Character("K["), true, false),
+            Some(b'[')
+        );
         assert_eq!(key_to_byte(KeyKind::Character("A"), false, true), Some(1));
     }
 

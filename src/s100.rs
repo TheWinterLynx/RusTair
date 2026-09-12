@@ -184,7 +184,9 @@ impl S100CardContact {
         Self { signal, role }
     }
 
-    pub const fn pin(self) -> Option<u8> { self.signal.pin() }
+    pub const fn pin(self) -> Option<u8> {
+        self.signal.pin()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,7 +257,14 @@ const A7: S100CardContact = S100CardContact::new(S100Signal::Address(7), S100Con
 const SERIAL_COMMON: &[S100CardContact] = &[
     PWR,
     GND,
-    A0, A1, A2, A3, A4, A5, A6, A7,
+    A0,
+    A1,
+    A2,
+    A3,
+    A4,
+    A5,
+    A6,
+    A7,
     S100CardContact::new(S100Signal::DataOut(0), S100ContactRole::Input),
     S100CardContact::new(S100Signal::DataOut(1), S100ContactRole::Input),
     S100CardContact::new(S100Signal::DataOut(2), S100ContactRole::Input),
@@ -278,7 +287,10 @@ const SERIAL_COMMON: &[S100CardContact] = &[
     S100CardContact::new(S100Signal::DataBusIn, S100ContactRole::Input),
     S100CardContact::new(S100Signal::ExternalClear, S100ContactRole::Input),
     S100CardContact::new(S100Signal::PowerOnClear, S100ContactRole::Input),
-    S100CardContact::new(S100Signal::InterruptRequest, S100ContactRole::OpenCollectorOutput),
+    S100CardContact::new(
+        S100Signal::InterruptRequest,
+        S100ContactRole::OpenCollectorOutput,
+    ),
 ];
 
 // 88-2SIO has the same CPU/data decode boundary plus its documented one-TW
@@ -287,7 +299,14 @@ const SERIAL_COMMON: &[S100CardContact] = &[
 const TWO_SIO_CONTACTS: &[S100CardContact] = &[
     PWR,
     GND,
-    A0, A1, A2, A3, A4, A5, A6, A7,
+    A0,
+    A1,
+    A2,
+    A3,
+    A4,
+    A5,
+    A6,
+    A7,
     S100CardContact::new(S100Signal::DataOut(0), S100ContactRole::Input),
     S100CardContact::new(S100Signal::DataOut(1), S100ContactRole::Input),
     S100CardContact::new(S100Signal::DataOut(2), S100ContactRole::Input),
@@ -311,7 +330,10 @@ const TWO_SIO_CONTACTS: &[S100CardContact] = &[
     S100CardContact::new(S100Signal::Wait, S100ContactRole::Input),
     S100CardContact::new(S100Signal::Ready, S100ContactRole::OpenCollectorOutput),
     S100CardContact::new(S100Signal::PowerOnClear, S100ContactRole::Input),
-    S100CardContact::new(S100Signal::InterruptRequest, S100ContactRole::OpenCollectorOutput),
+    S100CardContact::new(
+        S100Signal::InterruptRequest,
+        S100ContactRole::OpenCollectorOutput,
+    ),
 ];
 
 const RAM_CONTACTS: &[S100CardContact] = &[
@@ -480,7 +502,12 @@ mod tests {
         ] {
             let descriptor = card.s100_descriptor();
             for contact in descriptor.contacts {
-                assert!(contact.pin().is_some(), "{} has an invalid contact: {:?}", descriptor.label, contact.signal);
+                assert!(
+                    contact.pin().is_some(),
+                    "{} has an invalid contact: {:?}",
+                    descriptor.label,
+                    contact.signal
+                );
             }
         }
     }
@@ -497,7 +524,12 @@ mod tests {
             let mut pins = HashSet::new();
             for contact in descriptor.contacts {
                 let pin = contact.pin().unwrap();
-                assert!(pins.insert(pin), "{} duplicates S-100 pin {}", descriptor.label, pin);
+                assert!(
+                    pins.insert(pin),
+                    "{} duplicates S-100 pin {}",
+                    descriptor.label,
+                    pin
+                );
             }
         }
     }

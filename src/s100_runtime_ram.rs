@@ -407,9 +407,7 @@ impl RuntimeRamState {
         if m1 {
             let before_m1 = u32::from(self.m1_phi2_count);
             let hidden_edge = (before_m1 < 4).then_some(4 - before_m1);
-            self.m1_phi2_count = before_m1
-                .saturating_add(edges)
-                .min(u32::from(u8::MAX)) as u8;
+            self.m1_phi2_count = before_m1.saturating_add(edges).min(u32::from(u8::MAX)) as u8;
             if let Some(hidden_edge) = hidden_edge {
                 let hidden_slot_reached = edges >= hidden_edge;
                 let pending_at_hidden = pending_before || (became_due && to_due <= hidden_edge);
@@ -596,12 +594,9 @@ impl RuntimeRamHandle {
         m1: bool,
         base_t_states: u32,
     ) -> u32 {
-        self.state.borrow_mut().full_machine_cycle_timing(
-            address,
-            memory_access,
-            m1,
-            base_t_states,
-        )
+        self.state
+            .borrow_mut()
+            .full_machine_cycle_timing(address, memory_access, m1, base_t_states)
     }
 
     #[cfg(test)]
@@ -620,7 +615,10 @@ impl RuntimeRamCard {
         init: RamInit,
     ) -> Result<(Self, RuntimeRamHandle), crate::s100_memory::S100RamConfigError> {
         let config = config.validate()?;
-        Ok(Self::from_config(RuntimeRamConfig::Historical(config), init))
+        Ok(Self::from_config(
+            RuntimeRamConfig::Historical(config),
+            init,
+        ))
     }
 
     pub fn compatibility(
@@ -628,12 +626,20 @@ impl RuntimeRamCard {
         init: RamInit,
     ) -> Result<(Self, RuntimeRamHandle), crate::config::S100HardwareConfigError> {
         let config = config.validate()?;
-        Ok(Self::from_config(RuntimeRamConfig::Compatibility(config), init))
+        Ok(Self::from_config(
+            RuntimeRamConfig::Compatibility(config),
+            init,
+        ))
     }
 
     fn from_config(config: RuntimeRamConfig, init: RamInit) -> (Self, RuntimeRamHandle) {
         let state = Rc::new(RefCell::new(RuntimeRamState::new(config, init)));
-        (Self { state: Rc::clone(&state) }, RuntimeRamHandle { state })
+        (
+            Self {
+                state: Rc::clone(&state),
+            },
+            RuntimeRamHandle { state },
+        )
     }
 
     fn descriptor_for(config: RuntimeRamConfig) -> &'static S100CardDescriptor {
@@ -714,8 +720,9 @@ impl S100ElectricalCard for RuntimeRamCard {
         match state
             .historical_model()
             .map(S100RamBoardModel::timing_model)
-            .unwrap_or(S100RamTimingModel::FixedReadWaits(state.config.read_wait_states()))
-        {
+            .unwrap_or(S100RamTimingModel::FixedReadWaits(
+                state.config.read_wait_states(),
+            )) {
             S100RamTimingModel::FixedReadWaits(fixed_waits) => {
                 if !memory_read || fixed_waits == 0 {
                     state.wait_clocks_remaining = 0;
@@ -831,9 +838,18 @@ mod tests {
         run: bool,
         halt_ack: bool,
     ) {
-        let _ = observe(card, s4k_drive(address, false, m1, data_bus_in, run, halt_ack));
-        let _ = observe(card, s4k_drive(address, true, m1, data_bus_in, run, halt_ack));
-        let _ = observe(card, s4k_drive(address, false, m1, data_bus_in, run, halt_ack));
+        let _ = observe(
+            card,
+            s4k_drive(address, false, m1, data_bus_in, run, halt_ack),
+        );
+        let _ = observe(
+            card,
+            s4k_drive(address, true, m1, data_bus_in, run, halt_ack),
+        );
+        let _ = observe(
+            card,
+            s4k_drive(address, false, m1, data_bus_in, run, halt_ack),
+        );
     }
 
     #[test]
@@ -883,7 +899,10 @@ mod tests {
         card.observe_s100(&observed);
         let resolved = backplane.resolve_drive_sets(&[master, card.drive_s100()]);
         assert_eq!(resolved.data_in(), Some(0xa5));
-        assert!(matches!(handle.config(), RuntimeRamConfig::Compatibility(_)));
+        assert!(matches!(
+            handle.config(),
+            RuntimeRamConfig::Compatibility(_)
+        ));
     }
 
     #[test]
@@ -927,13 +946,17 @@ mod tests {
         let observed = backplane.resolve_drive_sets(&[master]);
         card.observe_s100(&observed);
         assert_eq!(
-            backplane.resolve_drive_sets(&[master, card.drive_s100()]).data_in(),
+            backplane
+                .resolve_drive_sets(&[master, card.drive_s100()])
+                .data_in(),
             Some(0)
         );
 
         assert!(handle.write_byte(0x0010, 0x5a, false));
         assert_eq!(
-            backplane.resolve_drive_sets(&[master, card.drive_s100()]).data_in(),
+            backplane
+                .resolve_drive_sets(&[master, card.drive_s100()])
+                .data_in(),
             Some(0x5a)
         );
     }
@@ -1066,7 +1089,10 @@ mod tests {
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
-        let resolved = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
+        let resolved = observe(
+            &mut card,
+            s4k_drive(0x0010, false, true, false, true, false),
+        );
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
         assert!(!handle.state.borrow().refresh_pending);
@@ -1083,7 +1109,10 @@ mod tests {
             s4k_phi2_pulse(&mut card, 0x0010, false, false, true, false);
         }
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
-        let _ = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
+        let _ = observe(
+            &mut card,
+            s4k_drive(0x0010, false, true, false, true, false),
+        );
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
         assert!(!handle.state.borrow().refresh_pending);
 
@@ -1092,7 +1121,10 @@ mod tests {
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
-        let _ = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
+        let _ = observe(
+            &mut card,
+            s4k_drive(0x0010, false, true, false, true, false),
+        );
         assert!(!handle.state.borrow().refresh_pending);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
     }

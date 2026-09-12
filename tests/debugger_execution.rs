@@ -1,6 +1,4 @@
-use rustair::backend::{
-    BackendHost, DebugStopReason, EmulationEngine, MemoryWatchAccess,
-};
+use rustair::backend::{BackendHost, DebugStopReason, EmulationEngine, MemoryWatchAccess};
 use rustair::config::{RamInit, RamSize};
 
 fn prepared_host_with_ram(
@@ -28,8 +26,14 @@ fn exercise_breakpoint(engine: EmulationEngine) {
     host.set_running(true);
     host.run_cycles(128);
     let stopped = host.intel8080_state();
-    assert_eq!(stopped.pc, 0x0001, "{engine:?}: breakpoint must stop before opcode fetch");
-    assert!(!host.running(), "{engine:?}: breakpoint must drop execution to STOP");
+    assert_eq!(
+        stopped.pc, 0x0001,
+        "{engine:?}: breakpoint must stop before opcode fetch"
+    );
+    assert!(
+        !host.running(),
+        "{engine:?}: breakpoint must drop execution to STOP"
+    );
     assert_eq!(
         host.debugger_stop_reason(),
         Some(DebugStopReason::ExecuteBreakpoint(0x0001)),
@@ -39,7 +43,10 @@ fn exercise_breakpoint(engine: EmulationEngine) {
     host.set_running(true);
     host.run_cycles(128);
     let after_resume = host.intel8080_state();
-    assert!(after_resume.pc >= 0x0002, "{engine:?}: resume did not pass breakpoint");
+    assert!(
+        after_resume.pc >= 0x0002,
+        "{engine:?}: resume did not pass breakpoint"
+    );
 }
 
 fn exercise_fresh_breakpoint_at_current_pc(engine: EmulationEngine) {
@@ -48,7 +55,10 @@ fn exercise_fresh_breakpoint_at_current_pc(engine: EmulationEngine) {
     host.set_running(true);
     host.run_cycles(64);
     let cpu = host.intel8080_state();
-    assert_eq!(cpu.pc, 0x0000, "{engine:?}: fresh RUN must not silently skip current breakpoint");
+    assert_eq!(
+        cpu.pc, 0x0000,
+        "{engine:?}: fresh RUN must not silently skip current breakpoint"
+    );
     assert!(!host.running(), "{engine:?}");
 }
 
@@ -60,12 +70,22 @@ fn exercise_breakpoint_waits_until_reset_is_released(engine: EmulationEngine) {
     host.debugger_set_breakpoint(0x0000, true);
 
     host.run_cycles(64);
-    assert!(host.running(), "{engine:?}: debugger must not consume RUN while RESET is held");
-    assert_eq!(host.debugger_stop_reason(), None, "{engine:?}: RESET is not an instruction boundary");
+    assert!(
+        host.running(),
+        "{engine:?}: debugger must not consume RUN while RESET is held"
+    );
+    assert_eq!(
+        host.debugger_stop_reason(),
+        None,
+        "{engine:?}: RESET is not an instruction boundary"
+    );
 
     host.release_front_panel_reset();
     host.run_cycles(64);
-    assert!(!host.running(), "{engine:?}: breakpoint should trigger after RESET release");
+    assert!(
+        !host.running(),
+        "{engine:?}: breakpoint should trigger after RESET release"
+    );
     assert_eq!(host.intel8080_state().pc, 0x0000, "{engine:?}");
     assert_eq!(
         host.debugger_stop_reason(),
@@ -81,10 +101,21 @@ fn exercise_run_to(engine: EmulationEngine) {
     host.run_cycles(128);
 
     let cpu = host.intel8080_state();
-    assert_eq!(cpu.pc, 0x0002, "{engine:?}: run-to must stop before target executes");
+    assert_eq!(
+        cpu.pc, 0x0002,
+        "{engine:?}: run-to must stop before target executes"
+    );
     assert!(!host.running(), "{engine:?}");
-    assert_eq!(host.debugger_run_to_target(), None, "{engine:?}: run-to must be one-shot");
-    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0002)), "{engine:?}");
+    assert_eq!(
+        host.debugger_run_to_target(),
+        None,
+        "{engine:?}: run-to must be one-shot"
+    );
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::RunTo(0x0002)),
+        "{engine:?}"
+    );
 }
 
 fn exercise_run_to_from_breakpoint(engine: EmulationEngine) {
@@ -93,12 +124,24 @@ fn exercise_run_to_from_breakpoint(engine: EmulationEngine) {
     host.set_running(true);
     host.run_cycles(64);
     assert_eq!(host.intel8080_state().pc, 0x0000, "{engine:?}");
-    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::ExecuteBreakpoint(0x0000)), "{engine:?}");
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::ExecuteBreakpoint(0x0000)),
+        "{engine:?}"
+    );
 
     host.debugger_run_to(0x0002);
     host.run_cycles(128);
-    assert_eq!(host.intel8080_state().pc, 0x0002, "{engine:?}: run-to must resume past the triggered breakpoint");
-    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0002)), "{engine:?}");
+    assert_eq!(
+        host.intel8080_state().pc,
+        0x0002,
+        "{engine:?}: run-to must resume past the triggered breakpoint"
+    );
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::RunTo(0x0002)),
+        "{engine:?}"
+    );
 }
 
 fn exercise_stack_guarded_run_to(engine: EmulationEngine) {
@@ -113,8 +156,8 @@ fn exercise_stack_guarded_run_to(engine: EmulationEngine) {
             0xcd, 0x09, 0x00, // 0003 CALL 0009
             0xc3, 0x0c, 0x00, // 0006 JMP 000C (false early visit path)
             0xc3, 0x06, 0x00, // 0009 JMP 0006
-            0xc9,             // 000C RET -> real return to 0006
-            0x76,             // 000D HLT
+            0xc9, // 000C RET -> real return to 0006
+            0x76, // 000D HLT
         ],
     );
 
@@ -128,9 +171,19 @@ fn exercise_stack_guarded_run_to(engine: EmulationEngine) {
 
     let cpu = host.intel8080_state();
     assert_eq!(cpu.pc, 0x0006, "{engine:?}: guarded target PC");
-    assert_eq!(cpu.sp, before_call.sp, "{engine:?}: target must wait for caller stack depth");
-    assert!(!host.running(), "{engine:?}: guarded run-to must stop execution");
-    assert_eq!(host.debugger_stop_reason(), Some(DebugStopReason::RunTo(0x0006)), "{engine:?}");
+    assert_eq!(
+        cpu.sp, before_call.sp,
+        "{engine:?}: target must wait for caller stack depth"
+    );
+    assert!(
+        !host.running(),
+        "{engine:?}: guarded run-to must stop execution"
+    );
+    assert_eq!(
+        host.debugger_stop_reason(),
+        Some(DebugStopReason::RunTo(0x0006)),
+        "{engine:?}"
+    );
 }
 
 fn exercise_debugger_instruction_step(engine: EmulationEngine) {
@@ -139,12 +192,22 @@ fn exercise_debugger_instruction_step(engine: EmulationEngine) {
     host.debugger_step_instruction();
 
     let cpu = host.intel8080_state();
-    assert_eq!(cpu.pc, 0x0002, "{engine:?}: debugger step must complete whole MVI instruction");
+    assert_eq!(
+        cpu.pc, 0x0002,
+        "{engine:?}: debugger step must complete whole MVI instruction"
+    );
     assert_eq!(cpu.a, 0x42, "{engine:?}");
-    assert!(!host.running(), "{engine:?}: debugger step must remain stopped");
+    assert!(
+        !host.running(),
+        "{engine:?}: debugger step must remain stopped"
+    );
 
     let history = host.instruction_trace_snapshot();
-    assert_eq!(history.len(), 1, "{engine:?}: debugger step should produce one history entry");
+    assert_eq!(
+        history.len(),
+        1,
+        "{engine:?}: debugger step should produce one history entry"
+    );
     assert_eq!(history[0].address, 0x0000, "{engine:?}");
     assert_eq!(history[0].after.pc, 0x0002, "{engine:?}");
 }
@@ -156,20 +219,33 @@ fn exercise_halted_debugger_step_is_noop(engine: EmulationEngine) {
     host.run_cycles(64);
 
     let halted = host.intel8080_state();
-    assert!(halted.halted.unwrap_or(false), "{engine:?}: program must enter HLT");
+    assert!(
+        halted.halted.unwrap_or(false),
+        "{engine:?}: program must enter HLT"
+    );
     assert_eq!(halted.pc, 0x0001, "{engine:?}");
     host.set_running(false);
 
     let history_before = host.instruction_trace_snapshot();
-    assert_eq!(history_before.len(), 1, "{engine:?}: only HLT should be captured");
+    assert_eq!(
+        history_before.len(),
+        1,
+        "{engine:?}: only HLT should be captured"
+    );
     let t_states_before = host.intel8080_state().total_t_states;
 
     host.debugger_step_instruction();
 
     let after = host.intel8080_state();
     assert!(after.halted.unwrap_or(false), "{engine:?}");
-    assert_eq!(after.pc, 0x0001, "{engine:?}: debugger step must not execute post-HLT byte");
-    assert_eq!(after.total_t_states, t_states_before, "{engine:?}: debugger step while HLT must be a no-op");
+    assert_eq!(
+        after.pc, 0x0001,
+        "{engine:?}: debugger step must not execute post-HLT byte"
+    );
+    assert_eq!(
+        after.total_t_states, t_states_before,
+        "{engine:?}: debugger step while HLT must be a no-op"
+    );
     assert_eq!(
         host.instruction_trace_snapshot().len(),
         history_before.len(),
@@ -185,18 +261,34 @@ fn exercise_hold_blocks_debugger_step(engine: EmulationEngine) {
     let before = host.intel8080_state();
     host.debugger_step_instruction();
     let held = host.intel8080_state();
-    assert_eq!(held.pc, before.pc, "{engine:?}: debugger step must not execute while HOLD is asserted");
-    assert_eq!(held.total_t_states, before.total_t_states, "{engine:?}: stopped debugger step must not consume T-states during HOLD");
-    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: HOLD must not fabricate a completed instruction");
+    assert_eq!(
+        held.pc, before.pc,
+        "{engine:?}: debugger step must not execute while HOLD is asserted"
+    );
+    assert_eq!(
+        held.total_t_states, before.total_t_states,
+        "{engine:?}: stopped debugger step must not consume T-states during HOLD"
+    );
+    assert!(
+        host.instruction_trace_snapshot().is_empty(),
+        "{engine:?}: HOLD must not fabricate a completed instruction"
+    );
 
     // Runtime HOLD is machine-cycle based; the debugger-level contract starts
     // from an already asserted HOLD and must preserve exact execution state.
     host.request_hold(false);
     host.debugger_step_instruction();
     let resumed = host.intel8080_state();
-    assert_eq!(resumed.pc, 0x0001, "{engine:?}: debugger step must resume after HOLD release");
+    assert_eq!(
+        resumed.pc, 0x0001,
+        "{engine:?}: debugger step must resume after HOLD release"
+    );
     let history = host.instruction_trace_snapshot();
-    assert_eq!(history.len(), 1, "{engine:?}: exactly one NOP should be captured after HOLD release");
+    assert_eq!(
+        history.len(),
+        1,
+        "{engine:?}: exactly one NOP should be captured after HOLD release"
+    );
     assert_eq!(history[0].address, 0x0000, "{engine:?}");
 }
 
@@ -216,7 +308,10 @@ fn exercise_memory_read_watchpoint_without_history(engine: EmulationEngine) {
     host.run_cycles(256);
 
     let cpu = host.intel8080_state();
-    assert!(!host.running(), "{engine:?}: read watchpoint must stop execution");
+    assert!(
+        !host.running(),
+        "{engine:?}: read watchpoint must stop execution"
+    );
     assert_eq!(cpu.a, 0xa5, "{engine:?}: watched read must have completed");
     assert_eq!(cpu.pc, 0x0004, "{engine:?}: stop must be after MOV A,M");
     assert_eq!(
@@ -228,7 +323,10 @@ fn exercise_memory_read_watchpoint_without_history(engine: EmulationEngine) {
         }),
         "{engine:?}",
     );
-    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: watchpoints must not force history retention");
+    assert!(
+        host.instruction_trace_snapshot().is_empty(),
+        "{engine:?}: watchpoints must not force history retention"
+    );
 }
 
 fn exercise_memory_write_watchpoint_without_history(engine: EmulationEngine) {
@@ -241,8 +339,15 @@ fn exercise_memory_write_watchpoint_without_history(engine: EmulationEngine) {
     host.run_cycles(256);
 
     let cpu = host.intel8080_state();
-    assert!(!host.running(), "{engine:?}: write watchpoint must stop execution");
-    assert_eq!(host.peek_memory(0x0080), Some(0x5a), "{engine:?}: watched write must have completed");
+    assert!(
+        !host.running(),
+        "{engine:?}: write watchpoint must stop execution"
+    );
+    assert_eq!(
+        host.peek_memory(0x0080),
+        Some(0x5a),
+        "{engine:?}: watched write must have completed"
+    );
     assert_eq!(cpu.pc, 0x0005, "{engine:?}: stop must be after MVI M,5A");
     assert_eq!(
         host.debugger_stop_reason(),
@@ -253,7 +358,10 @@ fn exercise_memory_write_watchpoint_without_history(engine: EmulationEngine) {
         }),
         "{engine:?}",
     );
-    assert!(host.instruction_trace_snapshot().is_empty(), "{engine:?}: watchpoints must not force history retention");
+    assert!(
+        host.instruction_trace_snapshot().is_empty(),
+        "{engine:?}: watchpoints must not force history retention"
+    );
 }
 
 fn exercise_uninstalled_memory_read_watchpoint(engine: EmulationEngine) {
@@ -271,8 +379,14 @@ fn exercise_uninstalled_memory_read_watchpoint(engine: EmulationEngine) {
     host.run_cycles(256);
 
     let cpu = host.intel8080_state();
-    assert!(!host.running(), "{engine:?}: unmapped read watchpoint must stop execution");
-    assert_eq!(cpu.a, 0xff, "{engine:?}: uninstalled RAM must resolve through open bus as FFh");
+    assert!(
+        !host.running(),
+        "{engine:?}: unmapped read watchpoint must stop execution"
+    );
+    assert_eq!(
+        cpu.a, 0xff,
+        "{engine:?}: uninstalled RAM must resolve through open bus as FFh"
+    );
     assert_eq!(cpu.pc, 0x0004, "{engine:?}");
     assert_eq!(
         host.debugger_stop_reason(),
@@ -295,8 +409,15 @@ fn exercise_uninstalled_memory_write_watchpoint(engine: EmulationEngine) {
     host.set_running(true);
     host.run_cycles(256);
 
-    assert_eq!(host.peek_memory(0x0100), None, "{engine:?}: a write must not create uninstalled RAM");
-    assert!(!host.running(), "{engine:?}: unmapped write transfer must trigger watchpoint");
+    assert_eq!(
+        host.peek_memory(0x0100),
+        None,
+        "{engine:?}: a write must not create uninstalled RAM"
+    );
+    assert!(
+        !host.running(),
+        "{engine:?}: unmapped write transfer must trigger watchpoint"
+    );
     assert_eq!(
         host.debugger_stop_reason(),
         Some(DebugStopReason::MemoryWriteWatchpoint {
@@ -324,8 +445,15 @@ fn exercise_protected_memory_write_watchpoint(engine: EmulationEngine) {
     host.set_running(true);
     host.run_cycles(256);
 
-    assert_eq!(host.peek_memory(0x0080), Some(0x00), "{engine:?}: protected RAM must remain unchanged");
-    assert!(!host.running(), "{engine:?}: blocked write transfer must still trigger watchpoint");
+    assert_eq!(
+        host.peek_memory(0x0080),
+        Some(0x00),
+        "{engine:?}: protected RAM must remain unchanged"
+    );
+    assert!(
+        !host.running(),
+        "{engine:?}: blocked write transfer must still trigger watchpoint"
+    );
     assert_eq!(
         host.debugger_stop_reason(),
         Some(DebugStopReason::MemoryWriteWatchpoint {

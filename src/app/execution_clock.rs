@@ -205,17 +205,29 @@ mod tests {
     fn fast_backend_overshoot_is_repaid_instead_of_drifting_fast() {
         let t0 = Instant::now();
         let mut clock = ExecutionClock::new(t0);
-        assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic), 0);
+        assert_eq!(
+            clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic),
+            0
+        );
         let t1 = t0 + Duration::from_micros(2); // four T-states at 2 MHz
-        assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic), 4);
+        assert_eq!(
+            clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic),
+            4
+        );
 
         clock.record_executed(7); // e.g. a whole seven-T-state instruction
         assert_eq!(clock.whole_t_state_balance(), -3);
 
         let t2 = t1 + Duration::from_micros(1); // +2, still one T-state ahead
-        assert_eq!(clock.budget(t2, true, TWO_MHZ, EmulationSpeed::Authentic), 0);
+        assert_eq!(
+            clock.budget(t2, true, TWO_MHZ, EmulationSpeed::Authentic),
+            0
+        );
         let t3 = t2 + Duration::from_micros(1); // +2, now one is due
-        assert_eq!(clock.budget(t3, true, TWO_MHZ, EmulationSpeed::Authentic), 1);
+        assert_eq!(
+            clock.budget(t3, true, TWO_MHZ, EmulationSpeed::Authentic),
+            1
+        );
     }
 
     #[test]
@@ -242,7 +254,10 @@ mod tests {
         let mut clock = ExecutionClock::new(t0);
         assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::X10), 0);
         let t1 = t0 + Duration::from_millis(100);
-        assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::X10), 400_000);
+        assert_eq!(
+            clock.budget(t1, true, TWO_MHZ, EmulationSpeed::X10),
+            400_000
+        );
         assert_eq!(clock.whole_t_state_balance(), 2_000_000);
     }
 
@@ -250,9 +265,15 @@ mod tests {
     fn changing_effective_speed_starts_new_epoch_without_retiming_prior_interval() {
         let t0 = Instant::now();
         let mut clock = ExecutionClock::new(t0);
-        assert_eq!(clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic), 0);
+        assert_eq!(
+            clock.budget(t0, true, TWO_MHZ, EmulationSpeed::Authentic),
+            0
+        );
         let t1 = t0 + Duration::from_millis(100);
-        assert_eq!(clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic), 40_000);
+        assert_eq!(
+            clock.budget(t1, true, TWO_MHZ, EmulationSpeed::Authentic),
+            40_000
+        );
         assert_eq!(clock.whole_t_state_balance(), 200_000);
 
         // If a diagnostic changes to 10x before this observation, the 10 ms
@@ -263,7 +284,10 @@ mod tests {
         assert_eq!(clock.whole_t_state_balance(), 0);
 
         let t3 = t2 + Duration::from_millis(10);
-        assert_eq!(clock.budget(t3, true, TWO_MHZ, EmulationSpeed::X10), 200_000);
+        assert_eq!(
+            clock.budget(t3, true, TWO_MHZ, EmulationSpeed::X10),
+            200_000
+        );
         assert_eq!(clock.whole_t_state_balance(), 200_000);
     }
 

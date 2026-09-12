@@ -41,10 +41,7 @@ impl SerialDevice {
     /// The Model 33 is a direct 20 mA current-loop device; a host COM port is a
     /// direct RS-232 endpoint. Text Terminal and raw TCP are explicitly virtual
     /// peers and may instantiate their connector side in any selected family.
-    pub(crate) const fn supports_two_sio_interface(
-        self,
-        interface: TwoSioSignalInterface,
-    ) -> bool {
+    pub(crate) const fn supports_two_sio_interface(self, interface: TwoSioSignalInterface) -> bool {
         match self {
             Self::InternalAsr33 => matches!(interface, TwoSioSignalInterface::Tty20mA),
             Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232),
@@ -54,7 +51,9 @@ impl SerialDevice {
 
     pub(crate) const fn two_sio_requirement_label(self) -> &'static str {
         match self {
-            Self::InternalAsr33 => "direct ASR-33 cable requires an 88-2SIO TTY 20 mA current-loop port",
+            Self::InternalAsr33 => {
+                "direct ASR-33 cable requires an 88-2SIO TTY 20 mA current-loop port"
+            }
             Self::ExternalCom => "External COM direct cable requires an 88-2SIO RS-232 port",
             Self::TextTerminal => "virtual terminal matches the selected 88-2SIO signal interface",
             Self::ExternalTcp => "virtual TCP peer matches the selected 88-2SIO signal interface",
@@ -132,7 +131,8 @@ impl SerialRouter {
         connection: SerialConnection,
     ) -> Option<SerialDevice> {
         let displaced = if connection != SerialConnection::Disconnected {
-            self.device_on(connection).filter(|current| *current != device)
+            self.device_on(connection)
+                .filter(|current| *current != device)
         } else {
             None
         };
@@ -140,9 +140,7 @@ impl SerialRouter {
         if let Some(current) = displaced {
             match current {
                 SerialDevice::InternalAsr33 => self.asr33 = SerialConnection::Disconnected,
-                SerialDevice::TextTerminal => {
-                    self.text_terminal = SerialConnection::Disconnected
-                }
+                SerialDevice::TextTerminal => self.text_terminal = SerialConnection::Disconnected,
                 SerialDevice::ExternalTcp => self.external_tcp = SerialConnection::Disconnected,
                 SerialDevice::ExternalCom => self.external_com = SerialConnection::Disconnected,
             }
@@ -281,13 +279,21 @@ mod tests {
 
     #[test]
     fn two_sio_direct_endpoint_wiring_does_not_invent_level_converters() {
-        assert!(SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA));
-        assert!(!SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Rs232));
-        assert!(!SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Ttl));
+        assert!(
+            SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA)
+        );
+        assert!(
+            !SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Rs232)
+        );
+        assert!(
+            !SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Ttl)
+        );
 
         assert!(SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Rs232));
         assert!(!SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Ttl));
-        assert!(!SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA));
+        assert!(
+            !SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA)
+        );
 
         for interface in TwoSioSignalInterface::ALL {
             assert!(SerialDevice::TextTerminal.supports_two_sio_interface(interface));

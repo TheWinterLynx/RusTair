@@ -48,10 +48,18 @@ impl DebugStopReason {
         match self {
             Self::ExecuteBreakpoint(address) => format!("execute breakpoint at ${address:04X}"),
             Self::RunTo(address) => format!("run-to target reached at ${address:04X}"),
-            Self::MemoryReadWatchpoint { instruction_pc, address, value } => format!(
+            Self::MemoryReadWatchpoint {
+                instruction_pc,
+                address,
+                value,
+            } => format!(
                 "memory READ watchpoint at ${address:04X}: ${value:02X} read by instruction at ${instruction_pc:04X}"
             ),
-            Self::MemoryWriteWatchpoint { instruction_pc, address, value } => format!(
+            Self::MemoryWriteWatchpoint {
+                instruction_pc,
+                address,
+                value,
+            } => format!(
                 "memory WRITE watchpoint at ${address:04X}: instruction at ${instruction_pc:04X} attempted a ${value:02X} write transfer"
             ),
         }
@@ -192,9 +200,7 @@ impl DebugExecutionControl {
     }
 
     fn prepare_resume_internal(&mut self, pc: u16, sp: Option<u16>) {
-        let run_to_matches_now = self
-            .run_to
-            .is_some_and(|target| target.matches(pc, sp));
+        let run_to_matches_now = self.run_to.is_some_and(|target| target.matches(pc, sp));
         let stopped_on_active_breakpoint = matches!(
             self.stop_reason,
             Some(DebugStopReason::ExecuteBreakpoint(address)) if address == pc
@@ -259,7 +265,10 @@ impl DebugExecutionControl {
             let reason = match *effect {
                 InstructionEffect8080::MemoryRead { address, value }
                 | InstructionEffect8080::StackRead { address, value }
-                    if self.watchpoints.get(&address).is_some_and(|access| access.reads()) =>
+                    if self
+                        .watchpoints
+                        .get(&address)
+                        .is_some_and(|access| access.reads()) =>
                 {
                     Some(DebugStopReason::MemoryReadWatchpoint {
                         instruction_pc,
@@ -269,7 +278,10 @@ impl DebugExecutionControl {
                 }
                 InstructionEffect8080::MemoryWrite { address, value }
                 | InstructionEffect8080::StackWrite { address, value }
-                    if self.watchpoints.get(&address).is_some_and(|access| access.writes()) =>
+                    if self
+                        .watchpoints
+                        .get(&address)
+                        .is_some_and(|access| access.writes()) =>
                 {
                     Some(DebugStopReason::MemoryWriteWatchpoint {
                         instruction_pc,
@@ -299,28 +311,46 @@ mod tests {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1234, true);
         control.prepare_resume(0x1234);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
     }
 
     #[test]
     fn persistent_breakpoint_skips_once_when_resuming_from_triggered_stop() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1234, true);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
         control.prepare_resume(0x1234);
-        assert!(control.active(), "armed resume skip is transient debugger state");
+        assert!(
+            control.active(),
+            "armed resume skip is transient debugger state"
+        );
         assert_eq!(control.stop_before(0x1234), None);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
     }
 
     #[test]
     fn explicit_run_to_current_breakpoint_is_not_swallowed_by_resume_skip() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1234, true);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
         control.set_run_to(0x1234);
         control.prepare_resume(0x1234);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::RunTo(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::RunTo(0x1234))
+        );
         assert_eq!(control.run_to(), None);
     }
 
@@ -343,14 +373,20 @@ mod tests {
     fn removing_triggered_breakpoint_does_not_leave_a_future_skip() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1234, true);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
         control.set_breakpoint(0x1234, false);
         control.prepare_resume(0x1234);
         assert!(!control.active());
         assert_eq!(control.stop_before(0x1234), None);
 
         control.set_breakpoint(0x1234, true);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
     }
 
     #[test]
@@ -369,21 +405,33 @@ mod tests {
     fn manual_step_does_not_leave_future_breakpoint_skip_armed() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1234, true);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
         control.prepare_manual_step();
         assert_eq!(control.stop_reason(), None);
-        assert_eq!(control.stop_before(0x1234), Some(DebugStopReason::ExecuteBreakpoint(0x1234)));
+        assert_eq!(
+            control.stop_before(0x1234),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1234))
+        );
     }
 
     #[test]
     fn run_to_from_triggered_breakpoint_can_resume_past_current_pc() {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x1000, true);
-        assert_eq!(control.stop_before(0x1000), Some(DebugStopReason::ExecuteBreakpoint(0x1000)));
+        assert_eq!(
+            control.stop_before(0x1000),
+            Some(DebugStopReason::ExecuteBreakpoint(0x1000))
+        );
         control.set_run_to(0x1002);
         control.prepare_resume(0x1000);
         assert_eq!(control.stop_before(0x1000), None);
-        assert_eq!(control.stop_before(0x1002), Some(DebugStopReason::RunTo(0x1002)));
+        assert_eq!(
+            control.stop_before(0x1002),
+            Some(DebugStopReason::RunTo(0x1002))
+        );
     }
 
     #[test]
@@ -391,10 +439,16 @@ mod tests {
         let mut control = DebugExecutionControl::default();
         control.set_breakpoint(0x2000, true);
         control.set_run_to(0x2000);
-        assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::RunTo(0x2000)));
+        assert_eq!(
+            control.stop_before(0x2000),
+            Some(DebugStopReason::RunTo(0x2000))
+        );
         assert_eq!(control.run_to(), None);
         control.prepare_resume(0x2000);
-        assert_eq!(control.stop_before(0x2000), Some(DebugStopReason::ExecuteBreakpoint(0x2000)));
+        assert_eq!(
+            control.stop_before(0x2000),
+            Some(DebugStopReason::ExecuteBreakpoint(0x2000))
+        );
     }
 
     #[test]
@@ -402,9 +456,15 @@ mod tests {
         let mut control = DebugExecutionControl::default();
         control.set_watchpoint(0x3456, Some(MemoryWatchAccess::ReadWrite));
         assert!(control.active());
-        assert_eq!(control.watchpoints(), vec![(0x3456, MemoryWatchAccess::ReadWrite)]);
+        assert_eq!(
+            control.watchpoints(),
+            vec![(0x3456, MemoryWatchAccess::ReadWrite)]
+        );
 
-        let read = [InstructionEffect8080::MemoryRead { address: 0x3456, value: 0xaa }];
+        let read = [InstructionEffect8080::MemoryRead {
+            address: 0x3456,
+            value: 0xaa,
+        }];
         assert_eq!(
             control.stop_after_effects(0x0100, &read),
             Some(DebugStopReason::MemoryReadWatchpoint {
@@ -415,7 +475,10 @@ mod tests {
         );
 
         control.prepare_resume(0x0101);
-        let write = [InstructionEffect8080::StackWrite { address: 0x3456, value: 0x55 }];
+        let write = [InstructionEffect8080::StackWrite {
+            address: 0x3456,
+            value: 0x55,
+        }];
         assert_eq!(
             control.stop_after_effects(0x0200, &write),
             Some(DebugStopReason::MemoryWriteWatchpoint {
@@ -430,9 +493,15 @@ mod tests {
     fn access_direction_is_respected() {
         let mut control = DebugExecutionControl::default();
         control.set_watchpoint(0x2222, Some(MemoryWatchAccess::Write));
-        let read = [InstructionEffect8080::MemoryRead { address: 0x2222, value: 1 }];
+        let read = [InstructionEffect8080::MemoryRead {
+            address: 0x2222,
+            value: 1,
+        }];
         assert_eq!(control.stop_after_effects(0x1000, &read), None);
-        let write = [InstructionEffect8080::MemoryWrite { address: 0x2222, value: 2 }];
+        let write = [InstructionEffect8080::MemoryWrite {
+            address: 0x2222,
+            value: 2,
+        }];
         assert!(matches!(
             control.stop_after_effects(0x1001, &write),
             Some(DebugStopReason::MemoryWriteWatchpoint { .. })

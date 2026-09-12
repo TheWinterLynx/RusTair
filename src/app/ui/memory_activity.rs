@@ -1,4 +1,4 @@
-use super::super::{egui, RusTairApp};
+use super::super::{RusTairApp, egui};
 use super::execution_position::current_instruction_address;
 use super::s100_memory_inspection::{mapping_detail, mapping_summary};
 use crate::backend::MemoryWatchAccess;
@@ -76,7 +76,11 @@ impl RusTairApp {
                 ActivitySort::Write => a.write_count.cmp(&b.write_count),
                 ActivitySort::Address => address_a.cmp(address_b),
             };
-            if state.descending { ordering.reverse() } else { ordering }
+            if state.descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {

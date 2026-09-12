@@ -52,22 +52,36 @@ impl SwitchConfig {
 }
 
 const fn pose(sprite: SwitchSpriteId) -> SwitchPoseConfig {
-    SwitchPoseConfig { sprite, offset: (0.0, 0.0), scale: 1.0 }
+    SwitchPoseConfig {
+        sprite,
+        offset: (0.0, 0.0),
+        scale: 1.0,
+    }
 }
 
-const fn switch_config(
-    name: &'static str,
-    x: f32,
-    y: f32,
-    kind: SwitchKind,
-) -> SwitchConfig {
+const fn switch_config(name: &'static str, x: f32, y: f32, kind: SwitchKind) -> SwitchConfig {
     SwitchConfig {
         name,
         socket: (x, y),
-        hit_size: (if matches!(kind, SwitchKind::TwoPosition) { 72.0 } else { 76.0 }, if matches!(kind, SwitchKind::TwoPosition) { 92.0 } else { 96.0 }),
+        hit_size: (
+            if matches!(kind, SwitchKind::TwoPosition) {
+                72.0
+            } else {
+                76.0
+            },
+            if matches!(kind, SwitchKind::TwoPosition) {
+                92.0
+            } else {
+                96.0
+            },
+        ),
         kind,
         up: pose(SwitchSpriteId::WhiteUp),
-        center: if matches!(kind, SwitchKind::ThreePosition) { Some(pose(SwitchSpriteId::WhiteCenter)) } else { None },
+        center: if matches!(kind, SwitchKind::ThreePosition) {
+            Some(pose(SwitchSpriteId::WhiteCenter))
+        } else {
+            None
+        },
         down: pose(SwitchSpriteId::WhiteDown),
     }
 }
@@ -91,12 +105,21 @@ pub(super) const SENSE_SWITCHES: [SwitchConfig; 16] = [
     switch_config("A15", 480.6, 425.8, SwitchKind::TwoPosition),
 ];
 
-pub(super) const SWITCH_POWER: SwitchConfig = switch_config("POWER", 151.8, 562.2, SwitchKind::TwoPosition);
-pub(super) const SWITCH_RUN_STOP: SwitchConfig = switch_config("RUN / STOP", 477.0, 562.2, SwitchKind::ThreePosition);
-pub(super) const SWITCH_SINGLE_STEP: SwitchConfig = switch_config("SINGLE STEP", 610.2, 561.0, SwitchKind::ThreePosition);
-pub(super) const SWITCH_EXAMINE: SwitchConfig = switch_config("EXAMINE", 748.2, 562.2, SwitchKind::ThreePosition);
-pub(super) const SWITCH_DEPOSIT: SwitchConfig = switch_config("DEPOSIT", 885.0, 562.2, SwitchKind::ThreePosition);
-pub(super) const SWITCH_RESET: SwitchConfig = switch_config("RESET", 1018.2, 559.8, SwitchKind::ThreePosition);
-pub(super) const SWITCH_PROTECT: SwitchConfig = switch_config("PROTECT", 1152.6, 563.4, SwitchKind::ThreePosition);
-pub(super) const SWITCH_AUX1: SwitchConfig = switch_config("AUX 1", 1285.8, 559.8, SwitchKind::ThreePosition);
-pub(super) const SWITCH_AUX2: SwitchConfig = switch_config("AUX 2", 1423.8, 562.2, SwitchKind::ThreePosition);
+pub(super) const SWITCH_POWER: SwitchConfig =
+    switch_config("POWER", 151.8, 562.2, SwitchKind::TwoPosition);
+pub(super) const SWITCH_RUN_STOP: SwitchConfig =
+    switch_config("RUN / STOP", 477.0, 562.2, SwitchKind::ThreePosition);
+pub(super) const SWITCH_SINGLE_STEP: SwitchConfig =
+    switch_config("SINGLE STEP", 610.2, 561.0, SwitchKind::ThreePosition);
+pub(super) const SWITCH_EXAMINE: SwitchConfig =
+    switch_config("EXAMINE", 748.2, 562.2, SwitchKind::ThreePosition);
+pub(super) const SWITCH_DEPOSIT: SwitchConfig =
+    switch_config("DEPOSIT", 885.0, 562.2, SwitchKind::ThreePosition);
+pub(super) const SWITCH_RESET: SwitchConfig =
+    switch_config("RESET", 1018.2, 559.8, SwitchKind::ThreePosition);
+pub(super) const SWITCH_PROTECT: SwitchConfig =
+    switch_config("PROTECT", 1152.6, 563.4, SwitchKind::ThreePosition);
+pub(super) const SWITCH_AUX1: SwitchConfig =
+    switch_config("AUX 1", 1285.8, 559.8, SwitchKind::ThreePosition);
+pub(super) const SWITCH_AUX2: SwitchConfig =
+    switch_config("AUX 2", 1423.8, 562.2, SwitchKind::ThreePosition);

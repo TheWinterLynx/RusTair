@@ -27,21 +27,13 @@ pub(in crate::app) struct Tex {
 impl Tex {
     pub(in crate::app) fn load(ctx: &egui::Context) -> Self {
         Self {
-            panel: Self::load_texture(
-                ctx,
-                "front-panel",
-                "assets/panels/white-pivot/panel.png",
-            ),
+            panel: Self::load_texture(ctx, "front-panel", "assets/panels/white-pivot/panel.png"),
             switch_sprites: load_switch_textures(ctx),
             tty_body: Self::load_texture(ctx, "tty-body", "assets/asr33_body_clean.png"),
             // The clean body contains the key wells and each key is painted
             // independently from aligned photographic poses.
             tty_keys: None,
-            tty_key_up: Self::load_key_pose_texture(
-                ctx,
-                "tty-key-up",
-                "assets/asr33_key_up.png",
-            ),
+            tty_key_up: Self::load_key_pose_texture(ctx, "tty-key-up", "assets/asr33_key_up.png"),
             tty_key_mid: Self::load_key_pose_texture(
                 ctx,
                 "tty-key-mid",
@@ -58,11 +50,7 @@ impl Tex {
                 "assets/as33_spacebar_mid.png",
             ),
             tty_head: Self::load_texture(ctx, "tty-head", "assets/asr33head.png"),
-            tty_line_local: Self::load_texture(
-                ctx,
-                "tty-line-local",
-                "assets/asrlinelocal.png",
-            ),
+            tty_line_local: Self::load_texture(ctx, "tty-line-local", "assets/asrlinelocal.png"),
             tty_knob: Self::load_texture(ctx, "tty-knob", "assets/asrlinelocalknob.png"),
         }
     }
@@ -83,11 +71,7 @@ impl Tex {
         ctx.set_fonts(fonts);
     }
 
-    fn load_texture(
-        ctx: &egui::Context,
-        name: &str,
-        path: &str,
-    ) -> Option<egui::TextureHandle> {
+    fn load_texture(ctx: &egui::Context, name: &str, path: &str) -> Option<egui::TextureHandle> {
         let bytes = embedded_assets::get(path)?;
         let image = image::load_from_memory(bytes).ok()?.to_rgba8();
         let size = [image.width() as usize, image.height() as usize];

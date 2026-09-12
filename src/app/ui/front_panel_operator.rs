@@ -32,10 +32,7 @@ impl RusTairApp {
         })
     }
 
-    fn store_standalone_operator_state(
-        ctx: &egui::Context,
-        state: FrontPanelOperatorUiState,
-    ) {
+    fn store_standalone_operator_state(ctx: &egui::Context, state: FrontPanelOperatorUiState) {
         ctx.data_mut(|data| {
             data.insert_temp(
                 egui::Id::new("rustair-standalone-front-panel-operator-state"),
@@ -44,10 +41,7 @@ impl RusTairApp {
         });
     }
 
-    pub(in crate::app) fn open_standalone_front_panel_operator(
-        &mut self,
-        ctx: &egui::Context,
-    ) {
+    pub(in crate::app) fn open_standalone_front_panel_operator(&mut self, ctx: &egui::Context) {
         let mut state = Self::standalone_operator_state(ctx);
         state.open = true;
         Self::store_standalone_operator_state(ctx, state);
@@ -79,7 +73,10 @@ impl RusTairApp {
 
     fn load_standalone_operator_source(&mut self, state: &mut FrontPanelOperatorUiState) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Assembled binary / paper tape", &["bin", "rom", "com", "tap"])
+            .add_filter(
+                "Assembled binary / paper tape",
+                &["bin", "rom", "com", "tap"],
+            )
             .pick_file()
         else {
             return;
@@ -136,7 +133,10 @@ impl RusTairApp {
             return Err("Power ON the Altair before using the Front Panel Operator.".into());
         }
         if self.machine.running() {
-            return Err("STOP the Altair before using EXAMINE / DEPOSIT from the Front Panel Operator.".into());
+            return Err(
+                "STOP the Altair before using EXAMINE / DEPOSIT from the Front Panel Operator."
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -189,7 +189,11 @@ impl RusTairApp {
         if current_address != required_before {
             return Err(format!(
                 "{} for {address:04X}h requires the panel to be at {required_before:04X}h first; it is at {current_address:04X}h. Follow the rows in order.",
-                if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" }
+                if deposit_next {
+                    "DEPOSIT NEXT"
+                } else {
+                    "DEPOSIT"
+                }
             ));
         }
 
@@ -199,7 +203,11 @@ impl RusTairApp {
         // which cards actually decoded it.
         self.machine.deposit(deposit_next);
         let inspection = self.machine.inspect_memory_mapping(address);
-        let operation = if deposit_next { "DEPOSIT NEXT" } else { "DEPOSIT" };
+        let operation = if deposit_next {
+            "DEPOSIT NEXT"
+        } else {
+            "DEPOSIT"
+        };
 
         match inspection.drivers.as_slice() {
             [] => {
@@ -213,7 +221,11 @@ impl RusTairApp {
                     "{operation} bus cycle executed at {address:04X}h with {byte:02X}h, but Slot {:02} now contains {:02X}h{}.",
                     driver.slot,
                     driver.value,
-                    if driver.protected { " (card/protection state blocked the write)" } else { "" },
+                    if driver.protected {
+                        " (card/protection state blocked the write)"
+                    } else {
+                        ""
+                    },
                 ));
             }
             [driver] => {
@@ -561,7 +573,10 @@ mod tests {
             RusTairApp::parse_operator_hex_address("0x0100"),
             Some(0x0100)
         );
-        assert_eq!(RusTairApp::parse_operator_hex_address("0100h"), Some(0x0100));
+        assert_eq!(
+            RusTairApp::parse_operator_hex_address("0100h"),
+            Some(0x0100)
+        );
         assert_eq!(RusTairApp::parse_operator_hex_address("10000"), None);
     }
 }

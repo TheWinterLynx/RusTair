@@ -72,7 +72,9 @@ impl TwoSioBaudTap {
 }
 
 impl Default for TwoSioBaudTap {
-    fn default() -> Self { Self::Baud110 }
+    fn default() -> Self {
+        Self::Baud110
+    }
 }
 
 /// Electrical signal interconnect hardwired on one 88-2SIO port.
@@ -118,7 +120,9 @@ impl TwoSioSignalInterface {
 }
 
 impl Default for TwoSioSignalInterface {
-    fn default() -> Self { Self::Rs232 }
+    fn default() -> Self {
+        Self::Rs232
+    }
 }
 
 /// Where one MC6850 IRQ output is physically wired on the 88-2SIO PCB.
@@ -202,7 +206,9 @@ impl TwoSioInterruptTarget {
         }
     }
 
-    pub const fn drives_pint(self) -> bool { matches!(self, Self::Pint) }
+    pub const fn drives_pint(self) -> bool {
+        matches!(self, Self::Pint)
+    }
 
     pub const fn vector_level(self) -> Option<u8> {
         match self {
@@ -270,11 +276,21 @@ impl TwoSioAddressBlock {
         }
     }
 
-    pub const fn base(self) -> u8 { self.base }
-    pub const fn port0_status(self) -> u8 { self.base }
-    pub const fn port0_data(self) -> u8 { self.base + 1 }
-    pub const fn port1_status(self) -> u8 { self.base + 2 }
-    pub const fn port1_data(self) -> u8 { self.base + 3 }
+    pub const fn base(self) -> u8 {
+        self.base
+    }
+    pub const fn port0_status(self) -> u8 {
+        self.base
+    }
+    pub const fn port0_data(self) -> u8 {
+        self.base + 1
+    }
+    pub const fn port1_status(self) -> u8 {
+        self.base + 2
+    }
+    pub const fn port1_data(self) -> u8 {
+        self.base + 3
+    }
 
     pub const fn contains(self, port: u8) -> bool {
         port >= self.base && port <= self.base + 3
@@ -282,12 +298,18 @@ impl TwoSioAddressBlock {
 
     /// A0/A1 decoded offset inside the four-address board block.
     pub const fn offset(self, port: u8) -> Option<u8> {
-        if self.contains(port) { Some(port - self.base) } else { None }
+        if self.contains(port) {
+            Some(port - self.base)
+        } else {
+            None
+        }
     }
 }
 
 impl Default for TwoSioAddressBlock {
-    fn default() -> Self { Self::DEFAULT }
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// Physical address, baud and line-interface straps/hardwiring for one MITS
@@ -352,7 +374,8 @@ mod tests {
 
     #[test]
     fn address_strap_is_one_aligned_four_port_block() {
-        let block = TwoSioAddressBlock::try_new(0x44).expect("68 decimal / 44h is MITS manual example");
+        let block =
+            TwoSioAddressBlock::try_new(0x44).expect("68 decimal / 44h is MITS manual example");
         assert_eq!(block.port0_status(), 0x44);
         assert_eq!(block.port0_data(), 0x45);
         assert_eq!(block.port1_status(), 0x46);
@@ -395,7 +418,10 @@ mod tests {
             ..TwoSioStraps::default()
         };
         assert_eq!(straps.port_interface(0), Some(TwoSioSignalInterface::Ttl));
-        assert_eq!(straps.port_interface(1), Some(TwoSioSignalInterface::Tty20mA));
+        assert_eq!(
+            straps.port_interface(1),
+            Some(TwoSioSignalInterface::Tty20mA)
+        );
         assert_eq!(straps.port_interface(2), None);
     }
 
@@ -407,7 +433,10 @@ mod tests {
                 Some(interface)
             );
         }
-        assert_eq!(TwoSioSignalInterface::from_persistence_key("current-loop"), Some(TwoSioSignalInterface::Tty20mA));
+        assert_eq!(
+            TwoSioSignalInterface::from_persistence_key("current-loop"),
+            Some(TwoSioSignalInterface::Tty20mA)
+        );
         assert_eq!(TwoSioSignalInterface::from_persistence_key("usb"), None);
     }
 
@@ -462,7 +491,10 @@ mod tests {
                 Some(target)
             );
         }
-        assert_eq!(TwoSioInterruptTarget::from_persistence_key("NONE"), Some(TwoSioInterruptTarget::Disconnected));
+        assert_eq!(
+            TwoSioInterruptTarget::from_persistence_key("NONE"),
+            Some(TwoSioInterruptTarget::Disconnected)
+        );
         assert_eq!(TwoSioInterruptTarget::from_persistence_key("irq7"), None);
     }
 }

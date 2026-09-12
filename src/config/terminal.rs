@@ -11,10 +11,7 @@ pub enum TerminalDuplex {
 }
 
 impl TerminalDuplex {
-    pub const ALL: [Self; 2] = [
-        Self::FullDuplexRemoteEcho,
-        Self::HalfDuplexLocalEcho,
-    ];
+    pub const ALL: [Self; 2] = [Self::FullDuplexRemoteEcho, Self::HalfDuplexLocalEcho];
 
     pub const fn label(self) -> &'static str {
         match self {
@@ -40,7 +37,10 @@ mod tests {
 
     #[test]
     fn full_duplex_is_the_default_for_echoing_hosts() {
-        assert_eq!(TerminalDuplex::default(), TerminalDuplex::FullDuplexRemoteEcho);
+        assert_eq!(
+            TerminalDuplex::default(),
+            TerminalDuplex::FullDuplexRemoteEcho
+        );
         assert!(!TerminalDuplex::default().local_echo());
         assert!(TerminalDuplex::HalfDuplexLocalEcho.local_echo());
     }

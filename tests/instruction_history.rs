@@ -79,12 +79,12 @@ fn adaptive_cycle_records_memory_and_io_effects() {
         0,
         &[
             0x21, 0x80, 0x00, // LXI H,0080h
-            0x3e, 0x5a,       // MVI A,5Ah
-            0x77,             // MOV M,A
-            0x7e,             // MOV A,M
-            0xd3, 0x01,       // OUT 01h (88-SIO data)
-            0xdb, 0x00,       // IN 00h (88-SIO status)
-            0x76,             // HLT
+            0x3e, 0x5a, // MVI A,5Ah
+            0x77, // MOV M,A
+            0x7e, // MOV A,M
+            0xd3, 0x01, // OUT 01h (88-SIO data)
+            0xdb, 0x00, // IN 00h (88-SIO status)
+            0x76, // HLT
         ],
     );
     host.clear_instruction_trace();

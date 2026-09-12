@@ -5,7 +5,7 @@ use rustair::config::{
     RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use rustair::cpu8080_cycle::Cpu8080Pins;
-use rustair::s100_backplane::{s100_slot_mask, S100Backplane};
+use rustair::s100_backplane::{S100Backplane, s100_slot_mask};
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_cpu::Mits8080CpuBoard;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -23,10 +23,7 @@ fn simple_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
             )),
         )
         .unwrap();
@@ -162,7 +159,11 @@ fn profile_runtime_data_out_edges(label: &str, hardware: S100HardwareConfig) {
             wait: false,
             hlda: false,
         });
-        checksum ^= fabric.settle(display, &[]).unwrap().data_out().unwrap_or(0xff);
+        checksum ^= fabric
+            .settle(display, &[])
+            .unwrap()
+            .data_out()
+            .unwrap_or(0xff);
     }
     black_box(checksum);
     report(label, ITER, start.elapsed());
@@ -186,7 +187,11 @@ fn profile_s100_hot_path_components() {
         checksum ^= black_box(fabric.peek_unique_memory(black_box(0x0123))).unwrap();
     }
     black_box(checksum);
-    report("host RAM handle read (diagnostic baseline)", ITER, start.elapsed());
+    report(
+        "host RAM handle read (diagnostic baseline)",
+        ITER,
+        start.elapsed(),
+    );
 
     // Measure the full compiled Fast physical transaction independently of the
     // 8080 instruction core and backend/UI bookkeeping.
@@ -257,7 +262,11 @@ fn profile_s100_hot_path_components() {
         });
         black_box(backplane.refresh_cached_drives(s100_slot_mask(1)).unwrap());
     }
-    report("CPU board package->cached drive refresh", ITER, start.elapsed());
+    report(
+        "CPU board package->cached drive refresh",
+        ITER,
+        start.elapsed(),
+    );
 
     // One production-style event delta: CPU refresh, cached resolve and only
     // electrically affected card observations. This approximates one live edge

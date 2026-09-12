@@ -5,8 +5,7 @@ use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 use crate::s100_runtime::{DisplayControlLines, S100RuntimeFabric};
 
 fn live_cycle_hardware() -> S100HardwareConfig {
-    let mut config =
-        S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+    let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
     config
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
@@ -14,10 +13,7 @@ fn live_cycle_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits16KStatic88_16Mcs,
-                    0,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits16KStatic88_16Mcs, 0),
             )),
         )
         .unwrap();

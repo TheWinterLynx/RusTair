@@ -20,16 +20,25 @@ impl SioRevision {
     }
 
     const fn persistence_key(self) -> &'static str {
-        match self { Self::Rev0 => "rev0", Self::Rev1 => "rev1" }
+        match self {
+            Self::Rev0 => "rev0",
+            Self::Rev1 => "rev1",
+        }
     }
 
     fn from_persistence_key(value: &str) -> Option<Self> {
-        Some(match value { "rev0" => Self::Rev0, "rev1" => Self::Rev1, _ => return None })
+        Some(match value {
+            "rev0" => Self::Rev0,
+            "rev1" => Self::Rev1,
+            _ => return None,
+        })
     }
 }
 
 impl Default for SioRevision {
-    fn default() -> Self { Self::Rev1 }
+    fn default() -> Self {
+        Self::Rev1
+    }
 }
 
 /// External electrical interface fitted to an 88-SIO card.
@@ -76,7 +85,9 @@ impl SioInterface {
 }
 
 impl Default for SioInterface {
-    fn default() -> Self { Self::TtyC }
+    fn default() -> Self {
+        Self::TtyC
+    }
 }
 
 /// Physical destination of one 88-SIO interrupt-source pad.
@@ -129,7 +140,9 @@ impl SioInterruptTarget {
         }
     }
 
-    pub const fn drives_pint(self) -> bool { matches!(self, Self::Pint) }
+    pub const fn drives_pint(self) -> bool {
+        matches!(self, Self::Pint)
+    }
 
     pub const fn vector_level(self) -> Option<u8> {
         Some(match self {
@@ -178,7 +191,9 @@ impl SioInterruptTarget {
 }
 
 impl Default for SioInterruptTarget {
-    fn default() -> Self { Self::Pint }
+    fn default() -> Self {
+        Self::Pint
+    }
 }
 
 /// Physical routing of the 88-SIO input/output interrupt request sources.
@@ -194,55 +209,125 @@ pub struct SioInterruptWiring {
 
 impl Default for SioInterruptWiring {
     fn default() -> Self {
-        Self { input: SioInterruptTarget::Pint, output: SioInterruptTarget::Pint }
+        Self {
+            input: SioInterruptTarget::Pint,
+            output: SioInterruptTarget::Pint,
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SioDataBits { Five, Six, Seven, Eight }
+pub enum SioDataBits {
+    Five,
+    Six,
+    Seven,
+    Eight,
+}
 
 impl SioDataBits {
     pub const ALL: [Self; 4] = [Self::Five, Self::Six, Self::Seven, Self::Eight];
     pub const fn bits(self) -> u8 {
-        match self { Self::Five => 5, Self::Six => 6, Self::Seven => 7, Self::Eight => 8 }
+        match self {
+            Self::Five => 5,
+            Self::Six => 6,
+            Self::Seven => 7,
+            Self::Eight => 8,
+        }
     }
     pub const fn label(self) -> &'static str {
-        match self { Self::Five => "5 data bits", Self::Six => "6 data bits", Self::Seven => "7 data bits", Self::Eight => "8 data bits" }
+        match self {
+            Self::Five => "5 data bits",
+            Self::Six => "6 data bits",
+            Self::Seven => "7 data bits",
+            Self::Eight => "8 data bits",
+        }
     }
     fn from_bits(bits: u8) -> Option<Self> {
-        Some(match bits { 5 => Self::Five, 6 => Self::Six, 7 => Self::Seven, 8 => Self::Eight, _ => return None })
+        Some(match bits {
+            5 => Self::Five,
+            6 => Self::Six,
+            7 => Self::Seven,
+            8 => Self::Eight,
+            _ => return None,
+        })
     }
 }
 
 impl Default for SioDataBits {
-    fn default() -> Self { Self::Eight }
+    fn default() -> Self {
+        Self::Eight
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SioParity { None, Even, Odd }
+pub enum SioParity {
+    None,
+    Even,
+    Odd,
+}
 impl SioParity {
     pub const ALL: [Self; 3] = [Self::None, Self::Even, Self::Odd];
     pub const fn label(self) -> &'static str {
-        match self { Self::None => "No parity", Self::Even => "Even parity", Self::Odd => "Odd parity" }
+        match self {
+            Self::None => "No parity",
+            Self::Even => "Even parity",
+            Self::Odd => "Odd parity",
+        }
     }
     const fn persistence_key(self) -> &'static str {
-        match self { Self::None => "none", Self::Even => "even", Self::Odd => "odd" }
+        match self {
+            Self::None => "none",
+            Self::Even => "even",
+            Self::Odd => "odd",
+        }
     }
     fn from_persistence_key(value: &str) -> Option<Self> {
-        Some(match value { "none" => Self::None, "even" => Self::Even, "odd" => Self::Odd, _ => return None })
+        Some(match value {
+            "none" => Self::None,
+            "even" => Self::Even,
+            "odd" => Self::Odd,
+            _ => return None,
+        })
     }
 }
-impl Default for SioParity { fn default() -> Self { Self::None } }
+impl Default for SioParity {
+    fn default() -> Self {
+        Self::None
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SioStopBits { One, Two }
+pub enum SioStopBits {
+    One,
+    Two,
+}
 impl SioStopBits {
     pub const ALL: [Self; 2] = [Self::One, Self::Two];
-    pub const fn bits(self) -> u8 { match self { Self::One => 1, Self::Two => 2 } }
-    pub const fn label(self) -> &'static str { match self { Self::One => "1 stop bit", Self::Two => "2 stop bits" } }
-    fn from_bits(bits: u8) -> Option<Self> { Some(match bits { 1 => Self::One, 2 => Self::Two, _ => return None }) }
+    pub const fn bits(self) -> u8 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+        }
+    }
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::One => "1 stop bit",
+            Self::Two => "2 stop bits",
+        }
+    }
+    fn from_bits(bits: u8) -> Option<Self> {
+        Some(match bits {
+            1 => Self::One,
+            2 => Self::Two,
+            _ => return None,
+        })
+    }
 }
-impl Default for SioStopBits { fn default() -> Self { Self::Two } }
+impl Default for SioStopBits {
+    fn default() -> Self {
+        Self::Two
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct SioWordFormat {
@@ -253,32 +338,62 @@ pub struct SioWordFormat {
 
 impl SioWordFormat {
     pub const fn frame_bits(self) -> u8 {
-        1 + self.data_bits.bits() + match self.parity { SioParity::None => 0, _ => 1 } + self.stop_bits.bits()
+        1 + self.data_bits.bits()
+            + match self.parity {
+                SioParity::None => 0,
+                _ => 1,
+            }
+            + self.stop_bits.bits()
     }
 
     pub fn label(self) -> String {
-        let parity = match self.parity { SioParity::None => 'N', SioParity::Even => 'E', SioParity::Odd => 'O' };
-        format!("{}{}{}", self.data_bits.bits(), parity, self.stop_bits.bits())
+        let parity = match self.parity {
+            SioParity::None => 'N',
+            SioParity::Even => 'E',
+            SioParity::Odd => 'O',
+        };
+        format!(
+            "{}{}{}",
+            self.data_bits.bits(),
+            parity,
+            self.stop_bits.bits()
+        )
     }
 }
 
 /// Even control/status address selected by the seven 88-SIO address jumpers.
 /// The data channel is always the following odd address.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SioAddressPair { base: u8 }
+pub struct SioAddressPair {
+    base: u8,
+}
 
 impl SioAddressPair {
     pub const fn try_new(base: u8) -> Option<Self> {
-        if base & 1 == 0 { Some(Self { base }) } else { None }
+        if base & 1 == 0 {
+            Some(Self { base })
+        } else {
+            None
+        }
     }
-    pub const fn base(self) -> u8 { self.base }
-    pub const fn status(self) -> u8 { self.base }
-    pub const fn data(self) -> u8 { self.base.wrapping_add(1) }
-    pub const fn contains(self, port: u8) -> bool { port == self.status() || port == self.data() }
+    pub const fn base(self) -> u8 {
+        self.base
+    }
+    pub const fn status(self) -> u8 {
+        self.base
+    }
+    pub const fn data(self) -> u8 {
+        self.base.wrapping_add(1)
+    }
+    pub const fn contains(self, port: u8) -> bool {
+        port == self.status() || port == self.data()
+    }
 }
 
 impl Default for SioAddressPair {
-    fn default() -> Self { Self { base: 0x00 } }
+    fn default() -> Self {
+        Self { base: 0x00 }
+    }
 }
 
 /// Nominal serial bit rate produced by the 88-SIO baud generator.
@@ -294,22 +409,42 @@ pub struct SioBaudRate(u32);
 impl SioBaudRate {
     pub const MAX: u32 = 25_000;
     pub const STANDARD: [Self; 9] = [
-        Self(110), Self(150), Self(300), Self(600), Self(1_200), Self(2_400),
-        Self(4_800), Self(9_600), Self(19_200),
+        Self(110),
+        Self(150),
+        Self(300),
+        Self(600),
+        Self(1_200),
+        Self(2_400),
+        Self(4_800),
+        Self(9_600),
+        Self(19_200),
     ];
 
     pub const fn try_new(baud: u32) -> Option<Self> {
-        if baud <= Self::MAX { Some(Self(baud)) } else { None }
+        if baud <= Self::MAX {
+            Some(Self(baud))
+        } else {
+            None
+        }
     }
-    pub const fn baud(self) -> u32 { self.0 }
-    pub fn label(self) -> String { format!("{} baud", self.0) }
+    pub const fn baud(self) -> u32 {
+        self.0
+    }
+    pub fn label(self) -> String {
+        format!("{} baud", self.0)
+    }
     pub fn is_standard(self) -> bool {
-        matches!(self.0, 110 | 150 | 300 | 600 | 1_200 | 2_400 | 4_800 | 9_600 | 19_200)
+        matches!(
+            self.0,
+            110 | 150 | 300 | 600 | 1_200 | 2_400 | 4_800 | 9_600 | 19_200
+        )
     }
 }
 
 impl Default for SioBaudRate {
-    fn default() -> Self { Self(110) }
+    fn default() -> Self {
+        Self(110)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
@@ -347,7 +482,9 @@ impl SioHardwareConfig {
 
     pub fn from_persistence_key(value: &str) -> Option<Self> {
         let fields: Vec<_> = value.split(',').collect();
-        if fields.len() != 7 && fields.len() != 9 { return None; }
+        if fields.len() != 7 && fields.len() != 9 {
+            return None;
+        }
         let revision = SioRevision::from_persistence_key(fields[0])?;
         let interface = SioInterface::from_persistence_key(fields[1])?;
         let address = SioAddressPair::try_new(u8::from_str_radix(fields[2], 16).ok()?)?;
@@ -368,7 +505,11 @@ impl SioHardwareConfig {
             interface,
             address,
             baud,
-            format: SioWordFormat { data_bits, parity, stop_bits },
+            format: SioWordFormat {
+                data_bits,
+                parity,
+                stop_bits,
+            },
             interrupt_wiring,
         })
     }
@@ -400,7 +541,10 @@ mod tests {
 
     #[test]
     fn published_mits_baud_table_is_exposed_without_forbidding_custom_presets() {
-        assert_eq!(SioBaudRate::STANDARD.map(SioBaudRate::baud), [110, 150, 300, 600, 1_200, 2_400, 4_800, 9_600, 19_200]);
+        assert_eq!(
+            SioBaudRate::STANDARD.map(SioBaudRate::baud),
+            [110, 150, 300, 600, 1_200, 2_400, 4_800, 9_600, 19_200]
+        );
         assert!(SioBaudRate::try_new(4_800).unwrap().is_standard());
         assert!(!SioBaudRate::try_new(2_000).unwrap().is_standard());
     }
@@ -422,21 +566,39 @@ mod tests {
             interface: SioInterface::Rs232A,
             address: SioAddressPair::try_new(0x06).unwrap(),
             baud: SioBaudRate::try_new(9_600).unwrap(),
-            format: SioWordFormat { data_bits: SioDataBits::Seven, parity: SioParity::Even, stop_bits: SioStopBits::One },
+            format: SioWordFormat {
+                data_bits: SioDataBits::Seven,
+                parity: SioParity::Even,
+                stop_bits: SioStopBits::One,
+            },
             interrupt_wiring: SioInterruptWiring {
                 input: SioInterruptTarget::Vi3,
                 output: SioInterruptTarget::Disconnected,
             },
         };
-        assert_eq!(SioHardwareConfig::from_persistence_key(&config.persistence_key()), Some(config));
-        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,07,9600,7,even,1,vi3,disconnected").is_none());
-        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none());
-        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,rst7,vi2").is_none());
+        assert_eq!(
+            SioHardwareConfig::from_persistence_key(&config.persistence_key()),
+            Some(config)
+        );
+        assert!(
+            SioHardwareConfig::from_persistence_key(
+                "rev0,a-rs232,07,9600,7,even,1,vi3,disconnected"
+            )
+            .is_none()
+        );
+        assert!(
+            SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none()
+        );
+        assert!(
+            SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,rst7,vi2")
+                .is_none()
+        );
     }
 
     #[test]
     fn legacy_seven_field_hardware_migrates_without_losing_card_configuration() {
-        let migrated = SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1").unwrap();
+        let migrated =
+            SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1").unwrap();
         assert_eq!(migrated.revision, SioRevision::Rev0);
         assert_eq!(migrated.interface, SioInterface::Rs232A);
         assert_eq!(migrated.address, SioAddressPair::try_new(0x06).unwrap());
@@ -445,7 +607,9 @@ mod tests {
         assert_eq!(migrated.format.parity, SioParity::Even);
         assert_eq!(migrated.format.stop_bits, SioStopBits::One);
         assert_eq!(migrated.interrupt_wiring, SioInterruptWiring::default());
-        assert!(SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none());
+        assert!(
+            SioHardwareConfig::from_persistence_key("rev0,a-rs232,06,9600,7,even,1,vi3").is_none()
+        );
     }
 
     #[test]
@@ -455,9 +619,12 @@ mod tests {
         assert_eq!(SioInterruptTarget::Vi3.vector_level(), Some(3));
         assert_eq!(SioInterruptTarget::Pint.vector_level(), None);
         assert_eq!(SioInterruptTarget::Disconnected.vector_level(), None);
-        assert_eq!(SioInterruptWiring::default(), SioInterruptWiring {
-            input: SioInterruptTarget::Pint,
-            output: SioInterruptTarget::Pint,
-        });
+        assert_eq!(
+            SioInterruptWiring::default(),
+            SioInterruptWiring {
+                input: SioInterruptTarget::Pint,
+                output: SioInterruptTarget::Pint,
+            }
+        );
     }
 }

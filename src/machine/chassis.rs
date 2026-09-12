@@ -239,12 +239,7 @@ impl AltairChassis {
 
     /// Cycle-accurate RUN/STOP entry point. STOP records the physical switch
     /// level but does not clear RUN while HLT/HLDA suppresses PSYNC.
-    pub(crate) fn cycle_assert_run_stop(
-        &mut self,
-        run: bool,
-        cpu_halted: bool,
-        cpu_holding: bool,
-    ) {
+    pub(crate) fn cycle_assert_run_stop(&mut self, run: bool, cpu_halted: bool, cpu_holding: bool) {
         if !self.powered {
             return;
         }
@@ -265,10 +260,7 @@ impl AltairChassis {
     /// A STOP held while HLT/HLDA suppressed PSYNC becomes effective at the
     /// first real synchronization opportunity after the processor can drive it.
     pub(crate) fn cycle_capture_pending_stop_at_psync(&mut self) -> bool {
-        if self.powered
-            && self.running()
-            && self.stop_switch_asserted
-            && !self.bus.reset_asserted()
+        if self.powered && self.running() && self.stop_switch_asserted && !self.bus.reset_asserted()
         {
             self.cycle_set_running(false);
             true

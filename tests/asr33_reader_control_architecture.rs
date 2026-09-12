@@ -51,7 +51,9 @@ fn manual_buttons_cannot_override_88_tya_reader_control() {
         "fn draw_tty_punch_controls",
     );
     assert!(controls.contains("ReaderControlMode::ALL"));
-    assert!(controls.contains("let manual = self.asr33.reader_control == ReaderControlMode::Manual"));
+    assert!(
+        controls.contains("let manual = self.asr33.reader_control == ReaderControlMode::Manual")
+    );
     assert!(controls.contains("manual && can_run && !self.asr33.reader_running"));
     assert!(controls.contains("manual && self.asr33.reader_running"));
     assert!(controls.contains("51h (121 octal)"));

@@ -368,7 +368,9 @@ impl S100RuntimeFabric {
     }
 
     pub(crate) fn serial_timing_is_quiet(&self) -> bool {
-        self.serial.iter().all(|installed| installed.handle.timing_is_quiet())
+        self.serial
+            .iter()
+            .all(|installed| installed.handle.timing_is_quiet())
     }
 
     pub(crate) fn serial_receive(&self, port_index: usize, byte: u8) -> bool {
@@ -1467,7 +1469,8 @@ mod tests {
             source.drive_signal(S100Signal::Write, write_high);
             source.drive_signal(S100Signal::Out, out_high);
             let sample = fabric.backplane.resolve_drive_sets(&[source]);
-            fabric.backplane
+            fabric
+                .backplane
                 .resolve_selected_drives(0, &[source])
                 .unwrap();
             let direct = display.drive(&sample);

@@ -26,10 +26,7 @@ fn static_4k_hardware() -> S100HardwareConfig {
     ram_hardware(S100RamBoardModel::Mits4KStatic88_4Mcs)
 }
 
-fn prepare_ram_backend(
-    model: S100RamBoardModel,
-    program: &[u8],
-) -> CycleAccurateMachineBackend {
+fn prepare_ram_backend(model: S100RamBoardModel, program: &[u8]) -> CycleAccurateMachineBackend {
     let mut backend = CycleAccurateMachineBackend::default();
     backend
         .machine
@@ -136,8 +133,7 @@ fn compiled_full_control_flow_t5_families_match_forced_partial_exactly() {
             "{name} budget tail"
         );
         assert_eq!(
-            stats.fallbacks.opcode_barrier,
-            0,
+            stats.fallbacks.opcode_barrier, 0,
             "{name} must not be a Full barrier"
         );
 
@@ -152,7 +148,11 @@ fn compiled_full_control_flow_t5_families_match_forced_partial_exactly() {
             partial.cpu.total_t_states(),
             "{name} T-states"
         );
-        assert_eq!(compiled.cpu.registers(), partial.cpu.registers(), "{name} registers");
+        assert_eq!(
+            compiled.cpu.registers(),
+            partial.cpu.registers(),
+            "{name} registers"
+        );
         for address in [STACK_LO, STACK_HI, 0x0800, 0x0801] {
             assert_eq!(
                 compiled.machine.bus.peek_memory(address),
@@ -205,7 +205,10 @@ fn stale_memr_t1_uses_new_address_data_before_next_status_latches() {
         compiled.machine.bus.raw_panel_lamp_duty(),
         partial.machine.bus.raw_panel_lamp_duty()
     );
-    assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
+    assert_eq!(
+        compiled.machine.bus.raw_panel_data(),
+        partial.machine.bus.raw_panel_data()
+    );
 }
 
 #[test]
@@ -261,9 +264,18 @@ fn compiled_full_di_matches_forced_partial_inte_and_panel_exactly() {
         partial.machine.bus.raw_panel_lamp_duty(),
         "DI Full must preserve the T4-delayed INTE lamp duty"
     );
-    assert_eq!(compiled.machine.bus.raw_s100_inte(), partial.machine.bus.raw_s100_inte());
-    assert_eq!(compiled.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_status_word());
-    assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
+    assert_eq!(
+        compiled.machine.bus.raw_s100_inte(),
+        partial.machine.bus.raw_s100_inte()
+    );
+    assert_eq!(
+        compiled.machine.bus.raw_s100_status_word(),
+        partial.machine.bus.raw_s100_status_word()
+    );
+    assert_eq!(
+        compiled.machine.bus.raw_panel_data(),
+        partial.machine.bus.raw_panel_data()
+    );
 }
 
 #[test]

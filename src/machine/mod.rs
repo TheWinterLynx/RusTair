@@ -21,8 +21,8 @@ pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
 pub(crate) use dcdd::Mits88DcddHarness;
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
-pub use panel_bus::PanelLampSnapshot;
 pub(crate) use panel_bus::FullPanelDuty;
+pub use panel_bus::PanelLampSnapshot;
 pub(crate) use serial_card::RuntimeSerialCardHandle;
 
 pub const CLOCK_HZ: u32 = 2_000_000;
@@ -312,8 +312,7 @@ impl AltairBus {
 
     fn refresh_protect_line(&mut self) {
         let address = self.s100.signals().address;
-        self.s100
-            .refresh_protect(self.memory.is_protected(address));
+        self.s100.refresh_protect(self.memory.is_protected(address));
     }
 
     fn drive_power_on_state(&mut self, address: u16, run: bool) {

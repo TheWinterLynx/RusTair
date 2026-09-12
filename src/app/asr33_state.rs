@@ -28,7 +28,11 @@ impl ReaderControlMode {
     /// Whether the reader motor is electrically commanded to run. In RTS mode
     /// absence of an MC6850 RTS pin means the optional Reader Control wiring has
     /// no valid source and therefore cannot energize ReaderRun+.
-    pub(super) const fn effective_running(self, manual_running: bool, rts_high: Option<bool>) -> bool {
+    pub(super) const fn effective_running(
+        self,
+        manual_running: bool,
+        rts_high: Option<bool>,
+    ) -> bool {
         match self {
             Self::Manual => manual_running,
             Self::Mits88TyaRts => matches!(rts_high, Some(true)),
@@ -183,11 +187,7 @@ impl Asr33KeyboardState {
     /// The Model 33 keyboard trips a mechanical distributor that serializes one
     /// character at the configured line rate. Until that distributor/reset
     /// cycle finishes, another primary key cannot start a second character.
-    pub(super) fn try_begin_transmission(
-        &mut self,
-        now: Instant,
-        char_time: Duration,
-    ) -> bool {
+    pub(super) fn try_begin_transmission(&mut self, now: Instant, char_time: Duration) -> bool {
         if char_time.is_zero() {
             self.distributor_ready_at = now;
             return true;
@@ -219,9 +219,18 @@ mod tests {
 
     #[test]
     fn tape_transport_speeds_match_requested_character_rates() {
-        assert_eq!(TapeTransportSpeed::Historical1x.char_time(), Duration::from_millis(100));
-        assert_eq!(TapeTransportSpeed::X5.char_time(), Duration::from_millis(20));
-        assert_eq!(TapeTransportSpeed::X10.char_time(), Duration::from_millis(10));
+        assert_eq!(
+            TapeTransportSpeed::Historical1x.char_time(),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            TapeTransportSpeed::X5.char_time(),
+            Duration::from_millis(20)
+        );
+        assert_eq!(
+            TapeTransportSpeed::X10.char_time(),
+            Duration::from_millis(10)
+        );
         assert_eq!(TapeTransportSpeed::Unlimited.char_time(), Duration::ZERO);
     }
 
@@ -247,10 +256,7 @@ mod tests {
         let mut keyboard = Asr33KeyboardState::new(start);
 
         assert!(keyboard.try_begin_transmission(start, char_time));
-        assert!(!keyboard.try_begin_transmission(
-            start + Duration::from_millis(99),
-            char_time
-        ));
+        assert!(!keyboard.try_begin_transmission(start + Duration::from_millis(99), char_time));
         assert!(keyboard.try_begin_transmission(start + char_time, char_time));
     }
 
@@ -268,16 +274,15 @@ mod tests {
         let start = Instant::now();
         let mut keyboard = Asr33KeyboardState::new(start);
         assert!(keyboard.try_begin_transmission(start, Duration::from_millis(100)));
-        assert!(!keyboard.try_begin_transmission(
-            start + Duration::from_millis(1),
-            Duration::from_millis(100)
-        ));
+        assert!(
+            !keyboard.try_begin_transmission(
+                start + Duration::from_millis(1),
+                Duration::from_millis(100)
+            )
+        );
 
         let reset_at = start + Duration::from_millis(1);
         keyboard.reset_distributor(reset_at);
-        assert!(keyboard.try_begin_transmission(
-            reset_at,
-            Duration::from_millis(100)
-        ));
+        assert!(keyboard.try_begin_transmission(reset_at, Duration::from_millis(100)));
     }
 }

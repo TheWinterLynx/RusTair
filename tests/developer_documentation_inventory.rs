@@ -61,8 +61,8 @@ fn assert_inventory_documented(
         .iter()
         .filter(|path| {
             let exact = reference.contains(&format!("`{path}`"));
-            let context_relative = allow_unique_basename
-                && unique_basename_is_documented(path, &sources, &reference);
+            let context_relative =
+                allow_unique_basename && unique_basename_is_documented(path, &sources, &reference);
             !exact && !context_relative
         })
         .cloned()
@@ -102,8 +102,7 @@ fn every_integration_test_source_is_listed_in_the_test_reference() {
 #[test]
 fn core_contributor_documents_exist_and_are_linked_from_the_index() {
     let root = manifest_root();
-    let index = fs::read_to_string(root.join("docs/README.md"))
-        .expect("docs/README.md must exist");
+    let index = fs::read_to_string(root.join("docs/README.md")).expect("docs/README.md must exist");
 
     let required = [
         "DEVELOPER_GUIDE.md",
@@ -129,7 +128,11 @@ fn core_contributor_documents_exist_and_are_linked_from_the_index() {
 
     for name in required {
         let path = root.join("docs").join(name);
-        assert!(path.is_file(), "required contributor document missing: {}", path.display());
+        assert!(
+            path.is_file(),
+            "required contributor document missing: {}",
+            path.display()
+        );
         assert!(
             index.contains(name),
             "docs/README.md must link or name required contributor document {name}"

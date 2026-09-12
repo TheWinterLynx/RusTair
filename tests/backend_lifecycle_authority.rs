@@ -1,6 +1,4 @@
-use rustair::backend::{
-    BackendHost, BusMachineCycle, BusTeachingAccuracy, EmulationEngine,
-};
+use rustair::backend::{BackendHost, BusMachineCycle, BusTeachingAccuracy, EmulationEngine};
 
 fn cycle_host() -> BackendHost {
     BackendHost::from_engine(EmulationEngine::RustCycleAccurate8080)
@@ -43,7 +41,10 @@ fn cycle_power_on_inte_has_one_cpu_and_s100_truth() {
     let released = host
         .bus_teaching_snapshot()
         .expect("released RESET control snapshot");
-    assert_eq!(released.machine_cycle, BusMachineCycle::ResetReleasedStopped);
+    assert_eq!(
+        released.machine_cycle,
+        BusMachineCycle::ResetReleasedStopped
+    );
     assert_eq!(released.status.inte, Some(false));
     assert_eq!(released.pins.inte, Some(false));
 }
@@ -75,7 +76,10 @@ fn cycle_run_latch_drives_ready_wait_without_changing_reset_semantics() {
         .bus_teaching_snapshot()
         .expect("RUN control snapshot before first exact T-state");
     assert!(running_panel.running);
-    assert_eq!(before_clock.machine_cycle, BusMachineCycle::ResetReleasedRunning);
+    assert_eq!(
+        before_clock.machine_cycle,
+        BusMachineCycle::ResetReleasedRunning
+    );
     assert_eq!(before_clock.reset, Some(false));
     assert_eq!(before_clock.ready, Some(true));
     assert_eq!(

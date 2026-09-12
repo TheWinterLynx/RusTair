@@ -1,8 +1,12 @@
-use super::*;
 use super::alu::{FLAG_AC, FLAG_C, FLAG_Z};
+use super::*;
 
 fn input(data_in: u8, ready: bool) -> Cpu8080Inputs {
-    Cpu8080Inputs { data_in, ready, ..Cpu8080Inputs::default() }
+    Cpu8080Inputs {
+        data_in,
+        ready,
+        ..Cpu8080Inputs::default()
+    }
 }
 
 fn fetch(cpu: &mut Cpu8080Cycle, opcode: u8) -> [TickTrace; 4] {
@@ -55,14 +59,38 @@ fn accumulator_only_operations_are_exactly_four_t_states_with_no_extra_cycle() {
         cpu.set_registers(r);
 
         let trace = fetch(&mut cpu, opcode);
-        assert_eq!(trace[0].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
-        assert_eq!(trace[1].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
-        assert_eq!(trace[2].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
-        assert_eq!(trace[3].machine_cycle, MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert_eq!(
+            trace[0].machine_cycle,
+            MachineCycle::InstructionFetch,
+            "opcode {opcode:02x}"
+        );
+        assert_eq!(
+            trace[1].machine_cycle,
+            MachineCycle::InstructionFetch,
+            "opcode {opcode:02x}"
+        );
+        assert_eq!(
+            trace[2].machine_cycle,
+            MachineCycle::InstructionFetch,
+            "opcode {opcode:02x}"
+        );
+        assert_eq!(
+            trace[3].machine_cycle,
+            MachineCycle::InstructionFetch,
+            "opcode {opcode:02x}"
+        );
         assert!(trace[3].instruction_complete, "opcode {opcode:02x}");
         assert_eq!(trace[3].instruction_t_states, 4, "opcode {opcode:02x}");
-        assert_eq!(cpu.last_instruction_t_states(), Some(4), "opcode {opcode:02x}");
-        assert_eq!(cpu.machine_cycle(), MachineCycle::InstructionFetch, "opcode {opcode:02x}");
+        assert_eq!(
+            cpu.last_instruction_t_states(),
+            Some(4),
+            "opcode {opcode:02x}"
+        );
+        assert_eq!(
+            cpu.machine_cycle(),
+            MachineCycle::InstructionFetch,
+            "opcode {opcode:02x}"
+        );
         assert_eq!(cpu.t_state(), TState::T1, "opcode {opcode:02x}");
         assert_eq!(cpu.registers().pc, 1, "opcode {opcode:02x}");
     }

@@ -12,27 +12,57 @@ const TODO: &str = include_str!("../TODO.md");
 
 #[test]
 fn product_exposes_only_adaptive_cycle_8080() {
-    assert_eq!(EmulationEngine::ALL, [EmulationEngine::RustCycleAccurate8080]);
+    assert_eq!(
+        EmulationEngine::ALL,
+        [EmulationEngine::RustCycleAccurate8080]
+    );
 }
 
 #[test]
 fn retired_backend_surface_is_absent() {
-    assert!(!BACKEND.contains("Simh"), "backend API must not expose retired backend variants or modules");
-    assert!(!BACKEND.contains("Z80State"), "retired Z80 state must not remain in the common backend API");
-    assert!(!BUS_TEACHING.contains("CpuState::Z80"), "Bus Teacher must not retain the removed Z80 CPU-state branch");
-    assert!(!APP.contains("SIMH"), "application control paths must not retain retired backend fallbacks");
-    assert!(!PERSISTENCE.contains("SimhAltair"), "persistence must not retain removed engine variants");
-    assert!(!PERSISTENCE.contains("simh-altair"), "persistence must not serialize removed engine keys");
-    assert!(!RUNTIME.contains("SIMH"), "runtime UI must not advertise the retired integration");
+    assert!(
+        !BACKEND.contains("Simh"),
+        "backend API must not expose retired backend variants or modules"
+    );
+    assert!(
+        !BACKEND.contains("Z80State"),
+        "retired Z80 state must not remain in the common backend API"
+    );
+    assert!(
+        !BUS_TEACHING.contains("CpuState::Z80"),
+        "Bus Teacher must not retain the removed Z80 CPU-state branch"
+    );
+    assert!(
+        !APP.contains("SIMH"),
+        "application control paths must not retain retired backend fallbacks"
+    );
+    assert!(
+        !PERSISTENCE.contains("SimhAltair"),
+        "persistence must not retain removed engine variants"
+    );
+    assert!(
+        !PERSISTENCE.contains("simh-altair"),
+        "persistence must not serialize removed engine keys"
+    );
+    assert!(
+        !RUNTIME.contains("SIMH"),
+        "runtime UI must not advertise the retired integration"
+    );
 }
 
 #[test]
 fn retired_backend_artifacts_and_build_scaffolding_are_absent() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest = include_str!("../Cargo.toml");
-    assert!(!manifest.contains("simh-ffi"), "retired FFI feature must not be advertised");
+    assert!(
+        !manifest.contains("simh-ffi"),
+        "retired FFI feature must not be advertised"
+    );
     if let Ok(build_script) = std::fs::read_to_string(root.join("build.rs")) {
-        assert!(!build_script.contains("simh_frontpanel"), "retired native linkage must not return");
+        assert!(
+            !build_script.contains("simh_frontpanel"),
+            "retired native linkage must not return"
+        );
         assert!(!build_script.contains("RUSTAIR_SIMH_FRONTPANEL_DIR"));
     }
     for path in [
@@ -41,7 +71,10 @@ fn retired_backend_artifacts_and_build_scaffolding_are_absent() {
         "tools/simh",
         "tests/simh_frontpanel_smoke.rs",
     ] {
-        assert!(!root.join(path).exists(), "retired backend path was reintroduced: {path}");
+        assert!(
+            !root.join(path).exists(),
+            "retired backend path was reintroduced: {path}"
+        );
     }
 }
 

@@ -86,11 +86,7 @@ impl RusTairApp {
                         ),
                     ] {
                         if port == mapped_port {
-                            bindings.push(PhysicalSerialPortBinding {
-                                slot,
-                                port,
-                                kind,
-                            });
+                            bindings.push(PhysicalSerialPortBinding { slot, port, kind });
                         }
                     }
                 }
@@ -135,9 +131,7 @@ impl RusTairApp {
             .next()
             .map(|(_, card)| match card {
                 S100InstalledCardConfig::Mits88Sio(config) => config.address.data(),
-                S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
-                    straps.address.port0_data()
-                }
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. } => straps.address.port0_data(),
                 _ => unreachable!("serial_slots returned a non-serial card"),
             })
     }
@@ -195,7 +189,10 @@ impl RusTairApp {
         dcd_high: bool,
     ) -> bool {
         Self::backend_serial_port(connection)
-            .map(|port| self.machine.serial_set_modem_inputs(port, cts_high, dcd_high))
+            .map(|port| {
+                self.machine
+                    .serial_set_modem_inputs(port, cts_high, dcd_high)
+            })
             .unwrap_or(false)
     }
 

@@ -164,34 +164,37 @@ fn parse_card_persistence_key(value: &str) -> Option<Option<S100InstalledCardCon
             .validate()
             .ok()?,
         ),
-        ["fast", base, populated, waits] => {
-            S100InstalledCardConfig::FastRamCompatibility(
-                FastRamCompatibilityConfig {
-                    base_address: u16::from_str_radix(base, 16).ok()?,
-                    populated_bytes: populated.parse().ok()?,
-                    read_wait_states: waits.parse().ok()?,
-                }
-                .validate()
-                .ok()?,
-            )
-        }
-        ["2sio", base, baud0, baud1, interface0, interface1, irq0, irq1] => {
-            S100InstalledCardConfig::Mits88TwoSio {
-                straps: TwoSioStraps {
-                    address: TwoSioAddressBlock::try_new(
-                        u8::from_str_radix(base, 16).ok()?,
-                    )?,
-                    port0_baud: parse_two_sio_baud(baud0)?,
-                    port1_baud: parse_two_sio_baud(baud1)?,
-                    port0_interface: TwoSioSignalInterface::from_persistence_key(interface0)?,
-                    port1_interface: TwoSioSignalInterface::from_persistence_key(interface1)?,
-                },
-                interrupt_wiring: TwoSioInterruptWiring {
-                    port0: TwoSioInterruptTarget::from_persistence_key(irq0)?,
-                    port1: TwoSioInterruptTarget::from_persistence_key(irq1)?,
-                },
+        ["fast", base, populated, waits] => S100InstalledCardConfig::FastRamCompatibility(
+            FastRamCompatibilityConfig {
+                base_address: u16::from_str_radix(base, 16).ok()?,
+                populated_bytes: populated.parse().ok()?,
+                read_wait_states: waits.parse().ok()?,
             }
-        }
+            .validate()
+            .ok()?,
+        ),
+        [
+            "2sio",
+            base,
+            baud0,
+            baud1,
+            interface0,
+            interface1,
+            irq0,
+            irq1,
+        ] => S100InstalledCardConfig::Mits88TwoSio {
+            straps: TwoSioStraps {
+                address: TwoSioAddressBlock::try_new(u8::from_str_radix(base, 16).ok()?)?,
+                port0_baud: parse_two_sio_baud(baud0)?,
+                port1_baud: parse_two_sio_baud(baud1)?,
+                port0_interface: TwoSioSignalInterface::from_persistence_key(interface0)?,
+                port1_interface: TwoSioSignalInterface::from_persistence_key(interface1)?,
+            },
+            interrupt_wiring: TwoSioInterruptWiring {
+                port0: TwoSioInterruptTarget::from_persistence_key(irq0)?,
+                port1: TwoSioInterruptTarget::from_persistence_key(irq1)?,
+            },
+        },
         _ => return None,
     };
     Some(Some(card.validate().ok()?))
@@ -219,16 +222,19 @@ mod tests {
     fn complete_s100_hardware_round_trips_atomically() {
         let config = S100HardwareConfig::historical_8800b_18_slot_starter();
         let encoded = config.persistence_key();
-        assert_eq!(S100HardwareConfig::from_persistence_key(&encoded), Some(config));
+        assert_eq!(
+            S100HardwareConfig::from_persistence_key(&encoded),
+            Some(config)
+        );
     }
 
     #[test]
     fn malformed_or_partial_slot_inventory_is_rejected() {
         assert!(S100HardwareConfig::from_persistence_key("8800b|18|cpu").is_none());
-        assert!(S100HardwareConfig::from_persistence_key(
-            "8800b|6|cpu;-;-;-;-;ram,4k-mcs,0001,4096"
-        )
-        .is_none());
+        assert!(
+            S100HardwareConfig::from_persistence_key("8800b|6|cpu;-;-;-;-;ram,4k-mcs,0001,4096")
+                .is_none()
+        );
         assert!(S100HardwareConfig::from_persistence_key("8800b|6|-;-;-;-;-;-").is_none());
         assert!(S100HardwareConfig::from_persistence_key("8800b|6|cpu;dcdd1;-;-;-;-").is_none());
     }
@@ -236,38 +242,53 @@ mod tests {
     #[test]
     fn serial_card_instance_state_survives_round_trip() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        config.set_slot(
-            2,
-            Some(S100InstalledCardConfig::Mits88TwoSio {
-                straps: TwoSioStraps {
-                    address: TwoSioAddressBlock::try_new(0x44).unwrap(),
-                    port0_baud: TwoSioBaudTap::Baud300,
-                    port1_baud: TwoSioBaudTap::Baud9600,
-                    port0_interface: TwoSioSignalInterface::Tty20mA,
-                    port1_interface: TwoSioSignalInterface::Rs232,
-                },
-                interrupt_wiring: TwoSioInterruptWiring {
-                    port0: TwoSioInterruptTarget::Vi3,
-                    port1: TwoSioInterruptTarget::Disconnected,
-                },
-            }),
-        )
-        .unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        config
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps: TwoSioStraps {
+                        address: TwoSioAddressBlock::try_new(0x44).unwrap(),
+                        port0_baud: TwoSioBaudTap::Baud300,
+                        port1_baud: TwoSioBaudTap::Baud9600,
+                        port0_interface: TwoSioSignalInterface::Tty20mA,
+                        port1_interface: TwoSioSignalInterface::Rs232,
+                    },
+                    interrupt_wiring: TwoSioInterruptWiring {
+                        port0: TwoSioInterruptTarget::Vi3,
+                        port1: TwoSioInterruptTarget::Disconnected,
+                    },
+                }),
+            )
+            .unwrap();
         let encoded = config.persistence_key();
-        assert_eq!(S100HardwareConfig::from_persistence_key(&encoded), Some(config));
+        assert_eq!(
+            S100HardwareConfig::from_persistence_key(&encoded),
+            Some(config)
+        );
     }
 
     #[test]
     fn dcdd_two_board_assembly_survives_atomic_round_trip() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        config.set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
-        config.set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        config
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
+        config
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
         let config = config.validate().unwrap();
         let encoded = config.persistence_key();
 
         assert!(encoded.contains(";dcdd1;dcdd2;"));
-        assert_eq!(S100HardwareConfig::from_persistence_key(&encoded), Some(config));
+        assert_eq!(
+            S100HardwareConfig::from_persistence_key(&encoded),
+            Some(config)
+        );
     }
 }

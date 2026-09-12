@@ -33,9 +33,11 @@ impl RusTairApp {
     }
 
     fn process_tty_repeat(&mut self, ctx: &egui::Context) {
-        let repeat_held = self.asr33.keyboard.pressed_key.is_some_and(|index| {
-            matches!(teletype::KEYS[index].kind, KeyKind::Repeat)
-        });
+        let repeat_held = self
+            .asr33
+            .keyboard
+            .pressed_key
+            .is_some_and(|index| matches!(teletype::KEYS[index].kind, KeyKind::Repeat));
         if !repeat_held {
             return;
         }
@@ -157,11 +159,7 @@ impl RusTairApp {
 
         let now = Instant::now();
         let char_time = self.asr_char_time();
-        if !self
-            .asr33
-            .keyboard
-            .try_begin_transmission(now, char_time)
-        {
+        if !self.asr33.keyboard.try_begin_transmission(now, char_time) {
             return false;
         }
 
@@ -392,20 +390,33 @@ impl RusTairApp {
                     } if modifiers.ctrl => {
                         any_key = true;
                         let letter = match key {
-                            egui::Key::A=>Some(b'A'), egui::Key::B=>Some(b'B'),
-                            egui::Key::C=>Some(b'C'), egui::Key::D=>Some(b'D'),
-                            egui::Key::E=>Some(b'E'), egui::Key::F=>Some(b'F'),
-                            egui::Key::G=>Some(b'G'), egui::Key::H=>Some(b'H'),
-                            egui::Key::I=>Some(b'I'), egui::Key::J=>Some(b'J'),
-                            egui::Key::K=>Some(b'K'), egui::Key::L=>Some(b'L'),
-                            egui::Key::M=>Some(b'M'), egui::Key::N=>Some(b'N'),
-                            egui::Key::O=>Some(b'O'), egui::Key::P=>Some(b'P'),
-                            egui::Key::Q=>Some(b'Q'), egui::Key::R=>Some(b'R'),
-                            egui::Key::S=>Some(b'S'), egui::Key::T=>Some(b'T'),
-                            egui::Key::U=>Some(b'U'), egui::Key::V=>Some(b'V'),
-                            egui::Key::W=>Some(b'W'), egui::Key::X=>Some(b'X'),
-                            egui::Key::Y=>Some(b'Y'), egui::Key::Z=>Some(b'Z'),
-                            _=>None,
+                            egui::Key::A => Some(b'A'),
+                            egui::Key::B => Some(b'B'),
+                            egui::Key::C => Some(b'C'),
+                            egui::Key::D => Some(b'D'),
+                            egui::Key::E => Some(b'E'),
+                            egui::Key::F => Some(b'F'),
+                            egui::Key::G => Some(b'G'),
+                            egui::Key::H => Some(b'H'),
+                            egui::Key::I => Some(b'I'),
+                            egui::Key::J => Some(b'J'),
+                            egui::Key::K => Some(b'K'),
+                            egui::Key::L => Some(b'L'),
+                            egui::Key::M => Some(b'M'),
+                            egui::Key::N => Some(b'N'),
+                            egui::Key::O => Some(b'O'),
+                            egui::Key::P => Some(b'P'),
+                            egui::Key::Q => Some(b'Q'),
+                            egui::Key::R => Some(b'R'),
+                            egui::Key::S => Some(b'S'),
+                            egui::Key::T => Some(b'T'),
+                            egui::Key::U => Some(b'U'),
+                            egui::Key::V => Some(b'V'),
+                            egui::Key::W => Some(b'W'),
+                            egui::Key::X => Some(b'X'),
+                            egui::Key::Y => Some(b'Y'),
+                            egui::Key::Z => Some(b'Z'),
+                            _ => None,
                         };
                         if let Some(letter) = letter {
                             keystrokes.push((letter - 64, Some(letter)));
@@ -442,7 +453,10 @@ impl RusTairApp {
             keyboard.auto_release_at = None;
         }
 
-        let dt = now.duration_since(keyboard.anim_tick).as_secs_f32().min(0.05);
+        let dt = now
+            .duration_since(keyboard.anim_tick)
+            .as_secs_f32()
+            .min(0.05);
         keyboard.anim_tick = now;
         let velocity = 8.0 / 0.030;
 
@@ -515,9 +529,7 @@ impl RusTairApp {
                     }
                     let timer_id = egui::Id::new("asr33-repeat-next-at");
                     let char_time = self.asr_char_time();
-                    ctx.data_mut(|data| {
-                        data.insert_temp(timer_id, Instant::now() + char_time)
-                    });
+                    ctx.data_mut(|data| data.insert_temp(timer_id, Instant::now() + char_time));
                     ctx.request_repaint_after(Duration::from_millis(5));
                 }
             }

@@ -42,7 +42,9 @@ mod tests {
         if !trace_enabled {
             return cpu.pc;
         }
-        let Some(last) = last else { return cpu.pc; };
+        let Some(last) = last else {
+            return cpu.pc;
+        };
         if cpu.halted.unwrap_or(false) && last.after.halted {
             last.address
         } else {
@@ -52,15 +54,24 @@ mod tests {
 
     #[test]
     fn cycle_mid_instruction_uses_previous_after_pc_not_live_operand_pc() {
-        let cpu = Intel8080State { pc: 0x0387, ..Intel8080State::default() };
+        let cpu = Intel8080State {
+            pc: 0x0387,
+            ..Intel8080State::default()
+        };
         let entry = InstructionTraceEntry {
             sequence: 1,
             address: 0x0382,
             bytes: [0x00, 0x00, 0x00],
             length: 1,
             t_states: 4,
-            before: CpuSnapshot8080 { pc: 0x0382, ..CpuSnapshot8080::default() },
-            after: CpuSnapshot8080 { pc: 0x0385, ..CpuSnapshot8080::default() },
+            before: CpuSnapshot8080 {
+                pc: 0x0382,
+                ..CpuSnapshot8080::default()
+            },
+            after: CpuSnapshot8080 {
+                pc: 0x0385,
+                ..CpuSnapshot8080::default()
+            },
             effects: Vec::new(),
         };
         assert_eq!(stable_address(cpu, true, Some(&entry)), 0x0385);
@@ -68,15 +79,26 @@ mod tests {
 
     #[test]
     fn halted_display_keeps_hlt_opcode_address() {
-        let cpu = Intel8080State { pc: 0x0101, halted: Some(true), ..Intel8080State::default() };
+        let cpu = Intel8080State {
+            pc: 0x0101,
+            halted: Some(true),
+            ..Intel8080State::default()
+        };
         let entry = InstructionTraceEntry {
             sequence: 1,
             address: 0x0100,
             bytes: [0x76, 0x00, 0x00],
             length: 1,
             t_states: 7,
-            before: CpuSnapshot8080 { pc: 0x0100, ..CpuSnapshot8080::default() },
-            after: CpuSnapshot8080 { pc: 0x0101, halted: true, ..CpuSnapshot8080::default() },
+            before: CpuSnapshot8080 {
+                pc: 0x0100,
+                ..CpuSnapshot8080::default()
+            },
+            after: CpuSnapshot8080 {
+                pc: 0x0101,
+                halted: true,
+                ..CpuSnapshot8080::default()
+            },
             effects: Vec::new(),
         };
         assert_eq!(stable_address(cpu, true, Some(&entry)), 0x0100);

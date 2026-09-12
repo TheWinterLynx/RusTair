@@ -1,7 +1,5 @@
 use rustair::backend::{BackendHost, BusMachineCycle, BusTState, EmulationEngine};
-use rustair::config::{
-    RamInit, S100HardwareConfig, S100InstalledCardConfig,
-};
+use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
@@ -14,10 +12,7 @@ fn topology_with_gap_and_overlap() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0x2000,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x2000),
             )),
         )
         .unwrap();
@@ -25,10 +20,7 @@ fn topology_with_gap_and_overlap() -> S100HardwareConfig {
         .set_slot(
             3,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KDynamic88_4Mcd,
-                    0x2000,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0x2000),
             )),
         )
         .unwrap();
@@ -36,10 +28,7 @@ fn topology_with_gap_and_overlap() -> S100HardwareConfig {
         .set_slot(
             4,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0x4000,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x4000),
             )),
         )
         .unwrap();
@@ -55,10 +44,7 @@ fn dcdd_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0x0000,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000),
             )),
         )
         .unwrap();
@@ -89,11 +75,19 @@ fn fast_and_cycle_mount_the_same_slot_native_memory_topology() {
         let overlap = host.inspect_memory_mapping(0x2000);
         assert!(overlap.is_overlap(), "{engine:?}");
         assert_eq!(
-            overlap.drivers.iter().map(|driver| driver.slot).collect::<Vec<_>>(),
+            overlap
+                .drivers
+                .iter()
+                .map(|driver| driver.slot)
+                .collect::<Vec<_>>(),
             vec![2, 3],
             "{engine:?}"
         );
-        assert_eq!(host.peek_memory(0x2000), None, "overlap is not a unique host byte: {engine:?}");
+        assert_eq!(
+            host.peek_memory(0x2000),
+            None,
+            "overlap is not a unique host byte: {engine:?}"
+        );
 
         let unique = host.inspect_memory_mapping(0x4000);
         assert_eq!(unique.drivers.len(), 1, "{engine:?}");
@@ -115,17 +109,17 @@ fn dcdd_no_drive_register_surface_is_reached_only_through_real_8080_io_cycles() 
     // A later D7 clear exercises the same output surface before a second status
     // read. Results are stored by the 8080 in physical RAM for observation.
     let program = [
-        0x3e, 0x00,       // MVI A,00
-        0xd3, 0x08,       // OUT 08
-        0xdb, 0x08,       // IN 08
+        0x3e, 0x00, // MVI A,00
+        0xd3, 0x08, // OUT 08
+        0xdb, 0x08, // IN 08
         0x32, 0x00, 0x01, // STA 0100
-        0xdb, 0x09,       // IN 09
+        0xdb, 0x09, // IN 09
         0x32, 0x01, 0x01, // STA 0101
-        0x3e, 0x80,       // MVI A,80
-        0xd3, 0x08,       // OUT 08 -- Disk Control clear
-        0xdb, 0x08,       // IN 08
+        0x3e, 0x80, // MVI A,80
+        0xd3, 0x08, // OUT 08 -- Disk Control clear
+        0xdb, 0x08, // IN 08
         0x32, 0x02, 0x01, // STA 0102
-        0x76,             // HLT
+        0x76, // HLT
     ];
     host.load_bytes(0x0000, &program);
     host.set_running(true);

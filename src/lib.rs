@@ -9,9 +9,12 @@ pub mod cpu8080_cycle;
 pub mod debugger8080;
 pub mod debugger_control;
 pub mod decoder8080;
+pub(crate) mod embedded_assets;
 pub mod explain8080;
+pub(crate) mod full_boundary_reconcile;
 pub mod io;
 pub mod machine;
+pub(crate) mod mc6850;
 pub mod memory_activity8080;
 pub mod peripherals;
 pub mod s100;
@@ -25,9 +28,6 @@ pub mod s100_memory;
 pub mod s100_runtime;
 pub mod s100_runtime_ram;
 pub mod trace8080;
-pub(crate) mod embedded_assets;
-pub(crate) mod full_boundary_reconcile;
-pub(crate) mod mc6850;
 
 #[cfg(test)]
 mod s100_cycle_integration_tests;

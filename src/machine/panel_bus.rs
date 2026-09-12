@@ -274,13 +274,25 @@ pub(crate) struct FullPanelDuty {
 
 impl FullPanelDuty {
     pub(crate) fn new() -> Self {
-        Self { bytes: [[0; 256]; 4], inte: 0, prot: 0, total: 0 }
+        Self {
+            bytes: [[0; 256]; 4],
+            inte: 0,
+            prot: 0,
+            total: 0,
+        }
     }
 
     #[inline]
     pub(crate) fn record_cycle(
-        &mut self, address: u16, first_data: u8, later_data: u8,
-        first_status: u8, later_status: u8, protected: bool, inte: bool, total: u32,
+        &mut self,
+        address: u16,
+        first_data: u8,
+        later_data: u8,
+        first_status: u8,
+        later_status: u8,
+        protected: bool,
+        inte: bool,
+        total: u32,
     ) {
         // A Full window cannot exceed its u32 T-state budget. Consequently no
         // individual bin or the total can overflow, even at the maximum budget.
@@ -297,7 +309,15 @@ impl FullPanelDuty {
     }
 
     #[inline]
-    pub(crate) fn record_tail(&mut self, address: u16, data: u8, status: u8, prot: bool, inte: bool, weight: u32) {
+    pub(crate) fn record_tail(
+        &mut self,
+        address: u16,
+        data: u8,
+        status: u8,
+        prot: bool,
+        inte: bool,
+        weight: u32,
+    ) {
         self.bytes[0][address as u8 as usize] += weight;
         self.bytes[1][(address >> 8) as usize] += weight;
         self.bytes[2][data as usize] += weight;
@@ -308,8 +328,15 @@ impl FullPanelDuty {
     }
 
     pub(crate) fn remove_cycle(
-        &mut self, address: u16, first_data: u8, later_data: u8,
-        first_status: u8, later_status: u8, prot: bool, inte: bool, total: u32,
+        &mut self,
+        address: u16,
+        first_data: u8,
+        later_data: u8,
+        first_status: u8,
+        later_status: u8,
+        prot: bool,
+        inte: bool,
+        total: u32,
     ) {
         self.bytes[0][address as u8 as usize] -= total;
         self.bytes[1][(address >> 8) as usize] -= total;
@@ -979,7 +1006,11 @@ impl super::AltairBus {
     /// Full declines a window near the canonical integrator's saturation bound:
     /// clipped chronological samples must continue through exact Partial.
     pub(crate) fn cycle_full_panel_capacity(&self, budget: u32) -> bool {
-        self.s100.lamps.total_weight.checked_add(u64::from(budget)).is_some()
+        self.s100
+            .lamps
+            .total_weight
+            .checked_add(u64::from(budget))
+            .is_some()
     }
 
     pub(crate) fn cycle_full_prepare_panel_latch(&mut self, data: u8, status: u8) {
@@ -989,10 +1020,17 @@ impl super::AltairBus {
 
     pub(crate) fn cycle_full_merge_panel_duty(&mut self, duty: &FullPanelDuty) {
         let lamps = &mut self.s100.lamps;
-        assert!(lamps.total_weight.checked_add(u64::from(duty.total)).is_some());
+        assert!(
+            lamps
+                .total_weight
+                .checked_add(u64::from(duty.total))
+                .is_some()
+        );
         for (group, bins) in duty.bytes.iter().enumerate() {
             for (value, &weight) in bins.iter().enumerate() {
-                if weight == 0 { continue; }
+                if weight == 0 {
+                    continue;
+                }
                 let mask = if group < 3 {
                     (value as u64) << (group * 8)
                 } else {
@@ -1097,7 +1135,16 @@ mod tests {
             signals.prot = value & 1 != 0;
             signals.inte = value & 2 != 0;
             reference.sample(&signals, weight);
-            duty.record_cycle(address, data, data, value as u8, value as u8, signals.prot, signals.inte, weight);
+            duty.record_cycle(
+                address,
+                data,
+                data,
+                value as u8,
+                value as u8,
+                signals.prot,
+                signals.inte,
+                weight,
+            );
         }
         bus.cycle_full_merge_panel_duty(&duty);
         assert_eq!(bus.s100.lamps.on_count_planes, reference.on_count_planes);

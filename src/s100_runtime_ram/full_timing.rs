@@ -210,9 +210,7 @@ impl S4kFullTiming {
         if m1 {
             let before_m1 = u32::from(self.m1_phi2_count);
             let hidden_edge = (before_m1 < 4).then_some(4 - before_m1);
-            self.m1_phi2_count = before_m1
-                .saturating_add(edges)
-                .min(u32::from(u8::MAX)) as u8;
+            self.m1_phi2_count = before_m1.saturating_add(edges).min(u32::from(u8::MAX)) as u8;
             if let Some(hidden_edge) = hidden_edge {
                 let hidden_slot_reached = edges >= hidden_edge;
                 let pending_at_hidden = pending_before || (became_due && to_due <= hidden_edge);
@@ -473,7 +471,10 @@ mod tests {
         assert_eq!(actual.refresh_clock_count, expected.refresh_clock_count);
         assert_eq!(actual.refresh_pending, expected.refresh_pending);
         assert_eq!(actual.refresh_active, expected.refresh_active);
-        assert_eq!(actual.refresh_collision_waits, expected.refresh_collision_waits);
+        assert_eq!(
+            actual.refresh_collision_waits,
+            expected.refresh_collision_waits
+        );
         assert_eq!(actual.refresh_cycles, expected.refresh_cycles);
     }
 
@@ -544,18 +545,9 @@ mod tests {
             let memory_access = step % 4 != 0;
             let m1 = step % 3 == 0;
             let base_t_states = if m1 { 4 } else { 3 };
-            let expected = oracle.full_machine_cycle_timing(
-                address,
-                memory_access,
-                m1,
-                base_t_states,
-            );
-            let actual = window.machine_cycle_timing(
-                address,
-                memory_access,
-                m1,
-                base_t_states,
-            );
+            let expected =
+                oracle.full_machine_cycle_timing(address, memory_access, m1, base_t_states);
+            let actual = window.machine_cycle_timing(address, memory_access, m1, base_t_states);
             assert_eq!(actual, expected, "4MCD wait mismatch at step {step}");
         }
 

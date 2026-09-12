@@ -1,4 +1,4 @@
-use super::super::{egui, RusTairApp};
+use super::super::{RusTairApp, egui};
 use super::execution_position::current_instruction_address;
 use crate::debugger8080::SimpleLoop;
 use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
@@ -20,8 +20,10 @@ struct LoopInspectorUiState {
 impl RusTairApp {
     fn loop_inspector_state(ctx: &egui::Context) -> LoopInspectorUiState {
         ctx.data(|data| {
-            data.get_temp::<LoopInspectorUiState>(egui::Id::new("rustair-shared-loop-inspector-state"))
-                .unwrap_or_default()
+            data.get_temp::<LoopInspectorUiState>(egui::Id::new(
+                "rustair-shared-loop-inspector-state",
+            ))
+            .unwrap_or_default()
         })
     }
 
@@ -61,7 +63,9 @@ impl RusTairApp {
         history: &[InstructionTraceEntry],
         metadata: InstructionTraceMetadata,
     ) {
-        let Some(loop_info) = state.snapshot.as_ref() else { return; };
+        let Some(loop_info) = state.snapshot.as_ref() else {
+            return;
+        };
 
         if metadata.generation != state.baseline_generation {
             state.baseline_generation = metadata.generation;
@@ -73,16 +77,18 @@ impl RusTairApp {
             return;
         }
 
-        let Some(last) = history.last() else { return; };
+        let Some(last) = history.last() else {
+            return;
+        };
         if last.sequence <= state.last_sequence {
             return;
         }
 
-        let mut new_entries = history.iter().filter(|entry| entry.sequence > state.last_sequence);
+        let mut new_entries = history
+            .iter()
+            .filter(|entry| entry.sequence > state.last_sequence);
         if let Some(first) = new_entries.next() {
-            if state.last_sequence != 0
-                && first.sequence > state.last_sequence.saturating_add(1)
-            {
+            if state.last_sequence != 0 && first.sequence > state.last_sequence.saturating_add(1) {
                 state.trace_gap = true;
             }
             for entry in std::iter::once(first).chain(new_entries) {

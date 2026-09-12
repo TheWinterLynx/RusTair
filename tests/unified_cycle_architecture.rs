@@ -2,7 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn rust_files_under(root: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(root) else { return; };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
@@ -37,7 +39,9 @@ fn removed_fast_backend_and_semantic_machine_cannot_reenter_product_or_tests() {
     ];
 
     for path in files {
-        if path.ends_with("unified_cycle_architecture.rs") { continue; }
+        if path.ends_with("unified_cycle_architecture.rs") {
+            continue;
+        }
         let source = fs::read_to_string(&path).expect("Rust source must be UTF-8");
         for token in forbidden {
             assert!(

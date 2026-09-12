@@ -1,8 +1,12 @@
-use super::*;
 use super::alu::{FLAG_C, FLAG_Z};
+use super::*;
 
 fn input(data_in: u8, ready: bool) -> Cpu8080Inputs {
-    Cpu8080Inputs { data_in, ready, ..Cpu8080Inputs::default() }
+    Cpu8080Inputs {
+        data_in,
+        ready,
+        ..Cpu8080Inputs::default()
+    }
 }
 
 fn fetch(cpu: &mut Cpu8080Cycle, opcode: u8) -> [TickTrace; 4] {

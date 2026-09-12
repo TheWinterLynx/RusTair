@@ -162,13 +162,22 @@ impl RusTairApp {
 
     fn draw_tty_power_controls(&mut self, ui: &mut egui::Ui) {
         ui.label("POWER:");
-        if ui.selectable_label(self.tty.mode == TtyMode::Off, "OFF").clicked() {
+        if ui
+            .selectable_label(self.tty.mode == TtyMode::Off, "OFF")
+            .clicked()
+        {
             self.set_tty_mode(TtyMode::Off);
         }
-        if ui.selectable_label(self.tty.mode == TtyMode::Line, "LINE").clicked() {
+        if ui
+            .selectable_label(self.tty.mode == TtyMode::Line, "LINE")
+            .clicked()
+        {
             self.set_tty_mode(TtyMode::Line);
         }
-        if ui.selectable_label(self.tty.mode == TtyMode::Local, "LOCAL").clicked() {
+        if ui
+            .selectable_label(self.tty.mode == TtyMode::Local, "LOCAL")
+            .clicked()
+        {
             self.set_tty_mode(TtyMode::Local);
         }
     }
@@ -277,8 +286,7 @@ impl RusTairApp {
         // Match the exact interaction height used by labels/buttons/combo boxes
         // in this toolbar so the tape and its data sit on the same row center.
         let row_height = ui.spacing().interact_size.y;
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(170.0, row_height), Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(170.0, row_height), Sense::hover());
         let painter = ui.painter();
 
         // The mini-tape is part of the dark toolbar, not a separate cream card:
@@ -329,11 +337,7 @@ impl RusTairApp {
                 painter.circle_filled(center, 4.15, punched);
             } else {
                 painter.circle_filled(center, 4.15, background);
-                painter.circle_stroke(
-                    center,
-                    4.15,
-                    egui::Stroke::new(1.0_f32, zero_outline),
-                );
+                painter.circle_stroke(center, 4.15, egui::Stroke::new(1.0_f32, zero_outline));
             }
             slot += 1;
         }
@@ -372,7 +376,11 @@ impl RusTairApp {
         let can_run = self.reader_can_run();
         let read = ui.add_enabled(
             manual && can_run && !self.asr33.reader_running,
-            egui::Button::new(if self.tty.tape_input_position() == 0 { "Read" } else { "Resume" }),
+            egui::Button::new(if self.tty.tape_input_position() == 0 {
+                "Read"
+            } else {
+                "Resume"
+            }),
         );
         if read.clicked() {
             self.asr33.reader_running = true;
@@ -380,7 +388,10 @@ impl RusTairApp {
                 .checked_sub(self.asr33.reader_speed.char_time())
                 .unwrap_or_else(Instant::now);
             self.audio.play_asr_once("assets/click.mp3");
-            self.status = format!("ASR-33 reader started — {}", self.asr33.reader_speed.label());
+            self.status = format!(
+                "ASR-33 reader started — {}",
+                self.asr33.reader_speed.label()
+            );
         }
         if !manual {
             read.on_disabled_hover_text(
@@ -392,14 +403,23 @@ impl RusTairApp {
             );
         }
 
-        if ui.add_enabled(manual && self.asr33.reader_running, egui::Button::new("Pause")).clicked() {
+        if ui
+            .add_enabled(
+                manual && self.asr33.reader_running,
+                egui::Button::new("Pause"),
+            )
+            .clicked()
+        {
             self.asr33.reader_running = false;
             self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape reader paused".into();
         }
 
         let mounted = self.tty.tape_input_total_len() > 0;
-        if ui.add_enabled(mounted, egui::Button::new("Rewind")).clicked() {
+        if ui
+            .add_enabled(mounted, egui::Button::new("Rewind"))
+            .clicked()
+        {
             self.asr33.reader_running = false;
             self.tty.rewind_tape_reader();
             self.asr33.last_reader_byte = None;
@@ -407,7 +427,10 @@ impl RusTairApp {
             self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape rewound to leader".into();
         }
-        if ui.add_enabled(mounted, egui::Button::new("Eject")).clicked() {
+        if ui
+            .add_enabled(mounted, egui::Button::new("Eject"))
+            .clicked()
+        {
             self.asr33.reader_running = false;
             self.tty.eject_tape_reader();
             self.asr33.last_reader_byte = None;
@@ -425,11 +448,7 @@ impl RusTairApp {
         ui.separator();
         ui.label("BYTE:");
         ui.monospace(Self::reader_byte_label(self.asr33.last_reader_byte));
-        Self::draw_reader_byte_visual(
-            ui,
-            self.asr33.last_reader_byte,
-            self.asr33.tape_bit_order,
-        );
+        Self::draw_reader_byte_visual(ui, self.asr33.last_reader_byte, self.asr33.tape_bit_order);
         ui.label("Bits:");
         let order_button = ui.add(
             egui::Button::new(
@@ -487,7 +506,11 @@ impl RusTairApp {
         let can_punch = mounted && self.tty.mode != TtyMode::Off;
         let punch = ui.add_enabled(
             can_punch && !self.asr33.punch_running,
-            egui::Button::new(if self.tty.punched_tape_len() == 0 { "Punch" } else { "Resume" }),
+            egui::Button::new(if self.tty.punched_tape_len() == 0 {
+                "Punch"
+            } else {
+                "Resume"
+            }),
         );
         if punch.clicked() {
             self.tty.resume_tape_punch();
@@ -499,19 +522,31 @@ impl RusTairApp {
             self.status = format!("ASR-33 punch started — {}", self.asr33.punch_speed.label());
         }
         if self.tty.mode == TtyMode::Off {
-            punch.on_disabled_hover_text("Switch the ASR-33 to LINE or LOCAL before running the punch.");
+            punch.on_disabled_hover_text(
+                "Switch the ASR-33 to LINE or LOCAL before running the punch.",
+            );
         }
 
-        if ui.add_enabled(self.asr33.punch_running, egui::Button::new("Pause")).clicked() {
+        if ui
+            .add_enabled(self.asr33.punch_running, egui::Button::new("Pause"))
+            .clicked()
+        {
             self.asr33.punch_running = false;
             self.tty.pause_tape_punch();
             self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape punch paused".into();
         }
 
-        let save_label = if mounted { "Finish & save…" } else { "Save tape…" };
+        let save_label = if mounted {
+            "Finish & save…"
+        } else {
+            "Save tape…"
+        };
         let can_save = mounted || finished_unsaved;
-        if ui.add_enabled(can_save, egui::Button::new(save_label)).clicked() {
+        if ui
+            .add_enabled(can_save, egui::Button::new(save_label))
+            .clicked()
+        {
             if mounted {
                 self.asr33.punch_running = false;
                 self.tty.finish_tape_punch();
@@ -602,7 +637,11 @@ impl RusTairApp {
         self.draw_tty_menu(ctx);
         self.request_tape_transport_repaint(ctx);
 
-        if self.asr33.power_flash_until.is_some_and(|until| Instant::now() < until) {
+        if self
+            .asr33
+            .power_flash_until
+            .is_some_and(|until| Instant::now() < until)
+        {
             ctx.request_repaint_after(PANEL_FRAME);
         }
 

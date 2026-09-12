@@ -1,5 +1,5 @@
-pub(in crate::machine) use crate::config::{SioConnectorOutputs, SioElectricalLevel};
 use crate::config::SioInterface;
+pub(in crate::machine) use crate::config::{SioConnectorOutputs, SioElectricalLevel};
 
 /// Convert one board-internal TTL output to the selected physical interface.
 ///
@@ -64,32 +64,80 @@ mod tests {
 
     #[test]
     fn sio_a_inverts_between_ttl_and_rs232_levels() {
-        assert_eq!(encode_output(SioInterface::Rs232A, true), SioElectricalLevel::Rs232Negative);
-        assert_eq!(encode_output(SioInterface::Rs232A, false), SioElectricalLevel::Rs232Positive);
-        assert_eq!(decode_input(SioInterface::Rs232A, SioElectricalLevel::Rs232Negative), Some(true));
-        assert_eq!(decode_input(SioInterface::Rs232A, SioElectricalLevel::Rs232Positive), Some(false));
+        assert_eq!(
+            encode_output(SioInterface::Rs232A, true),
+            SioElectricalLevel::Rs232Negative
+        );
+        assert_eq!(
+            encode_output(SioInterface::Rs232A, false),
+            SioElectricalLevel::Rs232Positive
+        );
+        assert_eq!(
+            decode_input(SioInterface::Rs232A, SioElectricalLevel::Rs232Negative),
+            Some(true)
+        );
+        assert_eq!(
+            decode_input(SioInterface::Rs232A, SioElectricalLevel::Rs232Positive),
+            Some(false)
+        );
     }
 
     #[test]
     fn sio_b_is_non_inverting_ttl() {
-        assert_eq!(encode_output(SioInterface::TtlB, true), SioElectricalLevel::TtlHigh);
-        assert_eq!(encode_output(SioInterface::TtlB, false), SioElectricalLevel::TtlLow);
-        assert_eq!(decode_input(SioInterface::TtlB, SioElectricalLevel::TtlHigh), Some(true));
-        assert_eq!(decode_input(SioInterface::TtlB, SioElectricalLevel::TtlLow), Some(false));
+        assert_eq!(
+            encode_output(SioInterface::TtlB, true),
+            SioElectricalLevel::TtlHigh
+        );
+        assert_eq!(
+            encode_output(SioInterface::TtlB, false),
+            SioElectricalLevel::TtlLow
+        );
+        assert_eq!(
+            decode_input(SioInterface::TtlB, SioElectricalLevel::TtlHigh),
+            Some(true)
+        );
+        assert_eq!(
+            decode_input(SioInterface::TtlB, SioElectricalLevel::TtlLow),
+            Some(false)
+        );
     }
 
     #[test]
     fn sio_c_high_logic_conducts_current_loop_and_input_is_non_inverting() {
-        assert_eq!(encode_output(SioInterface::TtyC, true), SioElectricalLevel::CurrentLoopConducting);
-        assert_eq!(encode_output(SioInterface::TtyC, false), SioElectricalLevel::CurrentLoopOpen);
-        assert_eq!(decode_input(SioInterface::TtyC, SioElectricalLevel::CurrentLoopConducting), Some(true));
-        assert_eq!(decode_input(SioInterface::TtyC, SioElectricalLevel::CurrentLoopOpen), Some(false));
+        assert_eq!(
+            encode_output(SioInterface::TtyC, true),
+            SioElectricalLevel::CurrentLoopConducting
+        );
+        assert_eq!(
+            encode_output(SioInterface::TtyC, false),
+            SioElectricalLevel::CurrentLoopOpen
+        );
+        assert_eq!(
+            decode_input(
+                SioInterface::TtyC,
+                SioElectricalLevel::CurrentLoopConducting
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            decode_input(SioInterface::TtyC, SioElectricalLevel::CurrentLoopOpen),
+            Some(false)
+        );
     }
 
     #[test]
     fn wrong_electrical_family_is_rejected_not_coerced() {
-        assert_eq!(decode_input(SioInterface::Rs232A, SioElectricalLevel::TtlHigh), None);
-        assert_eq!(decode_input(SioInterface::TtlB, SioElectricalLevel::Rs232Negative), None);
-        assert_eq!(decode_input(SioInterface::TtyC, SioElectricalLevel::TtlLow), None);
+        assert_eq!(
+            decode_input(SioInterface::Rs232A, SioElectricalLevel::TtlHigh),
+            None
+        );
+        assert_eq!(
+            decode_input(SioInterface::TtlB, SioElectricalLevel::Rs232Negative),
+            None
+        );
+        assert_eq!(
+            decode_input(SioInterface::TtyC, SioElectricalLevel::TtlLow),
+            None
+        );
     }
 }

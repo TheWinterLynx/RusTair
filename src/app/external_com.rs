@@ -14,7 +14,9 @@ const COMMON_BAUD_RATES: [u32; 10] = [
 /// `serialport` reports whether an RS-232 signal is asserted. The MC6850 CTS
 /// and DCD inputs are active LOW: asserted CTS/carrier therefore means a LOW
 /// TTL level at the ACIA pin, while deasserted means HIGH.
-const fn mc6850_active_low_pin_high(host_asserted: bool) -> bool { !host_asserted }
+const fn mc6850_active_low_pin_high(host_asserted: bool) -> bool {
+    !host_asserted
+}
 
 pub(super) struct ExternalComState {
     pub(super) window_open: bool,
@@ -41,7 +43,9 @@ impl Default for ExternalComState {
 }
 
 impl ExternalComState {
-    pub(super) fn reset_line_timing(&mut self) { self.tx_started = None; }
+    pub(super) fn reset_line_timing(&mut self) {
+        self.tx_started = None;
+    }
 }
 
 impl RusTairApp {
@@ -52,7 +56,9 @@ impl RusTairApp {
     pub(in crate::app) fn process_external_com(&mut self, ctx: &egui::Context) {
         let config = self.external_com.config.clone();
         self.external_com.port.poll(&config);
-        if config.enabled { ctx.request_repaint_after(COM_POLL_INTERVAL); }
+        if config.enabled {
+            ctx.request_repaint_after(COM_POLL_INTERVAL);
+        }
 
         let connection = self.external_com_connection();
         let previous_connection = self.external_com.last_connection;
@@ -108,9 +114,13 @@ impl RusTairApp {
                 if let Some(raw_byte) = self.external_com.port.pop_rx() {
                     let byte = config.character_mode.rx_transform(raw_byte);
                     self.serial_receive_at(connection, byte);
-                    if self.external_com.port.rx_pending() != 0 { ctx.request_repaint(); }
+                    if self.external_com.port.rx_pending() != 0 {
+                        ctx.request_repaint();
+                    }
                 }
-            } else { ctx.request_repaint_after(UART_BUSY_RETRY); }
+            } else {
+                ctx.request_repaint_after(UART_BUSY_RETRY);
+            }
         }
 
         let now = Instant::now();
@@ -124,7 +134,9 @@ impl RusTairApp {
             if char_time.is_zero() || elapsed >= char_time {
                 self.serial_tx_complete_at(connection);
                 self.external_com.tx_started = None;
-            } else { ctx.request_repaint_after(char_time - elapsed); }
+            } else {
+                ctx.request_repaint_after(char_time - elapsed);
+            }
         }
         if self.external_com.tx_started.is_none()
             && self.serial_tx_busy_at(connection)
@@ -137,37 +149,61 @@ impl RusTairApp {
                 self.serial_tx_complete_at(connection);
                 self.external_com.tx_started = None;
                 ctx.request_repaint();
-            } else { ctx.request_repaint_after(char_time); }
+            } else {
+                ctx.request_repaint_after(char_time);
+            }
         }
     }
 
     pub(in crate::app) fn refresh_external_com_ports(&mut self) {
         match ComSerialTransport::available_port_names() {
-            Ok(ports) => { self.external_com.available_ports = ports; self.external_com.port_scan_error = None; }
-            Err(error) => { self.external_com.available_ports.clear(); self.external_com.port_scan_error = Some(error); }
+            Ok(ports) => {
+                self.external_com.available_ports = ports;
+                self.external_com.port_scan_error = None;
+            }
+            Err(error) => {
+                self.external_com.available_ports.clear();
+                self.external_com.port_scan_error = Some(error);
+            }
         }
     }
     fn apply_external_com_config(&mut self, next: ExternalComConfig) {
         let previous = self.external_com.config.clone();
-        if previous == next { return; }
+        if previous == next {
+            return;
+        }
         let framing_changed = previous.baud_rate != next.baud_rate
-            || previous.data_bits != next.data_bits || previous.parity != next.parity
+            || previous.data_bits != next.data_bits
+            || previous.parity != next.parity
             || previous.stop_bits != next.stop_bits;
         let hardware_changed = previous.enabled != next.enabled
-            || previous.port_name != next.port_name || framing_changed
+            || previous.port_name != next.port_name
+            || framing_changed
             || previous.flow_control != next.flow_control;
         let character_mode_changed = previous.character_mode != next.character_mode;
         self.external_com.config = next.clone();
-        if hardware_changed { self.external_com.port.restart_on_next_poll(); }
-        if framing_changed || character_mode_changed || previous.duplex != next.duplex { self.external_com.reset_line_timing(); }
+        if hardware_changed {
+            self.external_com.port.restart_on_next_poll();
+        }
+        if framing_changed || character_mode_changed || previous.duplex != next.duplex {
+            self.external_com.reset_line_timing();
+        }
 
         self.status = if next.enabled {
             if next.port_name.trim().is_empty() {
                 "External COM enabled — select a serial port".into()
             } else {
-                format!("External COM enabled: {} — {} — {} — {}", next.port_name, next.framing_label(), next.character_mode.label(), next.duplex.label())
+                format!(
+                    "External COM enabled: {} — {} — {} — {}",
+                    next.port_name,
+                    next.framing_label(),
+                    next.character_mode.label(),
+                    next.duplex.label()
+                )
             }
-        } else { "External COM disabled".into() };
+        } else {
+            "External COM disabled".into()
+        };
     }
 
     fn draw_external_com_config_controls(&mut self, ui: &mut egui::Ui, explanatory: bool) {
@@ -175,42 +211,80 @@ impl RusTairApp {
         ui.checkbox(&mut config.enabled, "Enable physical/virtual serial port");
         ui.horizontal_wrapped(|ui| {
             ui.label("Serial port:");
-            let selected = if config.port_name.trim().is_empty() { "Select port…".to_owned() } else { config.port_name.clone() };
-            egui::ComboBox::from_id_salt("external-com-port").selected_text(selected).show_ui(ui, |ui| {
-                for port in &self.external_com.available_ports { ui.selectable_value(&mut config.port_name, port.clone(), port); }
-            });
-            if ui.button("Refresh ports").clicked() { self.refresh_external_com_ports(); }
+            let selected = if config.port_name.trim().is_empty() {
+                "Select port…".to_owned()
+            } else {
+                config.port_name.clone()
+            };
+            egui::ComboBox::from_id_salt("external-com-port")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    for port in &self.external_com.available_ports {
+                        ui.selectable_value(&mut config.port_name, port.clone(), port);
+                    }
+                });
+            if ui.button("Refresh ports").clicked() {
+                self.refresh_external_com_ports();
+            }
         });
         ui.horizontal(|ui| {
             ui.label("Port name:");
-            ui.add(egui::TextEdit::singleline(&mut config.port_name).desired_width(150.0).hint_text("COM3, /dev/ttyUSB0, …"));
+            ui.add(
+                egui::TextEdit::singleline(&mut config.port_name)
+                    .desired_width(150.0)
+                    .hint_text("COM3, /dev/ttyUSB0, …"),
+            );
         });
         ui.horizontal(|ui| {
             ui.label("Baud:");
-            egui::ComboBox::from_id_salt("external-com-baud").selected_text(config.baud_rate.to_string()).show_ui(ui, |ui| {
-                for baud in COMMON_BAUD_RATES { ui.selectable_value(&mut config.baud_rate, baud, baud.to_string()); }
-            });
-            ui.add(egui::DragValue::new(&mut config.baud_rate).range(1..=4_000_000).speed(100));
+            egui::ComboBox::from_id_salt("external-com-baud")
+                .selected_text(config.baud_rate.to_string())
+                .show_ui(ui, |ui| {
+                    for baud in COMMON_BAUD_RATES {
+                        ui.selectable_value(&mut config.baud_rate, baud, baud.to_string());
+                    }
+                });
+            ui.add(
+                egui::DragValue::new(&mut config.baud_rate)
+                    .range(1..=4_000_000)
+                    .speed(100),
+            );
         });
         ui.horizontal(|ui| {
             ui.label("Data bits:");
-            egui::ComboBox::from_id_salt("external-com-data-bits").selected_text(config.data_bits.label()).show_ui(ui, |ui| {
-                for value in ComDataBits::ALL { ui.selectable_value(&mut config.data_bits, value, value.label()); }
-            });
+            egui::ComboBox::from_id_salt("external-com-data-bits")
+                .selected_text(config.data_bits.label())
+                .show_ui(ui, |ui| {
+                    for value in ComDataBits::ALL {
+                        ui.selectable_value(&mut config.data_bits, value, value.label());
+                    }
+                });
             ui.label("Parity:");
-            egui::ComboBox::from_id_salt("external-com-parity").selected_text(config.parity.label()).show_ui(ui, |ui| {
-                for value in ComParity::ALL { ui.selectable_value(&mut config.parity, value, value.label()); }
-            });
+            egui::ComboBox::from_id_salt("external-com-parity")
+                .selected_text(config.parity.label())
+                .show_ui(ui, |ui| {
+                    for value in ComParity::ALL {
+                        ui.selectable_value(&mut config.parity, value, value.label());
+                    }
+                });
             ui.label("Stop:");
-            egui::ComboBox::from_id_salt("external-com-stop-bits").selected_text(config.stop_bits.label()).show_ui(ui, |ui| {
-                for value in ComStopBits::ALL { ui.selectable_value(&mut config.stop_bits, value, value.label()); }
-            });
+            egui::ComboBox::from_id_salt("external-com-stop-bits")
+                .selected_text(config.stop_bits.label())
+                .show_ui(ui, |ui| {
+                    for value in ComStopBits::ALL {
+                        ui.selectable_value(&mut config.stop_bits, value, value.label());
+                    }
+                });
         });
         ui.horizontal(|ui| {
             ui.label("Flow control:");
-            egui::ComboBox::from_id_salt("external-com-flow-control").selected_text(config.flow_control.label()).show_ui(ui, |ui| {
-                for value in ComFlowControl::ALL { ui.selectable_value(&mut config.flow_control, value, value.label()); }
-            });
+            egui::ComboBox::from_id_salt("external-com-flow-control")
+                .selected_text(config.flow_control.label())
+                .show_ui(ui, |ui| {
+                    for value in ComFlowControl::ALL {
+                        ui.selectable_value(&mut config.flow_control, value, value.label());
+                    }
+                });
         });
         ui.horizontal_wrapped(|ui| {
             ui.label("88-2SIO CTS/DCD wiring:");
@@ -224,17 +298,27 @@ impl RusTairApp {
         });
         ui.horizontal(|ui| {
             ui.label("Character mode:");
-            egui::ComboBox::from_id_salt("external-com-character-mode").selected_text(config.character_mode.label()).show_ui(ui, |ui| {
-                for mode in ExternalSerialCharacterMode::ALL { ui.selectable_value(&mut config.character_mode, mode, mode.label()); }
-            });
+            egui::ComboBox::from_id_salt("external-com-character-mode")
+                .selected_text(config.character_mode.label())
+                .show_ui(ui, |ui| {
+                    for mode in ExternalSerialCharacterMode::ALL {
+                        ui.selectable_value(&mut config.character_mode, mode, mode.label());
+                    }
+                });
         });
         ui.horizontal(|ui| {
             ui.label("Terminal duplex:");
-            egui::ComboBox::from_id_salt("external-com-duplex").selected_text(config.duplex.label()).show_ui(ui, |ui| {
-                for duplex in TerminalDuplex::ALL { ui.selectable_value(&mut config.duplex, duplex, duplex.label()); }
-            });
+            egui::ComboBox::from_id_salt("external-com-duplex")
+                .selected_text(config.duplex.label())
+                .show_ui(ui, |ui| {
+                    for duplex in TerminalDuplex::ALL {
+                        ui.selectable_value(&mut config.duplex, duplex, duplex.label());
+                    }
+                });
         });
-        if let Some(error) = &self.external_com.port_scan_error { ui.small(error); }
+        if let Some(error) = &self.external_com.port_scan_error {
+            ui.small(error);
+        }
         if explanatory {
             ui.small("Framing configures the real host serial port. Character mode is a separate byte-level terminal model applied at the Altair boundary.");
             ui.small("COM RX is already physically paced by the host UART/driver, so RusTair does not add a second receive delay. A full MC6850 RDR does not pause the next frame; falling behind may set OVRN.");
@@ -247,7 +331,9 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn draw_external_com_config_menu(&mut self, ui: &mut egui::Ui) {
-        if self.external_com.available_ports.is_empty() { self.refresh_external_com_ports(); }
+        if self.external_com.available_ports.is_empty() {
+            self.refresh_external_com_ports();
+        }
         self.draw_external_com_config_controls(ui, true);
         ui.separator();
         ui.small(self.external_com_status_text());
@@ -261,42 +347,77 @@ impl RusTairApp {
         ui.horizontal(|ui| {
             ui.label("Virtual cable:");
             egui::ComboBox::from_id_salt("external-com-serial-connection")
-                .selected_text(Self::serial_connection_label(hardware, current)).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, SerialConnection::Disconnected, "Disconnected");
+                .selected_text(Self::serial_connection_label(hardware, current))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut selected,
+                        SerialConnection::Disconnected,
+                        "Disconnected",
+                    );
                     if board.is_some() {
-                        ui.selectable_value(&mut selected, SerialConnection::Port0, Self::serial_connection_label(hardware, SerialConnection::Port0));
+                        ui.selectable_value(
+                            &mut selected,
+                            SerialConnection::Port0,
+                            Self::serial_connection_label(hardware, SerialConnection::Port0),
+                        );
                     }
                     if board == Some(SerialBoard::TwoSio88) {
-                        ui.selectable_value(&mut selected, SerialConnection::Port1, Self::serial_connection_label(hardware, SerialConnection::Port1));
+                        ui.selectable_value(
+                            &mut selected,
+                            SerialConnection::Port1,
+                            Self::serial_connection_label(hardware, SerialConnection::Port1),
+                        );
                     }
                 });
         });
         if board.is_none() {
             ui.small("Install an 88-SIO or 88-2SIO in Configuration → S-100 Chassis / Cards before attaching the COM endpoint.");
         }
-        if selected != current { self.set_serial_connection(SerialDevice::ExternalCom, selected); }
+        if selected != current {
+            self.set_serial_connection(SerialDevice::ExternalCom, selected);
+        }
     }
 
     fn external_com_status_text(&self) -> String {
         let config = &self.external_com.config;
-        if !config.enabled { return "COM endpoint: disabled".into(); }
-        if let Some(error) = self.external_com.port.last_error() { return format!("COM endpoint error: {error}"); }
-        let port = if self.external_com.port.active_port_name().is_empty() { config.port_name.as_str() } else { self.external_com.port.active_port_name() };
+        if !config.enabled {
+            return "COM endpoint: disabled".into();
+        }
+        if let Some(error) = self.external_com.port.last_error() {
+            return format!("COM endpoint error: {error}");
+        }
+        let port = if self.external_com.port.active_port_name().is_empty() {
+            config.port_name.as_str()
+        } else {
+            self.external_com.port.active_port_name()
+        };
         match self.external_com.port.state() {
             ComTransportState::Disabled => "COM endpoint: disabled".into(),
             ComTransportState::Closed => format!("COM endpoint: closed — {port}"),
             ComTransportState::Opening => format!("COM endpoint: opening {port}…"),
-            ComTransportState::Open => format!("COM endpoint: open {} — {} — {} — {}", port, config.framing_label(), config.character_mode.label(), config.modem_inputs.label()),
+            ComTransportState::Open => format!(
+                "COM endpoint: open {} — {} — {} — {}",
+                port,
+                config.framing_label(),
+                config.character_mode.label(),
+                config.modem_inputs.label()
+            ),
             ComTransportState::Error => format!("COM endpoint: error — {port}"),
         }
     }
 
     fn draw_external_com_window(&mut self, ctx: &egui::Context) {
-        if self.external_com.available_ports.is_empty() { self.refresh_external_com_ports(); }
+        if self.external_com.available_ports.is_empty() {
+            self.refresh_external_com_ports();
+        }
         egui::TopBottomPanel::top("external-com-top").show(ctx, |ui| {
-            self.draw_external_com_connection_selector(ui); ui.separator(); self.draw_external_com_config_controls(ui, false);
+            self.draw_external_com_connection_selector(ui);
+            ui.separator();
+            self.draw_external_com_config_controls(ui, false);
         });
-        egui::TopBottomPanel::bottom("external-com-status").show(ctx, |ui| { ui.small(self.external_com_status_text()); });
+        egui::TopBottomPanel::bottom("external-com-status").show(ctx, |ui| {
+            ui.small(self.external_com_status_text());
+        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("External serial — COM / host serial port");
@@ -351,7 +472,9 @@ impl RusTairApp {
     }
 
     pub(in crate::app) fn show_external_com_viewport(&mut self, parent_ctx: &egui::Context) {
-        if !self.external_com.window_open { return; }
+        if !self.external_com.window_open {
+            return;
+        }
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-external-com"),
             egui::ViewportBuilder::default()
@@ -361,7 +484,9 @@ impl RusTairApp {
                 .with_resizable(true),
             |external_ctx, _class| {
                 self.draw_external_com_window(external_ctx);
-                if external_ctx.input(|input| input.viewport().close_requested()) { self.external_com.window_open = false; }
+                if external_ctx.input(|input| input.viewport().close_requested()) {
+                    self.external_com.window_open = false;
+                }
             },
         );
     }

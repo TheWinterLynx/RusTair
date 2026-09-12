@@ -1,7 +1,5 @@
 use super::super::egui;
-use crate::backend::{
-    BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
-};
+use crate::backend::{BusMachineCycle, BusTState, BusTeachingAccuracy, BusTeachingSnapshot};
 
 const DIAGRAM_HEIGHT: f32 = 424.0;
 const BODY_MIN_WIDTH: f32 = 150.0;
@@ -49,49 +47,215 @@ struct PinDef {
 
 // Intel 8080A DIP-40 pinout, top to bottom on each package side.
 const LEFT_PINS: [PinDef; 20] = [
-    PinDef { number: 1, label: "A10", kind: PinKind::Address(10) },
-    PinDef { number: 2, label: "GND", kind: PinKind::Ground },
-    PinDef { number: 3, label: "D4", kind: PinKind::Data(4) },
-    PinDef { number: 4, label: "D5", kind: PinKind::Data(5) },
-    PinDef { number: 5, label: "D6", kind: PinKind::Data(6) },
-    PinDef { number: 6, label: "D7", kind: PinKind::Data(7) },
-    PinDef { number: 7, label: "D3", kind: PinKind::Data(3) },
-    PinDef { number: 8, label: "D2", kind: PinKind::Data(2) },
-    PinDef { number: 9, label: "D1", kind: PinKind::Data(1) },
-    PinDef { number: 10, label: "D0", kind: PinKind::Data(0) },
-    PinDef { number: 11, label: "-5V", kind: PinKind::Power("-5 V supply rail") },
-    PinDef { number: 12, label: "RESET", kind: PinKind::Control(ControlPin::Reset) },
-    PinDef { number: 13, label: "HOLD", kind: PinKind::Control(ControlPin::Hold) },
-    PinDef { number: 14, label: "INT", kind: PinKind::Control(ControlPin::Interrupt) },
-    PinDef { number: 15, label: "PHI2", kind: PinKind::Clock(ClockPin::Phi2, "Intel 8080 PHI2 clock input. Exact Cycle samples expose the modeled digital phase level; reconstructed/control-only states never fabricate an edge level.") },
-    PinDef { number: 16, label: "INTE", kind: PinKind::Control(ControlPin::Inte) },
-    PinDef { number: 17, label: "DBIN", kind: PinKind::Control(ControlPin::Dbin) },
-    PinDef { number: 18, label: "/WR", kind: PinKind::Control(ControlPin::WrN) },
-    PinDef { number: 19, label: "SYNC", kind: PinKind::Control(ControlPin::Sync) },
-    PinDef { number: 20, label: "+5V", kind: PinKind::Power("+5 V supply rail") },
+    PinDef {
+        number: 1,
+        label: "A10",
+        kind: PinKind::Address(10),
+    },
+    PinDef {
+        number: 2,
+        label: "GND",
+        kind: PinKind::Ground,
+    },
+    PinDef {
+        number: 3,
+        label: "D4",
+        kind: PinKind::Data(4),
+    },
+    PinDef {
+        number: 4,
+        label: "D5",
+        kind: PinKind::Data(5),
+    },
+    PinDef {
+        number: 5,
+        label: "D6",
+        kind: PinKind::Data(6),
+    },
+    PinDef {
+        number: 6,
+        label: "D7",
+        kind: PinKind::Data(7),
+    },
+    PinDef {
+        number: 7,
+        label: "D3",
+        kind: PinKind::Data(3),
+    },
+    PinDef {
+        number: 8,
+        label: "D2",
+        kind: PinKind::Data(2),
+    },
+    PinDef {
+        number: 9,
+        label: "D1",
+        kind: PinKind::Data(1),
+    },
+    PinDef {
+        number: 10,
+        label: "D0",
+        kind: PinKind::Data(0),
+    },
+    PinDef {
+        number: 11,
+        label: "-5V",
+        kind: PinKind::Power("-5 V supply rail"),
+    },
+    PinDef {
+        number: 12,
+        label: "RESET",
+        kind: PinKind::Control(ControlPin::Reset),
+    },
+    PinDef {
+        number: 13,
+        label: "HOLD",
+        kind: PinKind::Control(ControlPin::Hold),
+    },
+    PinDef {
+        number: 14,
+        label: "INT",
+        kind: PinKind::Control(ControlPin::Interrupt),
+    },
+    PinDef {
+        number: 15,
+        label: "PHI2",
+        kind: PinKind::Clock(
+            ClockPin::Phi2,
+            "Intel 8080 PHI2 clock input. Exact Cycle samples expose the modeled digital phase level; reconstructed/control-only states never fabricate an edge level.",
+        ),
+    },
+    PinDef {
+        number: 16,
+        label: "INTE",
+        kind: PinKind::Control(ControlPin::Inte),
+    },
+    PinDef {
+        number: 17,
+        label: "DBIN",
+        kind: PinKind::Control(ControlPin::Dbin),
+    },
+    PinDef {
+        number: 18,
+        label: "/WR",
+        kind: PinKind::Control(ControlPin::WrN),
+    },
+    PinDef {
+        number: 19,
+        label: "SYNC",
+        kind: PinKind::Control(ControlPin::Sync),
+    },
+    PinDef {
+        number: 20,
+        label: "+5V",
+        kind: PinKind::Power("+5 V supply rail"),
+    },
 ];
 
 const RIGHT_PINS: [PinDef; 20] = [
-    PinDef { number: 40, label: "A11", kind: PinKind::Address(11) },
-    PinDef { number: 39, label: "A14", kind: PinKind::Address(14) },
-    PinDef { number: 38, label: "A13", kind: PinKind::Address(13) },
-    PinDef { number: 37, label: "A12", kind: PinKind::Address(12) },
-    PinDef { number: 36, label: "A15", kind: PinKind::Address(15) },
-    PinDef { number: 35, label: "A9", kind: PinKind::Address(9) },
-    PinDef { number: 34, label: "A8", kind: PinKind::Address(8) },
-    PinDef { number: 33, label: "A7", kind: PinKind::Address(7) },
-    PinDef { number: 32, label: "A6", kind: PinKind::Address(6) },
-    PinDef { number: 31, label: "A5", kind: PinKind::Address(5) },
-    PinDef { number: 30, label: "A4", kind: PinKind::Address(4) },
-    PinDef { number: 29, label: "A3", kind: PinKind::Address(3) },
-    PinDef { number: 28, label: "+12V", kind: PinKind::Power("+12 V supply rail") },
-    PinDef { number: 27, label: "A2", kind: PinKind::Address(2) },
-    PinDef { number: 26, label: "A1", kind: PinKind::Address(1) },
-    PinDef { number: 25, label: "A0", kind: PinKind::Address(0) },
-    PinDef { number: 24, label: "WAIT", kind: PinKind::Control(ControlPin::Wait) },
-    PinDef { number: 23, label: "READY", kind: PinKind::Control(ControlPin::Ready) },
-    PinDef { number: 22, label: "PHI1", kind: PinKind::Clock(ClockPin::Phi1, "Intel 8080 PHI1 clock input. Exact Cycle samples expose the modeled digital phase level; reconstructed/control-only states never fabricate an edge level.") },
-    PinDef { number: 21, label: "HLDA", kind: PinKind::Control(ControlPin::Hlda) },
+    PinDef {
+        number: 40,
+        label: "A11",
+        kind: PinKind::Address(11),
+    },
+    PinDef {
+        number: 39,
+        label: "A14",
+        kind: PinKind::Address(14),
+    },
+    PinDef {
+        number: 38,
+        label: "A13",
+        kind: PinKind::Address(13),
+    },
+    PinDef {
+        number: 37,
+        label: "A12",
+        kind: PinKind::Address(12),
+    },
+    PinDef {
+        number: 36,
+        label: "A15",
+        kind: PinKind::Address(15),
+    },
+    PinDef {
+        number: 35,
+        label: "A9",
+        kind: PinKind::Address(9),
+    },
+    PinDef {
+        number: 34,
+        label: "A8",
+        kind: PinKind::Address(8),
+    },
+    PinDef {
+        number: 33,
+        label: "A7",
+        kind: PinKind::Address(7),
+    },
+    PinDef {
+        number: 32,
+        label: "A6",
+        kind: PinKind::Address(6),
+    },
+    PinDef {
+        number: 31,
+        label: "A5",
+        kind: PinKind::Address(5),
+    },
+    PinDef {
+        number: 30,
+        label: "A4",
+        kind: PinKind::Address(4),
+    },
+    PinDef {
+        number: 29,
+        label: "A3",
+        kind: PinKind::Address(3),
+    },
+    PinDef {
+        number: 28,
+        label: "+12V",
+        kind: PinKind::Power("+12 V supply rail"),
+    },
+    PinDef {
+        number: 27,
+        label: "A2",
+        kind: PinKind::Address(2),
+    },
+    PinDef {
+        number: 26,
+        label: "A1",
+        kind: PinKind::Address(1),
+    },
+    PinDef {
+        number: 25,
+        label: "A0",
+        kind: PinKind::Address(0),
+    },
+    PinDef {
+        number: 24,
+        label: "WAIT",
+        kind: PinKind::Control(ControlPin::Wait),
+    },
+    PinDef {
+        number: 23,
+        label: "READY",
+        kind: PinKind::Control(ControlPin::Ready),
+    },
+    PinDef {
+        number: 22,
+        label: "PHI1",
+        kind: PinKind::Clock(
+            ClockPin::Phi1,
+            "Intel 8080 PHI1 clock input. Exact Cycle samples expose the modeled digital phase level; reconstructed/control-only states never fabricate an edge level.",
+        ),
+    },
+    PinDef {
+        number: 21,
+        label: "HLDA",
+        kind: PinKind::Control(ControlPin::Hlda),
+    },
 ];
 
 struct PinState {
@@ -107,18 +271,57 @@ struct PinState {
 /// The package renderer is deliberately view-only. CPU control-pin truth is
 /// decided by the backend teaching snapshot; this UI never reconstructs a
 /// signal from S-100 lamps, machine-cycle names or other presentation state.
-fn control_state(snapshot: BusTeachingSnapshot, pin: ControlPin) -> (Option<bool>, bool, &'static str) {
+fn control_state(
+    snapshot: BusTeachingSnapshot,
+    pin: ControlPin,
+) -> (Option<bool>, bool, &'static str) {
     match pin {
         ControlPin::Reset => (snapshot.reset, false, "RESET input; active HIGH."),
-        ControlPin::Hold => (snapshot.hold, false, "HOLD input requests that the 8080 relinquish the bus; active HIGH."),
-        ControlPin::Interrupt => (snapshot.interrupt, false, "INT is the active-HIGH 8080 interrupt-request input. On the Altair it is driven by the canonical S-100 PINT line; it is distinct from the front-panel INT/SINTA interrupt-acknowledge status."),
-        ControlPin::Inte => (snapshot.pins.inte, false, "INTE output indicates that maskable interrupts are enabled; active HIGH."),
-        ControlPin::Dbin => (snapshot.pins.dbin, false, "DBIN output indicates that the CPU is accepting data from the external data bus; it remains HIGH through TW during a read wait."),
-        ControlPin::WrN => (snapshot.pins.wr_n, true, "/WR is the active-LOW CPU write output. LOW means the write signal is asserted."),
-        ControlPin::Sync => (snapshot.pins.sync, false, "SYNC marks the T1 status/synchronization portion of a machine cycle; active HIGH."),
-        ControlPin::Wait => (snapshot.pins.wait, false, "WAIT output indicates that the processor is waiting; active HIGH."),
-        ControlPin::Ready => (snapshot.ready, false, "READY input controls wait-state insertion; active HIGH."),
-        ControlPin::Hlda => (snapshot.pins.hlda, false, "HLDA output acknowledges HOLD and bus relinquishment; active HIGH."),
+        ControlPin::Hold => (
+            snapshot.hold,
+            false,
+            "HOLD input requests that the 8080 relinquish the bus; active HIGH.",
+        ),
+        ControlPin::Interrupt => (
+            snapshot.interrupt,
+            false,
+            "INT is the active-HIGH 8080 interrupt-request input. On the Altair it is driven by the canonical S-100 PINT line; it is distinct from the front-panel INT/SINTA interrupt-acknowledge status.",
+        ),
+        ControlPin::Inte => (
+            snapshot.pins.inte,
+            false,
+            "INTE output indicates that maskable interrupts are enabled; active HIGH.",
+        ),
+        ControlPin::Dbin => (
+            snapshot.pins.dbin,
+            false,
+            "DBIN output indicates that the CPU is accepting data from the external data bus; it remains HIGH through TW during a read wait.",
+        ),
+        ControlPin::WrN => (
+            snapshot.pins.wr_n,
+            true,
+            "/WR is the active-LOW CPU write output. LOW means the write signal is asserted.",
+        ),
+        ControlPin::Sync => (
+            snapshot.pins.sync,
+            false,
+            "SYNC marks the T1 status/synchronization portion of a machine cycle; active HIGH.",
+        ),
+        ControlPin::Wait => (
+            snapshot.pins.wait,
+            false,
+            "WAIT output indicates that the processor is waiting; active HIGH.",
+        ),
+        ControlPin::Ready => (
+            snapshot.ready,
+            false,
+            "READY input controls wait-state insertion; active HIGH.",
+        ),
+        ControlPin::Hlda => (
+            snapshot.pins.hlda,
+            false,
+            "HLDA output acknowledges HOLD and bus relinquishment; active HIGH.",
+        ),
     }
 }
 
@@ -152,7 +355,10 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 state_text: if released {
                     "HI-Z / RELEASED".into()
                 } else {
-                    level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
+                    level
+                        .map(|v| if v { "1" } else { "0" })
+                        .unwrap_or("NO T-STATE SAMPLE")
+                        .into()
                 },
                 note: "8080 address-output pin. In an exact sample with no driven address the pin is HI-Z/released. RESET RELEASED / STOP-WAIT is a special stable control state: the CPU owns the address bus at PC=0000h, so those electrical levels are known even though no numbered T-state sample is fabricated.",
                 modeled: level.is_some() || released,
@@ -173,7 +379,10 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 state_text: if released {
                     "HI-Z / RELEASED".into()
                 } else {
-                    level.map(|v| if v { "1" } else { "0" }).unwrap_or("NO T-STATE SAMPLE").into()
+                    level
+                        .map(|v| if v { "1" } else { "0" })
+                        .unwrap_or("NO T-STATE SAMPLE")
+                        .into()
                 },
                 note: "Intel 8080 bidirectional D0-D7 package pin. This level comes only from the backend's CPU-data domain, never from S-100 DI/DO or optical DATA-lamp persistence. During STOP-WAIT, memory DI passes through the CPU-board input buffer onto the processor D bus while DBIN is active.",
                 modeled: level.is_some() || released,
@@ -189,14 +398,32 @@ fn pin_state(snapshot: BusTeachingSnapshot, pin: PinDef, powered: bool) -> PinSt
                 (Some(false), Some(true)) => "LOW ASSERTED".into(),
                 (Some(true), Some(false)) => "HIGH inactive".into(),
                 (Some(false), Some(false)) => "LOW inactive".into(),
-                _ => if powered { "UNKNOWN / NO SAMPLE".into() } else { "UNPOWERED".into() },
+                _ => {
+                    if powered {
+                        "UNKNOWN / NO SAMPLE".into()
+                    } else {
+                        "UNPOWERED".into()
+                    }
+                }
             };
-            PinState { level, asserted, state_text, note, modeled: level.is_some(), static_pin: false, released: false }
+            PinState {
+                level,
+                asserted,
+                state_text,
+                note,
+                modeled: level.is_some(),
+                static_pin: false,
+                released: false,
+            }
         }
         PinKind::Power(note) => PinState {
             level: Some(powered),
             asserted: None,
-            state_text: if powered { "POWER ON".into() } else { "POWER OFF".into() },
+            state_text: if powered {
+                "POWER ON".into()
+            } else {
+                "POWER OFF".into()
+            },
             note,
             modeled: true,
             static_pin: true,
@@ -240,7 +467,9 @@ fn address_bus_context(snapshot: BusTeachingSnapshot) -> &'static str {
         BusMachineCycle::PowerOnUndefined => "S-100 power-on value; CPU A pins undefined",
         BusMachineCycle::ResetAsserted => "front panel owns S-100 during RESET",
         BusMachineCycle::ResetReleasedStopped => "CPU -> S-100; stable STOP-WAIT fetch address",
-        BusMachineCycle::ResetReleasedRunning => "S-100 reset-release state; first CPU T-state not sampled yet",
+        BusMachineCycle::ResetReleasedRunning => {
+            "S-100 reset-release state; first CPU T-state not sampled yet"
+        }
         _ if snapshot.pins.hlda == Some(true) || snapshot.t_state == BusTState::Hold => {
             "CPU bus released"
         }
@@ -262,15 +491,39 @@ fn draw_pin(
     let spacing = body.height() / 21.0;
     let y = body.top() + spacing * (row as f32 + 1.0);
     let body_x = if left_side { body.left() } else { body.right() };
-    let terminal_x = if left_side { body_x - wire_len } else { body_x + wire_len };
+    let terminal_x = if left_side {
+        body_x - wire_len
+    } else {
+        body_x + wire_len
+    };
     let state = pin_state(snapshot, pin, powered);
 
     let visuals = ui.visuals();
     let high_color = visuals.selection.stroke.color;
-    let low_color = visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.36);
-    let neutral_color = visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.72);
-    let unknown_color = visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.55);
-    let released_color = visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.52);
+    let low_color = visuals
+        .widgets
+        .inactive
+        .fg_stroke
+        .color
+        .gamma_multiply(0.36);
+    let neutral_color = visuals
+        .widgets
+        .noninteractive
+        .fg_stroke
+        .color
+        .gamma_multiply(0.72);
+    let unknown_color = visuals
+        .widgets
+        .inactive
+        .fg_stroke
+        .color
+        .gamma_multiply(0.55);
+    let released_color = visuals
+        .widgets
+        .noninteractive
+        .fg_stroke
+        .color
+        .gamma_multiply(0.52);
     let asserted_color = visuals.warn_fg_color;
 
     let line_color = if state.released {
@@ -290,10 +543,23 @@ fn draw_pin(
             None => unknown_color,
         }
     };
-    let stroke = egui::Stroke::new(if state.asserted == Some(true) { 2.0_f32 } else if state.released { 1.0_f32 } else { 1.35_f32 }, line_color);
+    let stroke = egui::Stroke::new(
+        if state.asserted == Some(true) {
+            2.0_f32
+        } else if state.released {
+            1.0_f32
+        } else {
+            1.35_f32
+        },
+        line_color,
+    );
     painter.line_segment([egui::pos2(body_x, y), egui::pos2(terminal_x, y)], stroke);
     painter.circle_filled(egui::pos2(terminal_x, y), PIN_RADIUS, visuals.panel_fill);
-    painter.circle_stroke(egui::pos2(terminal_x, y), PIN_RADIUS, egui::Stroke::new(1.5_f32, line_color));
+    painter.circle_stroke(
+        egui::pos2(terminal_x, y),
+        PIN_RADIUS,
+        egui::Stroke::new(1.5_f32, line_color),
+    );
     if state.asserted == Some(true) {
         painter.circle_stroke(
             egui::pos2(terminal_x, y),
@@ -302,13 +568,26 @@ fn draw_pin(
         );
     }
 
-    let pin_number_x = if left_side { body.left() + 8.0 } else { body.right() - 8.0 };
+    let pin_number_x = if left_side {
+        body.left() + 8.0
+    } else {
+        body.right() - 8.0
+    };
     painter.text(
         egui::pos2(pin_number_x, y),
-        if left_side { egui::Align2::LEFT_CENTER } else { egui::Align2::RIGHT_CENTER },
+        if left_side {
+            egui::Align2::LEFT_CENTER
+        } else {
+            egui::Align2::RIGHT_CENTER
+        },
         pin.number.to_string(),
         egui::FontId::monospace(10.0),
-        visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.65),
+        visuals
+            .widgets
+            .noninteractive
+            .fg_stroke
+            .color
+            .gamma_multiply(0.65),
     );
 
     let level_suffix = if state.static_pin {
@@ -325,34 +604,58 @@ fn draw_pin(
         }
     };
     let label = format!("{}{}", pin.label, level_suffix);
-    let label_x = if left_side { terminal_x - 7.0 } else { terminal_x + 7.0 };
+    let label_x = if left_side {
+        terminal_x - 7.0
+    } else {
+        terminal_x + 7.0
+    };
     painter.text(
         egui::pos2(label_x, y),
-        if left_side { egui::Align2::RIGHT_CENTER } else { egui::Align2::LEFT_CENTER },
+        if left_side {
+            egui::Align2::RIGHT_CENTER
+        } else {
+            egui::Align2::LEFT_CENTER
+        },
         label,
         egui::FontId::monospace(11.0),
-        if state.asserted == Some(true) { asserted_color } else { line_color },
+        if state.asserted == Some(true) {
+            asserted_color
+        } else {
+            line_color
+        },
     );
 
-    let hit_min_x = if left_side { terminal_x - 92.0 } else { body_x - 4.0 };
-    let hit_max_x = if left_side { body_x + 4.0 } else { terminal_x + 92.0 };
+    let hit_min_x = if left_side {
+        terminal_x - 92.0
+    } else {
+        body_x - 4.0
+    };
+    let hit_max_x = if left_side {
+        body_x + 4.0
+    } else {
+        terminal_x + 92.0
+    };
     let hit = egui::Rect::from_min_max(
         egui::pos2(hit_min_x, y - spacing * 0.45),
         egui::pos2(hit_max_x, y + spacing * 0.45),
     );
-    ui.interact(hit, ui.id().with(("8080-pin", pin.number)), egui::Sense::hover())
-        .on_hover_ui(|ui| {
-            ui.strong(format!("Pin {} - {}", pin.number, pin.label));
-            ui.monospace(&state.state_text);
-            ui.label(state.note);
-            if state.released {
-                ui.label("Pin is electrically released (high impedance) in this exact T-state.");
-            } else if state.asserted == Some(true) {
-                ui.label("Signal is ASSERTED in this sample.");
-            } else if state.asserted == Some(false) {
-                ui.label("Signal is inactive in this sample.");
-            }
-        });
+    ui.interact(
+        hit,
+        ui.id().with(("8080-pin", pin.number)),
+        egui::Sense::hover(),
+    )
+    .on_hover_ui(|ui| {
+        ui.strong(format!("Pin {} - {}", pin.number, pin.label));
+        ui.monospace(&state.state_text);
+        ui.label(state.note);
+        if state.released {
+            ui.label("Pin is electrically released (high impedance) in this exact T-state.");
+        } else if state.asserted == Some(true) {
+            ui.label("Signal is ASSERTED in this sample.");
+        } else if state.asserted == Some(false) {
+            ui.label("Signal is inactive in this sample.");
+        }
+    });
 }
 
 fn hex8(value: Option<u8>) -> String {
@@ -362,36 +665,72 @@ fn hex8(value: Option<u8>) -> String {
 }
 
 fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
-    let address = snapshot.address.map(|value| format!("${value:04X}  {value:016b}")).unwrap_or_else(|| "----  ----------------".into());
+    let address = snapshot
+        .address
+        .map(|value| format!("${value:04X}  {value:016b}"))
+        .unwrap_or_else(|| "----  ----------------".into());
 
     ui.add_space(3.0);
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("STATE").strong()));
+        ui.add_sized(
+            [78.0, 20.0],
+            egui::Label::new(egui::RichText::new("STATE").strong()),
+        );
         ui.monospace(snapshot.machine_cycle.label());
     });
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("ADDRESS").strong()));
-        ui.add_sized([196.0, 20.0], egui::Label::new(egui::RichText::new(address).monospace()));
+        ui.add_sized(
+            [78.0, 20.0],
+            egui::Label::new(egui::RichText::new("ADDRESS").strong()),
+        );
+        ui.add_sized(
+            [196.0, 20.0],
+            egui::Label::new(egui::RichText::new(address).monospace()),
+        );
         ui.weak(address_bus_context(snapshot));
     });
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("CPU D").strong()));
-        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.cpu_data)).monospace()));
+        ui.add_sized(
+            [78.0, 20.0],
+            egui::Label::new(egui::RichText::new("CPU D").strong()),
+        );
+        ui.add_sized(
+            [128.0, 20.0],
+            egui::Label::new(egui::RichText::new(hex8(snapshot.cpu_data)).monospace()),
+        );
         ui.weak("Intel 8080 package D0-D7");
     });
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("S-100 DI").strong()));
-        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.s100_di)).monospace()));
+        ui.add_sized(
+            [78.0, 20.0],
+            egui::Label::new(egui::RichText::new("S-100 DI").strong()),
+        );
+        ui.add_sized(
+            [128.0, 20.0],
+            egui::Label::new(egui::RichText::new(hex8(snapshot.s100_di)).monospace()),
+        );
         ui.weak("toward processor / memory or I/O -> CPU board");
     });
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("S-100 DO").strong()));
-        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.s100_do)).monospace()));
+        ui.add_sized(
+            [78.0, 20.0],
+            egui::Label::new(egui::RichText::new("S-100 DO").strong()),
+        );
+        ui.add_sized(
+            [128.0, 20.0],
+            egui::Label::new(egui::RichText::new(hex8(snapshot.s100_do)).monospace()),
+        );
         ui.weak("away from processor / CPU board -> memory or I/O");
     });
     ui.horizontal(|ui| {
-        ui.add_sized([78.0, 20.0], egui::Label::new(egui::RichText::new("PANEL DATA").strong()));
-        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(hex8(snapshot.panel_data)).monospace()));
+        ui.add_sized(
+            [78.0, 20.0],
+            egui::Label::new(egui::RichText::new("PANEL DATA").strong()),
+        );
+        ui.add_sized(
+            [128.0, 20.0],
+            egui::Label::new(egui::RichText::new(hex8(snapshot.panel_data)).monospace()),
+        );
         ui.weak("front-panel DATA display path; presentation may retain/integrate activity");
     });
 
@@ -412,11 +751,7 @@ fn draw_bus_summary(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
 
 /// Draw the live Intel 8080A package from code so every pin remains tied to the
 /// teaching contract rather than to a decorative/static image asset.
-pub(super) fn draw_8080a_package(
-    ui: &mut egui::Ui,
-    snapshot: BusTeachingSnapshot,
-    powered: bool,
-) {
+pub(super) fn draw_8080a_package(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot, powered: bool) {
     let width = ui.available_width().max(360.0);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, DIAGRAM_HEIGHT), egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -440,7 +775,12 @@ pub(super) fn draw_8080a_package(
             if powered {
                 visuals.widgets.noninteractive.fg_stroke.color
             } else {
-                visuals.widgets.inactive.fg_stroke.color.gamma_multiply(0.45)
+                visuals
+                    .widgets
+                    .inactive
+                    .fg_stroke
+                    .color
+                    .gamma_multiply(0.45)
             },
         ),
         egui::StrokeKind::Inside,
@@ -457,7 +797,12 @@ pub(super) fn draw_8080a_package(
     painter.circle_filled(
         egui::pos2(body.left() + 22.0, body.top() + 22.0),
         3.2,
-        visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.7),
+        visuals
+            .widgets
+            .noninteractive
+            .fg_stroke
+            .color
+            .gamma_multiply(0.7),
     );
 
     painter.text(
@@ -465,21 +810,34 @@ pub(super) fn draw_8080a_package(
         egui::Align2::CENTER_CENTER,
         "INTEL 8080A",
         egui::FontId::monospace(19.0),
-        if powered { visuals.strong_text_color() } else { visuals.weak_text_color() },
+        if powered {
+            visuals.strong_text_color()
+        } else {
+            visuals.weak_text_color()
+        },
     );
     painter.text(
         body.center() + egui::vec2(0.0, 12.0),
         egui::Align2::CENTER_CENTER,
         if powered { "DIP-40" } else { "POWER OFF" },
         egui::FontId::monospace(11.0),
-        visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.7),
+        visuals
+            .widgets
+            .noninteractive
+            .fg_stroke
+            .color
+            .gamma_multiply(0.7),
     );
 
     for (row, pin) in LEFT_PINS.iter().copied().enumerate() {
-        draw_pin(ui, &painter, body, row, true, wire_len, pin, snapshot, powered);
+        draw_pin(
+            ui, &painter, body, row, true, wire_len, pin, snapshot, powered,
+        );
     }
     for (row, pin) in RIGHT_PINS.iter().copied().enumerate() {
-        draw_pin(ui, &painter, body, row, false, wire_len, pin, snapshot, powered);
+        draw_pin(
+            ui, &painter, body, row, false, wire_len, pin, snapshot, powered,
+        );
     }
 
     draw_bus_summary(ui, snapshot);

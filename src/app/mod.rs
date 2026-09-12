@@ -30,16 +30,14 @@ use self::terminal_state::TerminalState;
 use self::ui::assets::Tex;
 use crate::audio::AudioEngine;
 use crate::backend::{BackendHost, BackendSerialPort};
+#[cfg(test)]
+use crate::config::RamSize;
 use crate::config::{
     AppConfig, Asr33Speed, CpuBoard, EmulationSpeed, RamInit, S100HardwareConfig,
     S100InstalledCardConfig, SerialBoard, TerminalSpeed, TwoSioStraps,
 };
-#[cfg(test)]
-use crate::config::RamSize;
 use crate::io::serial_router::{SerialConnection, SerialDevice, SerialRouter};
-use crate::peripherals::asr33::{
-    self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype,
-};
+use crate::peripherals::asr33::{self as teletype, KeyKind, Mode as TtyMode, PrintEvent, Teletype};
 
 const PANEL_W: f32 = 1935.0;
 const PANEL_H: f32 = 813.0;
@@ -76,8 +74,8 @@ fn emulation_speed_label(speed: EmulationSpeed, board: CpuBoard) -> String {
 }
 
 const ADDR_LED_X: [f32; 16] = [
-    1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0, 1052.7, 953.6, 884.8,
-    817.5, 718.5, 649.7, 579.9, 480.0,
+    1666.2, 1596.5, 1527.9, 1427.7, 1359.1, 1289.1, 1189.6, 1121.0, 1052.7, 953.6, 884.8, 817.5,
+    718.5, 649.7, 579.9, 480.0,
 ];
 const ADDR_LED_Y: f32 = 290.3;
 
@@ -182,7 +180,9 @@ impl RusTairApp {
     }
 
     fn set_asr_speed(&mut self, speed: Asr33Speed) {
-        if self.config.peripherals.asr33_speed == speed { return; }
+        if self.config.peripherals.asr33_speed == speed {
+            return;
+        }
         self.config.peripherals.asr33_speed = speed;
         self.asr33.tx_started = None;
         self.asr33.answerback.clear();
@@ -190,7 +190,9 @@ impl RusTairApp {
     }
 
     fn set_terminal_speed(&mut self, speed: TerminalSpeed) {
-        if self.config.peripherals.terminal_speed == speed { return; }
+        if self.config.peripherals.terminal_speed == speed {
+            return;
+        }
         self.config.peripherals.terminal_speed = speed;
         self.terminal.speed = speed;
         self.terminal.tx_started = None;
@@ -199,7 +201,9 @@ impl RusTairApp {
     }
 
     fn set_emulation_speed(&mut self, speed: EmulationSpeed) {
-        if self.config.preferences.emulation_speed == speed { return; }
+        if self.config.preferences.emulation_speed == speed {
+            return;
+        }
         self.config.preferences.emulation_speed = speed;
         let now = Instant::now();
         self.last_tick = now;
@@ -242,7 +246,9 @@ impl RusTairApp {
         self.execution_clock.reset_at(now);
         let serial = hardware
             .active_serial_board()
-            .map_or("no serial card".to_string(), |board| board.label().to_string());
+            .map_or("no serial card".to_string(), |board| {
+                board.label().to_string()
+            });
         self.status = format!(
             "{action} — live S-100 chassis remounted ({} KiB RAM, {serial}) — POWER remains OFF",
             hardware.installed_ram_bytes() / 1024
@@ -253,7 +259,9 @@ impl RusTairApp {
     /// physical card topology. This setting is an emulator convenience, not an
     /// aggregate RAM-size control.
     fn apply_ram_initialization(&mut self, ram_init: RamInit) {
-        if self.config.machine.ram_init == ram_init { return; }
+        if self.config.machine.ram_init == ram_init {
+            return;
+        }
         if self.machine.powered() {
             self.status = "POWER OFF required before changing RAM power-on contents".into();
             return;
@@ -337,14 +345,12 @@ impl RusTairApp {
                 device.supports_sio_interface(config.interface)
             }
             (S100InstalledCardConfig::Mits88Sio(_), SerialConnection::Port1) => false,
-            (
-                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
-                SerialConnection::Port0,
-            ) => device.supports_two_sio_interface(straps.port0_interface),
-            (
-                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
-                SerialConnection::Port1,
-            ) => device.supports_two_sio_interface(straps.port1_interface),
+            (S100InstalledCardConfig::Mits88TwoSio { straps, .. }, SerialConnection::Port0) => {
+                device.supports_two_sio_interface(straps.port0_interface)
+            }
+            (S100InstalledCardConfig::Mits88TwoSio { straps, .. }, SerialConnection::Port1) => {
+                device.supports_two_sio_interface(straps.port1_interface)
+            }
             _ => false,
         }
     }
@@ -369,24 +375,22 @@ impl RusTairApp {
             (S100InstalledCardConfig::Mits88Sio(_), SerialConnection::Port1) => {
                 "Unavailable — 88-SIO has one serial channel".into()
             }
-            (
-                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
-                SerialConnection::Port0,
-            ) => format!(
-                "Slot {slot} · 88-2SIO Port 0 [{:02X}h/{:02X}h · {}]",
-                straps.address.port0_status(),
-                straps.address.port0_data(),
-                straps.port0_interface.label(),
-            ),
-            (
-                S100InstalledCardConfig::Mits88TwoSio { straps, .. },
-                SerialConnection::Port1,
-            ) => format!(
-                "Slot {slot} · 88-2SIO Port 1 [{:02X}h/{:02X}h · {}]",
-                straps.address.port1_status(),
-                straps.address.port1_data(),
-                straps.port1_interface.label(),
-            ),
+            (S100InstalledCardConfig::Mits88TwoSio { straps, .. }, SerialConnection::Port0) => {
+                format!(
+                    "Slot {slot} · 88-2SIO Port 0 [{:02X}h/{:02X}h · {}]",
+                    straps.address.port0_status(),
+                    straps.address.port0_data(),
+                    straps.port0_interface.label(),
+                )
+            }
+            (S100InstalledCardConfig::Mits88TwoSio { straps, .. }, SerialConnection::Port1) => {
+                format!(
+                    "Slot {slot} · 88-2SIO Port 1 [{:02X}h/{:02X}h · {}]",
+                    straps.address.port1_status(),
+                    straps.address.port1_data(),
+                    straps.port1_interface.label(),
+                )
+            }
             _ => "Unavailable".into(),
         }
     }
@@ -412,7 +416,9 @@ impl RusTairApp {
             );
             return;
         }
-        if self.serial_router.connection(device) == connection { return; }
+        if self.serial_router.connection(device) == connection {
+            return;
+        }
 
         let old_asr_connection = self.asr_connection();
         let moving_asr = device == SerialDevice::InternalAsr33;
@@ -428,14 +434,18 @@ impl RusTairApp {
         self.external_serial.reset_line_timing();
         self.external_com.reset_line_timing();
         if displaced == Some(SerialDevice::InternalAsr33)
-            || (device == SerialDevice::InternalAsr33 && connection == SerialConnection::Disconnected)
+            || (device == SerialDevice::InternalAsr33
+                && connection == SerialConnection::Disconnected)
         {
             self.asr33.answerback.clear();
         }
         let device_name = Self::serial_device_name(device);
         let connection_name = Self::serial_connection_label(hardware, connection);
         self.status = if let Some(displaced) = displaced {
-            format!("{device_name} connected to {connection_name}; {} disconnected from that port", Self::serial_device_name(displaced))
+            format!(
+                "{device_name} connected to {connection_name}; {} disconnected from that port",
+                Self::serial_device_name(displaced)
+            )
         } else {
             format!("{device_name}: {connection_name}")
         };
@@ -449,16 +459,24 @@ impl RusTairApp {
         }
     }
     fn serial_rx_empty_at(&mut self, connection: SerialConnection) -> bool {
-        Self::backend_serial_port(connection).map(|port| self.machine.serial_rx_empty(port)).unwrap_or(true)
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_rx_empty(port))
+            .unwrap_or(true)
     }
     fn serial_rx_len_at(&mut self, connection: SerialConnection) -> usize {
-        Self::backend_serial_port(connection).map(|port| self.machine.serial_rx_len(port)).unwrap_or(0)
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_rx_len(port))
+            .unwrap_or(0)
     }
     fn serial_receive_at(&mut self, connection: SerialConnection, byte: u8) {
-        if let Some(port) = Self::backend_serial_port(connection) { self.machine.serial_receive(port, byte); }
+        if let Some(port) = Self::backend_serial_port(connection) {
+            self.machine.serial_receive(port, byte);
+        }
     }
     fn serial_tx_busy_at(&mut self, connection: SerialConnection) -> bool {
-        Self::backend_serial_port(connection).map(|port| self.machine.serial_tx_busy(port)).unwrap_or(false)
+        Self::backend_serial_port(connection)
+            .map(|port| self.machine.serial_tx_busy(port))
+            .unwrap_or(false)
     }
     fn serial_tx_front_at(&mut self, connection: SerialConnection) -> Option<u8> {
         Self::backend_serial_port(connection).and_then(|port| self.machine.serial_tx_front(port))
@@ -467,30 +485,67 @@ impl RusTairApp {
         Self::backend_serial_port(connection).and_then(|port| self.machine.serial_tx_complete(port))
     }
 
-    fn asr_connection(&self) -> SerialConnection { self.serial_connection(SerialDevice::InternalAsr33) }
-    fn asr_serial_rx_empty(&mut self) -> bool { let c = self.asr_connection(); self.serial_rx_empty_at(c) }
-    fn asr_serial_rx_len(&mut self) -> usize { let c = self.asr_connection(); self.serial_rx_len_at(c) }
-    fn asr_serial_receive(&mut self, byte: u8) { let c = self.asr_connection(); self.serial_receive_at(c, byte); }
-    fn asr_serial_tx_busy(&mut self) -> bool { let c = self.asr_connection(); self.serial_tx_busy_at(c) }
-    fn asr_serial_tx_front(&mut self) -> Option<u8> { let c = self.asr_connection(); self.serial_tx_front_at(c) }
-    fn asr_serial_tx_complete(&mut self) -> Option<u8> { let c = self.asr_connection(); self.serial_tx_complete_at(c) }
+    fn asr_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::InternalAsr33)
+    }
+    fn asr_serial_rx_empty(&mut self) -> bool {
+        let c = self.asr_connection();
+        self.serial_rx_empty_at(c)
+    }
+    fn asr_serial_rx_len(&mut self) -> usize {
+        let c = self.asr_connection();
+        self.serial_rx_len_at(c)
+    }
+    fn asr_serial_receive(&mut self, byte: u8) {
+        let c = self.asr_connection();
+        self.serial_receive_at(c, byte);
+    }
+    fn asr_serial_tx_busy(&mut self) -> bool {
+        let c = self.asr_connection();
+        self.serial_tx_busy_at(c)
+    }
+    fn asr_serial_tx_front(&mut self) -> Option<u8> {
+        let c = self.asr_connection();
+        self.serial_tx_front_at(c)
+    }
+    fn asr_serial_tx_complete(&mut self) -> Option<u8> {
+        let c = self.asr_connection();
+        self.serial_tx_complete_at(c)
+    }
 
-    fn terminal_connection(&self) -> SerialConnection { self.serial_connection(SerialDevice::TextTerminal) }
-    fn terminal_serial_rx_len(&mut self) -> usize { let c = self.terminal_connection(); self.serial_rx_len_at(c) }
-    fn terminal_serial_receive(&mut self, byte: u8) { let c = self.terminal_connection(); self.serial_receive_at(c, byte); }
-    fn terminal_serial_tx_busy(&mut self) -> bool { let c = self.terminal_connection(); self.serial_tx_busy_at(c) }
+    fn terminal_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::TextTerminal)
+    }
+    fn terminal_serial_rx_len(&mut self) -> usize {
+        let c = self.terminal_connection();
+        self.serial_rx_len_at(c)
+    }
+    fn terminal_serial_receive(&mut self, byte: u8) {
+        let c = self.terminal_connection();
+        self.serial_receive_at(c, byte);
+    }
+    fn terminal_serial_tx_busy(&mut self) -> bool {
+        let c = self.terminal_connection();
+        self.serial_tx_busy_at(c)
+    }
 
     fn service_disconnected_serial_ports(&mut self) {
         if self.config.machine.serial_board().is_none() {
             return;
         }
-        if self.serial_router.device_on(SerialConnection::Port0).is_none()
+        if self
+            .serial_router
+            .device_on(SerialConnection::Port0)
+            .is_none()
             && self.machine.serial_tx_busy(BackendSerialPort::Port0)
         {
             self.machine.serial_tx_complete(BackendSerialPort::Port0);
         }
         if self.config.machine.serial_board() == Some(SerialBoard::TwoSio88)
-            && self.serial_router.device_on(SerialConnection::Port1).is_none()
+            && self
+                .serial_router
+                .device_on(SerialConnection::Port1)
+                .is_none()
             && self.machine.serial_tx_busy(BackendSerialPort::Port1)
         {
             self.machine.serial_tx_complete(BackendSerialPort::Port1);
@@ -498,10 +553,18 @@ impl RusTairApp {
     }
 
     fn image(ui: &mut egui::Ui, texture: &egui::TextureHandle, rect: Rect) {
-        ui.painter().image(texture.id(), rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+        ui.painter().image(
+            texture.id(),
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            Color32::WHITE,
+        );
     }
 
     fn centered_rect(origin: Pos2, scale: f32, x: f32, y: f32, w: f32, h: f32) -> Rect {
-        Rect::from_center_size(origin + Vec2::new(x * scale, y * scale), Vec2::new(w * scale, h * scale))
+        Rect::from_center_size(
+            origin + Vec2::new(x * scale, y * scale),
+            Vec2::new(w * scale, h * scale),
+        )
     }
 }

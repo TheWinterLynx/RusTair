@@ -1,15 +1,15 @@
-use super::super::{egui, RusTairApp};
+use super::super::{RusTairApp, egui};
 use super::execution_position::current_instruction_address;
 use super::s100_memory_inspection::{
     card_window, mapping_cell_text, mapping_detail, mapping_summary, ram_driver_line,
     visible_ram_value,
 };
 use crate::cpu8080::{FLAG_AC, FLAG_C, FLAG_P, FLAG_S, FLAG_Z};
-use crate::debugger8080::{decode_at, detect_simple_backward_loop, InstructionAt, SimpleLoop};
-use crate::explain8080::{explain_instruction, MemoryValue8080};
+use crate::debugger8080::{InstructionAt, SimpleLoop, decode_at, detect_simple_backward_loop};
+use crate::explain8080::{MemoryValue8080, explain_instruction};
 use crate::machine::MAX_MEM_SIZE;
 use crate::memory_activity8080::{
-    summarize_memory_activity_8080, MemoryActivity8080, MemoryActivityMap8080,
+    MemoryActivity8080, MemoryActivityMap8080, summarize_memory_activity_8080,
 };
 
 const BYTES_PER_ROW: usize = 16;
@@ -104,12 +104,7 @@ impl RusTairApp {
             .flatten()
     }
 
-    fn select_memory_address(
-        &mut self,
-        state: &mut MemoryViewerUiState,
-        address: u16,
-        jump: bool,
-    ) {
+    fn select_memory_address(&mut self, state: &mut MemoryViewerUiState, address: u16, jump: bool) {
         state.selected_address = address;
         state.address_input = format!("{address:04X}");
         let inspection = self.machine.inspect_memory_mapping(address);
@@ -203,7 +198,9 @@ impl RusTairApp {
     ) -> Option<(&'static str, u64)> {
         let mut latest: Option<(&'static str, u64)> = None;
         let mut consider = |label: &'static str, sequence: Option<u64>| {
-            let Some(sequence) = sequence else { return; };
+            let Some(sequence) = sequence else {
+                return;
+            };
             if latest.is_none_or(|(_, current)| sequence >= current) {
                 latest = Some((label, sequence));
             }
@@ -307,10 +304,7 @@ impl RusTairApp {
                 top + segment_height - 0.8
             };
             painter.rect_filled(
-                egui::Rect::from_min_max(
-                    egui::pos2(x0, top),
-                    egui::pos2(inner.right(), bottom),
-                ),
+                egui::Rect::from_min_max(egui::pos2(x0, top), egui::pos2(inner.right(), bottom)),
                 0.0,
                 color,
             );
@@ -569,7 +563,8 @@ impl RusTairApp {
             .animated(false);
         if let Some(address) = target {
             let target_row = address as usize / BYTES_PER_ROW;
-            scroll = scroll.vertical_scroll_offset(target_row.saturating_sub(5) as f32 * ROW_HEIGHT);
+            scroll =
+                scroll.vertical_scroll_offset(target_row.saturating_sub(5) as f32 * ROW_HEIGHT);
         }
 
         scroll.show_rows(ui, ROW_HEIGHT, ROW_COUNT, |ui, rows| {
@@ -809,7 +804,10 @@ impl RusTairApp {
                 for bit in (0..8).rev() {
                     let mask = 1u8 << bit;
                     let set = state.edit_value & mask != 0;
-                    if ui.selectable_label(set, if set { "1" } else { "0" }).clicked() {
+                    if ui
+                        .selectable_label(set, if set { "1" } else { "0" })
+                        .clicked()
+                    {
                         state.edit_value ^= mask;
                         state.edit_input = format!("{:02X}", state.edit_value);
                         state.last_edit_message = None;
@@ -893,12 +891,18 @@ impl RusTairApp {
             Self::ascii_description(state.edit_value),
         ));
         self.draw_bit_editor(ui, state);
-        ui.checkbox(&mut state.respect_protection, "Respect physical write protection");
+        ui.checkbox(
+            &mut state.respect_protection,
+            "Respect physical write protection",
+        );
 
         let valid = Self::parse_memory_byte(&state.edit_input).is_some();
         let blocked = protected && state.respect_protection;
         if ui
-            .add_enabled(valid && !blocked, egui::Button::new("Patch physical RAM byte"))
+            .add_enabled(
+                valid && !blocked,
+                egui::Button::new("Patch physical RAM byte"),
+            )
             .clicked()
         {
             let written =
@@ -971,7 +975,8 @@ impl RusTairApp {
                     let mut hover = format!(
                         "Slot {slot:02} · {label}\nAddress window {start:04X}h-{end:04X}h",
                     );
-                    if let Some(driver) = inspection.drivers.iter().find(|driver| driver.slot == slot)
+                    if let Some(driver) =
+                        inspection.drivers.iter().find(|driver| driver.slot == slot)
                     {
                         hover.push_str(&format!(
                             "\nProtection support: {} · unit {} byte(s)",
@@ -1049,14 +1054,20 @@ impl RusTairApp {
                 }
             });
         } else {
-            ui.small("Overlay OFF: the RAM Inspector does not request instruction capture on its own.");
+            ui.small(
+                "Overlay OFF: the RAM Inspector does not request instruction capture on its own.",
+            );
         }
     }
 
     fn draw_register8_cells(ui: &mut egui::Ui, name: &str, value: u8) {
         ui.strong(name);
         ui.label(egui::RichText::new(Self::grouped_binary8(value)).monospace());
-        ui.label(egui::RichText::new(format!("${value:02X}")).monospace().strong());
+        ui.label(
+            egui::RichText::new(format!("${value:02X}"))
+                .monospace()
+                .strong(),
+        );
     }
 
     fn draw_cpu_registers_sidebar(&mut self, ui: &mut egui::Ui) {
@@ -1107,7 +1118,9 @@ impl RusTairApp {
         ui.small("- Protection belongs to the installed RAM board. Historical boards use their real card-level behavior; the non-historical compatibility card alone retains legacy 1 KiB blocks.");
         ui.small("- Host debugger reads/writes are instrumentation shortcuts to the same physical card storage. They do not fabricate guest CPU cycles and cannot change which card decodes an address.");
         ui.small("- Editing is enabled only for one uniquely mapped RAM card. Overlap and contention must be corrected in the S-100 hardware configuration, not hidden here.");
-        ui.small("- Cell markers: EXEC = box, PC(reg) = left line, HL/M = top line, SP = bottom line.");
+        ui.small(
+            "- Cell markers: EXEC = box, PC(reg) = left line, HL/M = top line, SP = bottom line.",
+        );
         ui.small("- Activity overlay: blue = EXECUTE, green = data/stack READ, red = data/stack WRITE. IN/OUT are I/O bus activity, not RAM activity.");
     }
 

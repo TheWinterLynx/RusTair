@@ -72,5 +72,7 @@ fn s100_inventory_is_the_only_runtime_cpu_board_authority() {
     assert!(!CONFIG.contains("fn cpu_board("));
     assert!(!CONFIG.contains("pub cpu_model:"));
     assert!(S100_HARDWARE.contains("pub fn active_cpu_board(self) -> Option<CpuBoard>"));
-    assert!(S100_HARDWARE.contains("pub fn active_cpu_board_slot(self) -> Option<(usize, CpuBoard)>"));
+    assert!(
+        S100_HARDWARE.contains("pub fn active_cpu_board_slot(self) -> Option<(usize, CpuBoard)>")
+    );
 }

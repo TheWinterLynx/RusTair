@@ -1,8 +1,12 @@
-use super::*;
 use super::decode::RegisterPair;
+use super::*;
 
 fn input(data_in: u8, ready: bool) -> Cpu8080Inputs {
-    Cpu8080Inputs { data_in, ready, ..Cpu8080Inputs::default() }
+    Cpu8080Inputs {
+        data_in,
+        ready,
+        ..Cpu8080Inputs::default()
+    }
 }
 
 fn fetch(cpu: &mut Cpu8080Cycle, opcode: u8) -> [TickTrace; 4] {
@@ -41,7 +45,12 @@ fn nop_remains_four_t_states() {
 
 #[test]
 fn lxi_all_pairs_are_ten_t_states_little_endian_and_preserve_flags() {
-    let cases = [(0x01, RegisterPair::BC), (0x11, RegisterPair::DE), (0x21, RegisterPair::HL), (0x31, RegisterPair::SP)];
+    let cases = [
+        (0x01, RegisterPair::BC),
+        (0x11, RegisterPair::DE),
+        (0x21, RegisterPair::HL),
+        (0x31, RegisterPair::SP),
+    ];
     for (opcode, pair) in cases {
         let mut cpu = Cpu8080Cycle::new();
         let mut r = Registers::default();
@@ -86,11 +95,21 @@ fn inx_and_dcx_are_five_t_states_and_wrap_without_touching_flags() {
 fn dad_uses_two_internal_cycles_for_exactly_ten_t_states() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
-    r.h = 0xff; r.l = 0xff; r.b = 0; r.c = 1; r.f = 0xd6;
+    r.h = 0xff;
+    r.l = 0xff;
+    r.b = 0;
+    r.c = 1;
+    r.f = 0xd6;
     cpu.set_registers(r);
     fetch(&mut cpu, 0x09);
-    for _ in 0..3 { cpu.tick(input(0, false)); }
-    let m3 = [cpu.tick(input(0, false)), cpu.tick(input(0, false)), cpu.tick(input(0, false))];
+    for _ in 0..3 {
+        cpu.tick(input(0, false));
+    }
+    let m3 = [
+        cpu.tick(input(0, false)),
+        cpu.tick(input(0, false)),
+        cpu.tick(input(0, false)),
+    ];
     assert!(m3[2].instruction_complete);
     assert_eq!(m3[2].instruction_t_states, 10);
     assert_eq!(cpu.hl(), 0);
@@ -101,7 +120,12 @@ fn dad_uses_two_internal_cycles_for_exactly_ten_t_states() {
 fn ldax_stax_and_direct_transfers_preserve_exact_timings() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
-    r.b = 0x12; r.c = 0x34; r.d = 0x56; r.e = 0x78; r.a = 0xa5; r.f = 0x46;
+    r.b = 0x12;
+    r.c = 0x34;
+    r.d = 0x56;
+    r.e = 0x78;
+    r.a = 0xa5;
+    r.f = 0x46;
     cpu.set_registers(r);
 
     fetch(&mut cpu, 0x0a);
@@ -127,7 +151,9 @@ fn ldax_stax_and_direct_transfers_preserve_exact_timings() {
 fn lhld_and_shld_are_sixteen_t_states_and_use_consecutive_addresses() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
-    r.h = 0xaa; r.l = 0xbb; r.f = 0xd7;
+    r.h = 0xaa;
+    r.l = 0xbb;
+    r.f = 0xd7;
     cpu.set_registers(r);
 
     fetch(&mut cpu, 0x2a);
@@ -156,7 +182,9 @@ fn lhld_and_shld_are_sixteen_t_states_and_use_consecutive_addresses() {
 fn hl_addressed_mvi_mov_and_wait_state_paths_still_work() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
-    r.h = 0x20; r.l = 0x10; r.b = 0x77;
+    r.h = 0x20;
+    r.l = 0x10;
+    r.b = 0x77;
     cpu.set_registers(r);
 
     fetch(&mut cpu, 0x70);
@@ -176,7 +204,9 @@ fn hl_addressed_mvi_mov_and_wait_state_paths_still_work() {
 fn ready_wait_extends_external_write_and_keeps_bus_stable() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
-    r.h = 0x12; r.l = 0x34; r.b = 0xa5;
+    r.h = 0x12;
+    r.l = 0x34;
+    r.b = 0xa5;
     cpu.set_registers(r);
     fetch(&mut cpu, 0x70);
     cpu.tick(input(0, true));
@@ -206,9 +236,14 @@ fn undocumented_nop_alias_is_a_real_four_t_state_nop() {
 fn reset_preserves_general_registers_but_restarts_at_zero() {
     let mut cpu = Cpu8080Cycle::new();
     let mut r = Registers::default();
-    r.a = 0x5a; r.b = 0xa5; r.pc = 0x4321;
+    r.a = 0x5a;
+    r.b = 0xa5;
+    r.pc = 0x4321;
     cpu.set_registers(r);
-    let reset = cpu.tick(Cpu8080Inputs { reset: true, ..Cpu8080Inputs::default() });
+    let reset = cpu.tick(Cpu8080Inputs {
+        reset: true,
+        ..Cpu8080Inputs::default()
+    });
     assert!(reset.reset);
     assert_eq!(cpu.registers().pc, 0);
     assert_eq!(cpu.registers().a, 0x5a);

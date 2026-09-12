@@ -127,7 +127,11 @@ pub(super) fn dcr(registers: &mut Registers, value: u8) -> u8 {
 }
 
 fn add(registers: &mut Registers, rhs: u8, with_carry: bool) {
-    let carry = if with_carry && registers.f & FLAG_C != 0 { 1u16 } else { 0 };
+    let carry = if with_carry && registers.f & FLAG_C != 0 {
+        1u16
+    } else {
+        0
+    };
     let lhs = registers.a;
     let sum = lhs as u16 + rhs as u16 + carry;
     let result = sum as u8;
@@ -144,7 +148,11 @@ fn add(registers: &mut Registers, rhs: u8, with_carry: bool) {
 }
 
 fn sub(registers: &mut Registers, rhs: u8, with_borrow: bool, store: bool) {
-    let borrow = if with_borrow && registers.f & FLAG_C != 0 { 1u16 } else { 0 };
+    let borrow = if with_borrow && registers.f & FLAG_C != 0 {
+        1u16
+    } else {
+        0
+    };
     let lhs = registers.a;
     let rhs16 = rhs as u16 + borrow;
     let result = lhs.wrapping_sub(rhs).wrapping_sub(borrow as u8);
@@ -253,7 +261,11 @@ mod tests {
             let expected = FLAG_1
                 | if value & 0x80 != 0 { FLAG_S } else { 0 }
                 | if value == 0 { FLAG_Z } else { 0 }
-                | if value.count_ones() & 1 == 0 { FLAG_P } else { 0 };
+                | if value.count_ones() & 1 == 0 {
+                    FLAG_P
+                } else {
+                    0
+                };
             assert_eq!(SZP_TABLE[value as usize], expected, "value {value:02x}");
         }
     }

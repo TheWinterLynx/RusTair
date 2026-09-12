@@ -10,9 +10,16 @@ fn front_panel_operator_executes_panel_cycle_before_host_side_mapping_observatio
         .next()
         .expect("deposit body");
 
-    let deposit_call = deposit.find("self.machine.deposit(deposit_next)").expect("real DEPOSIT path");
-    let inspect_call = deposit.find("self.machine.inspect_memory_mapping(address)").expect("post-cycle S-100 inspection");
-    assert!(deposit_call < inspect_call, "mapping must observe the result; it must not choose the guest/panel target");
+    let deposit_call = deposit
+        .find("self.machine.deposit(deposit_next)")
+        .expect("real DEPOSIT path");
+    let inspect_call = deposit
+        .find("self.machine.inspect_memory_mapping(address)")
+        .expect("post-cycle S-100 inspection");
+    assert!(
+        deposit_call < inspect_call,
+        "mapping must observe the result; it must not choose the guest/panel target"
+    );
 
     assert!(!deposit.contains("installed_ram_bytes"));
     assert!(!deposit.contains("peek_memory"));

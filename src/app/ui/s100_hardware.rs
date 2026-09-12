@@ -1,9 +1,9 @@
 use super::*;
 use crate::config::{
-    fitted_connector_choices, S100HardwareConfig, S100InstalledCardConfig,
-    S100InstalledCardKind, SioAddressPair, SioBaudRate, SioDataBits, SioInterface,
-    SioInterruptTarget, SioParity, SioRevision, SioStopBits, TwoSioAddressBlock,
-    TwoSioBaudTap, TwoSioInterruptTarget, TwoSioSignalInterface,
+    S100HardwareConfig, S100InstalledCardConfig, S100InstalledCardKind, SioAddressPair,
+    SioBaudRate, SioDataBits, SioInterface, SioInterruptTarget, SioParity, SioRevision,
+    SioStopBits, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget, TwoSioSignalInterface,
+    fitted_connector_choices,
 };
 use crate::s100_chassis::{AltairChassisModel, S100ChassisConfig};
 use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -197,14 +197,7 @@ fn draw_slot_menu(
             S100InstalledCardConfig::Mits88TwoSio {
                 straps,
                 interrupt_wiring,
-            } => draw_two_sio_card_configuration(
-                app,
-                hardware,
-                slot,
-                straps,
-                interrupt_wiring,
-                ui,
-            ),
+            } => draw_two_sio_card_configuration(app, hardware, slot, straps, interrupt_wiring, ui),
             S100InstalledCardConfig::Mits88DcddBoard1
             | S100InstalledCardConfig::Mits88DcddBoard2 => {
                 ui.small("MITS 88-DCDD two-board controller assembly. Both adjacent cards are one physical subsystem joined by the documented controller harness.");
@@ -294,36 +287,64 @@ fn draw_sio_card_configuration(
 
     ui.menu_button(format!("Revision: {}", config.revision.label()), |ui| {
         for revision in SioRevision::ALL {
-            if ui.selectable_label(config.revision == revision, revision.label()).clicked() {
+            if ui
+                .selectable_label(config.revision == revision, revision.label())
+                .clicked()
+            {
                 let mut next = config;
                 next.revision = revision;
-                replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
+                replace_slot(
+                    app,
+                    hardware,
+                    slot,
+                    S100InstalledCardConfig::Mits88Sio(next),
+                );
                 ui.close();
             }
         }
     });
     ui.menu_button(format!("Interface: {}", config.interface.label()), |ui| {
         for interface in SioInterface::ALL {
-            if ui.selectable_label(config.interface == interface, interface.label()).clicked() {
+            if ui
+                .selectable_label(config.interface == interface, interface.label())
+                .clicked()
+            {
                 let mut next = config;
                 next.interface = interface;
-                replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
+                replace_slot(
+                    app,
+                    hardware,
+                    slot,
+                    S100InstalledCardConfig::Mits88Sio(next),
+                );
                 ui.close();
             }
         }
     });
     ui.menu_button(
-        format!("I/O address: {:02X}h/{:02X}h", config.address.status(), config.address.data()),
+        format!(
+            "I/O address: {:02X}h/{:02X}h",
+            config.address.status(),
+            config.address.data()
+        ),
         |ui| {
             for base in (0u8..=0xfe).step_by(2) {
                 let address = SioAddressPair::try_new(base).expect("even address");
                 if ui
-                    .selectable_label(config.address == address, format!("{base:02X}h/{:02X}h", base + 1))
+                    .selectable_label(
+                        config.address == address,
+                        format!("{base:02X}h/{:02X}h", base + 1),
+                    )
                     .clicked()
                 {
                     let mut next = config;
                     next.address = address;
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88Sio(next),
+                    );
                     ui.close();
                 }
             }
@@ -331,52 +352,98 @@ fn draw_sio_card_configuration(
     );
     ui.menu_button(format!("Baud: {}", config.baud.label()), |ui| {
         for baud in SioBaudRate::STANDARD {
-            if ui.selectable_label(config.baud == baud, baud.label()).clicked() {
+            if ui
+                .selectable_label(config.baud == baud, baud.label())
+                .clicked()
+            {
                 let mut next = config;
                 next.baud = baud;
-                replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
-                ui.close();
-            }
-        }
-    });
-    ui.menu_button(format!("Data bits: {}", config.format.data_bits.bits()), |ui| {
-        for data_bits in SioDataBits::ALL {
-            if ui.selectable_label(config.format.data_bits == data_bits, data_bits.label()).clicked() {
-                let mut next = config;
-                next.format.data_bits = data_bits;
-                replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
-                ui.close();
-            }
-        }
-    });
-    ui.menu_button(format!("Parity: {}", config.format.parity.label()), |ui| {
-        for parity in SioParity::ALL {
-            if ui.selectable_label(config.format.parity == parity, parity.label()).clicked() {
-                let mut next = config;
-                next.format.parity = parity;
-                replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
-                ui.close();
-            }
-        }
-    });
-    ui.menu_button(format!("Stop bits: {}", config.format.stop_bits.bits()), |ui| {
-        for stop_bits in SioStopBits::ALL {
-            if ui.selectable_label(config.format.stop_bits == stop_bits, stop_bits.label()).clicked() {
-                let mut next = config;
-                next.format.stop_bits = stop_bits;
-                replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
+                replace_slot(
+                    app,
+                    hardware,
+                    slot,
+                    S100InstalledCardConfig::Mits88Sio(next),
+                );
                 ui.close();
             }
         }
     });
     ui.menu_button(
+        format!("Data bits: {}", config.format.data_bits.bits()),
+        |ui| {
+            for data_bits in SioDataBits::ALL {
+                if ui
+                    .selectable_label(config.format.data_bits == data_bits, data_bits.label())
+                    .clicked()
+                {
+                    let mut next = config;
+                    next.format.data_bits = data_bits;
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88Sio(next),
+                    );
+                    ui.close();
+                }
+            }
+        },
+    );
+    ui.menu_button(format!("Parity: {}", config.format.parity.label()), |ui| {
+        for parity in SioParity::ALL {
+            if ui
+                .selectable_label(config.format.parity == parity, parity.label())
+                .clicked()
+            {
+                let mut next = config;
+                next.format.parity = parity;
+                replace_slot(
+                    app,
+                    hardware,
+                    slot,
+                    S100InstalledCardConfig::Mits88Sio(next),
+                );
+                ui.close();
+            }
+        }
+    });
+    ui.menu_button(
+        format!("Stop bits: {}", config.format.stop_bits.bits()),
+        |ui| {
+            for stop_bits in SioStopBits::ALL {
+                if ui
+                    .selectable_label(config.format.stop_bits == stop_bits, stop_bits.label())
+                    .clicked()
+                {
+                    let mut next = config;
+                    next.format.stop_bits = stop_bits;
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88Sio(next),
+                    );
+                    ui.close();
+                }
+            }
+        },
+    );
+    ui.menu_button(
         format!("Input IRQ: {}", config.interrupt_wiring.input.label()),
         |ui| {
             for target in SioInterruptTarget::ALL {
-                if ui.selectable_label(config.interrupt_wiring.input == target, target.label()).clicked() {
+                if ui
+                    .selectable_label(config.interrupt_wiring.input == target, target.label())
+                    .clicked()
+                {
                     let mut next = config;
                     next.interrupt_wiring.input = target;
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88Sio(next),
+                    );
                     ui.close();
                 }
             }
@@ -386,10 +453,18 @@ fn draw_sio_card_configuration(
         format!("Output IRQ: {}", config.interrupt_wiring.output.label()),
         |ui| {
             for target in SioInterruptTarget::ALL {
-                if ui.selectable_label(config.interrupt_wiring.output == target, target.label()).clicked() {
+                if ui
+                    .selectable_label(config.interrupt_wiring.output == target, target.label())
+                    .clicked()
+                {
                     let mut next = config;
                     next.interrupt_wiring.output = target;
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88Sio(next));
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88Sio(next),
+                    );
                     ui.close();
                 }
             }
@@ -407,14 +482,32 @@ fn draw_two_sio_card_configuration(
 ) {
     ui.label("88-2SIO physical straps");
     ui.menu_button(
-        format!("I/O block: {:02X}h–{:02X}h", straps.address.base(), straps.address.base() + 3),
+        format!(
+            "I/O block: {:02X}h–{:02X}h",
+            straps.address.base(),
+            straps.address.base() + 3
+        ),
         |ui| {
             for base in (0u8..=0xf8).step_by(4) {
                 let address = TwoSioAddressBlock::try_new(base).expect("aligned 88-2SIO block");
-                if ui.selectable_label(straps.address == address, format!("{base:02X}h–{:02X}h", base + 3)).clicked() {
+                if ui
+                    .selectable_label(
+                        straps.address == address,
+                        format!("{base:02X}h–{:02X}h", base + 3),
+                    )
+                    .clicked()
+                {
                     let mut next = straps;
                     next.address = address;
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88TwoSio { straps: next, interrupt_wiring });
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88TwoSio {
+                            straps: next,
+                            interrupt_wiring,
+                        },
+                    );
                     ui.close();
                 }
             }
@@ -422,37 +515,97 @@ fn draw_two_sio_card_configuration(
     );
 
     for port in 0..2 {
-        let baud = if port == 0 { straps.port0_baud } else { straps.port1_baud };
+        let baud = if port == 0 {
+            straps.port0_baud
+        } else {
+            straps.port1_baud
+        };
         ui.menu_button(format!("Port {port} baud tap: {}", baud.label()), |ui| {
             for next_baud in TwoSioBaudTap::ALL {
-                if ui.selectable_label(baud == next_baud, next_baud.label()).clicked() {
+                if ui
+                    .selectable_label(baud == next_baud, next_baud.label())
+                    .clicked()
+                {
                     let mut next = straps;
-                    if port == 0 { next.port0_baud = next_baud; } else { next.port1_baud = next_baud; }
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88TwoSio { straps: next, interrupt_wiring });
+                    if port == 0 {
+                        next.port0_baud = next_baud;
+                    } else {
+                        next.port1_baud = next_baud;
+                    }
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88TwoSio {
+                            straps: next,
+                            interrupt_wiring,
+                        },
+                    );
                     ui.close();
                 }
             }
         });
 
-        let interface = if port == 0 { straps.port0_interface } else { straps.port1_interface };
-        ui.menu_button(format!("Port {port} interface: {}", interface.label()), |ui| {
-            for next_interface in TwoSioSignalInterface::ALL {
-                if ui.selectable_label(interface == next_interface, next_interface.label()).clicked() {
-                    let mut next = straps;
-                    if port == 0 { next.port0_interface = next_interface; } else { next.port1_interface = next_interface; }
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88TwoSio { straps: next, interrupt_wiring });
-                    ui.close();
+        let interface = if port == 0 {
+            straps.port0_interface
+        } else {
+            straps.port1_interface
+        };
+        ui.menu_button(
+            format!("Port {port} interface: {}", interface.label()),
+            |ui| {
+                for next_interface in TwoSioSignalInterface::ALL {
+                    if ui
+                        .selectable_label(interface == next_interface, next_interface.label())
+                        .clicked()
+                    {
+                        let mut next = straps;
+                        if port == 0 {
+                            next.port0_interface = next_interface;
+                        } else {
+                            next.port1_interface = next_interface;
+                        }
+                        replace_slot(
+                            app,
+                            hardware,
+                            slot,
+                            S100InstalledCardConfig::Mits88TwoSio {
+                                straps: next,
+                                interrupt_wiring,
+                            },
+                        );
+                        ui.close();
+                    }
                 }
-            }
-        });
+            },
+        );
 
-        let target = if port == 0 { interrupt_wiring.port0 } else { interrupt_wiring.port1 };
+        let target = if port == 0 {
+            interrupt_wiring.port0
+        } else {
+            interrupt_wiring.port1
+        };
         ui.menu_button(format!("Port {port} IRQ: {}", target.label()), |ui| {
             for next_target in TwoSioInterruptTarget::ALL {
-                if ui.selectable_label(target == next_target, next_target.label()).clicked() {
+                if ui
+                    .selectable_label(target == next_target, next_target.label())
+                    .clicked()
+                {
                     let mut next = interrupt_wiring;
-                    if port == 0 { next.port0 = next_target; } else { next.port1 = next_target; }
-                    replace_slot(app, hardware, slot, S100InstalledCardConfig::Mits88TwoSio { straps, interrupt_wiring: next });
+                    if port == 0 {
+                        next.port0 = next_target;
+                    } else {
+                        next.port1 = next_target;
+                    }
+                    replace_slot(
+                        app,
+                        hardware,
+                        slot,
+                        S100InstalledCardConfig::Mits88TwoSio {
+                            straps,
+                            interrupt_wiring: next,
+                        },
+                    );
                     ui.close();
                 }
             }
@@ -500,10 +653,7 @@ fn default_card_for_kind(
     S100InstalledCardConfig::default_for_kind(kind)
 }
 
-fn first_free_ram_base(
-    hardware: S100HardwareConfig,
-    model: S100RamBoardModel,
-) -> Option<u16> {
+fn first_free_ram_base(hardware: S100HardwareConfig, model: S100RamBoardModel) -> Option<u16> {
     let quantum = model.address_granularity();
     let size = model.capacity_bytes();
     let last = 0x1_0000usize.checked_sub(size)?;
@@ -512,7 +662,9 @@ fn first_free_ram_base(
         .find(|&base| {
             let end = base + size;
             hardware.installed_cards().all(|(_, card)| {
-                let Some((other_base, other_size)) = ram_window(card) else { return true };
+                let Some((other_base, other_size)) = ram_window(card) else {
+                    return true;
+                };
                 let other_end = other_base + other_size;
                 end <= other_base || base >= other_end
             })
@@ -535,11 +687,9 @@ fn ram_window(card: S100InstalledCardConfig) -> Option<(usize, usize)> {
 fn card_summary(card: Option<S100InstalledCardConfig>) -> String {
     match card {
         None => "Empty".to_owned(),
-        Some(S100InstalledCardConfig::Ram(config)) => format!(
-            "{} @ {:04X}h",
-            config.model.label(),
-            config.base_address
-        ),
+        Some(S100InstalledCardConfig::Ram(config)) => {
+            format!("{} @ {:04X}h", config.model.label(), config.base_address)
+        }
         Some(S100InstalledCardConfig::FastRamCompatibility(config)) => format!(
             "Fast RAM compatibility @ {:04X}h ({} bytes)",
             config.base_address, config.populated_bytes

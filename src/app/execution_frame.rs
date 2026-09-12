@@ -89,11 +89,7 @@ mod tests {
         let mut uninterrupted = machine();
         let first = run_cpu_frame(&mut sliced, 40_000, Duration::ZERO);
         assert_eq!(first, u64::from(SERVICE_SLICE_T_STATES));
-        let rest = run_cpu_frame(
-            &mut sliced,
-            40_000 - first as u32,
-            Duration::from_secs(1),
-        );
+        let rest = run_cpu_frame(&mut sliced, 40_000 - first as u32, Duration::from_secs(1));
         assert_eq!(first + rest, 40_000);
         uninterrupted.run_cycles(40_000);
         assert_eq!(sliced.intel8080_state(), uninterrupted.intel8080_state());
@@ -133,6 +129,9 @@ mod tests {
     fn stopped_machine_does_not_consume_frame_budget() {
         let mut machine = machine();
         machine.set_running(false);
-        assert_eq!(run_cpu_frame(&mut machine, UNLIMITED_CHUNK_T_STATES, CPU_FRAME_TIME), 0);
+        assert_eq!(
+            run_cpu_frame(&mut machine, UNLIMITED_CHUNK_T_STATES, CPU_FRAME_TIME),
+            0
+        );
     }
 }

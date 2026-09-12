@@ -12,10 +12,9 @@ fn static_16k_hardware() -> S100HardwareConfig {
     hardware
         .set_slot(
             2,
-            Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                S100RamBoardModel::Mits16KStatic88_16Mcs,
-                0,
-            ))),
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits16KStatic88_16Mcs, 0),
+            )),
         )
         .unwrap();
     hardware.validate().unwrap()
@@ -40,9 +39,15 @@ fn adaptive_metrics_account_for_full_partial_full_barriers_without_losing_t_stat
 
     assert_eq!(stats.total_t_states(), actual);
     assert!(stats.full_t_states > 0, "NOP/JMP path must enter Full");
-    assert!(stats.partial_t_states > 0, "IN FFh must execute in exact Partial");
+    assert!(
+        stats.partial_t_states > 0,
+        "IN FFh must execute in exact Partial"
+    );
     assert!(stats.full_windows > 0);
     assert!(stats.full_to_partial > 0);
     assert!(stats.partial_to_full > 0);
-    assert!(stats.fallbacks.opcode_barrier > 0, "IN must be classified as the Partial barrier");
+    assert!(
+        stats.fallbacks.opcode_barrier > 0,
+        "IN must be classified as the Partial barrier"
+    );
 }

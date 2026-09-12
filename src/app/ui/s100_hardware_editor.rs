@@ -9,10 +9,7 @@ pub(in crate::app) fn open_s100_hardware_editor(ctx: &egui::Context) {
     });
 }
 
-pub(in crate::app) fn show_s100_hardware_editor(
-    app: &mut RusTairApp,
-    parent_ctx: &egui::Context,
-) {
+pub(in crate::app) fn show_s100_hardware_editor(app: &mut RusTairApp, parent_ctx: &egui::Context) {
     let id = egui::Id::new(S100_HARDWARE_EDITOR_OPEN_ID);
     let open = parent_ctx
         .data(|data| data.get_temp::<bool>(id))

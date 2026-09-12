@@ -13,8 +13,7 @@ use std::rc::Rc;
 
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
 use crate::s100::{
-    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole,
-    S100Signal,
+    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
 };
 use crate::s100_backplane::{S100BusSample, S100CardDrive, S100ElectricalCard};
 
@@ -25,10 +24,7 @@ const CPU_CONTACTS: &[S100CardContact] = &[
     S100CardContact::new(S100Signal::Ground, S100ContactRole::Power),
     S100CardContact::new(S100Signal::ExternalReady, S100ContactRole::Input),
     S100CardContact::new(S100Signal::StatusDisable, S100ContactRole::Input),
-    S100CardContact::new(
-        S100Signal::CommandControlDisable,
-        S100ContactRole::Input,
-    ),
+    S100CardContact::new(S100Signal::CommandControlDisable, S100ContactRole::Input),
     S100CardContact::new(S100Signal::AddressDisable, S100ContactRole::Input),
     S100CardContact::new(S100Signal::DataOutDisable, S100ContactRole::Input),
     S100CardContact::new(S100Signal::Ready, S100ContactRole::Input),
@@ -81,10 +77,7 @@ const CPU_CONTACTS: &[S100CardContact] = &[
     S100CardContact::new(S100Signal::Sync, S100ContactRole::Output),
     S100CardContact::new(S100Signal::Write, S100ContactRole::Output),
     S100CardContact::new(S100Signal::DataBusIn, S100ContactRole::Output),
-    S100CardContact::new(
-        S100Signal::InterruptAcknowledge,
-        S100ContactRole::Output,
-    ),
+    S100CardContact::new(S100Signal::InterruptAcknowledge, S100ContactRole::Output),
     S100CardContact::new(S100Signal::WriteStatus, S100ContactRole::Output),
     S100CardContact::new(S100Signal::Stack, S100ContactRole::Output),
 ];
@@ -181,10 +174,8 @@ impl Mits8080CpuBoardState {
             (S100Signal::Write, self.pins.wr_n),
             (S100Signal::DataBusIn, self.pins.dbin),
         ] {
-            self.cached_drive.drive_tristate(
-                signal,
-                (!self.command_disabled).then_some(level),
-            );
+            self.cached_drive
+                .drive_tristate(signal, (!self.command_disabled).then_some(level));
         }
     }
 
@@ -213,8 +204,7 @@ impl Mits8080CpuBoardState {
             .drive_signal(S100Signal::Phi1, self.pins.phi1);
         self.cached_drive
             .drive_signal(S100Signal::Phi2, self.pins.phi2);
-        self.cached_drive
-            .drive_signal(S100Signal::Clock, self.cloc);
+        self.cached_drive.drive_signal(S100Signal::Clock, self.cloc);
         self.cached_drive
             .drive_signal(S100Signal::Wait, self.pins.wait);
         self.cached_drive
@@ -304,10 +294,7 @@ impl Mits8080CpuBoardHandle {
     /// the already-computed physical connector state into the backplane cache
     /// instead of immediately re-entering the card through a virtual drive call.
     /// No other card is visible through this handle.
-    pub(crate) fn set_package_pins_and_connector_drive(
-        &self,
-        pins: Cpu8080Pins,
-    ) -> S100CardDrive {
+    pub(crate) fn set_package_pins_and_connector_drive(&self, pins: Cpu8080Pins) -> S100CardDrive {
         let mut state = self.state.borrow_mut();
         state.set_package_pins(pins);
         state.cached_drive
@@ -368,8 +355,7 @@ impl S100ElectricalCard for Mits8080CpuBoard {
 
         // Original PINT is active-low at the connector. HOLD and RESET are
         // consumed as asserted-high processor inputs at this board boundary.
-        state.inputs.interrupt =
-            sample.signal_level(S100Signal::InterruptRequest) == Some(false);
+        state.inputs.interrupt = sample.signal_level(S100Signal::InterruptRequest) == Some(false);
         state.inputs.hold = sample.signal_level(S100Signal::Hold) == Some(true);
         state.inputs.reset = sample.signal_level(S100Signal::Reset) == Some(true);
         state.inputs.data_in = sample.data_in().unwrap_or(0xff);
@@ -377,14 +363,11 @@ impl S100ElectricalCard for Mits8080CpuBoard {
         // Only these four backplane inputs can change what the CPU card drives.
         // Normal DI/READY/PINT/HOLD/RESET observations therefore do not rebuild
         // an identical 100-contact drive after every resolver delta.
-        let status_disabled =
-            sample.signal_level(S100Signal::StatusDisable) == Some(false);
+        let status_disabled = sample.signal_level(S100Signal::StatusDisable) == Some(false);
         let command_disabled =
             sample.signal_level(S100Signal::CommandControlDisable) == Some(false);
-        let address_disabled =
-            sample.signal_level(S100Signal::AddressDisable) == Some(false);
-        let data_out_disabled =
-            sample.signal_level(S100Signal::DataOutDisable) == Some(false);
+        let address_disabled = sample.signal_level(S100Signal::AddressDisable) == Some(false);
+        let data_out_disabled = sample.signal_level(S100Signal::DataOutDisable) == Some(false);
         let drive_controls_changed = status_disabled != state.status_disabled
             || command_disabled != state.command_disabled
             || address_disabled != state.address_disabled
@@ -410,7 +393,10 @@ mod tests {
     use crate::s100_backplane::S100Backplane;
 
     const SOURCE_CONTACTS: &[S100CardContact] = &[
-        S100CardContact::new(S100Signal::ExternalReady, S100ContactRole::OpenCollectorOutput),
+        S100CardContact::new(
+            S100Signal::ExternalReady,
+            S100ContactRole::OpenCollectorOutput,
+        ),
         S100CardContact::new(S100Signal::Ready, S100ContactRole::OpenCollectorOutput),
         S100CardContact::new(
             S100Signal::InterruptRequest,
@@ -419,10 +405,7 @@ mod tests {
         S100CardContact::new(S100Signal::Hold, S100ContactRole::Output),
         S100CardContact::new(S100Signal::Reset, S100ContactRole::Output),
         S100CardContact::new(S100Signal::StatusDisable, S100ContactRole::Output),
-        S100CardContact::new(
-            S100Signal::CommandControlDisable,
-            S100ContactRole::Output,
-        ),
+        S100CardContact::new(S100Signal::CommandControlDisable, S100ContactRole::Output),
         S100CardContact::new(S100Signal::AddressDisable, S100ContactRole::Output),
         S100CardContact::new(S100Signal::DataOutDisable, S100ContactRole::Output),
         S100CardContact::new(S100Signal::DataIn(0), S100ContactRole::TriStateOutput),

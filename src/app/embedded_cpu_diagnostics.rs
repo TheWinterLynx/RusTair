@@ -280,10 +280,7 @@ fn baseline_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0x0000,
-                ),
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000),
             )),
         )
         .unwrap();
@@ -433,9 +430,8 @@ fn run_control_line_baseline() -> ControlLineReport {
         .bus_teaching_snapshot()
         .and_then(|snapshot| snapshot.status.hlda)
         .unwrap_or(false);
-    let hold_release_transition_ok = hlda_before_release_clock
-        && hlda_after_first_release_clock
-        && !hlda_after_release_clock;
+    let hold_release_transition_ok =
+        hlda_before_release_clock && hlda_after_first_release_clock && !hlda_after_release_clock;
     machine.set_running(false);
 
     checks.push(ControlCheck {
@@ -519,10 +515,7 @@ impl RusTairApp {
             let p1 = cpu_diagnostics::DiagnosticSerialPort::Port1;
             if let Some(endpoint) = p0.resolve(hardware) {
                 if ui
-                    .selectable_label(
-                        self.embedded_diagnostics.port == p0,
-                        endpoint.label(),
-                    )
+                    .selectable_label(self.embedded_diagnostics.port == p0, endpoint.label())
                     .clicked()
                 {
                     self.embedded_diagnostics.port = p0;
@@ -530,10 +523,7 @@ impl RusTairApp {
             }
             if let Some(endpoint) = p1.resolve(hardware) {
                 if ui
-                    .selectable_label(
-                        self.embedded_diagnostics.port == p1,
-                        endpoint.label(),
-                    )
+                    .selectable_label(self.embedded_diagnostics.port == p1, endpoint.label())
                     .clicked()
                 {
                     self.embedded_diagnostics.port = p1;
@@ -572,7 +562,10 @@ impl RusTairApp {
             }
             ui.separator();
             for test in ClassicDiagnostic::SUITE {
-                if ui.add_enabled(enabled, egui::Button::new(test.label())).clicked() {
+                if ui
+                    .add_enabled(enabled, egui::Button::new(test.label()))
+                    .clicked()
+                {
                     self.start_embedded_classic_test(test, false);
                     ui.close();
                 }
@@ -587,7 +580,9 @@ impl RusTairApp {
             self.start_cpu_diagnostic_dialog(self.embedded_diagnostics.port);
             ui.close();
         }
-        ui.small("External .COM files use the normal emulator speed selected under Configuration → CPU.");
+        ui.small(
+            "External .COM files use the normal emulator speed selected under Configuration → CPU.",
+        );
         if running && !picker_open {
             ui.separator();
             if ui.button("Abort running diagnostic / suite").clicked() {
@@ -596,7 +591,9 @@ impl RusTairApp {
             }
         }
         if picker_open {
-            ui.small("The Windows diagnostic picker is open; guest execution is paused until it closes.");
+            ui.small(
+                "The Windows diagnostic picker is open; guest execution is paused until it closes.",
+            );
         }
     }
 
@@ -643,11 +640,7 @@ impl RusTairApp {
         }
     }
 
-    fn start_embedded_classic_test(
-        &mut self,
-        test: ClassicDiagnostic,
-        suite_member: bool,
-    ) -> bool {
+    fn start_embedded_classic_test(&mut self, test: ClassicDiagnostic, suite_member: bool) -> bool {
         let port = self.embedded_diagnostics.port;
         self.embedded_diagnostics.active_test = Some(test);
         if !suite_member {
@@ -931,7 +924,11 @@ impl RusTairApp {
                 ui.label(format!("Test speed: {speed_label}"));
                 ui.label(format!(
                     "RusTair Adaptive Cycle control-line baseline: {}",
-                    if report.control.passed() { "PASS" } else { "FAIL" }
+                    if report.control.passed() {
+                        "PASS"
+                    } else {
+                        "FAIL"
+                    }
                 ));
                 for check in &report.control.checks {
                     ui.small(format!(
@@ -985,19 +982,34 @@ mod tests {
 
     #[test]
     fn cputest_with_migrated_32k_ram_and_undrained_output_uses_gui_slices() {
+        use super::super::execution_frame::{CPU_FRAME_TIME, run_cpu_frame};
         use crate::adaptive_metrics;
         use crate::config::FastRamCompatibilityConfig;
-        use super::super::execution_frame::{CPU_FRAME_TIME, run_cpu_frame};
 
         let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(4)).unwrap();
-        hardware.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        hardware.set_slot(2, Some(S100InstalledCardConfig::FastRamCompatibility(
-            FastRamCompatibilityConfig::no_wait(0, 32768),
-        ))).unwrap();
-        hardware.set_slot(3, Some(S100InstalledCardConfig::Mits88TwoSio {
-            straps: TwoSioStraps::default(), interrupt_wiring: TwoSioInterruptWiring::default(),
-        })).unwrap();
-        let endpoint = cpu_diagnostics::DiagnosticSerialPort::Port1.resolve(hardware).unwrap();
+        hardware
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        hardware
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::FastRamCompatibility(
+                    FastRamCompatibilityConfig::no_wait(0, 32768),
+                )),
+            )
+            .unwrap();
+        hardware
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps: TwoSioStraps::default(),
+                    interrupt_wiring: TwoSioInterruptWiring::default(),
+                }),
+            )
+            .unwrap();
+        let endpoint = cpu_diagnostics::DiagnosticSerialPort::Port1
+            .resolve(hardware)
+            .unwrap();
         let env = build_cpm_environment(endpoint, 0x7f00);
         let mut machine = BackendHost::default();
         machine.configure_s100_hardware(hardware, RamInit::Zeroed);
@@ -1007,9 +1019,13 @@ mod tests {
         machine.load_bytes(0, &env.page_zero);
         machine.load_bytes(CPM_COM_LOAD_ADDRESS, ClassicDiagnostic::CpuTest.bytes());
         machine.load_bytes(env.bdos_base, &env.bdos);
-        machine.begin_cpu_diagnostic_meter("CPUTEST.COM".into(), env.bdos_base, env.bdos.len(),
+        machine.begin_cpu_diagnostic_meter(
+            "CPUTEST.COM".into(),
+            env.bdos_base,
+            env.bdos.len(),
             Some(ClassicDiagnostic::CpuTest.expected_instructions()),
-            Some(ClassicDiagnostic::CpuTest.expected_t_states()));
+            Some(ClassicDiagnostic::CpuTest.expected_t_states()),
+        );
         machine.set_running(true);
         adaptive_metrics::begin_measurement();
         let started = Instant::now();
@@ -1035,8 +1051,16 @@ mod tests {
         }
         assert!(!output.is_empty());
         frame_times.sort_unstable();
-        eprintln!("[GUI CPUTEST] {executed} T, {elapsed:.3?}, Full={:.2}%, {} frames, p95={:.3?}, max={:.3?}, {} retained output bytes; reference instructions={}, T={}",
-            stats.full_percent(), frame_times.len(), frame_times[frame_times.len() * 95 / 100], frame_times.last().unwrap(), output.len(), result.instructions, result.t_states);
+        eprintln!(
+            "[GUI CPUTEST] {executed} T, {elapsed:.3?}, Full={:.2}%, {} frames, p95={:.3?}, max={:.3?}, {} retained output bytes; reference instructions={}, T={}",
+            stats.full_percent(),
+            frame_times.len(),
+            frame_times[frame_times.len() * 95 / 100],
+            frame_times.last().unwrap(),
+            output.len(),
+            result.instructions,
+            result.t_states
+        );
     }
 
     #[test]
@@ -1069,10 +1093,7 @@ mod tests {
             DiagnosticRunSpeed::Authentic.emulation_speed(),
             EmulationSpeed::Authentic
         );
-        assert_eq!(
-            DiagnosticRunSpeed::X5.emulation_speed(),
-            EmulationSpeed::X5
-        );
+        assert_eq!(DiagnosticRunSpeed::X5.emulation_speed(), EmulationSpeed::X5);
         assert_eq!(
             DiagnosticRunSpeed::X10.emulation_speed(),
             EmulationSpeed::X10

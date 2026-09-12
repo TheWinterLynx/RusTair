@@ -42,10 +42,18 @@ impl DifferentialBus {
 }
 
 impl Bus for DifferentialBus {
-    fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
-    fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
-    fn input(&mut self, port: u8) -> u8 { Self::input_value(port) }
-    fn output(&mut self, port: u8, value: u8) { self.outputs.push((port, value)); }
+    fn read(&mut self, address: u16) -> u8 {
+        self.memory[address as usize]
+    }
+    fn write(&mut self, address: u16, value: u8) {
+        self.memory[address as usize] = value;
+    }
+    fn input(&mut self, port: u8) -> u8 {
+        Self::input_value(port)
+    }
+    fn output(&mut self, port: u8, value: u8) {
+        self.outputs.push((port, value));
+    }
 }
 
 fn seed_semantic(a: u8, flags: u8) -> Cpu8080 {
@@ -83,7 +91,9 @@ fn seed_cycle(a: u8, flags: u8) -> Cpu8080Cycle {
 }
 
 fn cycle_data_in(cpu: &Cpu8080Cycle, bus: &DifferentialBus) -> u8 {
-    if cpu.t_state() != TState::T3 { return 0; }
+    if cpu.t_state() != TState::T3 {
+        return 0;
+    }
 
     match cpu.machine_cycle() {
         MachineCycle::InstructionFetch | MachineCycle::MemoryRead | MachineCycle::StackRead => {
@@ -108,7 +118,9 @@ fn cycle_data_in(cpu: &Cpu8080Cycle, bus: &DifferentialBus) -> u8 {
 }
 
 fn apply_cycle_write(trace: &rustair::cpu8080_cycle::TickTrace, bus: &mut DifferentialBus) {
-    if trace.t_state != TState::T3 { return; }
+    if trace.t_state != TState::T3 {
+        return;
+    }
 
     match trace.machine_cycle {
         MachineCycle::MemoryWrite | MachineCycle::StackWrite => {
@@ -148,8 +160,14 @@ fn run_cycle_instruction(cpu: &mut Cpu8080Cycle, bus: &mut DifferentialBus) -> u
             reset: false,
         });
         apply_cycle_write(&trace, bus);
-        assert_eq!(trace.fault, None, "cycle core faulted on opcode {:?}", trace.opcode);
-        if trace.instruction_complete { return trace.instruction_t_states; }
+        assert_eq!(
+            trace.fault, None,
+            "cycle core faulted on opcode {:?}",
+            trace.opcode
+        );
+        if trace.instruction_complete {
+            return trace.instruction_t_states;
+        }
     }
 
     panic!("cycle core did not complete one instruction within 64 T-states");
@@ -167,11 +185,24 @@ fn assert_same_registers(opcode: u8, seed: usize, semantic: &Cpu8080, cycle: &Cp
     assert_eq!(r.f, semantic.f, "opcode {opcode:02x} seed {seed}: F");
     assert_eq!(r.pc, semantic.pc, "opcode {opcode:02x} seed {seed}: PC");
     assert_eq!(r.sp, semantic.sp, "opcode {opcode:02x} seed {seed}: SP");
-    assert_eq!(cycle.interrupts_enabled(), semantic.inte, "opcode {opcode:02x} seed {seed}: INTE");
-    assert_eq!(cycle.is_halted(), semantic.halted, "opcode {opcode:02x} seed {seed}: HALT");
+    assert_eq!(
+        cycle.interrupts_enabled(),
+        semantic.inte,
+        "opcode {opcode:02x} seed {seed}: INTE"
+    );
+    assert_eq!(
+        cycle.is_halted(),
+        semantic.halted,
+        "opcode {opcode:02x} seed {seed}: HALT"
+    );
 }
 
-fn assert_same_memory(opcode: u8, seed: usize, semantic: &DifferentialBus, cycle: &DifferentialBus) {
+fn assert_same_memory(
+    opcode: u8,
+    seed: usize,
+    semantic: &DifferentialBus,
+    cycle: &DifferentialBus,
+) {
     if let Some((address, (semantic_value, cycle_value))) = semantic
         .memory
         .iter()

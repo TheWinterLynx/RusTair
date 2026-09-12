@@ -1,9 +1,9 @@
 // Board-specific serial hardware lives below this module so the S-100 I/O
 // wrapper remains the only route from the machine to a UART implementation.
-#[path = "sio_interface.rs"]
-pub(super) mod sio_interface;
 #[path = "sio.rs"]
 pub(super) mod sio;
+#[path = "sio_interface.rs"]
+pub(super) mod sio_interface;
 
 use crate::config::{SioConnectorOutputs, SioElectricalLevel};
 
@@ -120,8 +120,7 @@ mod tests {
     use crate::s100_chassis::S100ChassisConfig;
 
     fn bus_with_sio(config: SioHardwareConfig) -> super::super::AltairBus {
-        let mut hardware =
-            S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
         hardware
             .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
             .unwrap();
@@ -145,7 +144,11 @@ mod tests {
         let bus = bus_with_sio(config);
         assert_eq!(
             bus.sio_physical_wiring(),
-            Some((SioRevision::Rev0, SioInterruptTarget::Vi2, SioInterruptTarget::Pint))
+            Some((
+                SioRevision::Rev0,
+                SioInterruptTarget::Vi2,
+                SioInterruptTarget::Pint
+            ))
         );
     }
 
@@ -156,10 +159,16 @@ mod tests {
             ..SioHardwareConfig::default()
         };
         let mut bus = bus_with_sio(config);
-        assert_eq!(bus.sio_logical_lines(), Some((true, false, false, true, false, false)));
+        assert_eq!(
+            bus.sio_logical_lines(),
+            Some((true, false, false, true, false, false))
+        );
         assert!(bus.pulse_sio_input_device_ready());
         assert!(bus.pulse_sio_output_device_ready());
-        assert_eq!(bus.sio_logical_lines(), Some((true, true, true, true, true, true)));
+        assert_eq!(
+            bus.sio_logical_lines(),
+            Some((true, true, true, true, true, true))
+        );
     }
 
     #[test]

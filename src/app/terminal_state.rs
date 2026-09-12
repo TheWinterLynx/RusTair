@@ -228,12 +228,20 @@ mod tests {
         terminal.receive_output(now + char_time * 15, || source.pop_front());
         assert_eq!(terminal.output.len(), 16);
         terminal.receive_output(now + char_time * 15, || source.pop_front());
-        assert_eq!(terminal.output.len(), 16, "same host instant cannot spend time twice");
+        assert_eq!(
+            terminal.output.len(),
+            16,
+            "same host instant cannot spend time twice"
+        );
         terminal.receive_output(now + char_time * 100, || source.pop_front());
         assert_eq!(terminal.output.len(), 30);
         source.extend([b'B'; 20]);
         terminal.receive_output(now + char_time * 200, || source.pop_front());
-        assert_eq!(terminal.output.len(), 31, "idle intervals are not output credit");
+        assert_eq!(
+            terminal.output.len(),
+            31,
+            "idle intervals are not output credit"
+        );
     }
 
     #[test]

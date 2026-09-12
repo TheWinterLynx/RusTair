@@ -14,19 +14,11 @@ use crate::s100_runtime::S100RuntimeFabric;
 /// other cards therefore see only that legitimate final boundary state, never
 /// the host-side reconciliation sequence.
 pub(crate) trait FullCpuBoundaryReconcile {
-    fn reconcile_full_cpu_boundary(
-        &mut self,
-        boundary_pins: Cpu8080Pins,
-        latched_status_word: u8,
-    );
+    fn reconcile_full_cpu_boundary(&mut self, boundary_pins: Cpu8080Pins, latched_status_word: u8);
 }
 
 impl FullCpuBoundaryReconcile for S100RuntimeFabric {
-    fn reconcile_full_cpu_boundary(
-        &mut self,
-        boundary_pins: Cpu8080Pins,
-        latched_status_word: u8,
-    ) {
+    fn reconcile_full_cpu_boundary(&mut self, boundary_pins: Cpu8080Pins, latched_status_word: u8) {
         debug_assert!(!boundary_pins.phi1 && !boundary_pins.phi2);
         debug_assert!(!boundary_pins.sync && !boundary_pins.dbin);
 

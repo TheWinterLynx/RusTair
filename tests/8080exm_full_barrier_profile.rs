@@ -150,11 +150,20 @@ fn profile_8080exm_dynamic_pressure_from_current_full_barrier_opcodes() {
         }
 
         assert!(!cpu.halted, "8080EXM halted before returning to CP/M");
-        assert!(instructions < MAX_INSTRUCTIONS, "8080EXM semantic profiler exceeded instruction guard");
+        assert!(
+            instructions < MAX_INSTRUCTIONS,
+            "8080EXM semantic profiler exceeded instruction guard"
+        );
 
         let opcode = bus.memory[cpu.pc as usize];
         let elapsed = u64::from(cpu.step(&mut bus));
-        add_cost(&mut costs, &mut instructions, &mut t_states, opcode, elapsed);
+        add_cost(
+            &mut costs,
+            &mut instructions,
+            &mut t_states,
+            opcode,
+            elapsed,
+        );
 
         if instructions >= next_progress {
             eprintln!(
@@ -170,7 +179,13 @@ fn profile_8080exm_dynamic_pressure_from_current_full_barrier_opcodes() {
         "8080EXM semantic profile complete: {instructions} instructions, {t_states} T-states, {:.3?}",
         started.elapsed(),
     );
-    assert_eq!(instructions, REFERENCE_INSTRUCTIONS, "8080EXM instruction reference total");
-    assert_eq!(t_states, REFERENCE_T_STATES, "8080EXM T-state reference total");
+    assert_eq!(
+        instructions, REFERENCE_INSTRUCTIONS,
+        "8080EXM instruction reference total"
+    );
+    assert_eq!(
+        t_states, REFERENCE_T_STATES,
+        "8080EXM T-state reference total"
+    );
     print_barrier_table(&costs, instructions, t_states);
 }

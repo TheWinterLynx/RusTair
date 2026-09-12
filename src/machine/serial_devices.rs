@@ -5,9 +5,9 @@ use crate::config::{
     TwoSioInterruptTarget, TwoSioInterruptWiring, TwoSioStraps,
 };
 
+use super::CLOCK_HZ;
 use super::memory::S100_OPEN_BUS_VALUE;
 use super::serial::sio::{SioHandshakeLines, SioPort};
-use super::CLOCK_HZ;
 
 #[path = "two_sio.rs"]
 mod two_sio;
@@ -103,7 +103,15 @@ impl IoTrace {
     fn snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
         self.events
             .iter()
-            .map(|event| (event.sequence, event.kind, event.port, event.value, event.repeat))
+            .map(|event| {
+                (
+                    event.sequence,
+                    event.kind,
+                    event.port,
+                    event.value,
+                    event.repeat,
+                )
+            })
             .collect()
     }
 
@@ -195,10 +203,7 @@ impl IoDevices {
         self.two_sio_straps
     }
 
-    pub(super) fn configure_two_sio_interrupt_wiring(
-        &mut self,
-        wiring: TwoSioInterruptWiring,
-    ) {
+    pub(super) fn configure_two_sio_interrupt_wiring(&mut self, wiring: TwoSioInterruptWiring) {
         self.two_sio_interrupt_wiring = wiring;
     }
 
@@ -245,8 +250,7 @@ impl IoDevices {
             SerialBoard::Sio88 => {
                 let (input, output) = self.sio_interrupt_sources();
                 let wiring = self.sio.config().interrupt_wiring;
-                (input && wiring.input.drives_pint())
-                    || (output && wiring.output.drives_pint())
+                (input && wiring.input.drives_pint()) || (output && wiring.output.drives_pint())
             }
             SerialBoard::TwoSio88 => self.two_sio_pint_request(),
         }
@@ -596,10 +600,7 @@ impl IoDevices {
         self.sio_control = 0;
     }
 
-    pub(super) fn trace_port_activity(
-        &self,
-        port: u8,
-    ) -> (Option<u8>, Option<u8>, u64, u64) {
+    pub(super) fn trace_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
         self.trace.port_activity(port)
     }
 

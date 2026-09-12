@@ -55,8 +55,7 @@ fn run_until_output(
 }
 
 fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
@@ -67,17 +66,21 @@ fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
                 hardware
                     .set_slot(
                         slot,
-                        Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                            S100RamBoardModel::Mits4KStatic88_4Mcs,
-                            base,
-                        ))),
+                        Some(S100InstalledCardConfig::Ram(
+                            S100RamCardConfig::fully_populated(
+                                S100RamBoardModel::Mits4KStatic88_4Mcs,
+                                base,
+                            ),
+                        )),
                     )
                     .unwrap();
             }
             hardware
                 .set_slot(
                     4,
-                    Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+                    Some(S100InstalledCardConfig::Mits88Sio(
+                        SioHardwareConfig::default(),
+                    )),
                 )
                 .unwrap();
         }
@@ -86,17 +89,21 @@ fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
                 hardware
                     .set_slot(
                         slot,
-                        Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                            S100RamBoardModel::Mits16KStatic88_16Mcs,
-                            base,
-                        ))),
+                        Some(S100InstalledCardConfig::Ram(
+                            S100RamCardConfig::fully_populated(
+                                S100RamBoardModel::Mits16KStatic88_16Mcs,
+                                base,
+                            ),
+                        )),
                     )
                     .unwrap();
             }
             hardware
                 .set_slot(
                     6,
-                    Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default())),
+                    Some(S100InstalledCardConfig::Mits88Sio(
+                        SioHardwareConfig::default(),
+                    )),
                 )
                 .unwrap();
         }
@@ -140,7 +147,10 @@ fn exercise_memory_size_return(ram: RamSize, trace: bool, max_after_cr_t_states:
         4_000_000,
         &context,
     );
-    assert!(machine.serial_rx_empty(PORT0), "{context}: RX should be empty before RETURN");
+    assert!(
+        machine.serial_rx_empty(PORT0),
+        "{context}: RX should be empty before RETURN"
+    );
 
     machine.serial_receive(PORT0, b'\r');
     run_until_output(

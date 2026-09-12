@@ -15,19 +15,29 @@ pub const FLAG_S: u8 = 0x80;
 pub trait Bus {
     fn read(&mut self, address: u16) -> u8;
     fn write(&mut self, address: u16, value: u8);
-    fn input(&mut self, _port: u8) -> u8 { 0xff }
+    fn input(&mut self, _port: u8) -> u8 {
+        0xff
+    }
     fn output(&mut self, _port: u8, _value: u8) {}
     fn set_inte(&mut self, _enabled: bool) {}
 
-    fn opcode_fetch(&mut self, address: u16) -> u8 { self.read(address) }
-    fn stack_read(&mut self, address: u16) -> u8 { self.read(address) }
-    fn stack_write(&mut self, address: u16, value: u8) { self.write(address, value); }
+    fn opcode_fetch(&mut self, address: u16) -> u8 {
+        self.read(address)
+    }
+    fn stack_read(&mut self, address: u16) -> u8 {
+        self.read(address)
+    }
+    fn stack_write(&mut self, address: u16, value: u8) {
+        self.write(address, value);
+    }
     fn halt_ack(&mut self, _address: u16, _opcode: u8) {}
     fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {}
     /// Extra external wait T-states accumulated by instruction-level bus
     /// devices during the current instruction. Exact Cycle mode does not use
     /// this approximation because it clocks every TW explicitly.
-    fn take_wait_states(&mut self) -> u32 { 0 }
+    fn take_wait_states(&mut self) -> u32 {
+        0
+    }
     fn instruction_complete(&mut self, _address: u16, _opcode: u8, _t_states: u32) {}
 }
 
@@ -50,13 +60,21 @@ pub struct Cpu8080 {
 }
 
 impl Default for Cpu8080 {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Cpu8080 {
     pub fn new() -> Self {
         Self {
-            a: 0, b: 0, c: 0, d: 0, e: 0, h: 0, l: 0,
+            a: 0,
+            b: 0,
+            c: 0,
+            d: 0,
+            e: 0,
+            h: 0,
+            l: 0,
             f: FLAG_1,
             pc: 0,
             sp: 0xf000,
@@ -78,31 +96,70 @@ impl Cpu8080 {
         self.ei_pending = false;
     }
 
-    #[inline] pub fn af(&self) -> u16 { ((self.a as u16) << 8) | self.flags_for_stack() as u16 }
-    #[inline] pub fn bc(&self) -> u16 { ((self.b as u16) << 8) | self.c as u16 }
-    #[inline] pub fn de(&self) -> u16 { ((self.d as u16) << 8) | self.e as u16 }
-    #[inline] pub fn hl(&self) -> u16 { ((self.h as u16) << 8) | self.l as u16 }
-    #[inline] pub fn set_bc(&mut self, v: u16) { self.b = (v >> 8) as u8; self.c = v as u8; }
-    #[inline] pub fn set_de(&mut self, v: u16) { self.d = (v >> 8) as u8; self.e = v as u8; }
-    #[inline] pub fn set_hl(&mut self, v: u16) { self.h = (v >> 8) as u8; self.l = v as u8; }
-    #[inline] fn set_af(&mut self, v: u16) { self.a = (v >> 8) as u8; self.f = (v as u8 & 0xd5) | FLAG_1; }
+    #[inline]
+    pub fn af(&self) -> u16 {
+        ((self.a as u16) << 8) | self.flags_for_stack() as u16
+    }
+    #[inline]
+    pub fn bc(&self) -> u16 {
+        ((self.b as u16) << 8) | self.c as u16
+    }
+    #[inline]
+    pub fn de(&self) -> u16 {
+        ((self.d as u16) << 8) | self.e as u16
+    }
+    #[inline]
+    pub fn hl(&self) -> u16 {
+        ((self.h as u16) << 8) | self.l as u16
+    }
+    #[inline]
+    pub fn set_bc(&mut self, v: u16) {
+        self.b = (v >> 8) as u8;
+        self.c = v as u8;
+    }
+    #[inline]
+    pub fn set_de(&mut self, v: u16) {
+        self.d = (v >> 8) as u8;
+        self.e = v as u8;
+    }
+    #[inline]
+    pub fn set_hl(&mut self, v: u16) {
+        self.h = (v >> 8) as u8;
+        self.l = v as u8;
+    }
+    #[inline]
+    fn set_af(&mut self, v: u16) {
+        self.a = (v >> 8) as u8;
+        self.f = (v as u8 & 0xd5) | FLAG_1;
+    }
 
     #[inline]
-    fn flags_for_stack(&self) -> u8 { (self.f & 0xd5) | FLAG_1 }
+    fn flags_for_stack(&self) -> u8 {
+        (self.f & 0xd5) | FLAG_1
+    }
 
     #[inline]
-    fn parity(v: u8) -> bool { v.count_ones() & 1 == 0 }
+    fn parity(v: u8) -> bool {
+        v.count_ones() & 1 == 0
+    }
 
     #[inline]
     fn set_szp(&mut self, v: u8) {
         self.f &= !(FLAG_S | FLAG_Z | FLAG_P);
-        if v & 0x80 != 0 { self.f |= FLAG_S; }
-        if v == 0 { self.f |= FLAG_Z; }
-        if Self::parity(v) { self.f |= FLAG_P; }
+        if v & 0x80 != 0 {
+            self.f |= FLAG_S;
+        }
+        if v == 0 {
+            self.f |= FLAG_Z;
+        }
+        if Self::parity(v) {
+            self.f |= FLAG_P;
+        }
         self.f |= FLAG_1;
     }
 
-    #[inline] fn condition(&self, code: u8) -> bool {
+    #[inline]
+    fn condition(&self, code: u8) -> bool {
         match code & 7 {
             0 => self.f & FLAG_Z == 0,
             1 => self.f & FLAG_Z != 0,
@@ -188,42 +245,70 @@ impl Cpu8080 {
 
     #[inline]
     fn rp(&self, code: u8) -> u16 {
-        match code & 3 { 0 => self.bc(), 1 => self.de(), 2 => self.hl(), _ => self.sp }
+        match code & 3 {
+            0 => self.bc(),
+            1 => self.de(),
+            2 => self.hl(),
+            _ => self.sp,
+        }
     }
 
     #[inline]
     fn set_rp(&mut self, code: u8, value: u16) {
-        match code & 3 { 0 => self.set_bc(value), 1 => self.set_de(value), 2 => self.set_hl(value), _ => self.sp = value }
+        match code & 3 {
+            0 => self.set_bc(value),
+            1 => self.set_de(value),
+            2 => self.set_hl(value),
+            _ => self.sp = value,
+        }
     }
 
     #[inline]
     fn add(&mut self, rhs: u8, carry: bool) {
-        let c = if carry && self.f & FLAG_C != 0 { 1u16 } else { 0 };
+        let c = if carry && self.f & FLAG_C != 0 {
+            1u16
+        } else {
+            0
+        };
         let a = self.a;
         let sum = a as u16 + rhs as u16 + c;
         let result = sum as u8;
         self.f &= !(FLAG_C | FLAG_AC);
-        if sum > 0xff { self.f |= FLAG_C; }
-        if ((a & 0x0f) as u16 + (rhs & 0x0f) as u16 + c) > 0x0f { self.f |= FLAG_AC; }
+        if sum > 0xff {
+            self.f |= FLAG_C;
+        }
+        if ((a & 0x0f) as u16 + (rhs & 0x0f) as u16 + c) > 0x0f {
+            self.f |= FLAG_AC;
+        }
         self.a = result;
         self.set_szp(result);
     }
 
     #[inline]
     fn sub(&mut self, rhs: u8, borrow: bool, store: bool) {
-        let b = if borrow && self.f & FLAG_C != 0 { 1u16 } else { 0 };
+        let b = if borrow && self.f & FLAG_C != 0 {
+            1u16
+        } else {
+            0
+        };
         let a = self.a;
         let rhs16 = rhs as u16 + b;
         let result = a.wrapping_sub(rhs).wrapping_sub(b as u8);
         self.f &= !(FLAG_C | FLAG_AC);
-        if (a as u16) < rhs16 { self.f |= FLAG_C; }
+        if (a as u16) < rhs16 {
+            self.f |= FLAG_C;
+        }
         // Intel 8080 AC on subtraction is the carry out of bit 3 from the
         // internal two's-complement addition, i.e. the inverse of a nibble
         // borrow. This is deliberately not Z80-style half-borrow semantics.
         let low_rhs = (rhs & 0x0f) as u16 + b;
-        if (a & 0x0f) as u16 >= low_rhs { self.f |= FLAG_AC; }
+        if (a & 0x0f) as u16 >= low_rhs {
+            self.f |= FLAG_AC;
+        }
         self.set_szp(result);
-        if store { self.a = result; }
+        if store {
+            self.a = result;
+        }
     }
 
     #[inline]
@@ -231,7 +316,9 @@ impl Cpu8080 {
         let ac = (self.a | rhs) & 0x08 != 0;
         self.a &= rhs;
         self.f &= !(FLAG_C | FLAG_AC);
-        if ac { self.f |= FLAG_AC; }
+        if ac {
+            self.f |= FLAG_AC;
+        }
         self.set_szp(self.a);
     }
 
@@ -254,7 +341,9 @@ impl Cpu8080 {
         let carry = self.f & FLAG_C;
         let result = value.wrapping_add(1);
         self.f &= !(FLAG_C | FLAG_AC);
-        if value & 0x0f == 0x0f { self.f |= FLAG_AC; }
+        if value & 0x0f == 0x0f {
+            self.f |= FLAG_AC;
+        }
         self.set_szp(result);
         self.f = (self.f & !FLAG_C) | carry;
         result
@@ -265,7 +354,9 @@ impl Cpu8080 {
         let carry = self.f & FLAG_C;
         let result = value.wrapping_sub(1);
         self.f &= !(FLAG_C | FLAG_AC);
-        if value & 0x0f != 0 { self.f |= FLAG_AC; }
+        if value & 0x0f != 0 {
+            self.f |= FLAG_AC;
+        }
         self.set_szp(result);
         self.f = (self.f & !FLAG_C) | carry;
         result
@@ -277,12 +368,21 @@ impl Cpu8080 {
         let old_ac = self.f & FLAG_AC != 0;
         let mut correction = 0u8;
         let mut carry = old_c;
-        if (old_a & 0x0f) > 9 || old_ac { correction |= 0x06; }
-        if old_a > 0x99 || old_c { correction |= 0x60; carry = true; }
+        if (old_a & 0x0f) > 9 || old_ac {
+            correction |= 0x06;
+        }
+        if old_a > 0x99 || old_c {
+            correction |= 0x60;
+            carry = true;
+        }
         let result = old_a.wrapping_add(correction);
         self.f &= !(FLAG_C | FLAG_AC);
-        if carry { self.f |= FLAG_C; }
-        if ((old_a & 0x0f) + (correction & 0x0f)) > 0x0f { self.f |= FLAG_AC; }
+        if carry {
+            self.f |= FLAG_C;
+        }
+        if ((old_a & 0x0f) + (correction & 0x0f)) > 0x0f {
+            self.f |= FLAG_AC;
+        }
         self.a = result;
         self.set_szp(result);
     }
@@ -314,18 +414,24 @@ impl Cpu8080 {
 
     pub fn run_cycles<B: Bus>(&mut self, bus: &mut B, budget: u32) -> u32 {
         let mut used = 0;
-        while used < budget { used += self.step(bus); }
+        while used < budget {
+            used += self.step(bus);
+        }
         used
     }
 
     pub fn interrupt<B: Bus>(&mut self, bus: &mut B, opcode: u8) -> bool {
-        if !self.inte { return false; }
+        if !self.inte {
+            return false;
+        }
         let while_halted = self.halted;
         bus.interrupt_ack(self.pc, opcode, while_halted);
         self.inte = false;
         bus.set_inte(false);
         self.halted = false;
-        let t = self.execute(bus, opcode).saturating_add(bus.take_wait_states());
+        let t = self
+            .execute(bus, opcode)
+            .saturating_add(bus.take_wait_states());
         self.cycles += t as u64;
         true
     }
@@ -407,26 +513,45 @@ impl Cpu8080 {
             let sum = lhs + rhs;
             self.set_hl(sum as u16);
             self.f &= !FLAG_C;
-            if sum > 0xffff { self.f |= FLAG_C; }
+            if sum > 0xffff {
+                self.f |= FLAG_C;
+            }
             return 10;
         }
 
         if op & 0xc7 == 0xc0 {
             let cond = (op >> 3) & 7;
-            if self.condition(cond) { self.pc = self.pop(bus); 11 } else { 5 }
+            if self.condition(cond) {
+                self.pc = self.pop(bus);
+                11
+            } else {
+                5
+            }
         } else if op & 0xc7 == 0xc2 {
             let cond = (op >> 3) & 7;
             let target = self.next_word(bus);
-            if self.condition(cond) { self.pc = target; }
+            if self.condition(cond) {
+                self.pc = target;
+            }
             10
         } else if op & 0xc7 == 0xc4 {
             let cond = (op >> 3) & 7;
             let target = self.next_word(bus);
-            if self.condition(cond) { self.push(bus, self.pc); self.pc = target; 17 } else { 11 }
+            if self.condition(cond) {
+                self.push(bus, self.pc);
+                self.pc = target;
+                17
+            } else {
+                11
+            }
         } else if op & 0xcf == 0xc1 {
             let rp = (op >> 4) & 3;
             let v = self.pop(bus);
-            if rp == 3 { self.set_af(v); } else { self.set_rp(rp, v); }
+            if rp == 3 {
+                self.set_af(v);
+            } else {
+                self.set_rp(rp, v);
+            }
             10
         } else if op & 0xcf == 0xc5 {
             let rp = (op >> 4) & 3;
@@ -441,12 +566,34 @@ impl Cpu8080 {
         } else {
             match op {
                 0x00 | 0x08 | 0x10 | 0x18 | 0x20 | 0x28 | 0x30 | 0x38 => 4,
-                0x02 => { bus.write(self.bc(), self.a); 7 }
-                0x0a => { self.a = bus.read(self.bc()); 7 }
-                0x12 => { bus.write(self.de(), self.a); 7 }
-                0x1a => { self.a = bus.read(self.de()); 7 }
-                0x07 => { let c = self.a >> 7; self.a = self.a.rotate_left(1); self.f = (self.f & !FLAG_C) | c; 4 }
-                0x0f => { let c = self.a & 1; self.a = self.a.rotate_right(1); self.f = (self.f & !FLAG_C) | c; 4 }
+                0x02 => {
+                    bus.write(self.bc(), self.a);
+                    7
+                }
+                0x0a => {
+                    self.a = bus.read(self.bc());
+                    7
+                }
+                0x12 => {
+                    bus.write(self.de(), self.a);
+                    7
+                }
+                0x1a => {
+                    self.a = bus.read(self.de());
+                    7
+                }
+                0x07 => {
+                    let c = self.a >> 7;
+                    self.a = self.a.rotate_left(1);
+                    self.f = (self.f & !FLAG_C) | c;
+                    4
+                }
+                0x0f => {
+                    let c = self.a & 1;
+                    self.a = self.a.rotate_right(1);
+                    self.f = (self.f & !FLAG_C) | c;
+                    4
+                }
                 0x17 => {
                     let old_c = if self.f & FLAG_C != 0 { 1 } else { 0 };
                     let new_c = self.a >> 7;
@@ -461,40 +608,139 @@ impl Cpu8080 {
                     self.f = (self.f & !FLAG_C) | new_c;
                     4
                 }
-                0x22 => { let a = self.next_word(bus); self.write_word(bus, a, self.hl()); 16 }
-                0x2a => { let a = self.next_word(bus); let v = self.read_word(bus, a); self.set_hl(v); 16 }
-                0x27 => { self.daa(); 4 }
-                0x2f => { self.a = !self.a; 4 }
-                0x32 => { let a = self.next_word(bus); bus.write(a, self.a); 13 }
-                0x37 => { self.f |= FLAG_C; 4 }
-                0x3a => { let a = self.next_word(bus); self.a = bus.read(a); 13 }
-                0x3f => { self.f ^= FLAG_C; 4 }
-                0xc3 | 0xcb => { self.pc = self.next_word(bus); 10 }
-                0xc6 => { let v = self.next_byte(bus); self.add(v, false); 7 }
-                0xc9 | 0xd9 => { self.pc = self.pop(bus); 10 }
-                0xcd | 0xdd | 0xed | 0xfd => { let a = self.next_word(bus); self.push(bus, self.pc); self.pc = a; 17 }
-                0xce => { let v = self.next_byte(bus); self.add(v, true); 7 }
-                0xd3 => { let p = self.next_byte(bus); bus.output(p, self.a); 10 }
-                0xd6 => { let v = self.next_byte(bus); self.sub(v, false, true); 7 }
-                0xdb => { let p = self.next_byte(bus); self.a = bus.input(p); 10 }
-                0xde => { let v = self.next_byte(bus); self.sub(v, true, true); 7 }
+                0x22 => {
+                    let a = self.next_word(bus);
+                    self.write_word(bus, a, self.hl());
+                    16
+                }
+                0x2a => {
+                    let a = self.next_word(bus);
+                    let v = self.read_word(bus, a);
+                    self.set_hl(v);
+                    16
+                }
+                0x27 => {
+                    self.daa();
+                    4
+                }
+                0x2f => {
+                    self.a = !self.a;
+                    4
+                }
+                0x32 => {
+                    let a = self.next_word(bus);
+                    bus.write(a, self.a);
+                    13
+                }
+                0x37 => {
+                    self.f |= FLAG_C;
+                    4
+                }
+                0x3a => {
+                    let a = self.next_word(bus);
+                    self.a = bus.read(a);
+                    13
+                }
+                0x3f => {
+                    self.f ^= FLAG_C;
+                    4
+                }
+                0xc3 | 0xcb => {
+                    self.pc = self.next_word(bus);
+                    10
+                }
+                0xc6 => {
+                    let v = self.next_byte(bus);
+                    self.add(v, false);
+                    7
+                }
+                0xc9 | 0xd9 => {
+                    self.pc = self.pop(bus);
+                    10
+                }
+                0xcd | 0xdd | 0xed | 0xfd => {
+                    let a = self.next_word(bus);
+                    self.push(bus, self.pc);
+                    self.pc = a;
+                    17
+                }
+                0xce => {
+                    let v = self.next_byte(bus);
+                    self.add(v, true);
+                    7
+                }
+                0xd3 => {
+                    let p = self.next_byte(bus);
+                    bus.output(p, self.a);
+                    10
+                }
+                0xd6 => {
+                    let v = self.next_byte(bus);
+                    self.sub(v, false, true);
+                    7
+                }
+                0xdb => {
+                    let p = self.next_byte(bus);
+                    self.a = bus.input(p);
+                    10
+                }
+                0xde => {
+                    let v = self.next_byte(bus);
+                    self.sub(v, true, true);
+                    7
+                }
                 0xe3 => {
                     let lo = bus.stack_read(self.sp);
                     let hi = bus.stack_read(self.sp.wrapping_add(1));
                     bus.stack_write(self.sp, self.l);
                     bus.stack_write(self.sp.wrapping_add(1), self.h);
-                    self.l = lo; self.h = hi;
+                    self.l = lo;
+                    self.h = hi;
                     18
                 }
-                0xe6 => { let v = self.next_byte(bus); self.ana(v); 7 }
-                0xe9 => { self.pc = self.hl(); 5 }
-                0xeb => { core::mem::swap(&mut self.d, &mut self.h); core::mem::swap(&mut self.e, &mut self.l); 4 }
-                0xee => { let v = self.next_byte(bus); self.xra(v); 7 }
-                0xf3 => { self.inte = false; self.ei_pending = false; bus.set_inte(false); 4 }
-                0xf6 => { let v = self.next_byte(bus); self.ora(v); 7 }
-                0xf9 => { self.sp = self.hl(); 5 }
-                0xfb => { self.ei_pending = true; 4 }
-                0xfe => { let v = self.next_byte(bus); self.sub(v, false, false); 7 }
+                0xe6 => {
+                    let v = self.next_byte(bus);
+                    self.ana(v);
+                    7
+                }
+                0xe9 => {
+                    self.pc = self.hl();
+                    5
+                }
+                0xeb => {
+                    core::mem::swap(&mut self.d, &mut self.h);
+                    core::mem::swap(&mut self.e, &mut self.l);
+                    4
+                }
+                0xee => {
+                    let v = self.next_byte(bus);
+                    self.xra(v);
+                    7
+                }
+                0xf3 => {
+                    self.inte = false;
+                    self.ei_pending = false;
+                    bus.set_inte(false);
+                    4
+                }
+                0xf6 => {
+                    let v = self.next_byte(bus);
+                    self.ora(v);
+                    7
+                }
+                0xf9 => {
+                    self.sp = self.hl();
+                    5
+                }
+                0xfb => {
+                    self.ei_pending = true;
+                    4
+                }
+                0xfe => {
+                    let v = self.next_byte(bus);
+                    self.sub(v, false, false);
+                    7
+                }
                 _ => 4,
             }
         }
@@ -505,11 +751,21 @@ impl Cpu8080 {
 mod tests {
     use super::*;
 
-    struct TestBus { mem: [u8; 65536] }
-    impl Default for TestBus { fn default() -> Self { Self { mem: [0; 65536] } } }
+    struct TestBus {
+        mem: [u8; 65536],
+    }
+    impl Default for TestBus {
+        fn default() -> Self {
+            Self { mem: [0; 65536] }
+        }
+    }
     impl Bus for TestBus {
-        fn read(&mut self, a: u16) -> u8 { self.mem[a as usize] }
-        fn write(&mut self, a: u16, v: u8) { self.mem[a as usize] = v; }
+        fn read(&mut self, a: u16) -> u8 {
+            self.mem[a as usize]
+        }
+        fn write(&mut self, a: u16, v: u8) {
+            self.mem[a as usize] = v;
+        }
     }
 
     #[test]
@@ -553,7 +809,9 @@ mod tests {
         let mut bus = TestBus::default();
         bus.mem[..8].copy_from_slice(&[0x06, 2, 0x0e, 3, 0x78, 0x81, 0x76, 0]);
         let mut cpu = Cpu8080::new();
-        while !cpu.halted { cpu.step(&mut bus); }
+        while !cpu.halted {
+            cpu.step(&mut bus);
+        }
         assert_eq!(cpu.a, 5);
         assert_eq!(cpu.b, 2);
         assert_eq!(cpu.c, 3);
@@ -562,11 +820,18 @@ mod tests {
     #[test]
     fn call_and_ret() {
         let mut bus = TestBus::default();
-        bus.mem[0] = 0xcd; bus.mem[1] = 0x06; bus.mem[2] = 0x00;
+        bus.mem[0] = 0xcd;
+        bus.mem[1] = 0x06;
+        bus.mem[2] = 0x00;
         bus.mem[3] = 0x76;
-        bus.mem[6] = 0x3e; bus.mem[7] = 0x42; bus.mem[8] = 0xc9;
-        let mut cpu = Cpu8080::new(); cpu.sp = 0x1000;
-        while !cpu.halted { cpu.step(&mut bus); }
+        bus.mem[6] = 0x3e;
+        bus.mem[7] = 0x42;
+        bus.mem[8] = 0xc9;
+        let mut cpu = Cpu8080::new();
+        cpu.sp = 0x1000;
+        while !cpu.halted {
+            cpu.step(&mut bus);
+        }
         assert_eq!(cpu.a, 0x42);
         assert_eq!(cpu.sp, 0x1000);
     }
@@ -599,7 +864,10 @@ mod tests {
         assert_eq!(cpu.step(&mut bus), 4);
         assert!(!cpu.inte, "EI must not enable interrupts immediately");
         assert_eq!(cpu.step(&mut bus), 4);
-        assert!(!cpu.inte, "DI immediately after EI must leave interrupts disabled");
+        assert!(
+            !cpu.inte,
+            "DI immediately after EI must leave interrupts disabled"
+        );
         assert!(!cpu.interrupt(&mut bus, 0xcf));
     }
 

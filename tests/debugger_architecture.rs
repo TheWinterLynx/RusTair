@@ -35,9 +35,9 @@ fn cycle_debugger_keeps_the_t_state_loop_inside_the_cycle_backend() {
     // the complete budget it receives to one cycle-backend observer call. Keep
     // the parameter and forwarded argument paired so renaming the local from
     // `t_state_budget` to `budget` cannot create a false regression.
-    let delegates_whole_budget =
-        (CYCLE_HOST_SOURCE.contains("fn service_execution(&mut self, t_state_budget: u32)")
-            && CYCLE_HOST_SOURCE.contains("service_execution_with_observer(t_state_budget"))
+    let delegates_whole_budget = (CYCLE_HOST_SOURCE
+        .contains("fn service_execution(&mut self, t_state_budget: u32)")
+        && CYCLE_HOST_SOURCE.contains("service_execution_with_observer(t_state_budget"))
         || (CYCLE_HOST_SOURCE.contains("fn service_execution(&mut self, budget: u32)")
             && CYCLE_HOST_SOURCE.contains("service_execution_with_observer(budget"));
     assert!(

@@ -175,7 +175,9 @@ impl<T> S100SlotInventory<T> {
     }
 
     pub fn slot(&self, number: usize) -> Option<&T> {
-        self.slots.get(number.checked_sub(1)?).and_then(Option::as_ref)
+        self.slots
+            .get(number.checked_sub(1)?)
+            .and_then(Option::as_ref)
     }
 
     pub fn set_slot(&mut self, number: usize, card: Option<T>) -> Result<(), usize> {
@@ -193,10 +195,15 @@ mod tests {
     #[test]
     fn original_8800_uses_four_slot_expander_sections_up_to_sixteen_cards() {
         for (sections, slots) in [(1, 4), (2, 8), (3, 12), (4, 16)] {
-            let config = S100ChassisConfig::original_8800(sections).validate().unwrap();
+            let config = S100ChassisConfig::original_8800(sections)
+                .validate()
+                .unwrap();
             assert_eq!(config.fitted_connectors, slots);
             assert_eq!(config.physical_slot_positions(), 16);
-            assert_eq!(config.motherboard(), S100MotherboardKind::FourSlotExpanderSections);
+            assert_eq!(
+                config.motherboard(),
+                S100MotherboardKind::FourSlotExpanderSections
+            );
         }
         assert!(S100ChassisConfig::original_8800(5).validate().is_err());
     }
@@ -204,7 +211,9 @@ mod tests {
     #[test]
     fn altair_8800b_keeps_eighteen_positions_separate_from_fitted_connectors() {
         for connectors in [6, 12, 18] {
-            let config = S100ChassisConfig::altair_8800b(connectors).validate().unwrap();
+            let config = S100ChassisConfig::altair_8800b(connectors)
+                .validate()
+                .unwrap();
             assert_eq!(config.physical_slot_positions(), 18);
             assert_eq!(config.fitted_connectors, connectors);
             assert_eq!(config.motherboard(), S100MotherboardKind::Single18Slot);

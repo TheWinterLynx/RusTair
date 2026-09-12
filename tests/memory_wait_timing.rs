@@ -26,26 +26,32 @@ fn mits_1k_opcode_fetch_emits_exactly_two_tw_states() {
         wait.push(sample.pins.wait);
     }
 
-    assert_eq!(states, vec![
-        BusTState::T1,
-        BusTState::T2,
-        BusTState::Tw,
-        BusTState::Tw,
-        BusTState::T3,
-        BusTState::T4,
-    ]);
+    assert_eq!(
+        states,
+        vec![
+            BusTState::T1,
+            BusTState::T2,
+            BusTState::Tw,
+            BusTState::Tw,
+            BusTState::T3,
+            BusTState::T4,
+        ]
+    );
     // T1 still exposes the raw 8080 status byte on DO; the MITS CPU-board 8212
     // latches sMEMR on the following T2 PHI1 edge. The selected 1K RAM therefore
     // pulls PRDY low from T2 onward, keeping it low through the first TW. READY
     // rises on the second TW sampling edge, which exits the processor to T3.
-    assert_eq!(ready, vec![
-        Some(true),
-        Some(false),
-        Some(false),
-        Some(true),
-        Some(true),
-        Some(true),
-    ]);
+    assert_eq!(
+        ready,
+        vec![
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(true),
+            Some(true),
+            Some(true),
+        ]
+    );
     assert_eq!(wait[2], Some(true));
     assert_eq!(wait[3], Some(true));
     assert_eq!(host.intel8080_state().total_t_states, Some(6));
@@ -75,7 +81,10 @@ fn running_adaptive_cycle_recovers_when_memory_ready_returns_high() {
     host.set_running(true);
     host.run_cycles(6);
     let cpu = host.intel8080_state();
-    assert_eq!(cpu.pc, 0x0001, "continuous RUN must leave TW when the card releases PRDY");
+    assert_eq!(
+        cpu.pc, 0x0001,
+        "continuous RUN must leave TW when the card releases PRDY"
+    );
     assert_eq!(cpu.total_t_states, Some(6));
 }
 
