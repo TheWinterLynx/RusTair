@@ -171,6 +171,7 @@ This layer connects the exact CPU and generic S-100 runtime into an Altair machi
 | `src/s100_cpu.rs` | Live MITS 8080 CPU-board S-100 card implementation/handle. Converts CPU package state into board-level S-100 drives/status-latch behavior while exposing controlled host reconciliation/inspection hooks. |
 | `src/s100_memory.rs` | Historical RAM-board descriptions/configuration semantics used to represent real board address/population/timing/protection properties. Provides board-level validation separate from runtime byte storage. |
 | `src/s100_runtime_ram.rs` | Live RAM card implementation and handle. Owns actual RAM bytes and runtime drive/decode/protection/wait behavior for installed RAM cards. This storage is the authoritative guest memory. |
+| `src/s100_runtime_ram/full_timing.rs` | Adaptive Full transactional timing accelerator for 88-4MCD and 88-S4K RAM. Snapshots only digital refresh/WAIT phase into specialized window-local state, commits those latches back to the authoritative runtime RAM state at Full boundaries, and never owns guest bytes or protection state. |
 | `src/s100_io.rs` | Precompiled I/O-port and interrupt-driver responder masks derived from fixed card straps. Acceleration metadata only: multiple responders remain represented and selected cards still execute normal electrical behavior. |
 | `src/s100_io_card.rs` | S-100 electrical adapter for runtime serial/I/O cards. Connects machine serial-card behavior to generic S-100 I/O cycles/status/data/interrupt lines without teaching the backplane card-specific semantics. |
 
