@@ -41,6 +41,15 @@ fn prepare_ram_backend(
     backend.load_bytes(0, program).unwrap();
     backend.release_reset().unwrap();
     backend.run().unwrap();
+    // Altair power-on programmer-visible registers are intentionally undefined.
+    // Differential tests need identical architectural state so random B/C/D/E,
+    // HL or SP values cannot create false Full-vs-Partial failures.
+    backend.cpu.set_registers(Registers {
+        f: 0x02,
+        sp: 0x0800,
+        pc: 0,
+        ..Registers::default()
+    });
     backend
 }
 
