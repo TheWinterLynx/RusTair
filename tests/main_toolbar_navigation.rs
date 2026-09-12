@@ -3,6 +3,8 @@ const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const UI_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
 const ASR33_WINDOW_SOURCE: &str = include_str!("../src/app/ui/asr33_window.rs");
 const TERMINAL_WINDOW_SOURCE: &str = include_str!("../src/app/ui/terminal.rs");
+const EXTERNAL_TCP_SOURCE: &str = include_str!("../src/app/external_serial.rs");
+const EXTERNAL_COM_SOURCE: &str = include_str!("../src/app/external_com.rs");
 
 #[test]
 fn main_menu_uses_six_clear_top_level_sections() {
@@ -106,14 +108,26 @@ fn application_uses_one_readable_dense_typography_policy() {
     assert!(RUNTIME_SOURCE.contains("super::ui::ensure_readable_ui_style(ctx);"));
     assert!(UI_SOURCE.contains("pub(in crate::app) fn ensure_readable_ui_style"));
     assert!(UI_SOURCE.contains("egui::TextStyle::Small"));
-    assert!(UI_SOURCE.contains("egui::FontId::new(12.5"));
+    assert!(UI_SOURCE.contains("egui::FontId::new(14.0"));
     assert!(UI_SOURCE.contains("egui::TextStyle::Body"));
     assert!(UI_SOURCE.contains("egui::FontId::new(15.0"));
     assert!(UI_SOURCE.contains("egui::TextStyle::Button"));
     assert!(UI_SOURCE.contains("egui::TextStyle::Monospace"));
-    assert!(UI_SOURCE.contains("egui::FontId::new(14.0"));
     assert!(UI_SOURCE.contains("style.spacing.item_spacing.y = 3.0;"));
     assert!(UI_SOURCE.contains("style.spacing.button_padding = egui::vec2(5.0, 1.0);"));
+}
+
+#[test]
+fn auxiliary_status_bars_share_the_readable_small_text_policy() {
+    assert!(ASR33_WINDOW_SOURCE.contains("TopBottomPanel::bottom(\"tty-status\")"));
+    assert!(ASR33_WINDOW_SOURCE.contains("ui.small(format!("));
+    assert!(TERMINAL_WINDOW_SOURCE.contains("TopBottomPanel::bottom(\"terminal-status\")"));
+    assert!(TERMINAL_WINDOW_SOURCE.contains("ui.small(format!("));
+    assert!(EXTERNAL_TCP_SOURCE.contains("TopBottomPanel::bottom(\"external-tcp-status\")"));
+    assert!(EXTERNAL_TCP_SOURCE.contains("ui.small(self.external_tcp_status_text())"));
+    assert!(EXTERNAL_COM_SOURCE.contains("TopBottomPanel::bottom(\"external-com-status\")"));
+    assert!(EXTERNAL_COM_SOURCE.contains("ui.small(self.external_com_status_text())"));
+    assert!(UI_SOURCE.contains("egui::FontId::new(14.0, egui::FontFamily::Proportional)"));
 }
 
 #[test]
