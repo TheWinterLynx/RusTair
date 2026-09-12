@@ -1,6 +1,7 @@
 mod chassis;
 mod cpu_board;
 mod dcdd;
+mod fd400;
 mod front_panel;
 mod memory;
 mod panel_bus;
