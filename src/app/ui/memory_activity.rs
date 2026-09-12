@@ -80,7 +80,7 @@ impl RusTairApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong("8080 MEMORY ACTIVITY");
                 ui.separator();
                 ui.label(format!("{} active address(es)", activity.active_addresses()));
@@ -122,7 +122,7 @@ impl RusTairApp {
 
             ui.separator();
             super::collapsible_section(ui, "Sort / controls", true, |ui| {
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Sort:");
                     for (value, label) in [
                         (ActivitySort::Recent, "Recent"),
@@ -144,55 +144,63 @@ impl RusTairApp {
 
             ui.separator();
             super::collapsible_section(ui, "Activity table", true, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
-                    ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("EXEC").monospace().strong()));
-                    ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("READ").monospace().strong()));
-                    ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("WRITE").monospace().strong()));
-                    ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new("LAST #").monospace().strong()));
-                    ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new("MARKERS").strong()));
-                    ui.add_sized([260.0, 20.0], egui::Label::new(egui::RichText::new("S-100 NOW").strong()));
-                    ui.add_sized([ui.available_width(), 20.0], egui::Label::new(egui::RichText::new("ACTIONS").strong()));
-                });
-
-                egui::ScrollArea::vertical()
-                    .id_salt("memory-activity-list")
+                // This is a real fixed-column diagnostic table. Keep its column
+                // geometry stable and give narrow viewports horizontal scrolling
+                // instead of clipping the action columns.
+                egui::ScrollArea::both()
+                    .id_salt("memory-activity-table-scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for (address, counters) in rows {
-                            let markers = format!(
-                                "{} {} {} {}",
-                                if address == execution_address { "EXEC" } else { "    " },
-                                if address == cpu.pc { "PC" } else { "  " },
-                                if address == cpu.hl() { "HL/M" } else { "    " },
-                                if address == cpu.sp { "SP" } else { "  " },
-                            );
-                            let inspection = self.machine.inspect_memory_mapping(address);
-                            let mapping = mapping_summary(&inspection);
-                            ui.horizontal(|ui| {
-                                ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
-                                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.execute_count)).monospace()));
-                                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.read_count)).monospace()));
-                                ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.write_count)).monospace()));
-                                ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(
-                                    counters.last_sequence().map(|value| value.to_string()).unwrap_or_else(|| "-".into())
-                                ).monospace()));
-                                ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
-                                ui.add_sized(
-                                    [260.0, 20.0],
-                                    egui::Label::new(egui::RichText::new(&mapping).small()),
-                                )
-                                .on_hover_text(mapping_detail(address, &inspection));
-                                if ui.add_sized([82.0, 20.0], egui::Button::new("R/W watch")).clicked() {
-                                    self.machine.debugger_set_watchpoint(address, Some(MemoryWatchAccess::ReadWrite));
-                                    state.message = Some(format!("READ/WRITE watchpoint armed at ${address:04X} · {mapping}."));
-                                }
-                                if ui.add_sized([62.0, 20.0], egui::Button::new("Run to")).clicked() {
-                                    self.machine.debugger_run_to(address);
-                                    state.message = Some(format!("Running to ${address:04X}."));
+                        ui.horizontal(|ui| {
+                            ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new("ADDR").monospace().strong()));
+                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("EXEC").monospace().strong()));
+                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("READ").monospace().strong()));
+                            ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new("WRITE").monospace().strong()));
+                            ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new("LAST #").monospace().strong()));
+                            ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new("MARKERS").strong()));
+                            ui.add_sized([260.0, 20.0], egui::Label::new(egui::RichText::new("S-100 NOW").strong()));
+                            ui.add_sized([154.0, 20.0], egui::Label::new(egui::RichText::new("ACTIONS").strong()));
+                        });
+
+                        egui::ScrollArea::vertical()
+                            .id_salt("memory-activity-list")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                for (address, counters) in rows {
+                                    let markers = format!(
+                                        "{} {} {} {}",
+                                        if address == execution_address { "EXEC" } else { "    " },
+                                        if address == cpu.pc { "PC" } else { "  " },
+                                        if address == cpu.hl() { "HL/M" } else { "    " },
+                                        if address == cpu.sp { "SP" } else { "  " },
+                                    );
+                                    let inspection = self.machine.inspect_memory_mapping(address);
+                                    let mapping = mapping_summary(&inspection);
+                                    ui.horizontal(|ui| {
+                                        ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${address:04X}")).monospace()));
+                                        ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.execute_count)).monospace()));
+                                        ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.read_count)).monospace()));
+                                        ui.add_sized([70.0, 20.0], egui::Label::new(egui::RichText::new(format!("{}", counters.write_count)).monospace()));
+                                        ui.add_sized([88.0, 20.0], egui::Label::new(egui::RichText::new(
+                                            counters.last_sequence().map(|value| value.to_string()).unwrap_or_else(|| "-".into())
+                                        ).monospace()));
+                                        ui.add_sized([128.0, 20.0], egui::Label::new(egui::RichText::new(markers).small()));
+                                        ui.add_sized(
+                                            [260.0, 20.0],
+                                            egui::Label::new(egui::RichText::new(&mapping).small()),
+                                        )
+                                        .on_hover_text(mapping_detail(address, &inspection));
+                                        if ui.add_sized([82.0, 20.0], egui::Button::new("R/W watch")).clicked() {
+                                            self.machine.debugger_set_watchpoint(address, Some(MemoryWatchAccess::ReadWrite));
+                                            state.message = Some(format!("READ/WRITE watchpoint armed at ${address:04X} · {mapping}."));
+                                        }
+                                        if ui.add_sized([62.0, 20.0], egui::Button::new("Run to")).clicked() {
+                                            self.machine.debugger_run_to(address);
+                                            state.message = Some(format!("Running to ${address:04X}."));
+                                        }
+                                    });
                                 }
                             });
-                        }
                     });
             });
 
@@ -215,7 +223,7 @@ impl RusTairApp {
             egui::ViewportBuilder::default()
                 .with_title("RusTair - 8080 Memory Activity")
                 .with_inner_size([1260.0, 660.0])
-                .with_min_inner_size([1080.0, 480.0])
+                .with_min_inner_size([760.0, 480.0])
                 .with_resizable(true),
             |activity_ctx, _class| {
                 self.draw_memory_activity_contents(activity_ctx, &mut state);
