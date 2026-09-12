@@ -586,6 +586,20 @@ impl S100BusState {
         self.signals.ready = self.signals.front_panel_ready && self.signals.memory_ready;
     }
 
+    /// WAIT replay inside Cycle Full is presentation-only: `drive_cpu_t_state`
+    /// intentionally samples READY low/WAIT high without changing either physical
+    /// PRDY contributor. Before Full reconstructs its final non-WAIT boundary,
+    /// recover the effective READY level from those real sources without adding
+    /// another electrical sample.
+    fn restore_full_ready_after_wait_projection(&mut self) {
+        debug_assert!(
+            self.signals.front_panel_ready && self.signals.memory_ready,
+            "Cycle Full may only clear a projected WAIT when both READY sources are high"
+        );
+        self.recompute_ready();
+        self.signals.wait = false;
+    }
+
     /// Compatibility helper for aggregate/non-edge paths. Those callers have no
     /// exact T2->TW transition to supply WAIT, so WAIT follows inverse READY while stopped.
     pub(super) fn set_ready(&mut self, ready: bool) {
@@ -1015,6 +1029,9 @@ impl super::AltairBus {
         inte: bool,
     ) {
         let protected = self.memory.is_protected(address);
+        if !self.s100.signals().ready && self.s100.signals().wait {
+            self.s100.restore_full_ready_after_wait_projection();
+        }
         debug_assert!(self.s100.signals().ready, "Cycle Full requires READY high");
         self.s100.drive_cycle_full_reconstructed_cpu_cycle(
             address,
@@ -1090,6 +1107,38 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn full_projection_restores_ready_after_synthetic_wait_replay() {
+        let mut bus = super::super::AltairBus::default();
+        bus.s100.set_ready_input(true);
+        bus.s100.set_memory_ready_input(true);
+        assert!(bus.s100.signals().ready);
+
+        bus.cycle_drive_s100_t_state(
+            Some(0x1234),
+            Some(0x5a),
+            Some(0x5a),
+            None,
+            Some(0x82),
+            false,
+            false,
+            true,
+            false,
+        );
+        assert!(!bus.s100.signals().ready);
+        assert!(bus.s100.signals().wait);
+        assert!(bus.s100.signals().front_panel_ready);
+        assert!(bus.s100.signals().memory_ready);
+
+        let before = bus.s100.lamps.total_weight;
+        bus.cycle_full_prepare_panel_latch(0x5a, 0x82);
+        bus.cycle_full_project_panel_cycle(0x1234, 0x5a, 0x82, 3, true, false, false);
+        let after = bus.s100.signals();
+        assert!(after.ready);
+        assert!(!after.wait);
+        assert_eq!(bus.s100.lamps.total_weight, before + 3);
+    }
 
     #[test]
     fn raw_duty_counts_the_entire_interval_instead_of_the_first_visual_window() {
@@ -1497,7 +1546,6 @@ mod tests {
             running.cpu_data, None,
             "no exact running CPU D sample exists before the first tick"
         );
-
         bus.set_run(false);
         bus.assert_front_panel_reset();
         assert!(!bus.signals().ready);
