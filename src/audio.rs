@@ -61,17 +61,6 @@ impl AudioEngine {
     pub fn altair_muted(&self) -> bool { self.altair_muted }
     pub fn asr33_muted(&self) -> bool { self.asr33_muted }
 
-    /// Legacy aggregate query retained for migration/tests. New UI code must use
-    /// the two domain-specific mute states instead.
-    pub fn muted(&self) -> bool { self.altair_muted && self.asr33_muted }
-
-    /// Legacy aggregate setter: old persisted `audio.muted` meant silence every
-    /// sound, so applying it still changes both independent domains together.
-    pub fn set_muted(&mut self, muted: bool) {
-        self.set_altair_muted(muted);
-        self.set_asr33_muted(muted);
-    }
-
     pub fn set_altair_muted(&mut self, muted: bool) {
         if self.altair_muted == muted { return; }
         self.altair_muted = muted;
