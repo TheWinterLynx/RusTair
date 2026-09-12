@@ -68,16 +68,16 @@ impl Mits88DcddHarness {
         }
     }
 
-    pub(crate) fn board1(&self) -> Mits88DcddBoard1 {
-        Mits88DcddBoard1 {
+    pub(crate) fn board1_card(&self) -> Box<dyn S100ElectricalCard> {
+        Box::new(Mits88DcddBoard1 {
             harness: self.clone(),
-        }
+        })
     }
 
-    pub(crate) fn board2(&self) -> Mits88DcddBoard2 {
-        Mits88DcddBoard2 {
+    pub(crate) fn board2_card(&self) -> Box<dyn S100ElectricalCard> {
+        Box::new(Mits88DcddBoard2 {
             harness: self.clone(),
-        }
+        })
     }
 
     #[inline]
@@ -91,7 +91,7 @@ impl Mits88DcddHarness {
     }
 }
 
-pub(crate) struct Mits88DcddBoard1 {
+struct Mits88DcddBoard1 {
     harness: Mits88DcddHarness,
 }
 
@@ -114,7 +114,7 @@ impl S100ElectricalCard for Mits88DcddBoard1 {
     }
 }
 
-pub(crate) struct Mits88DcddBoard2 {
+struct Mits88DcddBoard2 {
     harness: Mits88DcddHarness,
 }
 
@@ -143,8 +143,12 @@ mod tests {
     #[test]
     fn both_controller_boards_share_one_harness_not_each_other() {
         let harness = Mits88DcddHarness::new();
-        let board1 = harness.board1();
-        let board2 = harness.board2();
+        let board1 = Mits88DcddBoard1 {
+            harness: harness.clone(),
+        };
+        let board2 = Mits88DcddBoard2 {
+            harness: harness.clone(),
+        };
 
         assert!(board1.harness.same_physical_harness(&board2.harness));
     }
@@ -152,8 +156,10 @@ mod tests {
     #[test]
     fn phase1_descriptors_are_distinct_historical_storage_controller_cards() {
         let harness = Mits88DcddHarness::new();
-        let board1 = harness.board1();
-        let board2 = harness.board2();
+        let board1 = Mits88DcddBoard1 {
+            harness: harness.clone(),
+        };
+        let board2 = Mits88DcddBoard2 { harness };
         let descriptor1 = board1.s100_descriptor();
         let descriptor2 = board2.s100_descriptor();
 
@@ -168,8 +174,10 @@ mod tests {
     #[test]
     fn phase1_cards_drive_no_s100_signal_and_need_no_external_refresh() {
         let harness = Mits88DcddHarness::new();
-        let board1 = harness.board1();
-        let board2 = harness.board2();
+        let board1 = Mits88DcddBoard1 {
+            harness: harness.clone(),
+        };
+        let board2 = Mits88DcddBoard2 { harness };
 
         for board in [&board1 as &dyn S100ElectricalCard, &board2 as &dyn S100ElectricalCard] {
             let drive = board.drive_s100();
