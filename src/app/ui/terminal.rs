@@ -144,31 +144,35 @@ impl RusTairApp {
     }
 
     fn draw_terminal_window(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("terminal-menu").show(ctx, |ui| {
-            egui::MenuBar::new().ui(ui, |ui| {
-                self.draw_terminal_connection_selector(ui);
-                ui.separator();
-                self.draw_terminal_speed_selector(ui);
-                ui.separator();
-                self.draw_terminal_duplex_selector(ui);
-                ui.separator();
-                if ui.button("Clear").clicked() {
-                    self.terminal.clear_output();
-                }
-                if ui.button("Send text/BASIC file…").clicked() {
-                    self.load_terminal_text_file();
-                }
-                ui.separator();
-                ui.checkbox(&mut self.terminal.uppercase, "Uppercase input");
-                ui.separator();
-                if ui.button("CTRL-C").clicked() {
-                    self.terminal_send_control(0x03, "CTRL-C");
-                }
-                if ui.button("ESC").clicked() {
-                    self.terminal_send_control(0x1b, "ESC");
-                }
+        egui::TopBottomPanel::top("terminal-menu")
+            .resizable(false)
+            .show(ctx, |ui| {
+                // Match the ASR-33 toolbar model: controls wrap onto additional
+                // rows instead of being clipped when the viewport narrows.
+                ui.horizontal_wrapped(|ui| {
+                    self.draw_terminal_connection_selector(ui);
+                    ui.separator();
+                    self.draw_terminal_speed_selector(ui);
+                    ui.separator();
+                    self.draw_terminal_duplex_selector(ui);
+                    ui.separator();
+                    if ui.button("Clear").clicked() {
+                        self.terminal.clear_output();
+                    }
+                    if ui.button("Send text/BASIC file…").clicked() {
+                        self.load_terminal_text_file();
+                    }
+                    ui.separator();
+                    ui.checkbox(&mut self.terminal.uppercase, "Uppercase input");
+                    ui.separator();
+                    if ui.button("CTRL-C").clicked() {
+                        self.terminal_send_control(0x03, "CTRL-C");
+                    }
+                    if ui.button("ESC").clicked() {
+                        self.terminal_send_control(0x1b, "ESC");
+                    }
+                });
             });
-        });
 
         egui::TopBottomPanel::bottom("terminal-status").show(ctx, |ui| {
             let connection = self.terminal_connection();
