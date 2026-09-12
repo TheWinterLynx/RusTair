@@ -153,29 +153,52 @@ fn dcdd_no_drive_register_surface_is_reached_only_through_real_8080_io_cycles() 
 }
 
 #[test]
-fn dcdd_input_byte_is_visible_on_the_same_exact_s100_cycle_as_the_front_panel() {
+fn dcdd_input_byte_reaches_s100_di_panel_then_cpu_within_one_exact_input_cycle() {
     let mut host = BackendHost::default();
     host.configure_s100_hardware(dcdd_hardware(), RamInit::Zeroed);
     host.power(true);
     host.front_panel_reset();
     host.load_bytes(0x0000, &[0xdb, 0x08, 0x76]); // IN 08 / HLT
 
-    let mut observed = None;
+    let mut observed_t2 = None;
+    let mut observed_t3 = None;
     for _ in 0..64 {
         host.debugger_step_t_state();
         let Some(sample) = host.bus_teaching_snapshot() else {
             continue;
         };
-        if sample.machine_cycle == BusMachineCycle::InputRead && sample.t_state == BusTState::T3 {
-            observed = Some(sample);
-            break;
+        if sample.machine_cycle != BusMachineCycle::InputRead {
+            continue;
+        }
+        match sample.t_state {
+            BusTState::T2 => observed_t2 = Some(sample),
+            BusTState::T3 => {
+                observed_t3 = Some(sample);
+                if observed_t2.is_some() {
+                    break;
+                }
+            }
+            _ => {}
         }
     }
 
-    let sample = observed.expect("real IN 08 must reach an exact InputRead T3 sample");
-    assert_eq!(sample.address, Some(0x0808));
-    assert_eq!(sample.s100_di, Some(0xe7));
-    assert_eq!(sample.cpu_data, Some(0xe7));
-    assert_eq!(sample.panel_data, Some(0xe7));
-    assert_eq!(sample.status.inp, Some(true));
+    // The input card drives S-100 DI while DBIN is active in T2. The front-panel
+    // DATA presentation is wired to that physical DI domain and therefore sees
+    // the controller's disabled-status byte on this exact bus sample.
+    let t2 = observed_t2.expect("real IN 08 must expose an exact InputRead T2 sample");
+    assert_eq!(t2.address, Some(0x0808));
+    assert_eq!(t2.s100_di, Some(0xe7));
+    assert_eq!(t2.panel_data, Some(0xe7));
+    assert_eq!(t2.status.inp, Some(true));
+
+    // By T3 the 8080 owns the sampled byte on its package D bus while the I/O
+    // card may already have released S-100 DI. This is the existing exact-input
+    // timing contract used by the serial hardware too; the panel retains the
+    // last genuinely driven DI byte rather than fabricating open-bus FFh.
+    let t3 = observed_t3.expect("real IN 08 must expose an exact InputRead T3 sample");
+    assert_eq!(t3.address, Some(0x0808));
+    assert_eq!(t3.s100_di, None);
+    assert_eq!(t3.cpu_data, Some(0xe7));
+    assert_eq!(t3.panel_data, Some(0xe7));
+    assert_eq!(t3.status.inp, Some(true));
 }
