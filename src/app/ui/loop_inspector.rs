@@ -116,7 +116,7 @@ impl RusTairApp {
                 return;
             };
 
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.strong(format!("Loop {:04X}h -> {:04X}h", loop_info.start, loop_info.back_edge));
                 ui.separator();
                 ui.label(format!("{} instructions", loop_info.instructions.len()));
@@ -184,8 +184,12 @@ impl RusTairApp {
 
             ui.separator();
             super::collapsible_section(ui, "Loop instructions", true, |ui| {
-                egui::ScrollArea::vertical()
+                // Keep the instruction table intact at narrow widths. If the
+                // viewport becomes smaller than the table's real minimum width,
+                // horizontal scrolling is preferable to clipping columns.
+                egui::ScrollArea::both()
                     .id_salt("shared-8080-loop-inspector-scroll")
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         for instruction in &loop_info.instructions {
                             let is_exec = instruction.address == execution_address;
@@ -228,7 +232,7 @@ impl RusTairApp {
             egui::ViewportBuilder::default()
                 .with_title("RusTair - 8080 Loop Inspector")
                 .with_inner_size([760.0, 520.0])
-                .with_min_inner_size([620.0, 360.0])
+                .with_min_inner_size([560.0, 360.0])
                 .with_resizable(true),
             |loop_ctx, _class| {
                 self.draw_shared_loop_inspector_contents(loop_ctx, &mut state);
