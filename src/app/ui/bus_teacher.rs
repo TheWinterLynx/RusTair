@@ -13,6 +13,7 @@ const TIMING_RIGHT_VALUE_WIDTH: f32 = 90.0;
 const WHY_HEIGHT: f32 = 132.0;
 const BUS_TEACHER_WIDTH: f32 = 1220.0;
 const BUS_TEACHER_HEIGHT: f32 = 760.0;
+const BUS_TEACHER_TWO_COLUMN_MIN_WIDTH: f32 = 1160.0;
 
 #[derive(Clone, Copy, Default)]
 struct BusTeacherUiState {
@@ -124,10 +125,10 @@ impl RusTairApp {
         state: &mut BusTeacherUiState,
     ) {
         egui::TopBottomPanel::top("bus-teacher-toolbar")
-            .exact_height(38.0)
+            .resizable(false)
             .show(ctx, |ui| {
                 ui.add_space(4.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.strong("8080 BUS / T-STATE TEACHER");
                     ui.separator();
                     ui.label(self.machine.engine().label());
@@ -147,6 +148,7 @@ impl RusTairApp {
                     }
                     ui.weak("Freeze locks LAST CPU SAMPLE only; CURRENT CHASSIS stays live.");
                 });
+                ui.add_space(2.0);
             });
     }
 
@@ -156,7 +158,7 @@ impl RusTairApp {
         snapshot: Option<BusTeachingSnapshot>,
     ) {
         let capabilities = self.machine.capabilities();
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.strong("Engine");
             ui.label(self.machine.engine().label());
             ui.separator();
@@ -220,7 +222,7 @@ impl RusTairApp {
             && !reset_held
             && !cpu.halted.unwrap_or(false);
 
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
                     panel.powered
@@ -699,7 +701,7 @@ impl RusTairApp {
     ) {
         let powered = self.machine.front_panel_state().powered;
         super::collapsible_section(ui, "Intel 8080 pins", true, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 if ui.selectable_label(!state.pin_table_view, "Package diagram").clicked() {
                     state.pin_table_view = false;
                 }
@@ -755,11 +757,29 @@ impl RusTairApp {
                 .id_salt("bus-teacher-main-scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.columns(2, |columns| {
-                        let (left_column, right_column) = columns.split_at_mut(1);
-                        self.draw_bus_teacher_left_column(&mut left_column[0], snapshot, current_chassis);
-                        self.draw_bus_teacher_right_column(&mut right_column[0], snapshot, state);
-                    });
+                    if ui.available_width() >= BUS_TEACHER_TWO_COLUMN_MIN_WIDTH {
+                        ui.columns(2, |columns| {
+                            let (left_column, right_column) = columns.split_at_mut(1);
+                            self.draw_bus_teacher_left_column(
+                                &mut left_column[0],
+                                snapshot,
+                                current_chassis,
+                            );
+                            self.draw_bus_teacher_right_column(
+                                &mut right_column[0],
+                                snapshot,
+                                state,
+                            );
+                        });
+                    } else {
+                        // A timing row is wider than half of a narrow viewport.
+                        // Stack the two logical columns instead of letting egui
+                        // clip fixed-width electrical tables inside undersized
+                        // half-columns.
+                        self.draw_bus_teacher_left_column(ui, snapshot, current_chassis);
+                        ui.separator();
+                        self.draw_bus_teacher_right_column(ui, snapshot, state);
+                    }
                 });
         });
     }
@@ -775,7 +795,7 @@ impl RusTairApp {
             egui::ViewportBuilder::default()
                 .with_title("RusTair - 8080 Bus / T-state Teacher")
                 .with_inner_size([BUS_TEACHER_WIDTH, BUS_TEACHER_HEIGHT])
-                .with_min_inner_size([900.0, 560.0])
+                .with_min_inner_size([760.0, 520.0])
                 .with_resizable(true),
             |teacher_ctx, _class| {
                 self.draw_bus_teacher_viewport_contents(teacher_ctx, &mut state);
