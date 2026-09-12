@@ -1,6 +1,11 @@
 use super::*;
 
 const STATUS_BAR_FONT_SIZE: f32 = 16.0;
+const STATUS_BAR_STATE_WIDTH: f32 = 170.0;
+const STATUS_BAR_REGISTERS_WIDTH: f32 = 275.0;
+const STATUS_BAR_SPEED_WIDTH: f32 = 160.0;
+const STATUS_BAR_SEPARATOR_WIDTH: f32 = 16.0;
+const STATUS_BAR_ROW_HEIGHT: f32 = 24.0;
 
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -128,44 +133,103 @@ impl eframe::App for RusTairApp {
             "POWER OFF"
         } else if cpu.halted.unwrap_or(false) {
             if panel.running {
-                "HALTED · RUN latch ON"
+                "HALTED · RUN ON"
             } else {
-                "HALTED · RUN latch OFF"
+                "HALTED · RUN OFF"
             }
         } else if panel.running {
             "RUNNING"
         } else {
             "STOPPED"
         };
-        let speed_label = emulation_speed_label(self.effective_emulation_speed(), board);
+        let speed_label = match self.effective_emulation_speed() {
+            EmulationSpeed::Authentic => format!(
+                "Speed: {:.1} MHz",
+                board.clock_hz() as f32 / 1_000_000.0
+            ),
+            EmulationSpeed::X2 => "Speed: 2×".into(),
+            EmulationSpeed::X5 => "Speed: 5×".into(),
+            EmulationSpeed::X10 => "Speed: 10×".into(),
+            EmulationSpeed::Unlimited => "Speed: Unlimited".into(),
+        };
+        let status_text = if self.status.starts_with("Ready — RusTair Adaptive Cycle 8080 —") {
+            "Ready"
+        } else {
+            self.status.as_str()
+        };
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&self.status).size(STATUS_BAR_FONT_SIZE));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("Core: {}", self.machine.engine().label()))
-                            .size(STATUS_BAR_FONT_SIZE),
-                    );
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(speed_label.as_str()).size(STATUS_BAR_FONT_SIZE),
-                    );
-                    ui.separator();
-                    ui.label(
+                // Every block to the right of the transient message owns a fixed
+                // width. Fast-changing state therefore cannot move a separator or
+                // make the status bar look as though it is continuously resizing.
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let fixed_width = STATUS_BAR_STATE_WIDTH
+                    + STATUS_BAR_REGISTERS_WIDTH
+                    + STATUS_BAR_SPEED_WIDTH
+                    + STATUS_BAR_SEPARATOR_WIDTH * 3.0;
+                let message_width = (ui.available_width() - fixed_width).max(0.0);
+
+                ui.add_sized(
+                    [message_width, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
+                        egui::RichText::new(status_text).size(STATUS_BAR_FONT_SIZE),
+                    )
+                    .truncate()
+                    .halign(egui::Align::LEFT),
+                );
+                ui.add_sized(
+                    [STATUS_BAR_SEPARATOR_WIDTH, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
+                        egui::RichText::new("│").size(STATUS_BAR_FONT_SIZE),
+                    )
+                    .halign(egui::Align::Center),
+                );
+                ui.add_sized(
+                    [STATUS_BAR_STATE_WIDTH, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
+                        egui::RichText::new(execution_state)
+                            .size(STATUS_BAR_FONT_SIZE)
+                            .strong(),
+                    )
+                    .truncate()
+                    .halign(egui::Align::Center),
+                );
+                ui.add_sized(
+                    [STATUS_BAR_SEPARATOR_WIDTH, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
+                        egui::RichText::new("│").size(STATUS_BAR_FONT_SIZE),
+                    )
+                    .halign(egui::Align::Center),
+                );
+                ui.add_sized(
+                    [STATUS_BAR_REGISTERS_WIDTH, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
                         egui::RichText::new(format!(
                             "PC {:04X}  SP {:04X}  A {:02X}  F {:02X}",
                             cpu.pc, cpu.sp, cpu.a, cpu.flags
                         ))
-                        .size(STATUS_BAR_FONT_SIZE),
-                    );
-                    ui.separator();
-                    ui.label(
-                        egui::RichText::new(execution_state)
-                            .size(STATUS_BAR_FONT_SIZE)
-                            .strong(),
-                    );
-                });
+                        .size(STATUS_BAR_FONT_SIZE)
+                        .monospace(),
+                    )
+                    .truncate()
+                    .halign(egui::Align::Center),
+                );
+                ui.add_sized(
+                    [STATUS_BAR_SEPARATOR_WIDTH, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
+                        egui::RichText::new("│").size(STATUS_BAR_FONT_SIZE),
+                    )
+                    .halign(egui::Align::Center),
+                );
+                ui.add_sized(
+                    [STATUS_BAR_SPEED_WIDTH, STATUS_BAR_ROW_HEIGHT],
+                    egui::Label::new(
+                        egui::RichText::new(speed_label).size(STATUS_BAR_FONT_SIZE),
+                    )
+                    .truncate()
+                    .halign(egui::Align::Center),
+                );
             });
         });
 
