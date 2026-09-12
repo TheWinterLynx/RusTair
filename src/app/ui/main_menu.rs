@@ -12,7 +12,12 @@ pub(in crate::app) fn draw_main_menu(app: &mut RusTairApp, ctx: &egui::Context) 
             ui.separator();
             let mut altair_muted = app.audio.altair_muted();
             if ui.checkbox(&mut altair_muted, "Mute Altair").changed() {
-                app.set_altair_audio_muted(altair_muted);
+                app.audio.set_altair_muted(altair_muted);
+                app.status = if altair_muted {
+                    "Altair audio muted".into()
+                } else {
+                    "Altair audio enabled".into()
+                };
             }
         });
     });
@@ -270,11 +275,21 @@ fn draw_settings_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
         ui.menu_button("Audio", |ui| {
             let mut altair_muted = app.audio.altair_muted();
             if ui.checkbox(&mut altair_muted, "Mute Altair").changed() {
-                app.set_altair_audio_muted(altair_muted);
+                app.audio.set_altair_muted(altair_muted);
+                app.status = if altair_muted {
+                    "Altair audio muted".into()
+                } else {
+                    "Altair audio enabled".into()
+                };
             }
             let mut asr33_muted = app.audio.asr33_muted();
             if ui.checkbox(&mut asr33_muted, "Mute ASR-33").changed() {
-                app.set_asr33_audio_muted(asr33_muted);
+                app.audio.set_asr33_muted(asr33_muted);
+                app.status = if asr33_muted {
+                    "ASR-33 audio muted".into()
+                } else {
+                    "ASR-33 audio enabled".into()
+                };
             }
         });
     });
