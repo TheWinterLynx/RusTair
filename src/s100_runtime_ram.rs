@@ -251,9 +251,9 @@ impl RuntimeRamState {
                     self.refresh_active = self.refresh_pending;
                     if self.refresh_active {
                         // MITS documents one or two waits when a selected access
-                        // collides with refresh. The phase relationship decides
-                        // which case: a refresh already pending before SYNC has
-                        // one interval left; the 32nd CLOC arriving with SYNC
+                        // collides with refresh. Keep both phase cases explicit:
+                        // a refresh already pending before SYNC has one interval
+                        // left; a refresh becoming due on that same CLOC/SYNC edge
                         // occupies both documented wait intervals.
                         self.refresh_collision_waits = if became_due_on_this_clock {
                             max_waits
@@ -539,7 +539,9 @@ impl S100ElectricalCard for RuntimeRamCard {
         match state
             .historical_model()
             .map(S100RamBoardModel::timing_model)
-            .unwrap_or(S100RamTimingModel::FixedReadWaits(state.config.read_wait_states()))
+            .unwrap_or(S100RamTimingModel::FixedReadWaits(
+                state.config.read_wait_states(),
+            ))
         {
             S100RamTimingModel::FixedReadWaits(fixed_waits) => {
                 if !memory_read || fixed_waits == 0 {
@@ -605,11 +607,12 @@ mod tests {
         drive
     }
 
-    fn observe(card: &mut RuntimeRamCard, drive: S100CardDrive) -> S100CardDrive {
+    fn observe(card: &mut RuntimeRamCard, drive: S100CardDrive) -> S100BusSample {
         let backplane = S100Backplane::new(0);
-        let observed = backplane.resolve_drive_sets(&[drive.clone()]);
+        let observed = backplane.resolve_drive_sets(&[drive]);
         card.observe_s100(&observed);
-        backplane.resolve_drive_sets(&[drive, card.drive_s100()])
+        let card_drive = card.drive_s100();
+        backplane.resolve_drive_sets(&[drive, card_drive])
     }
 
     fn clock_pulse(card: &mut RuntimeRamCard, address: u16) {
@@ -653,7 +656,7 @@ mod tests {
 
         let backplane = S100Backplane::new(0);
         let master = read_drive(0x0123, false, false);
-        let observed = backplane.resolve_drive_sets(&[master.clone()]);
+        let observed = backplane.resolve_drive_sets(&[master]);
         card.observe_s100(&observed);
         let resolved = backplane.resolve_drive_sets(&[master, card.drive_s100()]);
         assert_eq!(resolved.data_in(), Some(0x5a));
@@ -668,7 +671,7 @@ mod tests {
         bh.write_byte(0x0010, 0xff, false);
         let backplane = S100Backplane::new(0);
         let master = read_drive(0x0010, false, false);
-        let observed = backplane.resolve_drive_sets(&[master.clone()]);
+        let observed = backplane.resolve_drive_sets(&[master]);
         a.observe_s100(&observed);
         b.observe_s100(&observed);
         let resolved = backplane.resolve_drive_sets(&[master, a.drive_s100(), b.drive_s100()]);
@@ -685,7 +688,7 @@ mod tests {
         handle.write_byte(0x1234, 0xa5, false);
         let backplane = S100Backplane::new(0);
         let master = read_drive(0x1234, false, false);
-        let observed = backplane.resolve_drive_sets(&[master.clone()]);
+        let observed = backplane.resolve_drive_sets(&[master]);
         card.observe_s100(&observed);
         let resolved = backplane.resolve_drive_sets(&[master, card.drive_s100()]);
         assert_eq!(resolved.data_in(), Some(0xa5));
@@ -733,11 +736,11 @@ mod tests {
         .unwrap();
         let backplane = S100Backplane::new(0);
         let master = read_drive(0x0010, false, false);
-        let observed = backplane.resolve_drive_sets(&[master.clone()]);
+        let observed = backplane.resolve_drive_sets(&[master]);
         card.observe_s100(&observed);
         assert_eq!(
             backplane
-                .resolve_drive_sets(&[master.clone(), card.drive_s100()])
+                .resolve_drive_sets(&[master, card.drive_s100()])
                 .data_in(),
             Some(0)
         );
@@ -764,22 +767,20 @@ mod tests {
         }
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
-        let unselected_sync = read_drive(0x5000, true, false);
-        let resolved = observe(&mut card, unselected_sync);
+        let resolved = observe(&mut card, read_drive(0x5000, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
 
         for _ in 0..32 {
             clock_pulse(&mut card, 0x0010);
         }
-        let selected_sync = read_drive(0x0010, true, false);
-        let resolved = observe(&mut card, selected_sync);
+        let resolved = observe(&mut card, read_drive(0x0010, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
         assert_eq!(handle.state.borrow().refresh_cycles, 2);
     }
 
     #[test]
-    fn four_mcd_collision_releases_prdy_after_documented_wait_window() {
+    fn four_mcd_pending_before_sync_inserts_one_wait() {
         let (mut card, _handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
             RamInit::Zeroed,
@@ -793,11 +794,30 @@ mod tests {
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
 
         let _ = observe(&mut card, read_drive(0x0010, false, false));
-        let first = observe(&mut card, read_drive(0x0010, false, true));
-        assert_eq!(first.signal_level(S100Signal::Ready), Some(false));
+        let after_one_wait = observe(&mut card, read_drive(0x0010, false, true));
+        assert_eq!(after_one_wait.signal_level(S100Signal::Ready), Some(true));
+    }
+
+    #[test]
+    fn four_mcd_refresh_due_on_sync_inserts_two_waits() {
+        let (mut card, _handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..31 {
+            clock_pulse(&mut card, 0x0010);
+        }
+        let resolved = observe(&mut card, read_drive(0x0010, true, true));
+        assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
+
         let _ = observe(&mut card, read_drive(0x0010, false, false));
-        let second = observe(&mut card, read_drive(0x0010, false, true));
-        assert_eq!(second.signal_level(S100Signal::Ready), Some(true));
+        let first_wait = observe(&mut card, read_drive(0x0010, false, true));
+        assert_eq!(first_wait.signal_level(S100Signal::Ready), Some(false));
+        let _ = observe(&mut card, read_drive(0x0010, false, false));
+        let second_wait = observe(&mut card, read_drive(0x0010, false, true));
+        assert_eq!(second_wait.signal_level(S100Signal::Ready), Some(true));
     }
 
     #[test]
