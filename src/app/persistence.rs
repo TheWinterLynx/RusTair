@@ -41,7 +41,8 @@ pub(super) struct SavedSettings {
     pub(super) tape_bit_order: TapeBitOrder,
     pub(super) led_brightness: f32,
     pub(super) led_aura: f32,
-    pub(super) muted: bool,
+    pub(super) altair_muted: bool,
+    pub(super) asr33_muted: bool,
 }
 
 impl Default for SavedSettings {
@@ -63,7 +64,8 @@ impl Default for SavedSettings {
             tape_bit_order: TapeBitOrder::Historical8To1,
             led_brightness: DEFAULT_LED_BRIGHTNESS,
             led_aura: DEFAULT_LED_AURA,
-            muted: false,
+            altair_muted: false,
+            asr33_muted: false,
         }
     }
 }
@@ -428,9 +430,22 @@ impl SavedSettings {
                         }
                     }
                 }
+                // Legacy global mute meant both physical sound sources were
+                // silent. Keep it as a read-only migration input.
                 "audio.muted" => {
                     if let Ok(v) = value.parse() {
-                        saved.muted = v;
+                        saved.altair_muted = v;
+                        saved.asr33_muted = v;
+                    }
+                }
+                "audio.altair_muted" => {
+                    if let Ok(v) = value.parse() {
+                        saved.altair_muted = v;
+                    }
+                }
+                "audio.asr33_muted" => {
+                    if let Ok(v) = value.parse() {
+                        saved.asr33_muted = v;
                     }
                 }
                 _ => {}
@@ -613,7 +628,8 @@ impl SavedSettings {
         let _ = writeln!(out, "terminal.uppercase={}", self.terminal_uppercase);
         let _ = writeln!(out, "led.brightness={:.3}", self.led_brightness);
         let _ = writeln!(out, "led.aura={:.3}", self.led_aura);
-        let _ = writeln!(out, "audio.muted={}", self.muted);
+        let _ = writeln!(out, "audio.altair_muted={}", self.altair_muted);
+        let _ = writeln!(out, "audio.asr33_muted={}", self.asr33_muted);
         out
     }
 
@@ -753,7 +769,8 @@ impl RusTairApp {
         self.terminal.uppercase = saved.terminal_uppercase;
         self.terminal.speed = self.config.peripherals.terminal_speed;
         self.tty.set_mode(saved.tty_mode);
-        self.audio.set_muted(saved.muted);
+        self.audio.set_altair_muted(saved.altair_muted);
+        self.audio.set_asr33_muted(saved.asr33_muted);
         self.last_tick = Instant::now();
 
         let serial = hardware
@@ -791,7 +808,8 @@ impl RusTairApp {
             tape_bit_order: self.asr33.tape_bit_order,
             led_brightness: led_brightness.clamp(0.25, 3.0),
             led_aura: led_aura.clamp(0.0, 3.0),
-            muted: self.audio.muted(),
+            altair_muted: self.audio.altair_muted(),
+            asr33_muted: self.audio.asr33_muted(),
         }
     }
 
@@ -1314,16 +1332,40 @@ mod tests {
         saved.tape_bit_order = TapeBitOrder::Reversed1To8;
         saved.led_brightness = 1.37;
         saved.led_aura = 2.15;
-        saved.muted = true;
+        saved.altair_muted = true;
+        saved.asr33_muted = false;
 
         let decoded = SavedSettings::from_text(&saved.to_text());
         assert_eq!(decoded, saved);
     }
 
     #[test]
+    fn legacy_global_audio_mute_migrates_to_both_independent_domains() {
+        let decoded = SavedSettings::from_text("audio.muted=true\n");
+        assert!(decoded.altair_muted);
+        assert!(decoded.asr33_muted);
+        let rewritten = decoded.to_text();
+        assert!(rewritten.contains("audio.altair_muted=true"));
+        assert!(rewritten.contains("audio.asr33_muted=true"));
+        assert!(!rewritten.lines().any(|line| line.starts_with("audio.muted=")));
+    }
+
+    #[test]
+    fn independent_audio_mutes_round_trip_without_collapsing() {
+        let decoded = SavedSettings::from_text(
+            "audio.altair_muted=true\naudio.asr33_muted=false\n",
+        );
+        assert!(decoded.altair_muted);
+        assert!(!decoded.asr33_muted);
+        assert_eq!(SavedSettings::from_text(&decoded.to_text()), decoded);
+    }
+
+    #[test]
     fn obsolete_engine_key_is_ignored_and_not_rewritten() {
         let decoded = SavedSettings::from_text(
-            "engine=anything\npreferences.emulation_speed=5x\n",
+            "engine=anything\
+preferences.emulation_speed=5x\
+",
         );
         assert_eq!(
             decoded.config.preferences.emulation_speed,
@@ -1338,7 +1380,11 @@ mod tests {
     #[test]
     fn legacy_config_without_slot_inventory_is_migrated_from_old_globals() {
         let decoded = SavedSettings::from_text(
-            "machine.cpu_model=intel8080\nmachine.ram_size=48k\nmachine.ram_board_profile=mits-1k-static-1975\nmachine.serial_board=88-2sio\n",
+            "machine.cpu_model=intel8080\
+machine.ram_size=48k\
+machine.ram_board_profile=mits-1k-static-1975\
+machine.serial_board=88-2sio\
+",
         );
         let hardware = decoded.config.machine.s100_hardware;
         assert_eq!(hardware.installed_ram_bytes(), 48 * 1024);
@@ -1363,7 +1409,10 @@ mod tests {
     fn current_slot_inventory_wins_over_stale_aggregate_serial_keys() {
         let physical = S100HardwareConfig::default().persistence_key();
         let text = format!(
-            "machine.serial_board=88-2sio\nmachine.two_sio_base=44\nmachine.s100_hardware={physical}\n"
+            "machine.serial_board=88-2sio\
+machine.two_sio_base=44\
+machine.s100_hardware={physical}\
+"
         );
         let decoded = SavedSettings::from_text(&text);
         assert_eq!(
@@ -1378,14 +1427,17 @@ mod tests {
 
     #[test]
     fn old_or_invalid_sio_hardware_keeps_safe_atomic_migration_default() {
-        let old = SavedSettings::from_text("machine.serial_board=88-sio\n");
+        let old = SavedSettings::from_text("machine.serial_board=88-sio\
+");
         assert_eq!(
             old.config.machine.s100_hardware.active_sio_hardware(),
             Some(SioHardwareConfig::default())
         );
 
         let invalid = SavedSettings::from_text(
-            "machine.serial_board=88-sio\nmachine.sio_hardware=rev0,a-rs232,07,9600,7,even,1\n",
+            "machine.serial_board=88-sio\
+machine.sio_hardware=rev0,a-rs232,07,9600,7,even,1\
+",
         );
         assert_eq!(
             invalid.config.machine.s100_hardware.active_sio_hardware(),
@@ -1396,7 +1448,10 @@ mod tests {
     #[test]
     fn persisted_invalid_two_sio_block_cannot_override_safe_migration_default() {
         let decoded = SavedSettings::from_text(
-            "machine.serial_board=88-2sio\nmachine.two_sio_base=FC\nmachine.two_sio_port0_baud=300\n",
+            "machine.serial_board=88-2sio\
+machine.two_sio_base=FC\
+machine.two_sio_port0_baud=300\
+",
         );
         let straps = decoded
             .config
@@ -1410,7 +1465,8 @@ mod tests {
 
     #[test]
     fn old_or_invalid_two_sio_signal_wiring_keeps_safe_physical_defaults() {
-        let old = SavedSettings::from_text("machine.serial_board=88-2sio\n");
+        let old = SavedSettings::from_text("machine.serial_board=88-2sio\
+");
         let old_straps = old
             .config
             .machine
@@ -1421,7 +1477,10 @@ mod tests {
         assert_eq!(old_straps.port1_interface, TwoSioSignalInterface::Rs232);
 
         let invalid = SavedSettings::from_text(
-            "machine.serial_board=88-2sio\nmachine.two_sio_port0_interface=usb\nmachine.two_sio_port1_interface=ttl\n",
+            "machine.serial_board=88-2sio\
+machine.two_sio_port0_interface=usb\
+machine.two_sio_port1_interface=ttl\
+",
         );
         let invalid_straps = invalid
             .config
@@ -1496,7 +1555,8 @@ mod tests {
 
     #[test]
     fn old_or_invalid_interrupt_wiring_keeps_safe_migration_default() {
-        let old = SavedSettings::from_text("machine.serial_board=88-2sio\n");
+        let old = SavedSettings::from_text("machine.serial_board=88-2sio\
+");
         let old_wiring = old
             .config
             .machine
@@ -1507,7 +1567,10 @@ mod tests {
         assert_eq!(old_wiring.port1, TwoSioInterruptTarget::Pint);
 
         let invalid = SavedSettings::from_text(
-            "machine.serial_board=88-2sio\nmachine.two_sio_port0_irq=rst7\nmachine.two_sio_port1_irq=vi6\n",
+            "machine.serial_board=88-2sio\
+machine.two_sio_port0_irq=rst7\
+machine.two_sio_port1_irq=vi6\
+",
         );
         let invalid_wiring = invalid
             .config
@@ -1527,6 +1590,8 @@ mod tests {
         assert_eq!(saved.reader_speed, TapeTransportSpeed::Historical1x);
         assert_eq!(saved.punch_speed, TapeTransportSpeed::Historical1x);
         assert_eq!(saved.tape_bit_order, TapeBitOrder::Historical8To1);
+        assert!(!saved.altair_muted);
+        assert!(!saved.asr33_muted);
     }
 
     #[test]
@@ -1569,6 +1634,9 @@ mod tests {
         assert!(text.contains("asr33.reader_speed=1x"));
         assert!(text.contains("asr33.punch_speed=1x"));
         assert!(text.contains("asr33.tape_visual_order=8to1"));
+        assert!(text.contains("audio.altair_muted=false"));
+        assert!(text.contains("audio.asr33_muted=false"));
+        assert!(!text.lines().any(|line| line.starts_with("audio.muted=")));
         assert!(!dir.join(".config.ini.tmp").exists());
         let _ = fs::remove_dir_all(dir);
     }
