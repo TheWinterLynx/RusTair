@@ -1129,7 +1129,7 @@ mod tests {
                 }),
             )
             .unwrap();
-        config
+        hardware
     }
 
     #[test]
