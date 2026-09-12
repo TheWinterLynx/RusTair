@@ -105,6 +105,7 @@ struct RuntimeRamState {
     previous_clock: bool,
     previous_phi2: bool,
     previous_m1: bool,
+    previous_data_bus_in: bool,
     previous_memory_read: bool,
     previous_protect: bool,
     previous_unprotect: bool,
@@ -114,6 +115,8 @@ struct RuntimeRamState {
     refresh_collision_waits: u8,
     #[cfg(test)]
     refresh_cycles: u64,
+    /// Full needs to know whether an internal T-state is the hidden T4 of the
+    /// current semantic M1. Exact Partial locates the same slot from pDBIN.
     m1_phi2_count: u8,
     /// Physical connector output is persistent state. Rebuilding eight DI pins
     /// plus PRDY/PROT on every observation was pure host work when those outputs
@@ -138,6 +141,7 @@ impl RuntimeRamState {
             previous_clock: false,
             previous_phi2: false,
             previous_m1: false,
+            previous_data_bus_in: false,
             previous_memory_read: false,
             previous_protect: false,
             previous_unprotect: false,
@@ -225,7 +229,7 @@ impl RuntimeRamState {
         clock_rising: bool,
         phi2_rising: bool,
         m1: bool,
-        m1_rising: bool,
+        data_bus_in_falling: bool,
         run: bool,
         halt_ack: bool,
     ) {
@@ -253,11 +257,6 @@ impl RuntimeRamState {
                 if sync_rising {
                     self.refresh_active = self.refresh_pending;
                     if self.refresh_active {
-                        // MITS documents one or two waits when a selected access
-                        // collides with refresh. Keep both phase cases explicit:
-                        // a refresh already pending before SYNC has one interval
-                        // left; a refresh becoming due on that same CLOC/SYNC edge
-                        // occupies both documented wait intervals.
                         self.refresh_collision_waits = if became_due_on_this_clock {
                             max_waits
                         } else {
@@ -270,38 +269,28 @@ impl RuntimeRamState {
                 }
             }
             Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
-                if m1_rising {
-                    self.m1_phi2_count = 0;
-                }
                 if phi2_rising {
                     self.refresh_clock_count += 1;
                     if self.refresh_clock_count >= S4K_REFRESH_PHI2_EDGES {
                         self.refresh_clock_count = 0;
                         self.refresh_pending = true;
                     }
-                    if m1 {
-                        self.m1_phi2_count = self.m1_phi2_count.saturating_add(1);
-                    }
+                }
 
-                    // The 88-S4K hides refresh on the fourth PHI2 of sM1 while
-                    // RUNning. A request that becomes pending on a later M1 edge
-                    // must wait for the next M1 instead of being pulled backward
-                    // in time into the already-passed T4 slot.
-                    let hidden_m1_slot = run && m1 && self.m1_phi2_count == 4;
-                    let parked_refresh_slot = (!run || halt_ack) && self.refresh_pending;
-                    if self.refresh_pending && (hidden_m1_slot || parked_refresh_slot) {
-                        self.complete_refresh_cycle();
-                    }
+                // Later MITS artwork (the November 1976 factory correction)
+                // identifies the hidden T4 from the trailing edge of pDBIN while
+                // sM1 is asserted. This remains exact even when sM1 never drops
+                // between adjacent fetch cycles and when WAIT extends T2/TW.
+                let hidden_m1_t4 = run && m1 && data_bus_in_falling;
+                let parked_refresh_slot = (!run || halt_ack) && phi2_rising;
+                if self.refresh_pending && (hidden_m1_t4 || parked_refresh_slot) {
+                    self.complete_refresh_cycle();
                 }
             }
             _ => {}
         }
     }
 
-    /// Advance the 88-4MCD's free-running CLOC divider without fabricating an
-    /// S-100 transaction. Cycle Full uses this only for T-states it has already
-    /// proven semantically and electrically; a pending refresh is still consumed
-    /// solely by the next real/synthesized machine-cycle SYNC below.
     fn full_advance_four_mcd_clocks(&mut self, clocks: u32) {
         if clocks == 0 {
             return;
@@ -320,10 +309,6 @@ impl RuntimeRamState {
         self.refresh_clock_count = (total % interval) as u16;
     }
 
-    /// Cycle Full equivalent of one physical 88-4MCD machine cycle. T1 owns a
-    /// CLOC rising edge and SYNC; an already-pending refresh therefore costs one
-    /// TW, while a refresh becoming due on that same edge costs two. The waits
-    /// themselves are real T-states and feed the divider before the next cycle.
     fn full_four_mcd_machine_cycle(
         &mut self,
         address: u16,
@@ -361,8 +346,6 @@ impl RuntimeRamState {
         if refresh_at_sync {
             self.complete_refresh_cycle();
         }
-        // Full consumes every returned TW inside this machine cycle, so no low
-        // PRDY state may leak across the semantic/physical rejoin boundary.
         self.refresh_active = false;
         self.refresh_collision_waits = 0;
         self.wait_clocks_remaining = 0;
@@ -376,20 +359,20 @@ impl RuntimeRamState {
         u32::from(waits)
     }
 
-    /// Arithmetic PHI2 fast-forward for the 88-S4K. Full calls this in chunks
-    /// smaller than one 64-edge divider period, so at most one new request can
-    /// arise. Only a request pending by the fourth PHI2 of sM1 is consumed there;
-    /// a request born on a later M1 edge remains pending for the next M1.
-    fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool) {
+    /// Arithmetic PHI2 fast-forward for the corrected 88-S4K. A semantic M1
+    /// callback is an exact machine-cycle boundary even if the latched sM1 bus
+    /// level remains high across adjacent fetches. Internal T-states continue
+    /// that same M1 without resetting the T4 position.
+    fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool, new_machine_cycle: bool) {
+        if m1 && new_machine_cycle {
+            self.m1_phi2_count = 0;
+        }
         if edges == 0 {
             self.previous_m1 = m1;
             self.previous_phi2 = false;
             return;
         }
         debug_assert!(edges < u32::from(S4K_REFRESH_PHI2_EDGES));
-        if m1 && !self.previous_m1 {
-            self.m1_phi2_count = 0;
-        }
 
         let pending_before = self.refresh_pending;
         let count_before = u32::from(self.refresh_clock_count);
@@ -429,17 +412,13 @@ impl RuntimeRamState {
     ) -> u32 {
         match self.historical_model() {
             Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
-                let waits = self.full_four_mcd_machine_cycle(
-                    address,
-                    memory_access,
-                    base_t_states,
-                );
+                let waits = self.full_four_mcd_machine_cycle(address, memory_access, base_t_states);
                 self.previous_m1 = m1;
                 self.previous_phi2 = false;
                 waits
             }
             Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
-                self.full_advance_s4k_phi2(base_t_states, m1);
+                self.full_advance_s4k_phi2(base_t_states, m1, true);
                 0
             }
             _ => 0,
@@ -455,7 +434,7 @@ impl RuntimeRamState {
                 self.full_advance_four_mcd_clocks(t_states);
             }
             Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
-                self.full_advance_s4k_phi2(t_states, self.previous_m1);
+                self.full_advance_s4k_phi2(t_states, self.previous_m1, false);
             }
             _ => {}
         }
@@ -503,6 +482,7 @@ impl RuntimeRamState {
         self.previous_clock = false;
         self.previous_phi2 = false;
         self.previous_m1 = false;
+        self.previous_data_bus_in = false;
         self.previous_memory_read = false;
         self.previous_protect = false;
         self.previous_unprotect = false;
@@ -586,9 +566,6 @@ impl RuntimeRamHandle {
         len
     }
 
-    /// Cycle Full timing path for an already decoded external machine cycle.
-    /// This mutates the same physical card state used by exact Partial; there is
-    /// no shadow refresh clock to reconcile later.
     pub(crate) fn full_machine_cycle_timing(
         &self,
         address: u16,
@@ -604,8 +581,6 @@ impl RuntimeRamHandle {
         )
     }
 
-    /// Advance internal CPU T-states which retain the previous 8212 status and
-    /// therefore still clock dynamic RAM refresh logic without a new SYNC.
     pub(crate) fn full_internal_t_states(&self, t_states: u32) {
         self.state.borrow_mut().full_internal_t_states(t_states);
     }
@@ -621,10 +596,7 @@ impl RuntimeRamCard {
         init: RamInit,
     ) -> Result<(Self, RuntimeRamHandle), crate::s100_memory::S100RamConfigError> {
         let config = config.validate()?;
-        Ok(Self::from_config(
-            RuntimeRamConfig::Historical(config),
-            init,
-        ))
+        Ok(Self::from_config(RuntimeRamConfig::Historical(config), init))
     }
 
     pub fn compatibility(
@@ -632,20 +604,12 @@ impl RuntimeRamCard {
         init: RamInit,
     ) -> Result<(Self, RuntimeRamHandle), crate::config::S100HardwareConfigError> {
         let config = config.validate()?;
-        Ok(Self::from_config(
-            RuntimeRamConfig::Compatibility(config),
-            init,
-        ))
+        Ok(Self::from_config(RuntimeRamConfig::Compatibility(config), init))
     }
 
     fn from_config(config: RuntimeRamConfig, init: RamInit) -> (Self, RuntimeRamHandle) {
         let state = Rc::new(RefCell::new(RuntimeRamState::new(config, init)));
-        (
-            Self {
-                state: Rc::clone(&state),
-            },
-            RuntimeRamHandle { state },
-        )
+        (Self { state: Rc::clone(&state) }, RuntimeRamHandle { state })
     }
 
     fn descriptor_for(config: RuntimeRamConfig) -> &'static S100CardDescriptor {
@@ -677,6 +641,7 @@ impl S100ElectricalCard for RuntimeRamCard {
         let clock = sample.signal_level(S100Signal::Clock) == Some(true);
         let phi2 = sample.signal_level(S100Signal::Phi2) == Some(true);
         let m1 = sample.signal_level(S100Signal::M1) == Some(true);
+        let data_bus_in = sample.signal_level(S100Signal::DataBusIn) == Some(true);
         let run = sample.signal_level(S100Signal::Run) == Some(true);
         let halt_ack = sample.signal_level(S100Signal::HaltAcknowledge) == Some(true);
         let protect = sample.signal_level(S100Signal::Protect) == Some(true);
@@ -684,7 +649,7 @@ impl S100ElectricalCard for RuntimeRamCard {
         let sync_rising = sync && !state.previous_sync;
         let clock_rising = clock && !state.previous_clock;
         let phi2_rising = phi2 && !state.previous_phi2;
-        let m1_rising = m1 && !state.previous_m1;
+        let data_bus_in_falling = !data_bus_in && state.previous_data_bus_in;
 
         state.selected_offset = sample
             .address()
@@ -700,13 +665,11 @@ impl S100ElectricalCard for RuntimeRamCard {
             clock_rising,
             phi2_rising,
             m1,
-            m1_rising,
+            data_bus_in_falling,
             run,
             halt_ack,
         );
 
-        // The Display/Control board generates MWRT. A selected RAM card sees the
-        // resulting bus line; it does not infer writes from CPU package state.
         if let (Some(address), Some(value)) = (sample.address(), sample.data_out()) {
             if memory_write {
                 let _ = state.write_byte_raw(address, value, true);
@@ -727,21 +690,14 @@ impl S100ElectricalCard for RuntimeRamCard {
         match state
             .historical_model()
             .map(S100RamBoardModel::timing_model)
-            .unwrap_or(S100RamTimingModel::FixedReadWaits(
-                state.config.read_wait_states(),
-            ))
+            .unwrap_or(S100RamTimingModel::FixedReadWaits(state.config.read_wait_states()))
         {
             S100RamTimingModel::FixedReadWaits(fixed_waits) => {
                 if !memory_read || fixed_waits == 0 {
                     state.wait_clocks_remaining = 0;
                 } else if sync_rising || (!state.previous_memory_read && sync) {
-                    // sMEMR is produced by the CPU-board 8212 *after* SYNC+PHI1.
-                    // The second condition models that same-edge propagation without
-                    // asking the RAM card to predict the CPU status byte before it exists.
                     state.wait_clocks_remaining = fixed_waits;
                 } else if clock_rising && !sync && state.wait_clocks_remaining != 0 {
-                    // The status/SYNC phase loads the wait generator. Its coincident
-                    // CLOC edge is not one of the inserted TW intervals.
                     state.wait_clocks_remaining -= 1;
                 }
             }
@@ -755,9 +711,6 @@ impl S100ElectricalCard for RuntimeRamCard {
                         state.refresh_collision_waits = 0;
                     }
                 } else if state.selected_offset.is_none() {
-                    // A refresh whose SYNC did not select this card cannot turn
-                    // into a later false collision merely because the next bus
-                    // cycle happens to address the board.
                     state.wait_clocks_remaining = 0;
                     state.refresh_active = false;
                     state.refresh_collision_waits = 0;
@@ -774,6 +727,7 @@ impl S100ElectricalCard for RuntimeRamCard {
         state.previous_clock = clock;
         state.previous_phi2 = phi2;
         state.previous_m1 = m1;
+        state.previous_data_bus_in = data_bus_in;
         state.previous_protect = protect;
         state.previous_unprotect = unprotect;
         state.refresh_cached_drive_if_changed(before);
@@ -825,13 +779,21 @@ mod tests {
         let _ = observe(card, read_drive(address, false, false));
     }
 
-    fn s4k_drive(address: u16, phi2: bool, m1: bool, run: bool, halt_ack: bool) -> S100CardDrive {
+    fn s4k_drive(
+        address: u16,
+        phi2: bool,
+        m1: bool,
+        data_bus_in: bool,
+        run: bool,
+        halt_ack: bool,
+    ) -> S100CardDrive {
         let mut drive = S100CardDrive::new();
         drive.drive_address(address);
         drive.drive_signal(S100Signal::MemoryRead, true);
         drive.drive_signal(S100Signal::MemoryWrite, false);
         drive.drive_signal(S100Signal::Phi2, phi2);
         drive.drive_signal(S100Signal::M1, m1);
+        drive.drive_signal(S100Signal::DataBusIn, data_bus_in);
         drive.drive_signal(S100Signal::Run, run);
         drive.drive_signal(S100Signal::HaltAcknowledge, halt_ack);
         drive
@@ -841,12 +803,13 @@ mod tests {
         card: &mut RuntimeRamCard,
         address: u16,
         m1: bool,
+        data_bus_in: bool,
         run: bool,
         halt_ack: bool,
     ) {
-        let _ = observe(card, s4k_drive(address, false, m1, run, halt_ack));
-        let _ = observe(card, s4k_drive(address, true, m1, run, halt_ack));
-        let _ = observe(card, s4k_drive(address, false, m1, run, halt_ack));
+        let _ = observe(card, s4k_drive(address, false, m1, data_bus_in, run, halt_ack));
+        let _ = observe(card, s4k_drive(address, true, m1, data_bus_in, run, halt_ack));
+        let _ = observe(card, s4k_drive(address, false, m1, data_bus_in, run, halt_ack));
     }
 
     #[test]
@@ -896,10 +859,7 @@ mod tests {
         card.observe_s100(&observed);
         let resolved = backplane.resolve_drive_sets(&[master, card.drive_s100()]);
         assert_eq!(resolved.data_in(), Some(0xa5));
-        assert!(matches!(
-            handle.config(),
-            RuntimeRamConfig::Compatibility(_)
-        ));
+        assert!(matches!(handle.config(), RuntimeRamConfig::Compatibility(_)));
     }
 
     #[test]
@@ -943,17 +903,13 @@ mod tests {
         let observed = backplane.resolve_drive_sets(&[master]);
         card.observe_s100(&observed);
         assert_eq!(
-            backplane
-                .resolve_drive_sets(&[master, card.drive_s100()])
-                .data_in(),
+            backplane.resolve_drive_sets(&[master, card.drive_s100()]).data_in(),
             Some(0)
         );
 
         assert!(handle.write_byte(0x0010, 0x5a, false));
         assert_eq!(
-            backplane
-                .resolve_drive_sets(&[master, card.drive_s100()])
-                .data_in(),
+            backplane.resolve_drive_sets(&[master, card.drive_s100()]).data_in(),
             Some(0x5a)
         );
     }
@@ -991,13 +947,9 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
-        for _ in 0..32 {
-            clock_pulse(&mut card, 0x0010);
-        }
+        for _ in 0..32 { clock_pulse(&mut card, 0x0010); }
         let resolved = observe(&mut card, read_drive(0x0010, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
-
         let _ = observe(&mut card, read_drive(0x0010, false, false));
         let after_one_wait = observe(&mut card, read_drive(0x0010, false, true));
         assert_eq!(after_one_wait.signal_level(S100Signal::Ready), Some(true));
@@ -1010,13 +962,9 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
-        for _ in 0..31 {
-            clock_pulse(&mut card, 0x0010);
-        }
+        for _ in 0..31 { clock_pulse(&mut card, 0x0010); }
         let resolved = observe(&mut card, read_drive(0x0010, true, true));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
-
         let _ = observe(&mut card, read_drive(0x0010, false, false));
         let first_wait = observe(&mut card, read_drive(0x0010, false, true));
         assert_eq!(first_wait.signal_level(S100Signal::Ready), Some(false));
@@ -1032,17 +980,12 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
-        for _ in 0..32 {
-            clock_pulse(&mut card, 0x0010);
-        }
-        // SYNC announces the cycle before Display/Control generates MWRT.
+        for _ in 0..32 { clock_pulse(&mut card, 0x0010); }
         let at_sync = observe(&mut card, write_drive(0x0010, true, false, false));
         assert_eq!(at_sync.signal_level(S100Signal::Ready), Some(true));
         let at_mwrt = observe(&mut card, write_drive(0x0010, false, false, true));
         assert_eq!(at_mwrt.signal_level(S100Signal::Ready), Some(false));
         assert_eq!(handle.read_byte(0x0010), Some(0x5a));
-
         let released = observe(&mut card, write_drive(0x0010, false, true, true));
         assert_eq!(released.signal_level(S100Signal::Ready), Some(true));
     }
@@ -1054,11 +997,9 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
         handle.full_internal_t_states(31);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 2);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
-
         handle.initialize(RamInit::Zeroed);
         handle.full_internal_t_states(32);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 1);
@@ -1066,55 +1007,46 @@ mod tests {
     }
 
     #[test]
-    fn s4k_refresh_is_hidden_in_m1_and_never_pulls_prdy() {
+    fn s4k_refresh_uses_pdbin_falling_edge_as_hidden_t4() {
         let (mut card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
             RamInit::Zeroed,
         )
         .unwrap();
-
         for _ in 0..S4K_REFRESH_PHI2_EDGES {
-            s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+            s4k_phi2_pulse(&mut card, 0x0010, false, false, true, false);
         }
         assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
-        for _ in 0..4 {
-            let resolved = observe(&mut card, s4k_drive(0x0010, true, true, true, false));
-            assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
-            let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, false));
-        }
+        let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
+        let resolved = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
+        assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
         assert!(!handle.state.borrow().refresh_pending);
     }
 
     #[test]
-    fn s4k_refresh_due_after_t4_waits_for_the_next_m1() {
+    fn s4k_request_after_pdbin_fall_waits_for_next_m1_t4() {
         let (mut card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
             RamInit::Zeroed,
         )
         .unwrap();
-
-        for _ in 0..59 {
-            s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+        for _ in 0..63 {
+            s4k_phi2_pulse(&mut card, 0x0010, false, false, true, false);
         }
-        for _ in 0..4 {
-            s4k_phi2_pulse(&mut card, 0x0010, true, true, false);
-        }
-        assert!(!handle.state.borrow().refresh_pending);
+        let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
+        let _ = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
+        assert!(!handle.state.borrow().refresh_pending);
 
-        // The request is born on M1/T5. T4 has already passed, so it must not
-        // be serviced retroactively in this M1.
-        s4k_phi2_pulse(&mut card, 0x0010, true, true, false);
+        s4k_phi2_pulse(&mut card, 0x0010, true, false, true, false);
         assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
-        s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
-        for _ in 0..4 {
-            s4k_phi2_pulse(&mut card, 0x0010, true, true, false);
-        }
+        let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
+        let _ = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
         assert!(!handle.state.borrow().refresh_pending);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
     }
@@ -1126,9 +1058,7 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
-        handle.full_internal_t_states(63);
-        handle.full_internal_t_states(1);
+        handle.full_internal_t_states(64);
         assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
@@ -1142,14 +1072,12 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
         handle.full_internal_t_states(59);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
         assert!(!handle.state.borrow().refresh_pending);
         handle.full_internal_t_states(1);
         assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.state.borrow().refresh_cycles, 0);
-
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, false, 3), 0);
         assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
@@ -1164,12 +1092,11 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-
         for _ in 0..S4K_REFRESH_PHI2_EDGES {
-            s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+            s4k_phi2_pulse(&mut card, 0x0010, false, false, true, false);
         }
         assert!(handle.state.borrow().refresh_pending);
-        s4k_phi2_pulse(&mut card, 0x0010, false, false, false);
+        s4k_phi2_pulse(&mut card, 0x0010, false, false, false, false);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
         assert!(!handle.state.borrow().refresh_pending);
     }
