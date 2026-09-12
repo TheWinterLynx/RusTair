@@ -125,6 +125,8 @@ fn card_persistence_key(card: S100InstalledCardConfig) -> String {
             interrupt_wiring.port0.persistence_key(),
             interrupt_wiring.port1.persistence_key(),
         ),
+        S100InstalledCardConfig::Mits88DcddBoard1 => "dcdd1".to_owned(),
+        S100InstalledCardConfig::Mits88DcddBoard2 => "dcdd2".to_owned(),
         S100InstalledCardConfig::FastRamCompatibility(config) => format!(
             "fast,{:04X},{},{}",
             config.base_address, config.populated_bytes, config.read_wait_states
@@ -138,6 +140,12 @@ fn parse_card_persistence_key(value: &str) -> Option<Option<S100InstalledCardCon
     }
     if value == "cpu" {
         return Some(Some(S100InstalledCardConfig::Mits8080Cpu));
+    }
+    if value == "dcdd1" {
+        return Some(Some(S100InstalledCardConfig::Mits88DcddBoard1));
+    }
+    if value == "dcdd2" {
+        return Some(Some(S100InstalledCardConfig::Mits88DcddBoard2));
     }
     if let Some(value) = value.strip_prefix("sio,") {
         return Some(Some(S100InstalledCardConfig::Mits88Sio(
@@ -222,6 +230,7 @@ mod tests {
         )
         .is_none());
         assert!(S100HardwareConfig::from_persistence_key("8800b|6|-;-;-;-;-;-").is_none());
+        assert!(S100HardwareConfig::from_persistence_key("8800b|6|cpu;dcdd1;-;-;-;-").is_none());
     }
 
     #[test]
@@ -246,6 +255,19 @@ mod tests {
         )
         .unwrap();
         let encoded = config.persistence_key();
+        assert_eq!(S100HardwareConfig::from_persistence_key(&encoded), Some(config));
+    }
+
+    #[test]
+    fn dcdd_two_board_assembly_survives_atomic_round_trip() {
+        let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        config.set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
+        config.set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        let config = config.validate().unwrap();
+        let encoded = config.persistence_key();
+
+        assert!(encoded.contains(";dcdd1;dcdd2;"));
         assert_eq!(S100HardwareConfig::from_persistence_key(&encoded), Some(config));
     }
 }
