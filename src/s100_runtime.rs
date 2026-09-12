@@ -8,7 +8,7 @@ use crate::config::{
     MAX_S100_SLOTS, RamInit, S100HardwareConfig, S100HardwareConfigError, S100InstalledCardConfig,
 };
 use crate::cpu8080_cycle::{Cpu8080Inputs, Cpu8080Pins};
-use crate::machine::RuntimeSerialCardHandle;
+use crate::machine::{Mits88DcddHarness, RuntimeSerialCardHandle};
 use crate::s100::S100Signal;
 use crate::s100_backplane::{
     S100Backplane, S100BackplaneError, S100BusSample, S100CardDrive, S100SlotMask, s100_slot_mask,
@@ -118,6 +118,11 @@ pub struct S100RuntimeFabric {
     cpu: Mits8080CpuBoardHandle,
     ram: Vec<RuntimeRamSlot>,
     serial: Vec<RuntimeSerialSlot>,
+    /// Owns the one physical 88-DCDD controller harness when the validated
+    /// chassis contains the documented adjacent Board #1 / Board #2 pair. The
+    /// cards themselves hold clones of this same copper/electronics boundary;
+    /// neither board contains a software reference to the other.
+    _dcdd_harness: Option<Mits88DcddHarness>,
     /// Serial UART state may currently advance through its host endpoint handle
     /// between bus edges. Refresh these physical slots once when a new edge or
     /// Fast transaction phase begins; subsequent zero-time deltas use the cached
@@ -160,6 +165,9 @@ impl S100RuntimeFabric {
         let mut cpu_handle = None;
         let mut ram = Vec::new();
         let mut serial = Vec::new();
+        let dcdd_harness = hardware
+            .dcdd_controller_slots()
+            .map(|_| Mits88DcddHarness::new());
 
         for (slot, config) in hardware.installed_cards() {
             match config {
@@ -217,6 +225,22 @@ impl S100RuntimeFabric {
                         .map_err(S100RuntimeBuildError::Backplane)?;
                     serial.push(RuntimeSerialSlot { slot, handle });
                 }
+                S100InstalledCardConfig::Mits88DcddBoard1 => {
+                    let harness = dcdd_harness
+                        .as_ref()
+                        .expect("validated 88-DCDD Board #1 must have one physical harness");
+                    backplane
+                        .insert(slot, harness.board1_card())
+                        .map_err(S100RuntimeBuildError::Backplane)?;
+                }
+                S100InstalledCardConfig::Mits88DcddBoard2 => {
+                    let harness = dcdd_harness
+                        .as_ref()
+                        .expect("validated 88-DCDD Board #2 must have one physical harness");
+                    backplane
+                        .insert(slot, harness.board2_card())
+                        .map_err(S100RuntimeBuildError::Backplane)?;
+                }
             }
         }
 
@@ -246,6 +270,7 @@ impl S100RuntimeFabric {
             cpu,
             ram,
             serial,
+            _dcdd_harness: dcdd_harness,
             externally_mutable_slots,
             last_settled_display: None,
             display_drive_cache: None,
@@ -1111,6 +1136,17 @@ mod tests {
         hardware
     }
 
+    fn dcdd_hardware() -> S100HardwareConfig {
+        let mut hardware = simple_hardware();
+        hardware
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
+        hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
+        hardware.validate().unwrap()
+    }
+
     #[test]
     fn configured_cpu_and_ram_are_live_slots_on_one_backplane() {
         let fabric = S100RuntimeFabric::new(simple_hardware(), RamInit::Zeroed).unwrap();
@@ -1142,6 +1178,24 @@ mod tests {
         for port in 0x10..=0x13 {
             assert_eq!(fabric.io_responder_mask(port), s100_slot_mask(4));
         }
+    }
+
+    #[test]
+    fn phase1_dcdd_pair_is_two_live_cards_on_one_shared_runtime_fabric() {
+        let fabric = S100RuntimeFabric::new(dcdd_hardware(), RamInit::Zeroed).unwrap();
+        assert_eq!(
+            fabric.backplane().slots()[2].descriptor().unwrap().key,
+            "mits-88-dcdd-board-1"
+        );
+        assert_eq!(
+            fabric.backplane().slots()[3].descriptor().unwrap().key,
+            "mits-88-dcdd-board-2"
+        );
+        assert!(fabric._dcdd_harness.is_some());
+        assert_eq!(fabric.io_responder_mask(0x08), 0);
+        assert_eq!(fabric.io_responder_mask(0x09), 0);
+        assert_eq!(fabric.io_responder_mask(0x0a), 0);
+        assert_eq!(fabric.externally_mutable_slots & (s100_slot_mask(3) | s100_slot_mask(4)), 0);
     }
 
     #[test]
