@@ -84,8 +84,7 @@ impl S100RamBoardModel {
             // Original 8101 board explicitly slows every read by two 8080 waits.
             Self::Mits1KStatic88Mcs => S100RamTimingModel::FixedReadWaits(2),
             // 88-4MCD refreshes every 32 clock periods. A CPU access colliding
-            // with refresh may receive one or two waits; that collision engine
-            // is kept explicit instead of silently pretending this is static RAM.
+            // with refresh may receive one or two waits.
             Self::Mits4KDynamic88_4Mcd => S100RamTimingModel::RefreshCollision {
                 interval_clocks: 32,
                 min_waits: 1,
@@ -111,14 +110,12 @@ impl S100RamBoardModel {
         }
     }
 
-    /// The first electrical migration implements exact fixed/no-wait behavior.
-    /// Dynamic refresh failure/collision details remain visible as unfinished
-    /// hardware rather than being hidden behind a generic no-wait profile.
+    /// Bus-visible timing is implemented for every supported historical board.
+    /// This deliberately means digital S-100 behavior: exact READY/WAIT timing,
+    /// address decode, refresh scheduling where it can affect the processor, and
+    /// protection. Analog DRAM cell charge/decay is outside the emulator model.
     pub const fn timing_fully_implemented(self) -> bool {
-        !matches!(
-            self,
-            Self::Mits4KDynamic88_4Mcd | Self::Mits4KSynchronous88S4K
-        )
+        true
     }
 
     pub const fn supports_front_panel_protect(self) -> bool {
@@ -342,8 +339,10 @@ const MCD_CONTACTS: &[S100CardContact] = memory_contacts!(
     S100CardContact::new(S100Signal::ProtectStatus, S100ContactRole::TriStateOutput),
 );
 const S4K_CONTACTS: &[S100CardContact] = memory_contacts!(
-    S100CardContact::new(S100Signal::Sync, S100ContactRole::Input),
-    S100CardContact::new(S100Signal::Clock, S100ContactRole::Input),
+    S100CardContact::new(S100Signal::Phi2, S100ContactRole::Input),
+    S100CardContact::new(S100Signal::M1, S100ContactRole::Input),
+    S100CardContact::new(S100Signal::Run, S100ContactRole::Input),
+    S100CardContact::new(S100Signal::HaltAcknowledge, S100ContactRole::Input),
 );
 const MCS4_CONTACTS: &[S100CardContact] = memory_contacts!(
     S100CardContact::new(S100Signal::Protect, S100ContactRole::Input),
@@ -550,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_refresh_behavior_is_explicit_not_silently_flattened_to_fast_ram() {
+    fn dynamic_refresh_models_are_explicit_and_bus_timing_is_closed() {
         assert_eq!(
             S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_model(),
             S100RamTimingModel::RefreshCollision {
@@ -559,10 +558,28 @@ mod tests {
                 max_waits: 2,
             }
         );
-        assert!(!S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_fully_implemented());
+        assert_eq!(
+            S100RamBoardModel::Mits4KSynchronous88S4K.refresh_model(),
+            S100RamRefreshModel::CpuSynchronous,
+        );
         assert_eq!(
             S100RamBoardModel::Mits16KDynamic88_16Mcd.refresh_model(),
             S100RamRefreshModel::OnBoardCrystal,
         );
+        assert!(
+            S100RamBoardModel::ALL
+                .into_iter()
+                .all(S100RamBoardModel::timing_fully_implemented)
+        );
+    }
+
+    #[test]
+    fn synchronous_four_k_refresh_uses_phi2_m1_and_run_not_cloc() {
+        let contacts = MITS_88_S4K.contacts;
+        for signal in [S100Signal::Phi2, S100Signal::M1, S100Signal::Run] {
+            assert!(contacts.iter().any(|contact| contact.signal == signal));
+        }
+        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Clock));
+        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Ready));
     }
 }
