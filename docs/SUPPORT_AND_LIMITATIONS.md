@@ -70,15 +70,21 @@ If a historical behavior depends on one of those effects, it should be documente
 
 ---
 
-## 4. RAM limitations and work still identified
+## 4. RAM fidelity scope
 
-The runtime uses physical installed RAM-card instances as the authoritative guest storage.
+The runtime uses physical installed RAM-card instances as the authoritative guest storage. The supported MITS RAM inventory now has a closed **bus-visible digital timing** model rather than a static-RAM-only PASS claim.
 
-The active roadmap still identifies **remaining dynamic-RAM timing/refresh behavior** where specific card models/UI may contain explicit non-PASS areas. Therefore:
+In particular:
 
-- do not generalize a PASS claim from static RAM behavior to every dynamic RAM board;
-- consult the board-specific hardware fidelity record before changing timing/refresh;
-- preserve open-bus, overlap, protection and READY/wait behavior even when optimizing memory access.
+- the original 1K static board retains its documented two read wait states;
+- the 88-4MCD tracks its 32-CLOC refresh cadence and asserts PRDY only when a selected memory access collides with the documented one/two-WAIT refresh window;
+- the 88-S4K derives synchronous refresh from PHI2/sM1 and performs the refresh in the hidden M1 slot without asserting PRDY; its card logic also accepts the documented STOP/HLTA refresh path;
+- the 88-4MCS, 88-16MCS and 88-16MCD remain processor-no-wait boards in the digital S-100 timing model;
+- open bus, overlapping decoders, card-scoped protection and the one authoritative runtime storage remain unchanged.
+
+Dynamic historical RAM remains excluded from Adaptive Full's static-memory proof. It therefore executes through exact Partial whenever its timing can be observable rather than bypassing refresh/READY behavior for speed.
+
+This is deliberately **not** an analog DRAM-cell simulator. RusTair does not model capacitor leakage, charge decay, temperature-dependent retention margins or destructive failure after missed refresh. Those effects are outside the digital S-100 fidelity claim described in section 3.
 
 `FastRamCompatibility` remains a migration/compatibility concept and should not become the preferred way to create new hardware from the normal editor.
 
