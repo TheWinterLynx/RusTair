@@ -567,8 +567,13 @@ impl S100ElectricalCard for RuntimeRamCard {
                         state.refresh_active = false;
                         state.refresh_collision_waits = 0;
                     }
-                } else if !state.refresh_active && !memory_access {
+                } else if state.selected_offset.is_none() {
+                    // A refresh whose SYNC did not select this card cannot turn
+                    // into a later false collision merely because the next bus
+                    // cycle happens to address the board.
                     state.wait_clocks_remaining = 0;
+                    state.refresh_active = false;
+                    state.refresh_collision_waits = 0;
                 }
             }
             S100RamTimingModel::NoWait => {
@@ -782,6 +787,7 @@ mod tests {
         let resolved = observe(&mut card, read_drive(0x5000, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_active);
 
         for _ in 0..32 {
             clock_pulse(&mut card, 0x0010);
@@ -834,7 +840,7 @@ mod tests {
 
     #[test]
     fn four_mcd_write_collision_keeps_refresh_active_until_mwrt() {
-        let (mut card, _handle) = RuntimeRamCard::historical(
+        let (mut card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
             RamInit::Zeroed,
         )
@@ -848,14 +854,10 @@ mod tests {
         assert_eq!(at_sync.signal_level(S100Signal::Ready), Some(true));
         let at_mwrt = observe(&mut card, write_drive(0x0010, false, false, true));
         assert_eq!(at_mwrt.signal_level(S100Signal::Ready), Some(false));
-        assert_eq!(handle_read_for_test(&card, 0x0010), Some(0x5a));
+        assert_eq!(handle.read_byte(0x0010), Some(0x5a));
 
         let released = observe(&mut card, write_drive(0x0010, false, true, true));
         assert_eq!(released.signal_level(S100Signal::Ready), Some(true));
-    }
-
-    fn handle_read_for_test(card: &RuntimeRamCard, address: u16) -> Option<u8> {
-        card.state.borrow().read_byte(address)
     }
 
     #[test]
