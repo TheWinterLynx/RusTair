@@ -5,7 +5,7 @@
 //! and inspection tools so they can inspect the *same physical card storage*
 //! without fabricating CPU cycles or maintaining a shadow flat-memory array.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use rand::RngCore;
@@ -93,18 +93,22 @@ impl RuntimeRamConfig {
     }
 }
 
-/// Clock/refresh state is shared independently from byte storage so Adaptive
-/// Full can advance the exact same physical card timing without taking a dynamic
-/// `RefCell` borrow around unrelated RAM/protection/cache state on every machine
-/// cycle. `Cell` is sufficient because the emulator and S-100 fabric are
-/// single-threaded and this state is copied atomically at each host operation.
-#[derive(Clone, Copy, Debug, Default)]
-struct RuntimeRamRefreshState {
+#[derive(Debug)]
+struct RuntimeRamState {
+    config: RuntimeRamConfig,
+    bytes: Vec<u8>,
+    protected: Vec<bool>,
+    selected_offset: Option<usize>,
+    memory_read: bool,
+    wait_clocks_remaining: u8,
     previous_sync: bool,
     previous_clock: bool,
     previous_phi2: bool,
     previous_m1: bool,
     previous_data_bus_in: bool,
+    previous_memory_read: bool,
+    previous_protect: bool,
+    previous_unprotect: bool,
     refresh_clock_count: u16,
     refresh_pending: bool,
     refresh_active: bool,
@@ -114,10 +118,99 @@ struct RuntimeRamRefreshState {
     /// Full needs to know whether an internal T-state is the hidden T4 of the
     /// current semantic M1. Exact Partial locates the same slot from pDBIN.
     m1_phi2_count: u8,
+    /// Physical connector output is persistent state. Rebuilding eight DI pins
+    /// plus PRDY/PROT on every observation was pure host work when those outputs
+    /// had not changed. Keep the exact drive latched just like the CPU board.
+    cached_drive: S100CardDrive,
 }
 
-impl RuntimeRamRefreshState {
-    #[inline(always)]
+impl RuntimeRamState {
+    fn new(config: RuntimeRamConfig, init: RamInit) -> Self {
+        let mut bytes = vec![0; config.populated_bytes()];
+        if init == RamInit::Random {
+            rand::rng().fill_bytes(&mut bytes);
+        }
+        let mut state = Self {
+            config,
+            bytes,
+            protected: vec![false; config.protection_unit_count()],
+            selected_offset: None,
+            memory_read: false,
+            wait_clocks_remaining: 0,
+            previous_sync: false,
+            previous_clock: false,
+            previous_phi2: false,
+            previous_m1: false,
+            previous_data_bus_in: false,
+            previous_memory_read: false,
+            previous_protect: false,
+            previous_unprotect: false,
+            refresh_clock_count: 0,
+            refresh_pending: false,
+            refresh_active: false,
+            refresh_collision_waits: 0,
+            #[cfg(test)]
+            refresh_cycles: 0,
+            m1_phi2_count: 0,
+            cached_drive: S100CardDrive::new(),
+        };
+        state.rebuild_cached_drive();
+        state
+    }
+
+    fn offset_for(&self, address: u16) -> Option<usize> {
+        self.config
+            .contains(address)
+            .then_some(address.wrapping_sub(self.config.base_address()) as usize)
+    }
+
+    fn protection_index_for_offset(&self, offset: usize) -> usize {
+        offset / self.config.protection_unit_bytes()
+    }
+
+    fn is_offset_protected(&self, offset: usize) -> bool {
+        self.protected
+            .get(self.protection_index_for_offset(offset))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn is_protected(&self, address: u16) -> bool {
+        self.offset_for(address)
+            .is_some_and(|offset| self.is_offset_protected(offset))
+    }
+
+    fn set_protected_raw(&mut self, address: u16, protected: bool) -> bool {
+        if !self.config.supports_front_panel_protect() {
+            return false;
+        }
+        let Some(offset) = self.offset_for(address) else {
+            return false;
+        };
+        let index = self.protection_index_for_offset(offset);
+        let Some(latch) = self.protected.get_mut(index) else {
+            return false;
+        };
+        *latch = protected;
+        true
+    }
+
+    fn read_byte(&self, address: u16) -> Option<u8> {
+        let offset = self.offset_for(address)?;
+        Some(self.bytes[offset])
+    }
+
+    fn write_byte_raw(&mut self, address: u16, value: u8, respect_protection: bool) -> bool {
+        let Some(offset) = self.offset_for(address) else {
+            return false;
+        };
+        if respect_protection && self.is_offset_protected(offset) {
+            return false;
+        }
+        self.bytes[offset] = value;
+        true
+    }
+
     fn complete_refresh_cycle(&mut self) {
         self.refresh_pending = false;
         #[cfg(test)]
@@ -126,9 +219,12 @@ impl RuntimeRamRefreshState {
         }
     }
 
+    fn historical_model(&self) -> Option<S100RamBoardModel> {
+        self.config.historical_model()
+    }
+
     fn advance_refresh_timing(
         &mut self,
-        model: Option<S100RamBoardModel>,
         sync_rising: bool,
         clock_rising: bool,
         phi2_rising: bool,
@@ -137,7 +233,7 @@ impl RuntimeRamRefreshState {
         run: bool,
         halt_ack: bool,
     ) {
-        match model {
+        match self.historical_model() {
             Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
                 let S100RamTimingModel::RefreshCollision {
                     interval_clocks,
@@ -199,7 +295,6 @@ impl RuntimeRamRefreshState {
         }
     }
 
-    #[inline(always)]
     fn full_advance_four_mcd_clocks(&mut self, clocks: u32) {
         if clocks == 0 {
             return;
@@ -230,10 +325,8 @@ impl RuntimeRamRefreshState {
         }
     }
 
-    #[inline(always)]
     fn full_four_mcd_machine_cycle(
         &mut self,
-        config: RuntimeRamConfig,
         address: u16,
         memory_access: bool,
         base_t_states: u32,
@@ -252,7 +345,7 @@ impl RuntimeRamRefreshState {
         // latch therefore carries exactly the same phase information as Partial.
         self.full_advance_four_mcd_clocks(1);
         let refresh_at_sync = self.refresh_pending;
-        let selected_access = memory_access && config.contains(address);
+        let selected_access = memory_access && self.config.contains(address);
         let waits = if refresh_at_sync && selected_access {
             match self.refresh_collision_waits {
                 waits if waits == max_waits => max_waits,
@@ -267,6 +360,7 @@ impl RuntimeRamRefreshState {
             self.complete_refresh_cycle();
         }
         self.refresh_active = false;
+        self.wait_clocks_remaining = 0;
         self.refresh_collision_waits = 0;
         self.full_advance_four_mcd_clocks(
             base_t_states
@@ -283,7 +377,6 @@ impl RuntimeRamRefreshState {
     /// level remains high across adjacent fetches. Internal T-states continue
     /// that same M1 without resetting the T4 position. Full advances at most one
     /// 64-edge refresh period in any one arithmetic chunk.
-    #[inline(always)]
     fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool, new_machine_cycle: bool) {
         if m1 && new_machine_cycle {
             self.m1_phi2_count = 0;
@@ -324,23 +417,16 @@ impl RuntimeRamRefreshState {
         self.previous_phi2 = false;
     }
 
-    #[inline(always)]
     fn full_machine_cycle_timing(
         &mut self,
-        config: RuntimeRamConfig,
         address: u16,
         memory_access: bool,
         m1: bool,
         base_t_states: u32,
     ) -> u32 {
-        match config.historical_model() {
+        match self.historical_model() {
             Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
-                let waits = self.full_four_mcd_machine_cycle(
-                    config,
-                    address,
-                    memory_access,
-                    base_t_states,
-                );
+                let waits = self.full_four_mcd_machine_cycle(address, memory_access, base_t_states);
                 self.previous_m1 = m1;
                 self.previous_phi2 = false;
                 waits
@@ -353,12 +439,11 @@ impl RuntimeRamRefreshState {
         }
     }
 
-    #[inline(always)]
-    fn full_internal_t_states(&mut self, config: RuntimeRamConfig, t_states: u32) {
+    fn full_internal_t_states(&mut self, t_states: u32) {
         if t_states == 0 {
             return;
         }
-        match config.historical_model() {
+        match self.historical_model() {
             Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
                 self.full_advance_four_mcd_clocks(t_states);
             }
@@ -367,99 +452,6 @@ impl RuntimeRamRefreshState {
             }
             _ => {}
         }
-    }
-}
-
-#[derive(Debug)]
-struct RuntimeRamState {
-    config: RuntimeRamConfig,
-    bytes: Vec<u8>,
-    protected: Vec<bool>,
-    selected_offset: Option<usize>,
-    memory_read: bool,
-    wait_clocks_remaining: u8,
-    previous_memory_read: bool,
-    previous_protect: bool,
-    previous_unprotect: bool,
-    /// Physical connector output is persistent state. Rebuilding eight DI pins
-    /// plus PRDY/PROT on every observation was pure host work when those outputs
-    /// had not changed. Keep the exact drive latched just like the CPU board.
-    cached_drive: S100CardDrive,
-}
-
-impl RuntimeRamState {
-    fn new(config: RuntimeRamConfig, init: RamInit) -> Self {
-        let mut bytes = vec![0; config.populated_bytes()];
-        if init == RamInit::Random {
-            rand::rng().fill_bytes(&mut bytes);
-        }
-        let mut state = Self {
-            config,
-            bytes,
-            protected: vec![false; config.protection_unit_count()],
-            selected_offset: None,
-            memory_read: false,
-            wait_clocks_remaining: 0,
-            previous_memory_read: false,
-            previous_protect: false,
-            previous_unprotect: false,
-            cached_drive: S100CardDrive::new(),
-        };
-        state.rebuild_cached_drive();
-        state
-    }
-
-    fn offset_for(&self, address: u16) -> Option<usize> {
-        self.config
-            .contains(address)
-            .then_some(address.wrapping_sub(self.config.base_address()) as usize)
-    }
-
-    fn protection_index_for_offset(&self, offset: usize) -> usize {
-        offset / self.config.protection_unit_bytes()
-    }
-
-    fn is_offset_protected(&self, offset: usize) -> bool {
-        self.protected
-            .get(self.protection_index_for_offset(offset))
-            .copied()
-            .unwrap_or(false)
-    }
-
-    fn is_protected(&self, address: u16) -> bool {
-        self.offset_for(address)
-            .is_some_and(|offset| self.is_offset_protected(offset))
-    }
-
-    fn set_protected_raw(&mut self, address: u16, protected: bool) -> bool {
-        if !self.config.supports_front_panel_protect() {
-            return false;
-        }
-        let Some(offset) = self.offset_for(address) else {
-            return false;
-        };
-        let index = self.protection_index_for_offset(offset);
-        let Some(latch) = self.protected.get_mut(index) else {
-            return false;
-        };
-        *latch = protected;
-        true
-    }
-
-    fn read_byte(&self, address: u16) -> Option<u8> {
-        let offset = self.offset_for(address)?;
-        Some(self.bytes[offset])
-    }
-
-    fn write_byte_raw(&mut self, address: u16, value: u8, respect_protection: bool) -> bool {
-        let Some(offset) = self.offset_for(address) else {
-            return false;
-        };
-        if respect_protection && self.is_offset_protected(offset) {
-            return false;
-        }
-        self.bytes[offset] = value;
-        true
     }
 
     #[inline]
@@ -500,26 +492,38 @@ impl RuntimeRamState {
         self.selected_offset = None;
         self.memory_read = false;
         self.wait_clocks_remaining = 0;
+        self.previous_sync = false;
+        self.previous_clock = false;
+        self.previous_phi2 = false;
+        self.previous_m1 = false;
+        self.previous_data_bus_in = false;
         self.previous_memory_read = false;
         self.previous_protect = false;
         self.previous_unprotect = false;
+        self.refresh_clock_count = 0;
+        self.refresh_pending = false;
+        self.refresh_active = false;
+        self.refresh_collision_waits = 0;
+        #[cfg(test)]
+        {
+            self.refresh_cycles = 0;
+        }
+        self.m1_phi2_count = 0;
     }
 }
 
 #[derive(Clone)]
 pub struct RuntimeRamHandle {
     state: Rc<RefCell<RuntimeRamState>>,
-    refresh: Rc<Cell<RuntimeRamRefreshState>>,
-    config: RuntimeRamConfig,
 }
 
 impl RuntimeRamHandle {
     pub fn config(&self) -> RuntimeRamConfig {
-        self.config
+        self.state.borrow().config
     }
 
     pub fn contains(&self, address: u16) -> bool {
-        self.config.contains(address)
+        self.state.borrow().config.contains(address)
     }
 
     pub fn read_byte(&self, address: u16) -> Option<u8> {
@@ -554,17 +558,14 @@ impl RuntimeRamHandle {
     }
 
     pub fn initialize(&self, init: RamInit) {
-        {
-            let mut state = self.state.borrow_mut();
-            state.bytes.fill(0);
-            if init == RamInit::Random {
-                rand::rng().fill_bytes(&mut state.bytes);
-            }
-            state.protected.fill(false);
-            state.reset_timing();
-            state.rebuild_cached_drive();
+        let mut state = self.state.borrow_mut();
+        state.bytes.fill(0);
+        if init == RamInit::Random {
+            rand::rng().fill_bytes(&mut state.bytes);
         }
-        self.refresh.set(RuntimeRamRefreshState::default());
+        state.protected.fill(false);
+        state.reset_timing();
+        state.rebuild_cached_drive();
     }
 
     pub fn load(&self, address: u16, data: &[u8]) -> usize {
@@ -579,7 +580,6 @@ impl RuntimeRamHandle {
         len
     }
 
-    #[inline(always)]
     pub(crate) fn full_machine_cycle_timing(
         &self,
         address: u16,
@@ -587,30 +587,21 @@ impl RuntimeRamHandle {
         m1: bool,
         base_t_states: u32,
     ) -> u32 {
-        let mut refresh = self.refresh.get();
-        let waits = refresh.full_machine_cycle_timing(
-            self.config,
+        self.state.borrow_mut().full_machine_cycle_timing(
             address,
             memory_access,
             m1,
             base_t_states,
-        );
-        self.refresh.set(refresh);
-        waits
+        )
     }
 
-    #[inline(always)]
     pub(crate) fn full_internal_t_states(&self, t_states: u32) {
-        let mut refresh = self.refresh.get();
-        refresh.full_internal_t_states(self.config, t_states);
-        self.refresh.set(refresh);
+        self.state.borrow_mut().full_internal_t_states(t_states);
     }
 }
 
 pub struct RuntimeRamCard {
     state: Rc<RefCell<RuntimeRamState>>,
-    refresh: Rc<Cell<RuntimeRamRefreshState>>,
-    config: RuntimeRamConfig,
 }
 
 impl RuntimeRamCard {
@@ -632,19 +623,7 @@ impl RuntimeRamCard {
 
     fn from_config(config: RuntimeRamConfig, init: RamInit) -> (Self, RuntimeRamHandle) {
         let state = Rc::new(RefCell::new(RuntimeRamState::new(config, init)));
-        let refresh = Rc::new(Cell::new(RuntimeRamRefreshState::default()));
-        (
-            Self {
-                state: Rc::clone(&state),
-                refresh: Rc::clone(&refresh),
-                config,
-            },
-            RuntimeRamHandle {
-                state,
-                refresh,
-                config,
-            },
-        )
+        (Self { state: Rc::clone(&state) }, RuntimeRamHandle { state })
     }
 
     fn descriptor_for(config: RuntimeRamConfig) -> &'static S100CardDescriptor {
@@ -664,14 +643,13 @@ impl RuntimeRamCard {
 
 impl S100Card for RuntimeRamCard {
     fn s100_descriptor(&self) -> &'static S100CardDescriptor {
-        Self::descriptor_for(self.config)
+        Self::descriptor_for(self.state.borrow().config)
     }
 }
 
 impl S100ElectricalCard for RuntimeRamCard {
     fn observe_s100(&mut self, sample: &S100BusSample) {
         let mut state = self.state.borrow_mut();
-        let mut refresh = self.refresh.get();
         let before = state.drive_signature();
         let sync = sample.signal_level(S100Signal::Sync) == Some(true);
         let clock = sample.signal_level(S100Signal::Clock) == Some(true);
@@ -682,10 +660,10 @@ impl S100ElectricalCard for RuntimeRamCard {
         let halt_ack = sample.signal_level(S100Signal::HaltAcknowledge) == Some(true);
         let protect = sample.signal_level(S100Signal::Protect) == Some(true);
         let unprotect = sample.signal_level(S100Signal::Unprotect) == Some(true);
-        let sync_rising = sync && !refresh.previous_sync;
-        let clock_rising = clock && !refresh.previous_clock;
-        let phi2_rising = phi2 && !refresh.previous_phi2;
-        let data_bus_in_falling = !data_bus_in && refresh.previous_data_bus_in;
+        let sync_rising = sync && !state.previous_sync;
+        let clock_rising = clock && !state.previous_clock;
+        let phi2_rising = phi2 && !state.previous_phi2;
+        let data_bus_in_falling = !data_bus_in && state.previous_data_bus_in;
 
         state.selected_offset = sample
             .address()
@@ -696,8 +674,7 @@ impl S100ElectricalCard for RuntimeRamCard {
             && sample.signal_level(S100Signal::MemoryWrite) == Some(true);
         let memory_access = memory_read || memory_write;
 
-        refresh.advance_refresh_timing(
-            state.config.historical_model(),
+        state.advance_refresh_timing(
             sync_rising,
             clock_rising,
             phi2_rising,
@@ -725,7 +702,6 @@ impl S100ElectricalCard for RuntimeRamCard {
         }
 
         match state
-            .config
             .historical_model()
             .map(S100RamBoardModel::timing_model)
             .unwrap_or(S100RamTimingModel::FixedReadWaits(state.config.read_wait_states()))
@@ -740,18 +716,18 @@ impl S100ElectricalCard for RuntimeRamCard {
                 }
             }
             S100RamTimingModel::RefreshCollision { .. } => {
-                if refresh.refresh_active && memory_access && state.wait_clocks_remaining == 0 {
-                    state.wait_clocks_remaining = refresh.refresh_collision_waits;
+                if state.refresh_active && memory_access && state.wait_clocks_remaining == 0 {
+                    state.wait_clocks_remaining = state.refresh_collision_waits;
                 } else if clock_rising && !sync && state.wait_clocks_remaining != 0 {
                     state.wait_clocks_remaining -= 1;
                     if state.wait_clocks_remaining == 0 {
-                        refresh.refresh_active = false;
-                        refresh.refresh_collision_waits = 0;
+                        state.refresh_active = false;
+                        state.refresh_collision_waits = 0;
                     }
                 } else if state.selected_offset.is_none() {
                     state.wait_clocks_remaining = 0;
-                    refresh.refresh_active = false;
-                    refresh.refresh_collision_waits = 0;
+                    state.refresh_active = false;
+                    state.refresh_collision_waits = 0;
                 }
             }
             S100RamTimingModel::NoWait => {
@@ -761,14 +737,13 @@ impl S100ElectricalCard for RuntimeRamCard {
 
         state.memory_read = memory_read;
         state.previous_memory_read = memory_read;
-        refresh.previous_sync = sync;
-        refresh.previous_clock = clock;
-        refresh.previous_phi2 = phi2;
-        refresh.previous_m1 = m1;
-        refresh.previous_data_bus_in = data_bus_in;
+        state.previous_sync = sync;
+        state.previous_clock = clock;
+        state.previous_phi2 = phi2;
+        state.previous_m1 = m1;
+        state.previous_data_bus_in = data_bus_in;
         state.previous_protect = protect;
         state.previous_unprotect = unprotect;
-        self.refresh.set(refresh);
         state.refresh_cached_drive_if_changed(before);
     }
 
@@ -964,19 +939,19 @@ mod tests {
         for _ in 0..32 {
             clock_pulse(&mut card, 0x5000);
         }
-        assert_eq!(handle.refresh.get().refresh_cycles, 0);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
         let resolved = observe(&mut card, read_drive(0x5000, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
-        assert!(!handle.refresh.get().refresh_active);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_active);
 
         for _ in 0..32 {
             clock_pulse(&mut card, 0x0010);
         }
         let resolved = observe(&mut card, read_drive(0x0010, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
-        assert_eq!(handle.refresh.get().refresh_cycles, 2);
+        assert_eq!(handle.state.borrow().refresh_cycles, 2);
     }
 
     #[test]
@@ -1060,11 +1035,11 @@ mod tests {
         .unwrap();
         handle.full_internal_t_states(31);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 2);
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
         handle.initialize(RamInit::Zeroed);
         handle.full_internal_t_states(32);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 1);
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
     }
 
     #[test]
@@ -1077,14 +1052,14 @@ mod tests {
         for _ in 0..S4K_REFRESH_PHI2_EDGES {
             s4k_phi2_pulse(&mut card, 0x0010, false, false, true, false);
         }
-        assert!(handle.refresh.get().refresh_pending);
-        assert_eq!(handle.refresh.get().refresh_cycles, 0);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
         let resolved = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
-        assert!(!handle.refresh.get().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
     }
 
     #[test]
@@ -1099,17 +1074,17 @@ mod tests {
         }
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
-        assert_eq!(handle.refresh.get().refresh_cycles, 0);
-        assert!(!handle.refresh.get().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
+        assert!(!handle.state.borrow().refresh_pending);
 
         s4k_phi2_pulse(&mut card, 0x0010, true, false, true, false);
-        assert!(handle.refresh.get().refresh_pending);
-        assert_eq!(handle.refresh.get().refresh_cycles, 0);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
 
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, true, false));
         let _ = observe(&mut card, s4k_drive(0x0010, false, true, false, true, false));
-        assert!(!handle.refresh.get().refresh_pending);
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
     }
 
     #[test]
@@ -1120,10 +1095,10 @@ mod tests {
         )
         .unwrap();
         handle.full_internal_t_states(64);
-        assert!(handle.refresh.get().refresh_pending);
+        assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
-        assert!(!handle.refresh.get().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
     }
 
     #[test]
@@ -1135,15 +1110,15 @@ mod tests {
         .unwrap();
         handle.full_internal_t_states(59);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
-        assert!(!handle.refresh.get().refresh_pending);
+        assert!(!handle.state.borrow().refresh_pending);
         handle.full_internal_t_states(1);
-        assert!(handle.refresh.get().refresh_pending);
-        assert_eq!(handle.refresh.get().refresh_cycles, 0);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, false, 3), 0);
-        assert!(handle.refresh.get().refresh_pending);
+        assert!(handle.state.borrow().refresh_pending);
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
-        assert!(!handle.refresh.get().refresh_pending);
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
     }
 
     #[test]
@@ -1156,9 +1131,9 @@ mod tests {
         for _ in 0..S4K_REFRESH_PHI2_EDGES {
             s4k_phi2_pulse(&mut card, 0x0010, false, false, true, false);
         }
-        assert!(handle.refresh.get().refresh_pending);
+        assert!(handle.state.borrow().refresh_pending);
         s4k_phi2_pulse(&mut card, 0x0010, false, false, false, false);
-        assert_eq!(handle.refresh.get().refresh_cycles, 1);
-        assert!(!handle.refresh.get().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
     }
 }
