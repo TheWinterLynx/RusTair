@@ -1,19 +1,19 @@
 //! MITS 88-DCDD physical two-board controller assembly.
 //!
-//! The controller is deliberately not represented as one register device.  MITS
+//! The controller is deliberately not represented as one register device. MITS
 //! split the hardware across two S-100 cards: Board #1 owns address selection and
 //! all computer input paths, while Board #2 owns the output-side disk-enable and
-//! function/write circuitry.  The cards communicate through their documented
+//! function/write circuitry. The cards communicate through their documented
 //! controller harness, never by holding a software reference to each other.
 //!
 //! Phase 2 models the fixed 08h-0Ah S-100 register surface with no disk unit
-//! attached.  Mechanics/media arrive later.  In particular, sector-position
+//! attached. Mechanics/media arrive later. In particular, sector-position
 //! drivers remain disabled without Head Status, and the power-up contents of the
 //! read-data latches are intentionally *undefined* rather than fabricated as a
 //! historical constant.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use rand::RngCore;
 
@@ -26,9 +26,9 @@ pub(crate) const DCDD_STATUS_CONTROL_PORT: u8 = 0x08;
 pub(crate) const DCDD_SECTOR_CONTROL_PORT: u8 = 0x09;
 pub(crate) const DCDD_DATA_PORT: u8 = 0x0a;
 
-/// MITS defines active controller status as True=0, False=1.  With Disk Control
+/// MITS defines active controller status as True=0, False=1. With Disk Control
 /// disabled every active status function is false, while schematic/guide review
-/// fixes the two unused status outputs D3/D4 LOW.  Therefore the no-drive status
+/// fixes the two unused status outputs D3/D4 LOW. Therefore the no-drive status
 /// byte is 1110_0111b = E7h, not FFh.
 const DISABLED_STATUS: u8 = 0xe7;
 
@@ -40,9 +40,9 @@ const GND: S100CardContact =
 /// Board #1 connector contacts exercised by the Phase-2 circuit.
 ///
 /// The original decode is wired to A8..A15 (8080 I/O cycles duplicate the port
-/// byte on both address halves).  Keeping only those address inputs here is an
+/// byte on both address halves). Keeping only those address inputs here is an
 /// architectural guard against silently turning this into a generic low-byte
-/// register card.  The physical 2 MHz board clock is source-backed too, but its
+/// register card. The physical 2 MHz board clock is source-backed too, but its
 /// read/write timing circuitry is intentionally deferred until the event-driven
 /// disk timing phases; adding CLOC as a hot-path observer before it can affect a
 /// Phase-2 output would create needless per-T-state work.
@@ -72,9 +72,9 @@ const BOARD1_CONTACTS: &[S100CardContact] = &[
     S100CardContact::new(S100Signal::DataIn(7), S100ContactRole::TriStateOutput),
 ];
 
-/// Board #2 receives the computer output byte directly from S-100.  DCL/CD/WDS
+/// Board #2 receives the computer output byte directly from S-100. DCL/CD/WDS
 /// are *not* synthetic S-100 contacts: Board #1 supplies those strobes over the
-/// real inter-board harness.  POC clears the Board-2 disk-enable flip-flop.
+/// real inter-board harness. POC clears the Board-2 disk-enable flip-flop.
 const BOARD2_CONTACTS: &[S100CardContact] = &[
     PWR,
     GND,
@@ -108,7 +108,7 @@ static MITS_88_DCDD_BOARD_2: S100CardDescriptor = S100CardDescriptor {
 /// External controller-to-disk cable/bus boundary.
 ///
 /// Phase 2 deliberately has no attached Disk Buffer/FD-400, so every addressed
-/// drive is unavailable.  Later phases extend this boundary rather than handing
+/// drive is unavailable. Later phases extend this boundary rather than handing
 /// either S-100 board a disk image or host path.
 #[derive(Debug, Default)]
 struct Mits88DiskCableBus;
@@ -136,14 +136,33 @@ struct Board2HarnessDrive {
     disk_enable: bool,
 }
 
-/// Shared copper/electronics boundary joining Board #1, Board #2 and the external
-/// disk cable.  Signal ownership remains explicit: each board may only replace
-/// the group that it physically drives.
 #[derive(Debug, Default)]
+struct Mits88DcddBoard2Circuit {
+    selected_drive: u8,
+    disk_control_enabled: bool,
+}
+
+/// Shared copper/electronics boundary joining Board #1, Board #2 and the external
+/// disk cable. Signal ownership remains explicit: each board may only replace
+/// the group that it physically drives. The weak Board-2 endpoint represents the
+/// receiving pins on that board; it does not give Board #1 a card reference.
+#[derive(Debug)]
 struct Mits88DcddHarnessState {
     board1: Board1HarnessDrive,
     board2: Board2HarnessDrive,
+    board2_sink: Weak<RefCell<Mits88DcddBoard2Circuit>>,
     external_disk_bus: Mits88DiskCableBus,
+}
+
+impl Default for Mits88DcddHarnessState {
+    fn default() -> Self {
+        Self {
+            board1: Board1HarnessDrive::default(),
+            board2: Board2HarnessDrive::default(),
+            board2_sink: Weak::new(),
+            external_disk_bus: Mits88DiskCableBus,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -163,11 +182,33 @@ impl Mits88DcddHarness {
     }
 
     pub(crate) fn board2_card(&self) -> Box<dyn S100ElectricalCard> {
-        Box::new(Mits88DcddBoard2::new(self.clone()))
+        let circuit = Rc::new(RefCell::new(Mits88DcddBoard2Circuit::default()));
+        self.state.borrow_mut().board2_sink = Rc::downgrade(&circuit);
+        Box::new(Mits88DcddBoard2 {
+            harness: self.clone(),
+            circuit,
+        })
     }
 
-    fn set_board1_drive(&self, drive: Board1HarnessDrive) {
-        self.state.borrow_mut().board1 = drive;
+    /// Drive Board-1 harness outputs and propagate their electrical edge to the
+    /// Board-2 receiving circuit immediately. This is the software equivalent of
+    /// copper propagation: no runtime/card polling is required, and Board #2
+    /// samples its own S-100 DO inputs from the same resolved bus sample.
+    fn set_board1_drive(&self, drive: Board1HarnessDrive, sample: &S100BusSample) {
+        let (previous, sink) = {
+            let mut state = self.state.borrow_mut();
+            let previous = state.board1;
+            if previous == drive {
+                return;
+            }
+            state.board1 = drive;
+            (previous, state.board2_sink.clone())
+        };
+
+        if let Some(sink) = sink.upgrade() {
+            sink.borrow_mut()
+                .observe_harness_edge(previous, drive, sample, self);
+        }
     }
 
     fn board1_drive(&self) -> Board1HarnessDrive {
@@ -189,6 +230,47 @@ impl Mits88DcddHarness {
     #[cfg(test)]
     fn same_physical_harness(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.state, &other.state)
+    }
+}
+
+impl Mits88DcddBoard2Circuit {
+    fn clear_disk_control(&mut self, harness: &Mits88DcddHarness) {
+        self.disk_control_enabled = false;
+        harness.set_disk_enable(false);
+    }
+
+    fn apply_dcl_rising(&mut self, value: u8, harness: &Mits88DcddHarness) {
+        if value & 0x80 != 0 {
+            self.clear_disk_control(harness);
+            return;
+        }
+
+        self.selected_drive = value & 0x0f;
+        // MITS explicitly forbids enabling when the cable/drive/power path is
+        // absent. Phase 2 has no Disk Buffer attached, so an enable attempt must
+        // remain disabled rather than creating a synthetic drive.
+        self.disk_control_enabled = harness.drive_available(self.selected_drive);
+        harness.set_disk_enable(self.disk_control_enabled);
+    }
+
+    fn observe_harness_edge(
+        &mut self,
+        previous: Board1HarnessDrive,
+        current: Board1HarnessDrive,
+        sample: &S100BusSample,
+        harness: &Mits88DcddHarness,
+    ) {
+        if current.dcl && !previous.dcl {
+            if let Some(value) = sample.data_out() {
+                self.apply_dcl_rising(value, harness);
+            }
+        }
+
+        // CD and WDS edge ownership is established here, but while Disk Control
+        // is false they have no Phase-2 state effect. Head/write circuitry is
+        // introduced only with the source-backed mechanics/write phases.
+        let _cd_rising = current.cd && !previous.cd;
+        let _wds_rising = current.wds && !previous.wds;
     }
 }
 
@@ -236,8 +318,8 @@ impl Mits88DcddBoard1 {
         }
 
         // With a future enabled drive, D0/D1/D2/D6/D7 will be supplied by the
-        // mechanics/electronics state machines.  Phase 2 cannot reach this branch
-        // because the external cable has no attached Disk Buffer.  D5 is already
+        // mechanics/electronics state machines. Phase 2 cannot reach this branch
+        // because the external cable has no attached Disk Buffer. D5 is already
         // source-backed as observation of S-100 pINTE.
         let mut status = DISABLED_STATUS;
         if sample.signal_level(S100Signal::InterruptEnable) == Some(true) {
@@ -272,11 +354,14 @@ impl Mits88DcddBoard1 {
         let write_active = sample.signal_level(S100Signal::Out) == Some(true)
             && sample.signal_level(S100Signal::Write) == Some(false);
         let selected = write_active.then(|| Self::decoded_port(sample)).flatten();
-        self.harness.set_board1_drive(Board1HarnessDrive {
-            dcl: selected == Some(DCDD_STATUS_CONTROL_PORT),
-            cd: selected == Some(DCDD_SECTOR_CONTROL_PORT),
-            wds: selected == Some(DCDD_DATA_PORT),
-        });
+        self.harness.set_board1_drive(
+            Board1HarnessDrive {
+                dcl: selected == Some(DCDD_STATUS_CONTROL_PORT),
+                cd: selected == Some(DCDD_SECTOR_CONTROL_PORT),
+                wds: selected == Some(DCDD_DATA_PORT),
+            },
+            sample,
+        );
     }
 }
 
@@ -307,44 +392,7 @@ impl S100ElectricalCard for Mits88DcddBoard1 {
 
 struct Mits88DcddBoard2 {
     harness: Mits88DcddHarness,
-    selected_drive: u8,
-    disk_control_enabled: bool,
-    dcl_active: bool,
-    cd_active: bool,
-    wds_active: bool,
-}
-
-impl Mits88DcddBoard2 {
-    fn new(harness: Mits88DcddHarness) -> Self {
-        harness.set_disk_enable(false);
-        Self {
-            harness,
-            selected_drive: 0,
-            disk_control_enabled: false,
-            dcl_active: false,
-            cd_active: false,
-            wds_active: false,
-        }
-    }
-
-    fn clear_disk_control(&mut self) {
-        self.disk_control_enabled = false;
-        self.harness.set_disk_enable(false);
-    }
-
-    fn apply_dcl_rising(&mut self, value: u8) {
-        if value & 0x80 != 0 {
-            self.clear_disk_control();
-            return;
-        }
-
-        self.selected_drive = value & 0x0f;
-        // MITS explicitly forbids enabling when the cable/drive/power path is
-        // absent. Phase 2 has no Disk Buffer attached, so an enable attempt must
-        // remain disabled rather than creating a synthetic drive.
-        self.disk_control_enabled = self.harness.drive_available(self.selected_drive);
-        self.harness.set_disk_enable(self.disk_control_enabled);
-    }
+    circuit: Rc<RefCell<Mits88DcddBoard2Circuit>>,
 }
 
 impl S100Card for Mits88DcddBoard2 {
@@ -356,22 +404,8 @@ impl S100Card for Mits88DcddBoard2 {
 impl S100ElectricalCard for Mits88DcddBoard2 {
     fn observe_s100(&mut self, sample: &S100BusSample) {
         if sample.signal_level(S100Signal::PowerOnClear) == Some(true) {
-            self.clear_disk_control();
+            self.circuit.borrow_mut().clear_disk_control(&self.harness);
         }
-
-        let harness = self.harness.board1_drive();
-        if harness.dcl && !self.dcl_active {
-            if let Some(value) = sample.data_out() {
-                self.apply_dcl_rising(value);
-            }
-        }
-
-        // CD and WDS edge ownership is recorded now, but with Disk Control false
-        // they have no Phase-2 state effect. Their actual head/write electronics
-        // are introduced only with the source-backed mechanics/write phases.
-        self.dcl_active = harness.dcl;
-        self.cd_active = harness.cd;
-        self.wds_active = harness.wds;
     }
 
     fn drive_s100(&self) -> S100CardDrive {
@@ -403,11 +437,25 @@ mod tests {
         backplane.resolve_drive_sets(&[source])
     }
 
+    fn board2_fixture(
+        harness: &Mits88DcddHarness,
+    ) -> (Mits88DcddBoard2, Rc<RefCell<Mits88DcddBoard2Circuit>>) {
+        let circuit = Rc::new(RefCell::new(Mits88DcddBoard2Circuit::default()));
+        harness.state.borrow_mut().board2_sink = Rc::downgrade(&circuit);
+        (
+            Mits88DcddBoard2 {
+                harness: harness.clone(),
+                circuit: circuit.clone(),
+            },
+            circuit,
+        )
+    }
+
     #[test]
     fn both_controller_boards_share_one_harness_not_each_other() {
         let harness = Mits88DcddHarness::new();
         let board1 = Mits88DcddBoard1::new(harness.clone());
-        let board2 = Mits88DcddBoard2::new(harness.clone());
+        let (board2, _) = board2_fixture(&harness);
 
         assert!(board1.harness.same_physical_harness(&board2.harness));
     }
@@ -416,7 +464,7 @@ mod tests {
     fn descriptors_split_real_s100_ownership_between_the_two_boards() {
         let harness = Mits88DcddHarness::new();
         let board1 = Mits88DcddBoard1::new(harness.clone());
-        let board2 = Mits88DcddBoard2::new(harness);
+        let (board2, _) = board2_fixture(&harness);
         let descriptor1 = board1.s100_descriptor();
         let descriptor2 = board2.s100_descriptor();
 
@@ -458,13 +506,21 @@ mod tests {
 
         board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
         assert_eq!(board1.read_drive, Some(0xe7));
-        assert_eq!(board1.drive_s100().pin(S100Signal::DataIn(0).pin().unwrap()), Some(S100PinDrive::Driven(true)));
+        assert_eq!(
+            board1
+                .drive_s100()
+                .pin(S100Signal::DataIn(0).pin().unwrap()),
+            Some(S100PinDrive::Driven(true))
+        );
 
         board1.observe_s100(&io_sample(0x09, true, false, true, true, 0));
         assert_eq!(board1.read_drive, None);
         let drive = board1.drive_s100();
         for bit in 0..8 {
-            assert_eq!(drive.pin(S100Signal::DataIn(bit).pin().unwrap()), Some(S100PinDrive::HighZ));
+            assert_eq!(
+                drive.pin(S100Signal::DataIn(bit).pin().unwrap()),
+                Some(S100PinDrive::HighZ)
+            );
         }
     }
 
@@ -474,47 +530,77 @@ mod tests {
         let mut board1 = Mits88DcddBoard1::new(harness.clone());
 
         board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x00));
-        assert_eq!(harness.board1_drive(), Board1HarnessDrive { dcl: true, cd: false, wds: false });
+        assert_eq!(
+            harness.board1_drive(),
+            Board1HarnessDrive {
+                dcl: true,
+                cd: false,
+                wds: false
+            }
+        );
         board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x00));
-        assert_eq!(harness.board1_drive(), Board1HarnessDrive { dcl: false, cd: true, wds: false });
+        assert_eq!(
+            harness.board1_drive(),
+            Board1HarnessDrive {
+                dcl: false,
+                cd: true,
+                wds: false
+            }
+        );
         board1.observe_s100(&io_sample(0x0a, false, true, false, false, 0x00));
-        assert_eq!(harness.board1_drive(), Board1HarnessDrive { dcl: false, cd: false, wds: true });
+        assert_eq!(
+            harness.board1_drive(),
+            Board1HarnessDrive {
+                dcl: false,
+                cd: false,
+                wds: true
+            }
+        );
         board1.observe_s100(&io_sample(0x0b, false, true, false, false, 0x00));
         assert_eq!(harness.board1_drive(), Board1HarnessDrive::default());
+    }
+
+    #[test]
+    fn harness_edge_reaches_board2_independent_of_card_observation_order() {
+        let harness = Mits88DcddHarness::new();
+        let mut board1 = Mits88DcddBoard1::new(harness.clone());
+        let (_board2, circuit) = board2_fixture(&harness);
+
+        let select = io_sample(0x08, false, true, false, false, 0x03);
+        board1.observe_s100(&select);
+
+        assert_eq!(circuit.borrow().selected_drive, 3);
+        assert!(!circuit.borrow().disk_control_enabled);
+        assert!(!harness.disk_enabled());
     }
 
     #[test]
     fn board2_cannot_enable_a_missing_drive_and_d7_or_poc_clear_disk_control() {
         let harness = Mits88DcddHarness::new();
         let mut board1 = Mits88DcddBoard1::new(harness.clone());
-        let mut board2 = Mits88DcddBoard2::new(harness.clone());
+        let (mut board2, circuit) = board2_fixture(&harness);
 
         let select = io_sample(0x08, false, true, false, false, 0x03);
         board1.observe_s100(&select);
-        board2.observe_s100(&select);
-        assert_eq!(board2.selected_drive, 3);
-        assert!(!board2.disk_control_enabled);
+        assert_eq!(circuit.borrow().selected_drive, 3);
+        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
 
         // Release then assert a distinct DCL edge with the documented clear bit.
-        let release = io_sample(0x08, false, true, false, true, 0x83);
-        board1.observe_s100(&release);
-        board2.observe_s100(&release);
-        let clear = io_sample(0x08, false, true, false, false, 0x83);
-        board1.observe_s100(&clear);
-        board2.disk_control_enabled = true;
+        board1.observe_s100(&io_sample(0x08, false, true, false, true, 0x83));
+        circuit.borrow_mut().disk_control_enabled = true;
         harness.set_disk_enable(true);
-        board2.observe_s100(&clear);
-        assert!(!board2.disk_control_enabled);
+        board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x83));
+        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
 
-        board2.disk_control_enabled = true;
+        circuit.borrow_mut().disk_control_enabled = true;
         harness.set_disk_enable(true);
         let backplane = S100Backplane::new(0);
         let mut poc = S100CardDrive::new();
         poc.drive_signal(S100Signal::PowerOnClear, true);
         board2.observe_s100(&backplane.resolve_drive_sets(&[poc]));
-        assert!(!board2.disk_control_enabled);
+        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
     }
 
@@ -525,14 +611,19 @@ mod tests {
         board1.undefined_read_latch = 0x5a;
         board1.observe_s100(&io_sample(0x0a, true, false, true, true, 0));
         assert_eq!(board1.read_drive, Some(0x5a));
-        assert_eq!(board1.drive_s100().pin(S100Signal::DataIn(1).pin().unwrap()), Some(S100PinDrive::Driven(true)));
+        assert_eq!(
+            board1
+                .drive_s100()
+                .pin(S100Signal::DataIn(1).pin().unwrap()),
+            Some(S100PinDrive::Driven(true))
+        );
     }
 
     #[test]
     fn phase2_cards_have_no_asynchronous_s100_refresh_path() {
         let harness = Mits88DcddHarness::new();
         let board1 = Mits88DcddBoard1::new(harness.clone());
-        let board2 = Mits88DcddBoard2::new(harness);
+        let (board2, _) = board2_fixture(&harness);
         assert!(!board1.external_drive_dirty());
         assert!(!board2.external_drive_dirty());
     }
