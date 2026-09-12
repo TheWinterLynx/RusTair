@@ -1,6 +1,8 @@
 const MENU_SOURCE: &str = include_str!("../src/app/ui/main_menu.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const UI_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
+const ASR33_WINDOW_SOURCE: &str = include_str!("../src/app/ui/asr33_window.rs");
+const TERMINAL_WINDOW_SOURCE: &str = include_str!("../src/app/ui/terminal.rs");
 
 #[test]
 fn main_menu_uses_six_clear_top_level_sections() {
@@ -61,6 +63,37 @@ fn peripherals_group_external_tcp_and_com_configuration() {
 }
 
 #[test]
+fn peripheral_speed_controls_live_only_in_their_device_windows() {
+    let peripherals_section = MENU_SOURCE
+        .split("fn draw_peripherals_menu")
+        .nth(1)
+        .expect("peripherals menu function")
+        .split("fn draw_view_menu")
+        .next()
+        .expect("peripherals menu body");
+
+    for forbidden in [
+        "Asr33Speed::ALL",
+        "TerminalSpeed::ALL",
+        "set_asr_speed",
+        "set_terminal_speed",
+    ] {
+        assert!(
+            !peripherals_section.contains(forbidden),
+            "main Peripherals menu must not own device speed control: {forbidden}"
+        );
+    }
+
+    assert!(ASR33_WINDOW_SOURCE.contains("fn draw_tty_speed_selector"));
+    assert!(ASR33_WINDOW_SOURCE.contains("Asr33Speed::ALL"));
+    assert!(ASR33_WINDOW_SOURCE.contains("self.set_asr_speed(selected)"));
+
+    assert!(TERMINAL_WINDOW_SOURCE.contains("fn draw_terminal_speed_selector"));
+    assert!(TERMINAL_WINDOW_SOURCE.contains("TerminalSpeed::ALL"));
+    assert!(TERMINAL_WINDOW_SOURCE.contains("self.set_terminal_speed(selected)"));
+}
+
+#[test]
 fn s100_hardware_opens_a_dedicated_editor_viewport() {
     assert!(MENU_SOURCE.contains("S-100 Hardware…"));
     assert!(MENU_SOURCE.contains("super::open_s100_hardware_editor(ctx)"));
@@ -69,10 +102,12 @@ fn s100_hardware_opens_a_dedicated_editor_viewport() {
 }
 
 #[test]
-fn runtime_menu_is_navigation_only_and_machine_state_lives_in_status_bar() {
+fn runtime_menu_is_navigation_only_and_machine_state_uses_readable_status_bar() {
     assert!(RUNTIME_SOURCE.contains("super::ui::draw_main_menu(self, ctx);"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_FONT_SIZE: f32 = 16.0;"));
     assert!(RUNTIME_SOURCE.contains("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}"));
-    assert!(RUNTIME_SOURCE.contains("ui.strong(execution_state)"));
+    assert!(RUNTIME_SOURCE.contains("RichText::new(execution_state)"));
+    assert!(RUNTIME_SOURCE.contains(".size(STATUS_BAR_FONT_SIZE)"));
     assert!(!RUNTIME_SOURCE.contains("ASR-33 TELETYPE"));
     assert!(!RUNTIME_SOURCE.contains("EXEC HISTORY"));
     assert!(!RUNTIME_SOURCE.contains("PANEL OPERATOR"));
