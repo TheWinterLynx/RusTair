@@ -112,33 +112,6 @@ fn draw_machine_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::U
 
 fn draw_peripherals_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
     ui.menu_button("Peripherals", |ui| {
-        ui.menu_button("ASR-33 Teletype", |ui| {
-            ui.label("Line speed");
-            for speed in Asr33Speed::ALL {
-                if ui
-                    .selectable_label(app.config.peripherals.asr33_speed == speed, speed.label())
-                    .clicked()
-                {
-                    app.set_asr_speed(speed);
-                    ui.close();
-                }
-            }
-        });
-
-        ui.menu_button("Text Terminal", |ui| {
-            ui.label("Line speed");
-            for speed in TerminalSpeed::ALL {
-                if ui
-                    .selectable_label(app.config.peripherals.terminal_speed == speed, speed.label())
-                    .clicked()
-                {
-                    app.set_terminal_speed(speed);
-                    ui.close();
-                }
-            }
-        });
-
-        ui.separator();
         ui.menu_button("External Serial", |ui| {
             ui.menu_button("TCP", |ui| {
                 app.draw_external_serial_config_menu(ui);
@@ -149,7 +122,7 @@ fn draw_peripherals_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
         });
 
         ui.separator();
-        ui.small("Peripheral timing is independent of host execution speed.");
+        ui.small("ASR-33 and Text Terminal speed are configured in their respective windows.");
     });
 }
 
