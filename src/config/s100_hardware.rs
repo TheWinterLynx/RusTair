@@ -23,6 +23,12 @@ pub enum S100InstalledCardKind {
     Mits16KDynamic88_16Mcd,
     Mits88Sio,
     Mits88TwoSio,
+    /// MITS 88-DCDD controller board #1. The historical controller is a
+    /// two-board assembly; Phase 1 keeps both identities explicit even though
+    /// the normal editor does not expose half-assemblies yet.
+    Mits88DcddBoard1,
+    /// MITS 88-DCDD controller board #2.
+    Mits88DcddBoard2,
     /// Non-historical RAM used only for explicit compatibility assemblies and
     /// migration of old aggregate RusTair configurations.
     FastRamCompatibility,
@@ -30,6 +36,9 @@ pub enum S100InstalledCardKind {
 
 impl S100InstalledCardKind {
     /// Card kinds offered for a new physical S-100 configuration.
+    ///
+    /// 88-DCDD boards deliberately remain absent until the chassis editor can
+    /// install/remove the documented adjacent two-board assembly atomically.
     pub const ALL: [Self; 9] = [
         Self::Mits8080Cpu,
         Self::Mits1KStatic88Mcs,
@@ -53,6 +62,8 @@ impl S100InstalledCardKind {
             Self::Mits16KDynamic88_16Mcd => "MITS 88-16MCD 16K Dynamic RAM",
             Self::Mits88Sio => "MITS 88-SIO",
             Self::Mits88TwoSio => "MITS 88-2SIO",
+            Self::Mits88DcddBoard1 => "MITS 88-DCDD Controller Board #1",
+            Self::Mits88DcddBoard2 => "MITS 88-DCDD Controller Board #2",
             Self::FastRamCompatibility => "Fast RAM compatibility (migration only)",
         }
     }
@@ -117,6 +128,8 @@ pub enum S100InstalledCardConfig {
         straps: TwoSioStraps,
         interrupt_wiring: TwoSioInterruptWiring,
     },
+    Mits88DcddBoard1,
+    Mits88DcddBoard2,
     FastRamCompatibility(FastRamCompatibilityConfig),
 }
 
@@ -134,6 +147,8 @@ impl S100InstalledCardConfig {
             },
             Self::Mits88Sio(_) => S100InstalledCardKind::Mits88Sio,
             Self::Mits88TwoSio { .. } => S100InstalledCardKind::Mits88TwoSio,
+            Self::Mits88DcddBoard1 => S100InstalledCardKind::Mits88DcddBoard1,
+            Self::Mits88DcddBoard2 => S100InstalledCardKind::Mits88DcddBoard2,
             Self::FastRamCompatibility(_) => S100InstalledCardKind::FastRamCompatibility,
         }
     }
@@ -146,6 +161,8 @@ impl S100InstalledCardConfig {
                 straps: TwoSioStraps::default(),
                 interrupt_wiring: TwoSioInterruptWiring::default(),
             },
+            S100InstalledCardKind::Mits88DcddBoard1 => Self::Mits88DcddBoard1,
+            S100InstalledCardKind::Mits88DcddBoard2 => Self::Mits88DcddBoard2,
             S100InstalledCardKind::FastRamCompatibility => {
                 Self::FastRamCompatibility(FastRamCompatibilityConfig::no_wait(0, 8 * 1024))
             }
@@ -257,6 +274,29 @@ impl S100HardwareConfig {
                     | S100InstalledCardConfig::Mits88TwoSio { .. }
             )
         })
+    }
+
+    /// The documented 88-DCDD is one two-board controller assembly. Return the
+    /// two physical connector numbers only when exactly one of each board is
+    /// fitted and the pair is adjacent. Runtime callers operate on validated
+    /// configurations, so `None` also represents an incomplete POWER-OFF edit.
+    pub fn dcdd_controller_slots(self) -> Option<(usize, usize)> {
+        let mut board1 = self.installed_cards().filter_map(|(slot, card)| {
+            matches!(card, S100InstalledCardConfig::Mits88DcddBoard1).then_some(slot)
+        });
+        let board1_slot = board1.next()?;
+        if board1.next().is_some() {
+            return None;
+        }
+
+        let mut board2 = self.installed_cards().filter_map(|(slot, card)| {
+            matches!(card, S100InstalledCardConfig::Mits88DcddBoard2).then_some(slot)
+        });
+        let board2_slot = board2.next()?;
+        if board2.next().is_some() || board1_slot.abs_diff(board2_slot) != 1 {
+            return None;
+        }
+        Some((board1_slot, board2_slot))
     }
 
     /// The one CPU board physically installed in the fitted S-100 connectors.
@@ -384,8 +424,9 @@ impl S100HardwareConfig {
 
     /// Validate the persisted electrical assembly. RAM and I/O address overlap
     /// are not errors here: mis-strapped real cards are representable and the
-    /// electrical backplane must expose contention at runtime. The only global
-    /// cardinality restriction is the single supported CPU bus master.
+    /// electrical backplane must expose contention at runtime. The supported
+    /// global cardinality rules are one CPU bus master and, when fitted, one
+    /// complete adjacent 88-DCDD two-board controller assembly.
     pub fn validate(self) -> Result<Self, S100HardwareConfigError> {
         self.chassis
             .validate()
@@ -404,6 +445,38 @@ impl S100HardwareConfig {
         let cpu_count = self.cpu_slots().count();
         if cpu_count != 1 {
             return Err(S100HardwareConfigError::UnsupportedCpuCardCount(cpu_count));
+        }
+
+        let mut board1_slots = self.installed_cards().filter_map(|(slot, card)| {
+            matches!(card, S100InstalledCardConfig::Mits88DcddBoard1).then_some(slot)
+        });
+        let board1 = board1_slots.next();
+        let board1_duplicate = board1_slots.next().is_some();
+        let mut board2_slots = self.installed_cards().filter_map(|(slot, card)| {
+            matches!(card, S100InstalledCardConfig::Mits88DcddBoard2).then_some(slot)
+        });
+        let board2 = board2_slots.next();
+        let board2_duplicate = board2_slots.next().is_some();
+
+        if board1_duplicate || board2_duplicate || board1.is_some() != board2.is_some() {
+            return Err(S100HardwareConfigError::InvalidDcddControllerPair {
+                board1_count: self
+                    .installed_cards()
+                    .filter(|(_, card)| matches!(card, S100InstalledCardConfig::Mits88DcddBoard1))
+                    .count(),
+                board2_count: self
+                    .installed_cards()
+                    .filter(|(_, card)| matches!(card, S100InstalledCardConfig::Mits88DcddBoard2))
+                    .count(),
+            });
+        }
+        if let (Some(board1_slot), Some(board2_slot)) = (board1, board2) {
+            if board1_slot.abs_diff(board2_slot) != 1 {
+                return Err(S100HardwareConfigError::NonAdjacentDcddControllerPair {
+                    board1_slot,
+                    board2_slot,
+                });
+            }
         }
         Ok(self)
     }
@@ -485,6 +558,8 @@ pub enum S100HardwareConfigError {
     InvalidRamCard(S100RamConfigError),
     InvalidCompatibilityRamWindow { base_address: u16, populated_bytes: usize },
     UnsupportedCpuCardCount(usize),
+    InvalidDcddControllerPair { board1_count: usize, board2_count: usize },
+    NonAdjacentDcddControllerPair { board1_slot: usize, board2_slot: usize },
 }
 
 /// UI-friendly connector populations documented by the chassis model.
@@ -512,6 +587,13 @@ mod tests {
             S100InstalledCardKind::Mits16KStatic88_16Mcs.ram_model(),
             Some(S100RamBoardModel::Mits16KStatic88_16Mcs)
         );
+    }
+
+    #[test]
+    fn dcdd_half_boards_are_not_exposed_as_independent_editor_choices() {
+        assert!(!S100InstalledCardKind::ALL
+            .iter()
+            .any(|kind| matches!(kind, S100InstalledCardKind::Mits88DcddBoard1 | S100InstalledCardKind::Mits88DcddBoard2)));
     }
 
     #[test]
@@ -601,6 +683,50 @@ mod tests {
         let config = config.validate().unwrap();
         assert_eq!(config.serial_slots().count(), 2);
         assert_eq!(config.active_serial_card_slot(), None);
+    }
+
+    #[test]
+    fn dcdd_requires_one_adjacent_board1_board2_pair() {
+        let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        config.set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
+        assert_eq!(
+            config.validate(),
+            Err(S100HardwareConfigError::InvalidDcddControllerPair {
+                board1_count: 1,
+                board2_count: 0,
+            })
+        );
+
+        config.set_slot(5, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        assert_eq!(
+            config.validate(),
+            Err(S100HardwareConfigError::NonAdjacentDcddControllerPair {
+                board1_slot: 3,
+                board2_slot: 5,
+            })
+        );
+
+        config.set_slot(5, None).unwrap();
+        config.set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        let config = config.validate().unwrap();
+        assert_eq!(config.dcdd_controller_slots(), Some((3, 4)));
+    }
+
+    #[test]
+    fn dcdd_duplicate_half_board_is_rejected() {
+        let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        config.set_slot(2, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
+        config.set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        config.set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
+        assert_eq!(
+            config.validate(),
+            Err(S100HardwareConfigError::InvalidDcddControllerPair {
+                board1_count: 2,
+                board2_count: 1,
+            })
+        );
     }
 
     #[test]
