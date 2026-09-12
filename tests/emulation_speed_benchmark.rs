@@ -15,9 +15,12 @@ const BENCH_ROUNDS: usize = 3;
 //
 // Deliberately a ceiling microbenchmark: it keeps the adaptive backend in a
 // tiny, side-effect-free RAM loop so Full execution can show its best possible
-// dispatch/presentation throughput while historically dynamic RAM exposes the
-// effective cost of its exact Partial timing model. Classic diagnostics are
-// measured separately through the same BackendHost as representative workloads.
+// dispatch/presentation throughput while each historical RAM model still pays
+// for its own digital timing contract. The 88-4MCD therefore includes exact
+// refresh-collision/TW accounting inside Full; the 88-S4K advances synchronous
+// refresh without PRDY; the 88-16MCD remains processor-transparent at the
+// digital boundary. Classic diagnostics are measured separately through the
+// same BackendHost as representative workloads.
 const BENCH_PROGRAM: [u8; 4] = [0x00, 0xc3, 0x00, 0x00];
 
 type HardwareFactory = fn() -> S100HardwareConfig;
@@ -203,7 +206,7 @@ fn measure_adaptive_cycle_effective_mhz() {
         "Measurement: median of {BENCH_ROUNDS} rounds × {MEASURE_T_STATES} emulated T-states after {WARMUP_T_STATES}T warm-up"
     );
     println!("This NOP/JMP loop is a ceiling microbenchmark, not a representative workload.");
-    println!("Dynamic historical RAM remains on the exact Partial path by design.");
+    println!("Supported historical dynamic RAM participates in Adaptive Full; its digital refresh/WAIT timing remains accounted for rather than bypassed.");
     println!("Reference: MITS Altair 8800 nominal CPU clock = 2.000 MHz");
     println!();
 
@@ -228,7 +231,7 @@ fn measure_adaptive_cycle_effective_mhz() {
     }
 
     println!();
-    println!("Faithful dynamic RAM effective throughput cost");
+    println!("Historical RAM timing throughput cost inside Adaptive Full");
     print_relative_cost("88-4MCD vs 88-4MCS", &samples[0], &samples[1]);
     print_relative_cost("88-S4K vs 88-4MCS", &samples[0], &samples[2]);
     print_relative_cost("88-16MCD vs 88-16MCS", &samples[3], &samples[4]);
