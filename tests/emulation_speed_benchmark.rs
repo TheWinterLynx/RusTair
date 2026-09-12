@@ -6,8 +6,8 @@ use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
 const ALTAIR_CLOCK_HZ: f64 = 2_000_000.0;
-const WARMUP_T_STATES: u64 = 2_000_000;
-const MEASURE_T_STATES: u64 = 50_000_000;
+const WARMUP_T_STATES: u64 = 5_000_000;
+const MEASURE_T_STATES: u64 = 250_000_000;
 const SERVICE_CHUNK_T_STATES: u32 = 1_000_000;
 const BENCH_ROUNDS: usize = 5;
 
@@ -145,6 +145,12 @@ fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> Result
     }
 }
 
+fn median_f64(values: &[f64]) -> f64 {
+    let mut ordered = values.to_vec();
+    ordered.sort_by(|a, b| a.total_cmp(b));
+    ordered[ordered.len() / 2]
+}
+
 fn median_row(rows: &[ResultRow]) -> ResultRow {
     let mut ordered = rows.to_vec();
     ordered.sort_by(|a, b| a.mhz.total_cmp(&b.mhz));
@@ -181,12 +187,27 @@ fn print_rows(rows: &[ResultRow]) {
 }
 
 fn print_relative_cost(label: &str, baseline_rows: &[ResultRow], candidate_rows: &[ResultRow]) {
+    assert_eq!(baseline_rows.len(), candidate_rows.len());
     let baseline_mhz = median_row(baseline_rows).mhz;
     let candidate_mhz = median_row(candidate_rows).mhz;
-    let throughput_delta_pct = (candidate_mhz / baseline_mhz - 1.0) * 100.0;
-    let slowdown = baseline_mhz / candidate_mhz;
+    let paired_ratios = baseline_rows
+        .iter()
+        .zip(candidate_rows)
+        .map(|(baseline, candidate)| candidate.mhz / baseline.mhz)
+        .collect::<Vec<_>>();
+    let paired_ratio = median_f64(&paired_ratios);
+    let min_ratio = paired_ratios
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let max_ratio = paired_ratios
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+    let throughput_delta_pct = (paired_ratio - 1.0) * 100.0;
+    let slowdown = 1.0 / paired_ratio;
     println!(
-        "{label:<31} | baseline {baseline_mhz:>8.3} MHz | candidate {candidate_mhz:>8.3} MHz | {throughput_delta_pct:>+7.2}% | {slowdown:>6.2}x baseline/candidate"
+        "{label:<31} | medians {baseline_mhz:>8.3}->{candidate_mhz:>8.3} MHz | paired {throughput_delta_pct:>+7.2}% | {slowdown:>6.2}x | paired ratio {min_ratio:>5.3}-{max_ratio:>5.3}"
     );
 }
 
@@ -207,6 +228,7 @@ fn measure_adaptive_cycle_effective_mhz() {
     );
     println!("This NOP/JMP loop is a ceiling microbenchmark, not a representative workload.");
     println!("Supported historical dynamic RAM participates in Adaptive Full; its digital refresh/WAIT timing remains accounted for rather than bypassed.");
+    println!("Relative RAM costs use the median of same-round candidate/baseline ratios to suppress host clock and scheduler drift.");
     println!("Reference: MITS Altair 8800 nominal CPU clock = 2.000 MHz");
     println!();
 
