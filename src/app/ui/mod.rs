@@ -27,8 +27,10 @@ pub(super) mod terminal;
 /// Install one application-wide typography policy instead of fixing individual
 /// windows piecemeal. The goal is noticeably better legibility while keeping
 /// the desktop dense: text grows, but inter-widget vertical whitespace remains
-/// compact. Photographic front-panel labels and the ASR-33's own teletype font
-/// use explicit renderers and are therefore unaffected by these egui text styles.
+/// compact. `Small` is deliberately still readable because it is also the text
+/// style used by the ASR-33, text-terminal and external-serial status bars.
+/// Photographic front-panel labels and the ASR-33's own teletype font use
+/// explicit renderers and are therefore unaffected by these egui text styles.
 pub(in crate::app) fn ensure_readable_ui_style(ctx: &egui::Context) {
     let installed = ctx.data_mut(|data| {
         let id = egui::Id::new("rustair-readable-ui-style-installed");
@@ -45,7 +47,7 @@ pub(in crate::app) fn ensure_readable_ui_style(ctx: &egui::Context) {
     ctx.style_mut(|style| {
         style.text_styles.insert(
             egui::TextStyle::Small,
-            egui::FontId::new(12.5, egui::FontFamily::Proportional),
+            egui::FontId::new(14.0, egui::FontFamily::Proportional),
         );
         style.text_styles.insert(
             egui::TextStyle::Body,
