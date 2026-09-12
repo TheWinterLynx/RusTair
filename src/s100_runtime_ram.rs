@@ -362,7 +362,8 @@ impl RuntimeRamState {
     /// Arithmetic PHI2 fast-forward for the corrected 88-S4K. A semantic M1
     /// callback is an exact machine-cycle boundary even if the latched sM1 bus
     /// level remains high across adjacent fetches. Internal T-states continue
-    /// that same M1 without resetting the T4 position.
+    /// that same M1 without resetting the T4 position. Full advances at most one
+    /// 64-edge refresh period in any one arithmetic chunk.
     fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool, new_machine_cycle: bool) {
         if m1 && new_machine_cycle {
             self.m1_phi2_count = 0;
@@ -372,7 +373,7 @@ impl RuntimeRamState {
             self.previous_phi2 = false;
             return;
         }
-        debug_assert!(edges < u32::from(S4K_REFRESH_PHI2_EDGES));
+        debug_assert!(edges <= u32::from(S4K_REFRESH_PHI2_EDGES));
 
         let pending_before = self.refresh_pending;
         let count_before = u32::from(self.refresh_clock_count);
@@ -947,7 +948,9 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-        for _ in 0..32 { clock_pulse(&mut card, 0x0010); }
+        for _ in 0..32 {
+            clock_pulse(&mut card, 0x0010);
+        }
         let resolved = observe(&mut card, read_drive(0x0010, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
         let _ = observe(&mut card, read_drive(0x0010, false, false));
@@ -962,7 +965,9 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-        for _ in 0..31 { clock_pulse(&mut card, 0x0010); }
+        for _ in 0..31 {
+            clock_pulse(&mut card, 0x0010);
+        }
         let resolved = observe(&mut card, read_drive(0x0010, true, true));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
         let _ = observe(&mut card, read_drive(0x0010, false, false));
@@ -980,7 +985,9 @@ mod tests {
             RamInit::Zeroed,
         )
         .unwrap();
-        for _ in 0..32 { clock_pulse(&mut card, 0x0010); }
+        for _ in 0..32 {
+            clock_pulse(&mut card, 0x0010);
+        }
         let at_sync = observe(&mut card, write_drive(0x0010, true, false, false));
         assert_eq!(at_sync.signal_level(S100Signal::Ready), Some(true));
         let at_mwrt = observe(&mut card, write_drive(0x0010, false, false, true));
