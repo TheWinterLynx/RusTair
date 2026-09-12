@@ -19,7 +19,7 @@ use panel_bus::S100BusState;
 
 pub use chassis::AltairChassis;
 pub(crate) use cpu_board::{Cycle8080S100Adapter, S100CpuControlLines, S100CpuSample};
-pub(crate) use dcdd::{Mits88DcddBoard1, Mits88DcddBoard2, Mits88DcddHarness};
+pub(crate) use dcdd::Mits88DcddHarness;
 pub use memory::{MAX_MEM_SIZE, MEM_SIZE, MEMORY_BOARD_COUNT, MEMORY_BOARD_SIZE};
 pub use panel_bus::PanelLampSnapshot;
 pub(crate) use panel_bus::FullPanelDuty;
