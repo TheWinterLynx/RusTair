@@ -14,7 +14,7 @@ impl RusTairApp {
                     mechanics.print_head_impact_at = Some(now + PRINT_HEAD_IMPACT_DELAY);
                 }
                 PrintEvent::CarriageReturn => {
-                    self.audio.play_once("assets/crpadded.mp3");
+                    self.audio.play_asr_once("assets/crpadded.mp3");
                     mechanics.print_head_auto_return_at = None;
                     mechanics.print_head_raise_until = None;
                     mechanics.print_head_impact_at = None;
@@ -27,7 +27,7 @@ impl RusTairApp {
                 PrintEvent::AutomaticReturn => {
                     mechanics.print_head_auto_return_at = Some(now + PRINT_HEAD_STRIKE_TIME);
                 }
-                PrintEvent::Bell => self.audio.play_once("assets/bellpadded.mp3"),
+                PrintEvent::Bell => self.audio.play_asr_once("assets/bellpadded.mp3"),
             }
         }
     }
@@ -65,7 +65,7 @@ impl RusTairApp {
             .print_head_impact_at
             .is_some_and(|at| now >= at)
         {
-            self.audio.play_once("assets/printcharpadded.mp3");
+            self.audio.play_asr_once("assets/printcharpadded.mp3");
             self.asr33.mechanics.print_head_impact_at = None;
         }
 
@@ -77,7 +77,7 @@ impl RusTairApp {
         {
             self.asr33.mechanics.print_head_auto_return_at = None;
             if self.tty.complete_auto_wrap() {
-                self.audio.play_once("assets/crpadded.mp3");
+                self.audio.play_asr_once("assets/crpadded.mp3");
                 self.asr33.mechanics.print_head_raise_until = None;
                 self.asr33.mechanics.print_head_impact_at = None;
                 self.asr33.mechanics.print_head_carriage_return_until =
@@ -127,14 +127,14 @@ impl RusTairApp {
         }
         self.tty.set_mode(mode);
         self.asr33.keyboard.reset_distributor(Instant::now());
-        self.audio.play_once("assets/powerbtn.mp3");
+        self.audio.play_asr_once("assets/powerbtn.mp3");
         self.asr33.power_flash_until = None;
         if mode == TtyMode::Off {
             self.audio.stop_loop("tty-motor");
             self.asr33.mechanics.clear_motion();
             self.asr33.answerback.clear();
         } else {
-            self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
+            self.audio.start_asr_loop("tty-motor", "assets/up-hum4.mp3");
         }
     }
 
@@ -266,8 +266,8 @@ impl RusTairApp {
                 let was_off = self.tty.mode == TtyMode::Off;
                 let events = self.tty.print_serial(byte);
                 if was_off && self.tty.mode == TtyMode::Line {
-                    self.audio.play_once("assets/powerbtn.mp3");
-                    self.audio.start_loop("tty-motor", "assets/up-hum4.mp3");
+                    self.audio.play_asr_once("assets/powerbtn.mp3");
+                    self.audio.start_asr_loop("tty-motor", "assets/up-hum4.mp3");
                 }
                 self.play_print_events(&events);
 
