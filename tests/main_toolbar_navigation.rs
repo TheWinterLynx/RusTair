@@ -105,9 +105,17 @@ fn s100_hardware_opens_a_dedicated_editor_viewport() {
 fn runtime_menu_is_navigation_only_and_machine_state_uses_readable_status_bar() {
     assert!(RUNTIME_SOURCE.contains("super::ui::draw_main_menu(self, ctx);"));
     assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_FONT_SIZE: f32 = 16.0;"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_STATE_WIDTH: f32 = 170.0;"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_REGISTERS_WIDTH: f32 = 275.0;"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_SPEED_WIDTH: f32 = 160.0;"));
+    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_SEPARATOR_WIDTH * 3.0"));
     assert!(RUNTIME_SOURCE.contains("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}"));
     assert!(RUNTIME_SOURCE.contains("RichText::new(execution_state)"));
     assert!(RUNTIME_SOURCE.contains(".size(STATUS_BAR_FONT_SIZE)"));
+    assert!(RUNTIME_SOURCE.contains(".truncate()"));
+    assert!(RUNTIME_SOURCE.contains("\"Ready\""));
+    assert!(!RUNTIME_SOURCE.contains("Core: {}"));
+    assert!(!RUNTIME_SOURCE.contains("Layout::right_to_left"));
     assert!(!RUNTIME_SOURCE.contains("ASR-33 TELETYPE"));
     assert!(!RUNTIME_SOURCE.contains("EXEC HISTORY"));
     assert!(!RUNTIME_SOURCE.contains("PANEL OPERATOR"));
