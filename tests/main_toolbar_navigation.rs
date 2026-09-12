@@ -2,6 +2,7 @@ const MENU_SOURCE: &str = include_str!("../src/app/ui/main_menu.rs");
 const RUNTIME_SOURCE: &str = include_str!("../src/app/runtime.rs");
 const UI_SOURCE: &str = include_str!("../src/app/ui/mod.rs");
 const ASR33_WINDOW_SOURCE: &str = include_str!("../src/app/ui/asr33_window.rs");
+const ASR33_CONTROLLER_SOURCE: &str = include_str!("../src/app/asr33_controller.rs");
 const TERMINAL_WINDOW_SOURCE: &str = include_str!("../src/app/ui/terminal.rs");
 const EXTERNAL_TCP_SOURCE: &str = include_str!("../src/app/external_serial.rs");
 const EXTERNAL_COM_SOURCE: &str = include_str!("../src/app/external_com.rs");
@@ -10,6 +11,18 @@ const LOOP_INSPECTOR_SOURCE: &str = include_str!("../src/app/ui/loop_inspector.r
 const MEMORY_ACTIVITY_SOURCE: &str = include_str!("../src/app/ui/memory_activity.rs");
 const BUS_TEACHER_SOURCE: &str = include_str!("../src/app/ui/bus_teacher.rs");
 const S100_EDITOR_SOURCE: &str = include_str!("../src/app/ui/s100_hardware_editor.rs");
+const AUDIO_SOURCE: &str = include_str!("../src/audio.rs");
+const PERSISTENCE_SOURCE: &str = include_str!("../src/app/persistence.rs");
+
+fn function_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    source
+        .split(start)
+        .nth(1)
+        .unwrap_or_else(|| panic!("missing section start {start}"))
+        .split(end)
+        .next()
+        .unwrap_or_else(|| panic!("missing section end {end}"))
+}
 
 #[test]
 fn main_menu_uses_six_clear_top_level_sections() {
@@ -41,43 +54,61 @@ fn tools_group_debug_and_inspection_windows_instead_of_flat_toolbar_buttons() {
 }
 
 #[test]
-fn view_owns_operator_terminal_and_visual_windows() {
-    assert!(MENU_SOURCE.contains("ui.menu_button(\"View\""));
-    assert!(MENU_SOURCE.contains("Front Panel Operator"));
-    assert!(MENU_SOURCE.contains("ASR-33 Teletype"));
-    assert!(MENU_SOURCE.contains("Text Terminal"));
-    assert!(MENU_SOURCE.contains("LED Appearance…"));
+fn peripherals_owns_device_window_launchers_not_transport_configuration() {
+    let peripherals = function_section(
+        MENU_SOURCE,
+        "fn draw_peripherals_menu",
+        "fn draw_view_menu",
+    );
 
-    let file_section = MENU_SOURCE
-        .split("fn draw_file_menu")
-        .nth(1)
-        .expect("file menu function")
-        .split("fn draw_machine_menu")
-        .next()
-        .expect("file menu body");
-    assert!(!file_section.contains("Front Panel Operator"));
-    assert!(!file_section.contains("CPU Diagnostics"));
+    assert!(peripherals.contains("ASR-33 Teletype"));
+    assert!(peripherals.contains("app.asr33.window_open = true"));
+    assert!(peripherals.contains("Text Terminal"));
+    assert!(peripherals.contains("app.terminal.window_open = true"));
+    assert!(peripherals.contains("ui.menu_button(\"External Serial\""));
+    assert!(peripherals.contains("app.external_serial.window_open = true"));
+    assert!(peripherals.contains("app.external_com.window_open = true"));
+    assert!(!peripherals.contains("draw_external_serial_config_menu"));
+    assert!(!peripherals.contains("draw_external_com_config_menu"));
 }
 
 #[test]
-fn peripherals_group_external_tcp_and_com_configuration() {
-    assert!(MENU_SOURCE.contains("ui.menu_button(\"Peripherals\""));
-    assert!(MENU_SOURCE.contains("ui.menu_button(\"External Serial\""));
-    assert!(MENU_SOURCE.contains("ui.menu_button(\"TCP\""));
-    assert!(MENU_SOURCE.contains("app.draw_external_serial_config_menu(ui)"));
-    assert!(MENU_SOURCE.contains("ui.menu_button(\"COM\""));
-    assert!(MENU_SOURCE.contains("app.draw_external_com_config_menu(ui)"));
+fn view_owns_operator_and_visuals_without_duplicate_peripheral_launchers() {
+    let view = function_section(MENU_SOURCE, "fn draw_view_menu", "fn draw_tools_menu");
+    assert!(view.contains("Front Panel Operator"));
+    assert!(view.contains("LED Appearance…"));
+    for duplicate in ["ASR-33 Teletype", "Text Terminal", "External Serial"] {
+        assert!(
+            !view.contains(duplicate),
+            "View must not duplicate peripheral launcher {duplicate}"
+        );
+    }
+
+    let file = function_section(MENU_SOURCE, "fn draw_file_menu", "fn draw_machine_menu");
+    assert!(!file.contains("Front Panel Operator"));
+    assert!(!file.contains("CPU Diagnostics"));
+}
+
+#[test]
+fn settings_owns_external_tcp_and_com_configuration() {
+    let settings = MENU_SOURCE
+        .split("fn draw_settings_menu")
+        .nth(1)
+        .expect("settings menu function");
+    assert!(settings.contains("ui.menu_button(\"External Serial\""));
+    assert!(settings.contains("ui.menu_button(\"TCP\""));
+    assert!(settings.contains("app.draw_external_serial_config_menu(ui)"));
+    assert!(settings.contains("ui.menu_button(\"COM\""));
+    assert!(settings.contains("app.draw_external_com_config_menu(ui)"));
 }
 
 #[test]
 fn peripheral_speed_controls_live_only_in_their_device_windows() {
-    let peripherals_section = MENU_SOURCE
-        .split("fn draw_peripherals_menu")
-        .nth(1)
-        .expect("peripherals menu function")
-        .split("fn draw_view_menu")
-        .next()
-        .expect("peripherals menu body");
+    let peripherals = function_section(
+        MENU_SOURCE,
+        "fn draw_peripherals_menu",
+        "fn draw_view_menu",
+    );
 
     for forbidden in [
         "Asr33Speed::ALL",
@@ -86,7 +117,7 @@ fn peripheral_speed_controls_live_only_in_their_device_windows() {
         "set_terminal_speed",
     ] {
         assert!(
-            !peripherals_section.contains(forbidden),
+            !peripherals.contains(forbidden),
             "main Peripherals menu must not own device speed control: {forbidden}"
         );
     }
@@ -98,6 +129,41 @@ fn peripheral_speed_controls_live_only_in_their_device_windows() {
     assert!(TERMINAL_WINDOW_SOURCE.contains("fn draw_terminal_speed_selector"));
     assert!(TERMINAL_WINDOW_SOURCE.contains("TerminalSpeed::ALL"));
     assert!(TERMINAL_WINDOW_SOURCE.contains("self.set_terminal_speed(selected)"));
+}
+
+#[test]
+fn altair_and_asr33_audio_mutes_are_independent_and_available_where_expected() {
+    assert!(MENU_SOURCE.contains("ui.checkbox(&mut altair_muted, \"Mute Altair\")"));
+    assert!(MENU_SOURCE.contains("app.audio.set_altair_muted(altair_muted)"));
+
+    let settings = MENU_SOURCE
+        .split("fn draw_settings_menu")
+        .nth(1)
+        .expect("settings menu function");
+    assert!(settings.contains("ui.menu_button(\"Audio\""));
+    assert!(settings.contains("\"Mute Altair\""));
+    assert!(settings.contains("\"Mute ASR-33\""));
+    assert!(settings.contains("app.audio.set_altair_muted(altair_muted)"));
+    assert!(settings.contains("app.audio.set_asr33_muted(asr33_muted)"));
+
+    assert!(ASR33_WINDOW_SOURCE.contains("ui.checkbox(&mut muted, \"Mute audio\")"));
+    assert!(ASR33_WINDOW_SOURCE.contains("self.audio.set_asr33_muted(muted)"));
+
+    assert!(AUDIO_SOURCE.contains("altair_muted: bool"));
+    assert!(AUDIO_SOURCE.contains("asr33_muted: bool"));
+    assert!(AUDIO_SOURCE.contains("pub fn play_asr_once"));
+    assert!(AUDIO_SOURCE.contains("pub fn start_asr_loop"));
+    assert!(AUDIO_SOURCE.contains("AudioDomain::Altair"));
+    assert!(AUDIO_SOURCE.contains("AudioDomain::Asr33"));
+
+    assert!(ASR33_CONTROLLER_SOURCE.contains("self.audio.play_asr_once"));
+    assert!(ASR33_CONTROLLER_SOURCE.contains("self.audio.start_asr_loop"));
+    assert!(!ASR33_CONTROLLER_SOURCE.contains("self.audio.play_once("));
+    assert!(!ASR33_CONTROLLER_SOURCE.contains("self.audio.start_loop("));
+
+    assert!(PERSISTENCE_SOURCE.contains("audio.altair_muted"));
+    assert!(PERSISTENCE_SOURCE.contains("audio.asr33_muted"));
+    assert!(PERSISTENCE_SOURCE.contains("\"audio.muted\""));
 }
 
 #[test]
