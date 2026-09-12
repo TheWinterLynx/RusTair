@@ -14,9 +14,10 @@ const BENCH_ROUNDS: usize = 3;
 // NOP ; JMP 0000h
 //
 // Deliberately a ceiling microbenchmark: it keeps the adaptive backend in a
-// tiny, side-effect-free static-RAM loop so Full execution can show its best
-// possible dispatch/presentation throughput. Classic diagnostics are measured
-// separately through the same BackendHost as representative workloads.
+// tiny, side-effect-free RAM loop so Full execution can show its best possible
+// dispatch/presentation throughput while historically dynamic RAM exposes the
+// effective cost of its exact Partial timing model. Classic diagnostics are
+// measured separately through the same BackendHost as representative workloads.
 const BENCH_PROGRAM: [u8; 4] = [0x00, 0xc3, 0x00, 0x00];
 
 type HardwareFactory = fn() -> S100HardwareConfig;
@@ -30,7 +31,7 @@ struct ResultRow {
     realtime_multiple: f64,
 }
 
-fn minimal_historical_hardware() -> S100HardwareConfig {
+fn minimal_four_k_hardware(model: S100RamBoardModel) -> S100HardwareConfig {
     let mut hardware =
         S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
@@ -40,14 +41,23 @@ fn minimal_historical_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits4KStatic88_4Mcs,
-                    0x0000,
-                ),
+                S100RamCardConfig::fully_populated(model, 0x0000),
             )),
         )
         .unwrap();
     hardware.validate().unwrap()
+}
+
+fn four_k_static_hardware() -> S100HardwareConfig {
+    minimal_four_k_hardware(S100RamBoardModel::Mits4KStatic88_4Mcs)
+}
+
+fn four_k_dynamic_hardware() -> S100HardwareConfig {
+    minimal_four_k_hardware(S100RamBoardModel::Mits4KDynamic88_4Mcd)
+}
+
+fn four_k_synchronous_hardware() -> S100HardwareConfig {
+    minimal_four_k_hardware(S100RamBoardModel::Mits4KSynchronous88S4K)
 }
 
 fn historical_starter_hardware() -> S100HardwareConfig {
@@ -56,10 +66,37 @@ fn historical_starter_hardware() -> S100HardwareConfig {
         .unwrap()
 }
 
-fn historical_starter_without_two_sio() -> S100HardwareConfig {
+fn historical_starter_with_ram(model: S100RamBoardModel) -> S100HardwareConfig {
     let mut hardware = historical_starter_hardware();
+    hardware
+        .set_slot(
+            2,
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(model, 0x0000),
+            )),
+        )
+        .unwrap();
     hardware.set_slot(3, None).unwrap();
     hardware.validate().unwrap()
+}
+
+fn historical_starter_without_two_sio() -> S100HardwareConfig {
+    historical_starter_with_ram(S100RamBoardModel::Mits16KStatic88_16Mcs)
+}
+
+fn historical_starter_with_16mcd() -> S100HardwareConfig {
+    historical_starter_with_ram(S100RamBoardModel::Mits16KDynamic88_16Mcd)
+}
+
+fn benchmark_cases() -> [(&'static str, HardwareFactory); 6] {
+    [
+        ("CPU + 88-4MCS 4K Static", four_k_static_hardware),
+        ("CPU + 88-4MCD 4K Dynamic", four_k_dynamic_hardware),
+        ("CPU + 88-S4K 4K Sync", four_k_synchronous_hardware),
+        ("8800b + 16K Static", historical_starter_without_two_sio),
+        ("8800b + 88-16MCD Dynamic", historical_starter_with_16mcd),
+        ("8800b + 16K Static + 88-2SIO", historical_starter_hardware),
+    ]
 }
 
 fn run_t_states(machine: &mut BackendHost, target: u64) -> u64 {
@@ -113,7 +150,10 @@ fn median_row(rows: &[ResultRow]) -> ResultRow {
 
 fn print_rows(rows: &[ResultRow]) {
     let row = median_row(rows);
-    let min_mhz = rows.iter().map(|sample| sample.mhz).fold(f64::INFINITY, f64::min);
+    let min_mhz = rows
+        .iter()
+        .map(|sample| sample.mhz)
+        .fold(f64::INFINITY, f64::min);
     let max_mhz = rows
         .iter()
         .map(|sample| sample.mhz)
@@ -137,6 +177,23 @@ fn print_rows(rows: &[ResultRow]) {
     );
 }
 
+fn print_relative_cost(label: &str, baseline_rows: &[ResultRow], candidate_rows: &[ResultRow]) {
+    let baseline_mhz = median_row(baseline_rows).mhz;
+    let candidate_mhz = median_row(candidate_rows).mhz;
+    let throughput_delta_pct = (candidate_mhz / baseline_mhz - 1.0) * 100.0;
+    let slowdown = baseline_mhz / candidate_mhz;
+    println!(
+        "{label:<31} | baseline {baseline_mhz:>8.3} MHz | candidate {candidate_mhz:>8.3} MHz | {throughput_delta_pct:>+7.2}% | {slowdown:>6.2}x baseline/candidate"
+    );
+}
+
+#[test]
+fn adaptive_cycle_benchmark_hardware_matrix_builds() {
+    for (_, factory) in benchmark_cases() {
+        let _ = factory();
+    }
+}
+
 #[test]
 #[ignore = "manual Adaptive Cycle ceiling benchmark"]
 fn measure_adaptive_cycle_effective_mhz() {
@@ -146,14 +203,11 @@ fn measure_adaptive_cycle_effective_mhz() {
         "Measurement: median of {BENCH_ROUNDS} rounds × {MEASURE_T_STATES} emulated T-states after {WARMUP_T_STATES}T warm-up"
     );
     println!("This NOP/JMP loop is a ceiling microbenchmark, not a representative workload.");
+    println!("Dynamic historical RAM remains on the exact Partial path by design.");
     println!("Reference: MITS Altair 8800 nominal CPU clock = 2.000 MHz");
     println!();
 
-    let cases: [(&'static str, HardwareFactory); 3] = [
-        ("CPU + 88-4MCS 4K Static", minimal_historical_hardware),
-        ("8800b + 16K Static", historical_starter_without_two_sio),
-        ("8800b + 16K Static + 88-2SIO", historical_starter_hardware),
-    ];
+    let cases = benchmark_cases();
     let mut samples = vec![Vec::<ResultRow>::new(); cases.len()];
 
     for round in 0..BENCH_ROUNDS {
@@ -172,4 +226,10 @@ fn measure_adaptive_cycle_effective_mhz() {
     for rows in &samples {
         print_rows(rows);
     }
+
+    println!();
+    println!("Faithful dynamic RAM effective throughput cost");
+    print_relative_cost("88-4MCD vs 88-4MCS", &samples[0], &samples[1]);
+    print_relative_cost("88-S4K vs 88-4MCS", &samples[0], &samples[2]);
+    print_relative_cost("88-16MCD vs 88-16MCS", &samples[3], &samples[4]);
 }
