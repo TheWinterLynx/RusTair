@@ -1363,9 +1363,7 @@ mod tests {
     #[test]
     fn obsolete_engine_key_is_ignored_and_not_rewritten() {
         let decoded = SavedSettings::from_text(
-            "engine=anything\
-preferences.emulation_speed=5x\
-",
+            "engine=anything\npreferences.emulation_speed=5x\n",
         );
         assert_eq!(
             decoded.config.preferences.emulation_speed,
@@ -1380,11 +1378,7 @@ preferences.emulation_speed=5x\
     #[test]
     fn legacy_config_without_slot_inventory_is_migrated_from_old_globals() {
         let decoded = SavedSettings::from_text(
-            "machine.cpu_model=intel8080\
-machine.ram_size=48k\
-machine.ram_board_profile=mits-1k-static-1975\
-machine.serial_board=88-2sio\
-",
+            "machine.cpu_model=intel8080\nmachine.ram_size=48k\nmachine.ram_board_profile=mits-1k-static-1975\nmachine.serial_board=88-2sio\n",
         );
         let hardware = decoded.config.machine.s100_hardware;
         assert_eq!(hardware.installed_ram_bytes(), 48 * 1024);
@@ -1409,10 +1403,7 @@ machine.serial_board=88-2sio\
     fn current_slot_inventory_wins_over_stale_aggregate_serial_keys() {
         let physical = S100HardwareConfig::default().persistence_key();
         let text = format!(
-            "machine.serial_board=88-2sio\
-machine.two_sio_base=44\
-machine.s100_hardware={physical}\
-"
+            "machine.serial_board=88-2sio\nmachine.two_sio_base=44\nmachine.s100_hardware={physical}\n"
         );
         let decoded = SavedSettings::from_text(&text);
         assert_eq!(
@@ -1427,17 +1418,14 @@ machine.s100_hardware={physical}\
 
     #[test]
     fn old_or_invalid_sio_hardware_keeps_safe_atomic_migration_default() {
-        let old = SavedSettings::from_text("machine.serial_board=88-sio\
-");
+        let old = SavedSettings::from_text("machine.serial_board=88-sio\n");
         assert_eq!(
             old.config.machine.s100_hardware.active_sio_hardware(),
             Some(SioHardwareConfig::default())
         );
 
         let invalid = SavedSettings::from_text(
-            "machine.serial_board=88-sio\
-machine.sio_hardware=rev0,a-rs232,07,9600,7,even,1\
-",
+            "machine.serial_board=88-sio\nmachine.sio_hardware=rev0,a-rs232,07,9600,7,even,1\n",
         );
         assert_eq!(
             invalid.config.machine.s100_hardware.active_sio_hardware(),
@@ -1448,10 +1436,7 @@ machine.sio_hardware=rev0,a-rs232,07,9600,7,even,1\
     #[test]
     fn persisted_invalid_two_sio_block_cannot_override_safe_migration_default() {
         let decoded = SavedSettings::from_text(
-            "machine.serial_board=88-2sio\
-machine.two_sio_base=FC\
-machine.two_sio_port0_baud=300\
-",
+            "machine.serial_board=88-2sio\nmachine.two_sio_base=FC\nmachine.two_sio_port0_baud=300\n",
         );
         let straps = decoded
             .config
@@ -1465,8 +1450,7 @@ machine.two_sio_port0_baud=300\
 
     #[test]
     fn old_or_invalid_two_sio_signal_wiring_keeps_safe_physical_defaults() {
-        let old = SavedSettings::from_text("machine.serial_board=88-2sio\
-");
+        let old = SavedSettings::from_text("machine.serial_board=88-2sio\n");
         let old_straps = old
             .config
             .machine
@@ -1477,10 +1461,7 @@ machine.two_sio_port0_baud=300\
         assert_eq!(old_straps.port1_interface, TwoSioSignalInterface::Rs232);
 
         let invalid = SavedSettings::from_text(
-            "machine.serial_board=88-2sio\
-machine.two_sio_port0_interface=usb\
-machine.two_sio_port1_interface=ttl\
-",
+            "machine.serial_board=88-2sio\nmachine.two_sio_port0_interface=usb\nmachine.two_sio_port1_interface=ttl\n",
         );
         let invalid_straps = invalid
             .config
@@ -1555,8 +1536,7 @@ machine.two_sio_port1_interface=ttl\
 
     #[test]
     fn old_or_invalid_interrupt_wiring_keeps_safe_migration_default() {
-        let old = SavedSettings::from_text("machine.serial_board=88-2sio\
-");
+        let old = SavedSettings::from_text("machine.serial_board=88-2sio\n");
         let old_wiring = old
             .config
             .machine
@@ -1567,10 +1547,7 @@ machine.two_sio_port1_interface=ttl\
         assert_eq!(old_wiring.port1, TwoSioInterruptTarget::Pint);
 
         let invalid = SavedSettings::from_text(
-            "machine.serial_board=88-2sio\
-machine.two_sio_port0_irq=rst7\
-machine.two_sio_port1_irq=vi6\
-",
+            "machine.serial_board=88-2sio\nmachine.two_sio_port0_irq=rst7\nmachine.two_sio_port1_irq=vi6\n",
         );
         let invalid_wiring = invalid
             .config
