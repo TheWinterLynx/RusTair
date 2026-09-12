@@ -19,10 +19,11 @@ const DUTY_COUNTER_PLANES: usize = u64::BITS as usize;
 const STATUS_INSTRUCTION_FETCH: u8 = 0xa2;
 
 // Presentation persistence only. Electrical duty is accumulated independently
-// over every CPU-board sample seen since the previous commit. This low-pass maps
-// that exact duty onto human-visible persistence without feeding presentation
-// state back into the S-100 model.
-const VISUAL_PERSISTENCE_SECS: f32 = 0.045;
+// over every CPU-board sample seen since the previous commit. The frame-local
+// duty calculation already provides the physical time averaging; keep only a
+// short sub-frame optical smoothing term so panel games do not display a stale
+// address lamp tens of milliseconds after the S-100 activity has moved on.
+const VISUAL_PERSISTENCE_SECS: f32 = 0.008;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum BusOwner {
@@ -1189,6 +1190,28 @@ mod tests {
         assert_eq!(integrator.raw_duty.wo, 1.0);
         assert!(integrator.snapshot.wo > 0.0);
         assert!(integrator.snapshot.wo < 1.0);
+    }
+
+    #[test]
+    fn visual_persistence_tracks_panel_game_transitions_within_one_frame() {
+        let mut integrator = PanelLampIntegrator::default();
+        let off = S100Signals::default();
+        let mut on = off;
+        on.address = 0x8000;
+
+        integrator.sample(&on, 100);
+        integrator.commit(&on, Duration::from_millis(16), true);
+        assert!(
+            integrator.snapshot.address[15] > 0.8,
+            "an address lamp that is active for a whole frame must become visible immediately"
+        );
+
+        integrator.sample(&off, 100);
+        integrator.commit(&off, Duration::from_millis(16), true);
+        assert!(
+            integrator.snapshot.address[15] < 0.2,
+            "an obsolete address lamp must not remain visually dominant for another frame"
+        );
     }
 
     #[test]
