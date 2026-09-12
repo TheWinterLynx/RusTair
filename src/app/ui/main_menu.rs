@@ -9,6 +9,11 @@ pub(in crate::app) fn draw_main_menu(app: &mut RusTairApp, ctx: &egui::Context) 
             draw_view_menu(app, ctx, ui);
             draw_tools_menu(app, ctx, ui);
             draw_settings_menu(app, ui);
+            ui.separator();
+            let mut altair_muted = app.audio.altair_muted();
+            if ui.checkbox(&mut altair_muted, "Mute Altair").changed() {
+                app.set_altair_audio_muted(altair_muted);
+            }
         });
     });
 }
@@ -112,27 +117,6 @@ fn draw_machine_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::U
 
 fn draw_peripherals_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
     ui.menu_button("Peripherals", |ui| {
-        ui.menu_button("External Serial", |ui| {
-            ui.menu_button("TCP", |ui| {
-                app.draw_external_serial_config_menu(ui);
-            });
-            ui.menu_button("COM", |ui| {
-                app.draw_external_com_config_menu(ui);
-            });
-        });
-
-        ui.separator();
-        ui.small("ASR-33 and Text Terminal speed are configured in their respective windows.");
-    });
-}
-
-fn draw_view_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::Ui) {
-    ui.menu_button("View", |ui| {
-        if ui.button("Front Panel Operator").clicked() {
-            app.open_standalone_front_panel_operator(ctx);
-            ui.close();
-        }
-        ui.separator();
         if ui.button("ASR-33 Teletype").clicked() {
             app.asr33.window_open = true;
             ui.close();
@@ -154,6 +138,15 @@ fn draw_view_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::Ui) 
                 ui.close();
             }
         });
+    });
+}
+
+fn draw_view_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::Ui) {
+    ui.menu_button("View", |ui| {
+        if ui.button("Front Panel Operator").clicked() {
+            app.open_standalone_front_panel_operator(ctx);
+            ui.close();
+        }
         ui.separator();
         if ui.button("LED Appearance…").clicked() {
             super::open_led_visual_controls(app);
@@ -224,6 +217,15 @@ fn draw_settings_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
             ui.small("This changes how quickly the host advances emulated time. It never changes the installed CPU board's hardware clock or S-100 timing model.");
         });
 
+        ui.menu_button("External Serial", |ui| {
+            ui.menu_button("TCP", |ui| {
+                app.draw_external_serial_config_menu(ui);
+            });
+            ui.menu_button("COM", |ui| {
+                app.draw_external_com_config_menu(ui);
+            });
+        });
+
         ui.menu_button("Behaviour", |ui| {
             let mut auto_open_basic_console = app.config.preferences.auto_open_basic_console;
             if ui
@@ -266,9 +268,13 @@ fn draw_settings_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
         });
 
         ui.menu_button("Audio", |ui| {
-            let mut muted = app.audio.muted();
-            if ui.checkbox(&mut muted, "Mute").changed() {
-                app.audio.set_muted(muted);
+            let mut altair_muted = app.audio.altair_muted();
+            if ui.checkbox(&mut altair_muted, "Mute Altair").changed() {
+                app.set_altair_audio_muted(altair_muted);
+            }
+            let mut asr33_muted = app.audio.asr33_muted();
+            if ui.checkbox(&mut asr33_muted, "Mute ASR-33").changed() {
+                app.set_asr33_audio_muted(asr33_muted);
             }
         });
     });
