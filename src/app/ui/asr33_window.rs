@@ -49,7 +49,7 @@ impl RusTairApp {
             self.asr33.last_reader_byte = Some(byte);
             self.asr33.last_reader_tick = now;
             if self.asr33.media_sound_due(now) {
-                self.audio.play_once("assets/click.mp3");
+                self.audio.play_asr_once("assets/click.mp3");
             }
         }
 
@@ -89,7 +89,7 @@ impl RusTairApp {
                 // No dedicated punch recording is bundled in RusTair today;
                 // use the existing electromechanical impact sample rather than
                 // claiming a synthetic sound is an historical recording.
-                self.audio.play_once("assets/printcharpadded.mp3");
+                self.audio.play_asr_once("assets/printcharpadded.mp3");
             }
         }
     }
@@ -125,7 +125,7 @@ impl RusTairApp {
                 }
             });
         if board.is_none() {
-            ui.small("Install an 88-SIO or 88-2SIO in Configuration → S-100 Chassis / Cards to attach the ASR-33 cable.");
+            ui.small("Install an 88-SIO or 88-2SIO in Machine → S-100 Hardware to attach the ASR-33 cable.");
         }
 
         if selected != current {
@@ -379,7 +379,7 @@ impl RusTairApp {
             self.asr33.last_reader_tick = Instant::now()
                 .checked_sub(self.asr33.reader_speed.char_time())
                 .unwrap_or_else(Instant::now);
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = format!("ASR-33 reader started — {}", self.asr33.reader_speed.label());
         }
         if !manual {
@@ -394,7 +394,7 @@ impl RusTairApp {
 
         if ui.add_enabled(manual && self.asr33.reader_running, egui::Button::new("Pause")).clicked() {
             self.asr33.reader_running = false;
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape reader paused".into();
         }
 
@@ -404,14 +404,14 @@ impl RusTairApp {
             self.tty.rewind_tape_reader();
             self.asr33.last_reader_byte = None;
             self.asr33.last_reader_tick = Instant::now();
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape rewound to leader".into();
         }
         if ui.add_enabled(mounted, egui::Button::new("Eject")).clicked() {
             self.asr33.reader_running = false;
             self.tty.eject_tape_reader();
             self.asr33.last_reader_byte = None;
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape ejected".into();
         }
 
@@ -477,7 +477,7 @@ impl RusTairApp {
             self.tty.prepare_tape_punch();
             self.asr33.punch_running = false;
             self.asr33.last_punch_tick = Instant::now();
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = "Blank paper tape mounted in ASR-33 punch".into();
         }
         if finished_unsaved {
@@ -495,7 +495,7 @@ impl RusTairApp {
             self.asr33.last_punch_tick = Instant::now()
                 .checked_sub(self.asr33.punch_speed.char_time())
                 .unwrap_or_else(Instant::now);
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = format!("ASR-33 punch started — {}", self.asr33.punch_speed.label());
         }
         if self.tty.mode == TtyMode::Off {
@@ -505,7 +505,7 @@ impl RusTairApp {
         if ui.add_enabled(self.asr33.punch_running, egui::Button::new("Pause")).clicked() {
             self.asr33.punch_running = false;
             self.tty.pause_tape_punch();
-            self.audio.play_once("assets/click.mp3");
+            self.audio.play_asr_once("assets/click.mp3");
             self.status = "ASR-33 paper tape punch paused".into();
         }
 
@@ -515,7 +515,7 @@ impl RusTairApp {
             if mounted {
                 self.asr33.punch_running = false;
                 self.tty.finish_tape_punch();
-                self.audio.play_once("assets/click.mp3");
+                self.audio.play_asr_once("assets/click.mp3");
             }
             let _ = self.save_punched_tape();
         }
@@ -543,6 +543,16 @@ impl RusTairApp {
                 self.draw_tty_speed_selector(ui);
                 ui.separator();
                 self.draw_tty_duplex_selector(ui);
+                ui.separator();
+                let mut muted = self.audio.asr33_muted();
+                if ui.checkbox(&mut muted, "Mute audio").changed() {
+                    self.audio.set_asr33_muted(muted);
+                    self.status = if muted {
+                        "ASR-33 audio muted".into()
+                    } else {
+                        "ASR-33 audio enabled".into()
+                    };
+                }
             });
             ui.separator();
             ui.horizontal_wrapped(|ui| self.draw_tty_reader_controls(ui));
