@@ -298,6 +298,166 @@ impl RuntimeRamState {
         }
     }
 
+    /// Advance the 88-4MCD's free-running CLOC divider without fabricating an
+    /// S-100 transaction. Cycle Full uses this only for T-states it has already
+    /// proven semantically and electrically; a pending refresh is still consumed
+    /// solely by the next real/synthesized machine-cycle SYNC below.
+    fn full_advance_four_mcd_clocks(&mut self, clocks: u32) {
+        if clocks == 0 {
+            return;
+        }
+        let S100RamTimingModel::RefreshCollision {
+            interval_clocks, ..
+        } = S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_model()
+        else {
+            unreachable!("88-4MCD must retain refresh-collision timing")
+        };
+        let interval = u32::from(interval_clocks);
+        let total = u32::from(self.refresh_clock_count).saturating_add(clocks);
+        if total >= interval {
+            self.refresh_pending = true;
+        }
+        self.refresh_clock_count = (total % interval) as u16;
+    }
+
+    /// Cycle Full equivalent of one physical 88-4MCD machine cycle. T1 owns a
+    /// CLOC rising edge and SYNC; an already-pending refresh therefore costs one
+    /// TW, while a refresh becoming due on that same edge costs two. The waits
+    /// themselves are real T-states and feed the divider before the next cycle.
+    fn full_four_mcd_machine_cycle(
+        &mut self,
+        address: u16,
+        memory_access: bool,
+        base_t_states: u32,
+    ) -> u32 {
+        debug_assert!(base_t_states != 0);
+        let S100RamTimingModel::RefreshCollision {
+            interval_clocks,
+            min_waits,
+            max_waits,
+        } = S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_model()
+        else {
+            unreachable!("88-4MCD must retain refresh-collision timing")
+        };
+
+        let pending_before_sync = self.refresh_pending;
+        let count_before_sync = self.refresh_clock_count;
+        self.full_advance_four_mcd_clocks(1);
+        let became_due_on_sync = !pending_before_sync
+            && self.refresh_pending
+            && u32::from(count_before_sync) + 1 >= u32::from(interval_clocks);
+        let refresh_at_sync = self.refresh_pending;
+        let selected_access = memory_access && self.config.contains(address);
+        let waits = if refresh_at_sync && selected_access {
+            if became_due_on_sync {
+                max_waits
+            } else {
+                min_waits
+            }
+        } else {
+            0
+        };
+
+        if refresh_at_sync {
+            self.complete_refresh_cycle();
+        }
+        // Full consumes every returned TW inside this machine cycle, so no low
+        // PRDY state may leak across the semantic/physical rejoin boundary.
+        self.refresh_active = false;
+        self.refresh_collision_waits = 0;
+        self.wait_clocks_remaining = 0;
+        self.full_advance_four_mcd_clocks(
+            base_t_states
+                .saturating_sub(1)
+                .saturating_add(u32::from(waits)),
+        );
+        self.previous_sync = false;
+        self.previous_clock = false;
+        u32::from(waits)
+    }
+
+    /// Arithmetic PHI2 fast-forward for the 88-S4K. Full calls this in chunks
+    /// smaller than one 64-edge divider period, so at most one new request can
+    /// arise. Once sM1 has reached its fourth PHI2, a pending request is hidden
+    /// immediately exactly as in `advance_refresh_timing`.
+    fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool) {
+        if edges == 0 {
+            self.previous_m1 = m1;
+            self.previous_phi2 = false;
+            return;
+        }
+        debug_assert!(edges < u32::from(S4K_REFRESH_PHI2_EDGES));
+        if m1 && !self.previous_m1 {
+            self.m1_phi2_count = 0;
+        }
+
+        let pending_before = self.refresh_pending;
+        let count_before = u32::from(self.refresh_clock_count);
+        let to_due = u32::from(S4K_REFRESH_PHI2_EDGES) - count_before;
+        let became_due = to_due <= edges;
+        let total = count_before + edges;
+        self.refresh_clock_count = (total % u32::from(S4K_REFRESH_PHI2_EDGES)) as u16;
+        if became_due {
+            self.refresh_pending = true;
+        }
+
+        if m1 {
+            let before_m1 = u32::from(self.m1_phi2_count);
+            let hidden_edge = if before_m1 >= 4 { 1 } else { 4 - before_m1 };
+            let hidden_slot_reached = edges >= hidden_edge;
+            self.m1_phi2_count = before_m1
+                .saturating_add(edges)
+                .min(u32::from(u8::MAX)) as u8;
+            if hidden_slot_reached && (pending_before || became_due) {
+                self.complete_refresh_cycle();
+            }
+        }
+
+        self.previous_m1 = m1;
+        self.previous_phi2 = false;
+    }
+
+    fn full_machine_cycle_timing(
+        &mut self,
+        address: u16,
+        memory_access: bool,
+        m1: bool,
+        base_t_states: u32,
+    ) -> u32 {
+        match self.historical_model() {
+            Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
+                let waits = self.full_four_mcd_machine_cycle(
+                    address,
+                    memory_access,
+                    base_t_states,
+                );
+                self.previous_m1 = m1;
+                self.previous_phi2 = false;
+                waits
+            }
+            Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
+                self.full_advance_s4k_phi2(base_t_states, m1);
+                0
+            }
+            _ => 0,
+        }
+    }
+
+    fn full_internal_t_states(&mut self, t_states: u32) {
+        if t_states == 0 {
+            return;
+        }
+        match self.historical_model() {
+            Some(S100RamBoardModel::Mits4KDynamic88_4Mcd) => {
+                self.full_advance_four_mcd_clocks(t_states);
+            }
+            Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
+                self.full_advance_s4k_phi2(t_states, self.previous_m1);
+            }
+            _ => {}
+        }
+    }
+
     #[inline]
     fn drive_signature(&self) -> RamDriveSignature {
         let data_in = if self.memory_read {
@@ -421,6 +581,30 @@ impl RuntimeRamHandle {
         state.bytes[first..first + len].copy_from_slice(&data[..len]);
         state.refresh_cached_drive_if_changed(before);
         len
+    }
+
+    /// Cycle Full timing path for an already decoded external machine cycle.
+    /// This mutates the same physical card state used by exact Partial; there is
+    /// no shadow refresh clock to reconcile later.
+    pub(crate) fn full_machine_cycle_timing(
+        &self,
+        address: u16,
+        memory_access: bool,
+        m1: bool,
+        base_t_states: u32,
+    ) -> u32 {
+        self.state.borrow_mut().full_machine_cycle_timing(
+            address,
+            memory_access,
+            m1,
+            base_t_states,
+        )
+    }
+
+    /// Advance internal CPU T-states which retain the previous 8212 status and
+    /// therefore still clock dynamic RAM refresh logic without a new SYNC.
+    pub(crate) fn full_internal_t_states(&self, t_states: u32) {
+        self.state.borrow_mut().full_internal_t_states(t_states);
     }
 }
 
@@ -861,6 +1045,24 @@ mod tests {
     }
 
     #[test]
+    fn full_four_mcd_timing_preserves_both_collision_phases() {
+        let (_card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        handle.full_internal_t_states(31);
+        assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 2);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+
+        handle.initialize(RamInit::Zeroed);
+        handle.full_internal_t_states(32);
+        assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 1);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+    }
+
+    #[test]
     fn s4k_refresh_is_hidden_in_m1_and_never_pulls_prdy() {
         let (mut card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
@@ -879,6 +1081,22 @@ mod tests {
             assert_eq!(resolved.signal_level(S100Signal::Ready), Some(true));
             let _ = observe(&mut card, s4k_drive(0x0010, false, true, true, false));
         }
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+        assert!(!handle.state.borrow().refresh_pending);
+    }
+
+    #[test]
+    fn full_s4k_timing_consumes_pending_refresh_without_waiting() {
+        let (_card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        handle.full_internal_t_states(63);
+        handle.full_internal_t_states(1);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
         assert!(!handle.state.borrow().refresh_pending);
     }
