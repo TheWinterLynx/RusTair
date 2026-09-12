@@ -21,8 +21,10 @@ use crate::s100_memory::{
 };
 
 const LEGACY_COMPATIBILITY_PROTECTION_UNIT: usize = 1024;
-const S4K_REFRESH_DIVIDER: u16 = 32;
-const DYNAMIC_REFRESH_ROWS: u8 = 64;
+// The S4K divider advances every other 8080 T-cycle and requests refresh after
+// 32 divider counts. One PHI2 rising edge occurs per T-state, so the physical
+// request cadence is 64 PHI2 rising edges, approximately 32 us at 2 MHz.
+const S4K_REFRESH_PHI2_EDGES: u16 = 64;
 
 type RamDriveSignature = (Option<u8>, bool, bool);
 
@@ -110,7 +112,7 @@ struct RuntimeRamState {
     refresh_pending: bool,
     refresh_active: bool,
     refresh_collision_waits: u8,
-    refresh_row: u8,
+    #[cfg(test)]
     refresh_cycles: u64,
     m1_phi2_count: u8,
     /// Physical connector output is persistent state. Rebuilding eight DI pins
@@ -143,7 +145,7 @@ impl RuntimeRamState {
             refresh_pending: false,
             refresh_active: false,
             refresh_collision_waits: 0,
-            refresh_row: 0,
+            #[cfg(test)]
             refresh_cycles: 0,
             m1_phi2_count: 0,
             cached_drive: S100CardDrive::new(),
@@ -207,8 +209,10 @@ impl RuntimeRamState {
 
     fn complete_refresh_cycle(&mut self) {
         self.refresh_pending = false;
-        self.refresh_cycles = self.refresh_cycles.saturating_add(1);
-        self.refresh_row = (self.refresh_row + 1) % DYNAMIC_REFRESH_ROWS;
+        #[cfg(test)]
+        {
+            self.refresh_cycles = self.refresh_cycles.saturating_add(1);
+        }
     }
 
     fn historical_model(&self) -> Option<S100RamBoardModel> {
@@ -217,7 +221,6 @@ impl RuntimeRamState {
 
     fn advance_refresh_timing(
         &mut self,
-        sync: bool,
         sync_rising: bool,
         clock_rising: bool,
         phi2_rising: bool,
@@ -264,9 +267,6 @@ impl RuntimeRamState {
                     } else {
                         self.refresh_collision_waits = 0;
                     }
-                } else if !sync && self.previous_sync && self.wait_clocks_remaining == 0 {
-                    self.refresh_active = false;
-                    self.refresh_collision_waits = 0;
                 }
             }
             Some(S100RamBoardModel::Mits4KSynchronous88S4K) => {
@@ -275,7 +275,7 @@ impl RuntimeRamState {
                 }
                 if phi2_rising {
                     self.refresh_clock_count += 1;
-                    if self.refresh_clock_count >= S4K_REFRESH_DIVIDER {
+                    if self.refresh_clock_count >= S4K_REFRESH_PHI2_EDGES {
                         self.refresh_clock_count = 0;
                         self.refresh_pending = true;
                     }
@@ -347,8 +347,10 @@ impl RuntimeRamState {
         self.refresh_pending = false;
         self.refresh_active = false;
         self.refresh_collision_waits = 0;
-        self.refresh_row = 0;
-        self.refresh_cycles = 0;
+        #[cfg(test)]
+        {
+            self.refresh_cycles = 0;
+        }
         self.m1_phi2_count = 0;
     }
 }
@@ -507,7 +509,6 @@ impl S100ElectricalCard for RuntimeRamCard {
         let memory_access = memory_read || memory_write;
 
         state.advance_refresh_timing(
-            sync,
             sync_rising,
             clock_rising,
             phi2_rising,
@@ -602,6 +603,17 @@ mod tests {
         drive.drive_address(address);
         drive.drive_signal(S100Signal::MemoryRead, true);
         drive.drive_signal(S100Signal::MemoryWrite, false);
+        drive.drive_signal(S100Signal::Sync, sync);
+        drive.drive_signal(S100Signal::Clock, clock);
+        drive
+    }
+
+    fn write_drive(address: u16, sync: bool, clock: bool, memory_write: bool) -> S100CardDrive {
+        let mut drive = S100CardDrive::new();
+        drive.drive_address(address);
+        drive.drive_data_out(0x5a);
+        drive.drive_signal(S100Signal::MemoryRead, false);
+        drive.drive_signal(S100Signal::MemoryWrite, memory_write);
         drive.drive_signal(S100Signal::Sync, sync);
         drive.drive_signal(S100Signal::Clock, clock);
         drive
@@ -821,6 +833,32 @@ mod tests {
     }
 
     #[test]
+    fn four_mcd_write_collision_keeps_refresh_active_until_mwrt() {
+        let (mut card, _handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KDynamic88_4Mcd, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..32 {
+            clock_pulse(&mut card, 0x0010);
+        }
+        // SYNC announces the cycle before Display/Control generates MWRT.
+        let at_sync = observe(&mut card, write_drive(0x0010, true, false, false));
+        assert_eq!(at_sync.signal_level(S100Signal::Ready), Some(true));
+        let at_mwrt = observe(&mut card, write_drive(0x0010, false, false, true));
+        assert_eq!(at_mwrt.signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(handle_read_for_test(&card, 0x0010), Some(0x5a));
+
+        let released = observe(&mut card, write_drive(0x0010, false, true, true));
+        assert_eq!(released.signal_level(S100Signal::Ready), Some(true));
+    }
+
+    fn handle_read_for_test(card: &RuntimeRamCard, address: u16) -> Option<u8> {
+        card.state.borrow().read_byte(address)
+    }
+
+    #[test]
     fn s4k_refresh_is_hidden_in_m1_and_never_pulls_prdy() {
         let (mut card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
@@ -828,7 +866,7 @@ mod tests {
         )
         .unwrap();
 
-        for _ in 0..S4K_REFRESH_DIVIDER {
+        for _ in 0..S4K_REFRESH_PHI2_EDGES {
             s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
         }
         assert!(handle.state.borrow().refresh_pending);
@@ -851,7 +889,7 @@ mod tests {
         )
         .unwrap();
 
-        for _ in 0..S4K_REFRESH_DIVIDER {
+        for _ in 0..S4K_REFRESH_PHI2_EDGES {
             s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
         }
         assert!(handle.state.borrow().refresh_pending);
