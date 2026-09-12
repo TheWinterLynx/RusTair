@@ -1,6 +1,6 @@
 # MITS 88-DCDD / 88-DISK + Pertec FD-400 hardware contract
 
-Status: **Phase 0 source contract — PASS for Phase 1 topology work**
+Status: **Phase 0 source contract PASS; Phase 1 topology PASS; Phase 2 decode/electrical evidence locked pending test gate**
 
 This document is the source-backed hardware contract for the first RusTair implementation of the original Altair 8-inch floppy subsystem. It deliberately separates facts that are sufficiently established for production code from behavior that remains deferred until a later phase has the corresponding schematic/mechanical evidence.
 
@@ -37,6 +37,8 @@ Board #1 performs the **input-side** functions between the disk system and the A
 
 The block diagram identifies Board #1 separately on the Altair bus and shows a direct controller-board interconnect to Board #2.
 
+Schematic review for Phase 2 further fixes the S-100 ownership used by the implementation: Board #1 performs the fixed I/O decode from the mirrored upper address byte `A8..A15`, observes `sINP`, `sOUT`, `pDBIN`, `pWR` and `pINTE`, and owns the tri-state S-100 data-input drivers. Its decoded output strobes are carried to Board #2 over the controller harness; Board #1 does not acquire a synthetic copy of Board #2's output circuitry.
+
 ### Controller Board #2
 
 Board #2 performs the **output-side** functions from the Altair bus:
@@ -45,7 +47,7 @@ Board #2 performs the **output-side** functions from the Altair bus:
 - write-data circuitry;
 - disk-drive control circuitry.
 
-Board #2 is a second physical S-100 card, not a logical half of a synthetic single-slot device.
+Board #2 is a second physical S-100 card, not a logical half of a synthetic single-slot device. The schematic connects the Altair `DO0..DO7` lines and Power-On Clear to Board #2; the DCL/CD/WDS selection strobes arrive from Board #1 through the inter-board harness rather than by independently decoding the S-100 I/O address on Board #2.
 
 ### Board-to-board and controller cable
 
@@ -56,9 +58,9 @@ The installation instructions are explicit:
 - The harness terminates at a 37-pin rear-panel connector.
 - The instructions place Board #2 immediately to the left of Board #1 and slide the pair into S-100 connectors together.
 
-RusTair therefore models the board-to-board/controller harness as a **real physical signal bundle**. The two cards must never hold software references to one another. Sharing a harness signal authority is allowed because that represents documented copper.
+RusTair therefore models the board-to-board/controller harness as a **real physical signal bundle**. The two cards must never hold software references to one another. Sharing a harness signal authority is allowed because that represents documented copper. Phase 2 propagates DCL/CD/WDS changes as harness edges, so Board #2 receives the strobe independent of software slot-observation order and samples its own resolved S-100 `DO0..DO7` at that edge; no per-T-state harness polling is introduced.
 
-For Phase 1, RusTair will require one Board #1 and one Board #2 as a controller pair. The pair must occupy adjacent fitted S-100 connectors. RusTair does not yet assign historical meaning to increasing-vs-decreasing slot number as physical left/right; only adjacency is claimed until chassis orientation is explicitly documented in the slot model.
+RusTair requires one Board #1 and one Board #2 as a controller pair. The pair must occupy adjacent fitted S-100 connectors. RusTair does not yet assign historical meaning to increasing-vs-decreasing slot number as physical left/right; only adjacency is claimed until chassis orientation is explicitly documented in the slot model.
 
 ### External disk cable and daisy chain
 
@@ -104,7 +106,9 @@ The July 1977 guide specifies octal channels `010`, `011`, `012`, which are hexa
 | `09h` (`011` octal) | Sector position | Disk-function control |
 | `0Ah` (`012` octal) | Read data | Write data |
 
-These addresses are part of the historical base controller contract. Phase 1/2 must not add arbitrary user-remappable ports merely for emulator convenience.
+These addresses are part of the historical base controller contract. The implementation must not add arbitrary user-remappable ports merely for emulator convenience.
+
+Intel's 8080 I/O cycle mirrors the 8-bit port number onto both address-bus bytes. The DCDD schematic exploits that property by decoding the upper address lines on Board #1. RusTair therefore decodes the actual `A8..A15` connector signals for this controller rather than silently reusing the generic low-byte serial-card decoder.
 
 ## 4. Port 08h OUT — drive/controller selection
 
@@ -122,7 +126,7 @@ The controller/drive cannot be enabled when:
 - disk power is off;
 - the disk interconnect cable is absent.
 
-Those are physical conditions, not host UI special cases.
+Those are physical conditions, not host UI special cases. Consequently the Phase-2 no-drive assembly cannot become enabled after an `OUT 08h`; the DCL edge is real, Board #2 latches the selected address, but the absent external cable/drive path leaves Disk Enable false.
 
 ## 5. Port 08h IN — status
 
@@ -133,13 +137,13 @@ The guide explicitly states that the status truth convention is **True = 0, Fals
 | D0 | ENWD — Enter New Write Data | true when the write circuit is ready for a new byte; occurs every 32 µs after the write sequence reaches the data window; reset by OUT to 0Ah |
 | D1 | Move Head | indicates when head movement is allowed; constrained by step/write/trim-erase timing |
 | D2 | HS — Head Status | true 40 ms after head load, or 40 ms after a step while already loaded; also gates valid sector-position presentation |
-| D3 | unused | no invented semantics |
-| D4 | unused | no invented semantics |
+| D3 | unused | schematic/alternate-source review fixes this output at logic `0`; no functional semantics are assigned |
+| D4 | unused | schematic/alternate-source review fixes this output at logic `0`; no functional semantics are assigned |
 | D5 | INTE | the manual identifies this as INTE status; the schematic shows a `PINTE` input into the Board #1 status circuitry, so the base model treats this as observation of the S-100 `pINTE`/Interrupt Enable bus state when the controller is enabled, not as a fabricated private vector state |
 | D6 | TRACK 0 | true when the head is at the outermost track |
 | D7 | NRDA — New Read Data Available | true when one read byte is ready; after sync detection it occurs every 32 µs and is reset by IN from 0Ah |
 
-Before Phase 2 declares status PASS, the unused-bit electrical values will be checked against the full schematic/alternate scan. No other behavior depends on an assumed unused-bit value in Phase 1.
+With Disk Control disabled, D0/D1/D2/D5/D6/D7 are all false and therefore read as `1`, while D3/D4 are physically `0`. The exact disabled/no-drive status byte is therefore **`E7h` (`1110_0111b`)**. RusTair must not substitute `FFh` for this state.
 
 ## 6. Port 09h OUT — disk-function control
 
@@ -154,7 +158,7 @@ The guide defines a logic `1` on these output bits as the command assertion:
 - `D6`: HCS — Head Current Switch. Must be asserted for writes on tracks 43–76; automatically reset at the end of writing a sector.
 - `D7`: WRITE ENABLE — starts the documented write sequence.
 
-No step/head/write command may mutate a host image directly.
+No step/head/write command may mutate a host image directly. In the Phase-2 no-drive state the CD strobe is still generated over the physical board harness, but no mechanics or write state is fabricated in response; those effects begin only when the source-backed drive engine exists.
 
 ## 7. Port 09h IN — sector position
 
@@ -162,7 +166,9 @@ Sector-position input is valid only with the drive/controller enabled and after 
 
 - `D0`: SRO / Sector True. The guide defines True as logic `0` and approximately **30 µs** long.
 - `D1..D5`: binary sector number `0..31` as shown in the MITS table.
-- `D6..D7`: unused in the sector-position value; exact passive/forced electrical level will be finalized from the schematic before Phase 2 PASS.
+- `D6..D7`: unused in the sector-position value; their driven value during a valid Head-Status window remains deferred until the mechanics phase requires it.
+
+Schematic review resolves the Phase-2 non-enabled behavior: the sector-position line drivers are gated by Head Status. With no attached drive, Head Status is false and **IN 09h does not drive the S-100 DI bus**. The normal bus/open-bus resolution therefore applies; RusTair does not synthesize a sector byte while the output drivers are disabled.
 
 The guide states:
 
@@ -176,6 +182,8 @@ At 360 RPM with 32 hard sectors, one revolution is approximately 166.667 ms and 
 - OUT 0Ah supplies Write Data in response to ENWD.
 - IN 0Ah takes Read Data in response to NRDA.
 - Once synchronized, the documented cadence is **one byte every 32 µs**, corresponding to 250 kbit/s serial data.
+
+The Board #1 schematic shows the read strobe enabling the read-data line drivers; it does **not** establish a defined power-up value for the G3/H1 read-data latches. Therefore an `IN 0Ah` before valid disk data exists is not source-backed as either `00h`, `FFh`, or open bus. Phase 2 represents those uninitialized TTL latch bits as an indeterminate power-up byte and deliberately has no test asserting a particular value. The line drivers remain electrically enabled, which avoids falsely claiming high impedance. A valid read-data latch and NRDA side effect are introduced in the authentic read phase.
 
 The disk never waits for the 8080 merely because guest software failed to service NRDA/ENWD on time. Authentic mode must preserve the hardware consequence of late service.
 
@@ -192,7 +200,7 @@ The July 1977 guide/figure establishes the following observable timing sequence 
 - At end of sector the write circuit disables automatically.
 - Trim erase remains active for approximately **475 µs after the end of the sector/write interval**.
 
-The scan's wording for the special final/fill byte must be cross-checked against the alternate scan before RusTair encodes that exact byte-value rule. Phase 1 does not implement write data, so no assumption is needed yet.
+The scan's wording for the special final/fill byte must be cross-checked against the alternate scan before RusTair encodes that exact byte-value rule. The current phase does not implement write data, so no assumption is needed yet.
 
 ## 10. Head movement / head status contract
 
@@ -218,39 +226,47 @@ The Board #1 schematic contains an **INTERRUPT OPTION** selecting the interrupt 
 
 Therefore the DCDD must never contain a hard-coded `RST 7` injection. It asserts the configured physical request line. If pINT is used, the normal Altair interrupt acknowledge/open-bus behavior determines what the CPU receives; if VI7 is used, any installed 88-VI-class interrupt hardware owns prioritization/vectoring.
 
-The first controller configuration type should consequently model the physical interrupt strap/wiring as `PINT` vs `VI7` (and, if the schematic/installation documentation proves a disconnected position, that state may be represented explicitly). Phase 1 does not assert either line yet; Phase 7 implements the dynamic interrupt behavior.
+The first controller configuration type should consequently model the physical interrupt strap/wiring as `PINT` vs `VI7` (and, if the schematic/installation documentation proves a disconnected position, that state may be represented explicitly). Phase 2 does not assert either line; Phase 7 implements the dynamic interrupt behavior.
 
-## 12. Phase 1 implementation boundary
+## 12. Phase implementation boundaries
 
-Phase 1 is intentionally narrow. It may encode only facts already established above:
+### Phase 1 topology boundary — complete
+
+Phase 1 encoded only:
 
 - two distinct historical S-100 cards: MITS 88-DCDD Controller Board #1 and Board #2;
 - exactly one matched pair for the first supported controller subsystem;
 - adjacent fitted S-100 connectors;
 - one explicit shared physical controller harness object;
 - a distinct external disk-cable/bus boundary owned by that harness;
-- high-impedance/no-I/O behavior until Phase 2 installs source-backed connector decode and register state.
+- electrically quiescent cards before the source-backed register surface existed.
 
-Phase 1 **must not** yet encode:
+Its local full-test/release gate passed before Phase 2 began.
 
-- sector/image access;
-- FD-400 rotation or mechanics;
-- controller register behavior;
-- interrupt assertion;
-- read/write timing;
-- invented S-100 connector sensitivities merely to make future code convenient.
+### Phase 2 decode/register boundary
 
-This makes Phase 1 safely testable: installing the real two-card topology must not change CPU/bus behavior while the controller is electrically quiescent, and the cards add no per-T-state work because their Phase 1 descriptors do not subscribe to changing S-100 inputs.
+Phase 2 may make only the no-media register/electrical surface guest-visible:
+
+- fixed 08h/09h/0Ah decode through Board #1's actual upper address inputs;
+- DCL/CD/WDS board-to-board harness strobes;
+- Board #2 disk-enable/selection state sufficient to prove an absent drive cannot enable;
+- exact disabled status `E7h`;
+- Head-Status-gated high impedance on sector input with no drive;
+- enabled-but-indeterminate read-data latch output before valid media data;
+- source-backed Power-On-Clear/D7 clear paths;
+- no interrupt assertion, media access, rotation, stepping, head timing, read cadence or write cadence.
+
+This phase must remain event-driven: neither fitted DCDD board subscribes to the 2 MHz clock merely to poll an idle controller. Clock/timing circuitry is activated only when the later timing model can consume it without O(T-states × drives) work.
 
 ## 13. Deferred items which are not production assumptions
 
 The following are intentionally deferred rather than guessed:
 
-- exact unused-bit drive levels for status/sector-position reads;
-- full Board #1 and Board #2 S-100 contact sensitivity/output lists, to be transcribed from the schematics as Phase 2 adds those circuits;
+- exact D6/D7 electrical values on a **valid, Head-Status-enabled** sector-position read; the Phase-2 disabled-driver behavior is already fixed as high impedance;
+- the source-backed 2 MHz controller clock functions that become observable with serial read/write timing; they will be represented by virtual-time/event logic rather than an idle per-T-state subscription;
 - exact special final/fill-byte value/rule in the write sequence where the July 1977 scan is visually ambiguous;
 - full DB-37 signal-by-signal electrical table and active polarity, to be transcribed before the external drive electronics are activated;
 - exact Pertec FD-400 connector-level electrical interface beyond the MITS-visible mechanics/timing already established;
 - NWD controller timing differences and applicability to disk/media vintages.
 
-None of these deferred points is required to create the Phase 1 physical topology. They must be resolved before the phase that would make them guest-observable.
+None of these deferred points is needed to make the Phase-2 no-drive register surface exact. They must be resolved before the phase that would make them guest-observable.
