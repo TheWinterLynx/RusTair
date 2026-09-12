@@ -149,7 +149,7 @@ pub struct S100RuntimeFabric {
     /// Slot -> RAM vector index, used only after the responder mask has already
     /// established which physical card(s) can participate.
     ram_by_slot: [Option<usize>; MAX_S100_SLOTS],
-    /// Compiled A0..A7 and interrupt-pad decode for the installed serial cards.
+    /// Compiled A0..A7 and interrupt-pad decode for installed I/O cards.
     /// Multiple responder bits are deliberately retained for electrical overlap.
     io_decode: S100IoDecodeIndex,
 }
@@ -1181,7 +1181,7 @@ mod tests {
     }
 
     #[test]
-    fn phase1_dcdd_pair_is_two_live_cards_on_one_shared_runtime_fabric() {
+    fn phase2_dcdd_pair_is_two_live_cards_on_one_shared_runtime_fabric() {
         let fabric = S100RuntimeFabric::new(dcdd_hardware(), RamInit::Zeroed).unwrap();
         assert_eq!(
             fabric.backplane().slots()[2].descriptor().unwrap().key,
@@ -1192,10 +1192,13 @@ mod tests {
             "mits-88-dcdd-board-2"
         );
         assert!(fabric._dcdd_harness.is_some());
-        assert_eq!(fabric.io_responder_mask(0x08), 0);
-        assert_eq!(fabric.io_responder_mask(0x09), 0);
-        assert_eq!(fabric.io_responder_mask(0x0a), 0);
-        assert_eq!(fabric.externally_mutable_slots & (s100_slot_mask(3) | s100_slot_mask(4)), 0);
+        let dcdd_pair = s100_slot_mask(3) | s100_slot_mask(4);
+        assert_eq!(fabric.io_responder_mask(0x07), 0);
+        assert_eq!(fabric.io_responder_mask(0x08), dcdd_pair);
+        assert_eq!(fabric.io_responder_mask(0x09), dcdd_pair);
+        assert_eq!(fabric.io_responder_mask(0x0a), dcdd_pair);
+        assert_eq!(fabric.io_responder_mask(0x0b), 0);
+        assert_eq!(fabric.externally_mutable_slots & dcdd_pair, 0);
     }
 
     #[test]
