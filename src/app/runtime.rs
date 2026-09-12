@@ -2,7 +2,7 @@ use super::*;
 
 const STATUS_BAR_FONT_SIZE: f32 = 16.0;
 const STATUS_BAR_STATE_WIDTH: f32 = 150.0;
-const STATUS_BAR_PC_WIDTH: f32 = 105.0;
+const STATUS_BAR_REGISTERS_WIDTH: f32 = 285.0;
 const STATUS_BAR_SPEED_WIDTH: f32 = 165.0;
 const STATUS_BAR_FIELD_GAP: f32 = 16.0;
 const STATUS_BAR_ROW_HEIGHT: f32 = 24.0;
@@ -22,10 +22,7 @@ impl eframe::App for RusTairApp {
                 self.config.machine.s100_hardware,
                 self.config.machine.ram_init,
             );
-            self.status = format!(
-                "S-100 chassis mounted from configuration — {} KiB RAM across installed cards",
-                self.config.machine.s100_hardware.installed_ram_bytes() / 1024
-            );
+            self.status = "S-100 hardware configuration mounted".into();
         }
 
         self.poll_embedded_cpu_diagnostics(ctx);
@@ -166,20 +163,20 @@ impl eframe::App for RusTairApp {
                 egui::Sense::hover(),
             );
 
-            // The operational fields are anchored to the right edge with fixed
-            // widths. Only the transient message expands and contracts with the
-            // window, so fast-changing state cannot shift any field boundary.
+            // Operational fields are anchored to the right edge with fixed
+            // widths. Only the transient message expands with the window, so
+            // changing registers or execution state never moves a boundary.
             let mut right = bar_rect.right();
             let speed_rect = egui::Rect::from_min_max(
                 egui::Pos2::new(right - STATUS_BAR_SPEED_WIDTH, bar_rect.top()),
                 egui::Pos2::new(right, bar_rect.bottom()),
             );
             right = speed_rect.left() - STATUS_BAR_FIELD_GAP;
-            let pc_rect = egui::Rect::from_min_max(
-                egui::Pos2::new(right - STATUS_BAR_PC_WIDTH, bar_rect.top()),
+            let registers_rect = egui::Rect::from_min_max(
+                egui::Pos2::new(right - STATUS_BAR_REGISTERS_WIDTH, bar_rect.top()),
                 egui::Pos2::new(right, bar_rect.bottom()),
             );
-            right = pc_rect.left() - STATUS_BAR_FIELD_GAP;
+            right = registers_rect.left() - STATUS_BAR_FIELD_GAP;
             let state_rect = egui::Rect::from_min_max(
                 egui::Pos2::new(right - STATUS_BAR_STATE_WIDTH, bar_rect.top()),
                 egui::Pos2::new(right, bar_rect.bottom()),
@@ -193,7 +190,7 @@ impl eframe::App for RusTairApp {
             let separator_stroke = ui.visuals().widgets.noninteractive.bg_stroke;
             for x in [
                 state_rect.left() - STATUS_BAR_FIELD_GAP * 0.5,
-                pc_rect.left() - STATUS_BAR_FIELD_GAP * 0.5,
+                registers_rect.left() - STATUS_BAR_FIELD_GAP * 0.5,
                 speed_rect.left() - STATUS_BAR_FIELD_GAP * 0.5,
             ] {
                 ui.painter().line_segment(
@@ -224,11 +221,14 @@ impl eframe::App for RusTairApp {
                 .halign(egui::Align::Center),
             );
             ui.put(
-                pc_rect,
+                registers_rect,
                 egui::Label::new(
-                    egui::RichText::new(format!("PC {:04X}", cpu.pc))
-                        .size(STATUS_BAR_FONT_SIZE)
-                        .monospace(),
+                    egui::RichText::new(format!(
+                        "PC {:04X}  SP {:04X}  A {:02X}  F {:02X}",
+                        cpu.pc, cpu.sp, cpu.a, cpu.flags
+                    ))
+                    .size(STATUS_BAR_FONT_SIZE)
+                    .monospace(),
                 )
                 .halign(egui::Align::Center),
             );
