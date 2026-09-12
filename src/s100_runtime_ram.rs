@@ -20,6 +20,9 @@ use crate::s100_memory::{
     S100RamCardConfig, S100RamTimingModel,
 };
 
+mod full_timing;
+pub(crate) use full_timing::RuntimeRamTimingWindow;
+
 const LEGACY_COMPATIBILITY_PROTECTION_UNIT: usize = 1024;
 // The S4K divider advances every other 8080 T-cycle and requests refresh after
 // 32 divider counts. One PHI2 rising edge occurs per T-state, so the physical
@@ -580,6 +583,7 @@ impl RuntimeRamHandle {
         len
     }
 
+    #[cfg(test)]
     pub(crate) fn full_machine_cycle_timing(
         &self,
         address: u16,
@@ -595,6 +599,7 @@ impl RuntimeRamHandle {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn full_internal_t_states(&self, t_states: u32) {
         self.state.borrow_mut().full_internal_t_states(t_states);
     }

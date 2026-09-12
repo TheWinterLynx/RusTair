@@ -6,6 +6,7 @@ use crate::s100::{S100ContactRole, S100Signal};
 use crate::s100_backplane::{S100BackplaneError, S100BusSample};
 pub(crate) use crate::s100_runtime::S100_OPEN_BUS_VALUE;
 use crate::s100_runtime::{DisplayControlLines, RuntimeMemoryInspection, S100RuntimeFabric};
+use crate::s100_runtime_ram::RuntimeRamTimingWindow;
 
 pub const MEM_SIZE: usize = 8 * 1024;
 pub const MAX_MEM_SIZE: usize = 64 * 1024;
@@ -36,6 +37,9 @@ pub(super) struct Memory {
     /// to Partial must therefore force one real fabric settle before phase-only
     /// edge elision is legal again.
     full_execution_desynced: bool,
+    /// Dynamic RAM clock/refresh state is copied once per Full window and lives
+    /// here until the Full->Partial boundary. Guest bytes remain in `fabric`.
+    full_ram_timing_window: Option<RuntimeRamTimingWindow>,
     basic32_probe_guard: bool,
     basic32_probe_write: Option<u8>,
 }
@@ -56,6 +60,7 @@ impl Default for Memory {
             phase_edge_requires_settle,
             last_cycle_pins: Cpu8080Pins::default(),
             full_execution_desynced: false,
+            full_ram_timing_window: None,
             basic32_probe_guard: false,
             basic32_probe_write: None,
         }
@@ -251,6 +256,7 @@ impl Memory {
         self.fabric = fabric;
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
+        self.full_ram_timing_window = None;
         self.clear_transient_guards();
     }
 
@@ -265,6 +271,7 @@ impl Memory {
         self.init_mode = init_mode;
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
+        self.full_ram_timing_window = None;
         self.clear_transient_guards();
         Ok(())
     }
@@ -276,19 +283,39 @@ impl Memory {
         self.fabric.inspect_memory(address)
     }
 
+    #[inline(always)]
+    fn active_full_ram_timing(&mut self) -> &mut RuntimeRamTimingWindow {
+        if self.full_ram_timing_window.is_none() {
+            self.full_ram_timing_window = Some(self.fabric.full_ram_timing_window());
+        }
+        self.full_ram_timing_window
+            .as_mut()
+            .expect("Full RAM timing window was just initialized")
+    }
+
+    fn commit_full_ram_timing_window(&mut self) {
+        if let Some(window) = self.full_ram_timing_window.take() {
+            window.commit();
+        }
+    }
+
+    #[inline(always)]
     pub(super) fn full_ram_machine_cycle_timing(
-        &self,
+        &mut self,
         address: u16,
         memory_access: bool,
         m1: bool,
         base_t_states: u32,
     ) -> u32 {
-        self.fabric
-            .full_ram_machine_cycle_timing(address, memory_access, m1, base_t_states)
+        self.active_full_ram_timing()
+            .machine_cycle_timing(address, memory_access, m1, base_t_states)
     }
 
-    pub(super) fn full_ram_internal_t_states(&self, t_states: u32) {
-        self.fabric.full_ram_internal_t_states(t_states);
+    #[inline(always)]
+    pub(super) fn full_ram_internal_t_states(&mut self, t_states: u32) {
+        if t_states != 0 {
+            self.active_full_ram_timing().internal_t_states(t_states);
+        }
     }
 
     pub(super) fn mark_full_execution_desynced(
@@ -296,6 +323,7 @@ impl Memory {
         boundary_pins: Cpu8080Pins,
         latched_status_word: u8,
     ) {
+        self.commit_full_ram_timing_window();
         crate::full_boundary_reconcile::FullCpuBoundaryReconcile::reconcile_full_cpu_boundary(
             &mut self.fabric,
             boundary_pins,
@@ -310,6 +338,7 @@ impl Memory {
         pins: Cpu8080Pins,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        self.commit_full_ram_timing_window();
         if self.phase_only_edge_is_unobserved(pins) {
             let previous = self.last_cycle_pins;
             let phi1_rising = !previous.phi1 && pins.phi1 && !previous.phi2 && !pins.phi2;
@@ -356,6 +385,7 @@ impl Memory {
         &mut self,
         display: DisplayControlLines,
     ) -> Result<Cpu8080Inputs, S100BackplaneError> {
+        self.commit_full_ram_timing_window();
         self.fabric.settle(display, &[])?;
         Ok(self.fabric.cpu_package_inputs())
     }
@@ -388,6 +418,7 @@ impl Memory {
         self.fabric = fabric;
         self.last_cycle_pins = Cpu8080Pins::default();
         self.full_execution_desynced = false;
+        self.full_ram_timing_window = None;
         self.clear_transient_guards();
     }
 
@@ -583,7 +614,7 @@ impl super::AltairBus {
         self.memory.cycle_latched_status_word()
     }
     pub(crate) fn cycle_full_ram_machine_cycle_timing(
-        &self,
+        &mut self,
         address: u16,
         memory_access: bool,
         m1: bool,
@@ -592,7 +623,7 @@ impl super::AltairBus {
         self.memory
             .full_ram_machine_cycle_timing(address, memory_access, m1, base_t_states)
     }
-    pub(crate) fn cycle_full_ram_internal_t_states(&self, t_states: u32) {
+    pub(crate) fn cycle_full_ram_internal_t_states(&mut self, t_states: u32) {
         self.memory.full_ram_internal_t_states(t_states);
     }
     pub(crate) fn cycle_mark_full_execution_desynced(&mut self) {

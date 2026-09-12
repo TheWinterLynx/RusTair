@@ -16,7 +16,9 @@ use crate::s100_backplane::{
 use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use crate::s100_io::S100IoDecodeIndex;
 use crate::s100_io_card::{MITS_88_2SIO_IO_CARD, MITS_88_SIO_IO_CARD, S100IoCardAdapter};
-use crate::s100_runtime_ram::{RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle};
+use crate::s100_runtime_ram::{
+    RuntimeRamCard, RuntimeRamConfig, RuntimeRamHandle, RuntimeRamTimingWindow,
+};
 
 pub const S100_OPEN_BUS_VALUE: u8 = 0xff;
 const DIGITAL_SETTLE_DELTAS: usize = 3;
@@ -986,34 +988,11 @@ impl S100RuntimeFabric {
         self.memory_responder_mask(address).count_ones() as usize
     }
 
-    /// Advance dynamic RAM timing for one machine cycle executed by Cycle Full.
-    /// Every installed RAM card receives the same physical CPU clocks; only a
-    /// selected 88-4MCD may return TW states. Overlap is excluded by Full's
-    /// chassis proof, so taking the maximum preserves the wired-AND PRDY result.
-    pub(crate) fn full_ram_machine_cycle_timing(
-        &self,
-        address: u16,
-        memory_access: bool,
-        m1: bool,
-        base_t_states: u32,
-    ) -> u32 {
-        self.ram
-            .iter()
-            .map(|ram| {
-                ram.handle
-                    .full_machine_cycle_timing(address, memory_access, m1, base_t_states)
-            })
-            .max()
-            .unwrap_or(0)
-    }
-
-    /// Advance clocked RAM state during internal 8080 T-states. 16MCD is a
-    /// deliberate no-op here because its refresh oscillator is on-board and
-    /// processor-transparent at the digital claim boundary.
-    pub(crate) fn full_ram_internal_t_states(&self, t_states: u32) {
-        for ram in &self.ram {
-            ram.handle.full_internal_t_states(t_states);
-        }
+    /// Snapshot only the clocked digital state needed by Adaptive Full. The
+    /// returned window owns cloned handles solely for its one-time commit; guest
+    /// bytes and protection remain on the installed physical cards.
+    pub(crate) fn full_ram_timing_window(&self) -> RuntimeRamTimingWindow {
+        RuntimeRamTimingWindow::from_handles(self.ram.iter().map(|ram| ram.handle.clone()))
     }
 
     pub fn installed_ram_bytes(&self) -> usize {
