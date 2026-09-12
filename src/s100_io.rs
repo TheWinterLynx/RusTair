@@ -58,7 +58,12 @@ impl S100IoDecodeIndex {
                     index.add_two_sio_interrupt(interrupt_wiring.port0, slot_mask);
                     index.add_two_sio_interrupt(interrupt_wiring.port1, slot_mask);
                 }
-                S100InstalledCardConfig::Mits8080Cpu
+                // Phase 1 mounts the two documented 88-DCDD cards and their
+                // physical harness but deliberately does not activate I/O decode
+                // until Phase 2 has transcribed the connector/register circuit.
+                S100InstalledCardConfig::Mits88DcddBoard1
+                | S100InstalledCardConfig::Mits88DcddBoard2
+                | S100InstalledCardConfig::Mits8080Cpu
                 | S100InstalledCardConfig::Ram(_)
                 | S100InstalledCardConfig::FastRamCompatibility(_) => {}
             }
@@ -175,6 +180,24 @@ mod tests {
             assert_eq!(index.unique_port_slot(port), Some(5));
         }
         assert_eq!(index.port_responders(0x48), 0);
+    }
+
+    #[test]
+    fn phase1_dcdd_topology_does_not_claim_io_before_decode_is_implemented() {
+        let mut hardware = six_slot_with_cpu();
+        hardware
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
+        hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
+        let index = S100IoDecodeIndex::from_hardware(hardware.validate().unwrap());
+
+        assert_eq!(index.port_responders(0x08), 0);
+        assert_eq!(index.port_responders(0x09), 0);
+        assert_eq!(index.port_responders(0x0a), 0);
+        assert_eq!(index.pint_possible_drivers(), 0);
+        assert_eq!(index.vi_possible_drivers(7), 0);
     }
 
     #[test]
