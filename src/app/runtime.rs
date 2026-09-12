@@ -2,7 +2,9 @@ use super::*;
 
 const STATUS_BAR_FONT_SIZE: f32 = 16.0;
 const STATUS_BAR_STATE_WIDTH: f32 = 150.0;
-const STATUS_BAR_REGISTERS_WIDTH: f32 = 285.0;
+const STATUS_BAR_REGISTERS_COMPACT_WIDTH: f32 = 285.0;
+const STATUS_BAR_REGISTERS_EXTENDED_WIDTH: f32 = 555.0;
+const STATUS_BAR_EXTENDED_BREAKPOINT: f32 = 1120.0;
 const STATUS_BAR_SPEED_WIDTH: f32 = 165.0;
 const STATUS_BAR_FIELD_GAP: f32 = 16.0;
 const STATUS_BAR_ROW_HEIGHT: f32 = 24.0;
@@ -10,6 +12,7 @@ const STATUS_BAR_ROW_HEIGHT: f32 = 24.0;
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
+        super::ui::ensure_readable_ui_style(ctx);
         super::ui::ensure_persistent_configuration_loaded(self);
 
         // `machine.s100_hardware` is the sole physical authority. Persistence
@@ -156,12 +159,50 @@ impl eframe::App for RusTairApp {
         } else {
             self.status.as_str()
         };
+        let flag_summary = format!(
+            "S{}Z{}A{}P{}C{}",
+            (cpu.flags >> 7) & 1,
+            (cpu.flags >> 6) & 1,
+            (cpu.flags >> 4) & 1,
+            (cpu.flags >> 2) & 1,
+            cpu.flags & 1,
+        );
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             let (bar_rect, _) = ui.allocate_exact_size(
                 egui::Vec2::new(ui.available_width(), STATUS_BAR_ROW_HEIGHT),
                 egui::Sense::hover(),
             );
+
+            // On normal desktop widths show the complete 8080 architectural
+            // register set. At genuinely narrow widths fall back to the original
+            // compact PC/SP/A/F group so PC can never be clipped. This breakpoint
+            // depends only on manual window width, never on rapidly changing CPU
+            // values, so the field boundaries stay still during execution.
+            let extended_registers = bar_rect.width() >= STATUS_BAR_EXTENDED_BREAKPOINT;
+            let registers_width = if extended_registers {
+                STATUS_BAR_REGISTERS_EXTENDED_WIDTH
+            } else {
+                STATUS_BAR_REGISTERS_COMPACT_WIDTH
+            };
+            let registers_label = if extended_registers {
+                format!(
+                    "PC {:04X} SP {:04X} A {:02X} F {:02X}({}) BC {:04X} DE {:04X} HL {:04X}",
+                    cpu.pc,
+                    cpu.sp,
+                    cpu.a,
+                    cpu.flags,
+                    flag_summary,
+                    cpu.bc(),
+                    cpu.de(),
+                    cpu.hl(),
+                )
+            } else {
+                format!(
+                    "PC {:04X}  SP {:04X}  A {:02X}  F {:02X}",
+                    cpu.pc, cpu.sp, cpu.a, cpu.flags
+                )
+            };
 
             // Operational fields are anchored to the right edge with fixed
             // widths. Only the transient message expands with the window, so
@@ -173,7 +214,7 @@ impl eframe::App for RusTairApp {
             );
             right = speed_rect.left() - STATUS_BAR_FIELD_GAP;
             let registers_rect = egui::Rect::from_min_max(
-                egui::Pos2::new(right - STATUS_BAR_REGISTERS_WIDTH, bar_rect.top()),
+                egui::Pos2::new(right - registers_width, bar_rect.top()),
                 egui::Pos2::new(right, bar_rect.bottom()),
             );
             right = registers_rect.left() - STATUS_BAR_FIELD_GAP;
@@ -223,13 +264,11 @@ impl eframe::App for RusTairApp {
             ui.put(
                 registers_rect,
                 egui::Label::new(
-                    egui::RichText::new(format!(
-                        "PC {:04X}  SP {:04X}  A {:02X}  F {:02X}",
-                        cpu.pc, cpu.sp, cpu.a, cpu.flags
-                    ))
-                    .size(STATUS_BAR_FONT_SIZE)
-                    .monospace(),
+                    egui::RichText::new(registers_label)
+                        .size(STATUS_BAR_FONT_SIZE)
+                        .monospace(),
                 )
+                .truncate()
                 .halign(egui::Align::Center),
             );
             ui.put(
