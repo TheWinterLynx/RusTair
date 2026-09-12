@@ -298,6 +298,7 @@ impl RuntimeRamState {
         }
     }
 
+    #[cfg(test)]
     fn full_advance_four_mcd_clocks(&mut self, clocks: u32) {
         if clocks == 0 {
             return;
@@ -328,6 +329,7 @@ impl RuntimeRamState {
         }
     }
 
+    #[cfg(test)]
     fn full_four_mcd_machine_cycle(
         &mut self,
         address: u16,
@@ -380,6 +382,7 @@ impl RuntimeRamState {
     /// level remains high across adjacent fetches. Internal T-states continue
     /// that same M1 without resetting the T4 position. Full advances at most one
     /// 64-edge refresh period in any one arithmetic chunk.
+    #[cfg(test)]
     fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool, new_machine_cycle: bool) {
         if m1 && new_machine_cycle {
             self.m1_phi2_count = 0;
@@ -420,6 +423,7 @@ impl RuntimeRamState {
         self.previous_phi2 = false;
     }
 
+    #[cfg(test)]
     fn full_machine_cycle_timing(
         &mut self,
         address: u16,
@@ -442,6 +446,7 @@ impl RuntimeRamState {
         }
     }
 
+    #[cfg(test)]
     fn full_internal_t_states(&mut self, t_states: u32) {
         if t_states == 0 {
             return;
