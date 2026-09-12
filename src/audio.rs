@@ -6,16 +6,33 @@ use rodio::{Decoder, OutputStream, OutputStreamBuilder, Sink, Source};
 
 use crate::embedded_assets;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AudioDomain {
+    Altair,
+    Asr33,
+}
+
+struct ActiveLoop {
+    sink: Sink,
+    domain: AudioDomain,
+}
+
 /// Native sound engine shared by the Altair and ASR-33. Failure to open an
 /// audio device is deliberately non-fatal so CI/headless builds still work.
+///
+/// One host output stream/mixer is shared, while the Altair chassis and ASR-33
+/// retain independent mute domains. This avoids opening multiple host devices
+/// merely to let the operator silence one physical machine without muting the
+/// other.
 ///
 /// Audio data is compiled into the executable; callers keep using stable asset
 /// names so the rest of the application does not need to know where the bytes
 /// come from.
 pub struct AudioEngine {
     stream: Option<OutputStream>,
-    loops: HashMap<String, Sink>,
-    muted: bool,
+    loops: HashMap<String, ActiveLoop>,
+    altair_muted: bool,
+    asr33_muted: bool,
 }
 
 impl Default for AudioEngine {
@@ -35,20 +52,47 @@ impl AudioEngine {
         Self {
             stream,
             loops: HashMap::new(),
-            muted: false,
+            altair_muted: false,
+            asr33_muted: false,
         }
     }
 
     pub fn available(&self) -> bool { self.stream.is_some() }
-    pub fn muted(&self) -> bool { self.muted }
+    pub fn altair_muted(&self) -> bool { self.altair_muted }
+    pub fn asr33_muted(&self) -> bool { self.asr33_muted }
 
+    /// Legacy aggregate query retained for migration/tests. New UI code must use
+    /// the two domain-specific mute states instead.
+    pub fn muted(&self) -> bool { self.altair_muted && self.asr33_muted }
+
+    /// Legacy aggregate setter: old persisted `audio.muted` meant silence every
+    /// sound, so applying it still changes both independent domains together.
     pub fn set_muted(&mut self, muted: bool) {
-        self.muted = muted;
-        if muted { self.stop_all_loops(); }
+        self.set_altair_muted(muted);
+        self.set_asr33_muted(muted);
     }
 
-    pub fn play_once(&self, path: impl AsRef<Path>) {
-        if self.muted { return; }
+    pub fn set_altair_muted(&mut self, muted: bool) {
+        if self.altair_muted == muted { return; }
+        self.altair_muted = muted;
+        if muted { self.stop_domain_loops(AudioDomain::Altair); }
+    }
+
+    pub fn set_asr33_muted(&mut self, muted: bool) {
+        if self.asr33_muted == muted { return; }
+        self.asr33_muted = muted;
+        if muted { self.stop_domain_loops(AudioDomain::Asr33); }
+    }
+
+    fn domain_muted(&self, domain: AudioDomain) -> bool {
+        match domain {
+            AudioDomain::Altair => self.altair_muted,
+            AudioDomain::Asr33 => self.asr33_muted,
+        }
+    }
+
+    fn play_once_for(&self, domain: AudioDomain, path: impl AsRef<Path>) {
+        if self.domain_muted(domain) { return; }
         let Some(stream) = &self.stream else { return };
         let Some(path) = path.as_ref().to_str() else { return };
         let Some(bytes) = embedded_assets::get(path) else { return };
@@ -58,22 +102,51 @@ impl AudioEngine {
         sink.detach();
     }
 
-    pub fn start_loop(&mut self, name: &str, path: impl AsRef<Path>) {
-        if self.muted || self.loops.contains_key(name) { return; }
+    /// Play an Altair/chassis sound. This remains the default domain so existing
+    /// front-panel call sites cannot accidentally become ASR-33 audio.
+    pub fn play_once(&self, path: impl AsRef<Path>) {
+        self.play_once_for(AudioDomain::Altair, path);
+    }
+
+    pub fn play_asr_once(&self, path: impl AsRef<Path>) {
+        self.play_once_for(AudioDomain::Asr33, path);
+    }
+
+    fn start_loop_for(&mut self, domain: AudioDomain, name: &str, path: impl AsRef<Path>) {
+        if self.domain_muted(domain) || self.loops.contains_key(name) { return; }
         let Some(stream) = &self.stream else { return };
         let Some(path) = path.as_ref().to_str() else { return };
         let Some(bytes) = embedded_assets::get(path) else { return };
         let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
         let sink = Sink::connect_new(stream.mixer());
         sink.append(source.repeat_infinite());
-        self.loops.insert(name.to_owned(), sink);
+        self.loops.insert(name.to_owned(), ActiveLoop { sink, domain });
+    }
+
+    pub fn start_loop(&mut self, name: &str, path: impl AsRef<Path>) {
+        self.start_loop_for(AudioDomain::Altair, name, path);
+    }
+
+    pub fn start_asr_loop(&mut self, name: &str, path: impl AsRef<Path>) {
+        self.start_loop_for(AudioDomain::Asr33, name, path);
     }
 
     pub fn stop_loop(&mut self, name: &str) {
-        if let Some(sink) = self.loops.remove(name) { sink.stop(); }
+        if let Some(active) = self.loops.remove(name) { active.sink.stop(); }
+    }
+
+    fn stop_domain_loops(&mut self, domain: AudioDomain) {
+        self.loops.retain(|_, active| {
+            if active.domain == domain {
+                active.sink.stop();
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn stop_all_loops(&mut self) {
-        for (_, sink) in self.loops.drain() { sink.stop(); }
+        for (_, active) in self.loops.drain() { active.sink.stop(); }
     }
 }
