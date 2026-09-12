@@ -234,3 +234,36 @@ fn compiled_full_di_matches_forced_partial_inte_and_panel_exactly() {
     assert_eq!(compiled.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_status_word());
     assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
 }
+
+#[test]
+fn dynamic_historical_ram_never_enters_compiled_full_windows() {
+    for model in [
+        S100RamBoardModel::Mits4KDynamic88_4Mcd,
+        S100RamBoardModel::Mits4KSynchronous88S4K,
+        S100RamBoardModel::Mits16KDynamic88_16Mcd,
+    ] {
+        let mut hardware =
+            S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+        hardware
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        hardware
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::Ram(
+                    S100RamCardConfig::fully_populated(model, 0),
+                )),
+            )
+            .unwrap();
+        let mut backend = CycleAccurateMachineBackend::default();
+        backend
+            .machine
+            .bus
+            .configure_s100_hardware_memory(hardware, RamInit::Zeroed)
+            .unwrap();
+        assert!(
+            !backend.compiled_full_chassis_available(),
+            "{model:?} refresh timing must remain exact Partial hardware"
+        );
+    }
+}
