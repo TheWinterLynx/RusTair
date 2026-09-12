@@ -205,6 +205,11 @@ fn draw_slot_menu(
                 interrupt_wiring,
                 ui,
             ),
+            S100InstalledCardConfig::Mits88DcddBoard1
+            | S100InstalledCardConfig::Mits88DcddBoard2 => {
+                ui.small("MITS 88-DCDD two-board controller assembly. Both adjacent cards are one physical subsystem joined by the documented controller harness.");
+                ui.small("Phase 1 keeps the pair read-only in the normal editor; atomic install/remove and disk-unit controls arrive with the dedicated DCDD UI phase.");
+            }
             S100InstalledCardConfig::FastRamCompatibility(config) => {
                 ui.small(format!(
                     "Compatibility RAM: {:04X}h + {} bytes · {} read wait(s)",
