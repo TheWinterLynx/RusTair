@@ -3,6 +3,18 @@ const MAIN_MENU: &str = include_str!("../src/app/ui/main_menu.rs");
 const EMBEDDED_DIAGNOSTICS: &str = include_str!("../src/app/embedded_cpu_diagnostics.rs");
 const EXTERNAL_DIAGNOSTICS: &str = include_str!("../src/app/cpu_diagnostics.rs");
 
+fn source_contains_ignoring_whitespace(source: &str, expected: &str) -> bool {
+    let source = source
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    let expected = expected
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    source.contains(&expected)
+}
+
 #[test]
 fn new_emulator_speed_selector_exposes_only_supported_user_choices() {
     let choices = APP
@@ -66,10 +78,13 @@ fn external_cpu_diagnostic_keeps_the_launch_speed_for_its_result() {
     assert!(APP.contains("cpu_diagnostic_run_speed_label: Option<String>"));
     assert!(MAIN_MENU.contains("app.cpu_diagnostic_run_speed_label.is_some()"));
     assert!(MAIN_MENU.contains("Locked while external CPU diagnostic runs: {speed}"));
-    assert!(
-        EXTERNAL_DIAGNOSTICS
-            .contains("self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());")
-    );
-    assert!(EXTERNAL_DIAGNOSTICS.contains("self.cpu_diagnostic_run_speed_label.take()"));
+    assert!(source_contains_ignoring_whitespace(
+        EXTERNAL_DIAGNOSTICS,
+        "self.cpu_diagnostic_run_speed_label = Some(speed_label.clone());"
+    ));
+    assert!(source_contains_ignoring_whitespace(
+        EXTERNAL_DIAGNOSTICS,
+        "self.cpu_diagnostic_run_speed_label.take()"
+    ));
     assert!(EXTERNAL_DIAGNOSTICS.contains("DIAGNOSTIC_RESULT_SPEED_ID"));
 }
