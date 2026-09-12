@@ -24,6 +24,54 @@ mod s100_memory_inspection;
 pub(super) mod persistence;
 pub(super) mod terminal;
 
+/// Install one application-wide typography policy instead of fixing individual
+/// windows piecemeal. The goal is noticeably better legibility while keeping
+/// the desktop dense: text grows, but inter-widget vertical whitespace remains
+/// compact. Photographic front-panel labels and the ASR-33's own teletype font
+/// use explicit renderers and are therefore unaffected by these egui text styles.
+pub(in crate::app) fn ensure_readable_ui_style(ctx: &egui::Context) {
+    let installed = ctx.data_mut(|data| {
+        let id = egui::Id::new("rustair-readable-ui-style-installed");
+        let installed = *data.get_temp_mut_or(id, false);
+        if !installed {
+            data.insert_temp(id, true);
+        }
+        installed
+    });
+    if installed {
+        return;
+    }
+
+    ctx.style_mut(|style| {
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::new(12.5, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::new(15.0, egui::FontFamily::Proportional),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::new(14.0, egui::FontFamily::Monospace),
+        );
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(19.0, egui::FontFamily::Proportional),
+        );
+
+        // egui's default item spacing is already compact. Hold the vertical
+        // spacing at 3 px and trim button padding so larger glyphs do not turn
+        // menus/tool windows into substantially taller layouts.
+        style.spacing.item_spacing.y = 3.0;
+        style.spacing.button_padding = egui::vec2(5.0, 1.0);
+    });
+}
+
 /// Standard collapsible section used by debugger/tool viewports.
 ///
 /// `CollapsingHeader` owns the fold/unfold interaction; `Frame::group` only
