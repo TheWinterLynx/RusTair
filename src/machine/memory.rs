@@ -241,8 +241,6 @@ impl Memory {
         phi1_rising || phi1_falling || phi2_rising || phi2_falling
     }
 
-    /// Compatibility helper for old fixtures. It now builds a real slot-native
-    /// assembly rather than selecting a separate aggregate memory runtime.
     pub(super) fn configure(&mut self, size: RamSize, init_mode: RamInit) {
         self.ram_size = size;
         self.init_mode = init_mode;
@@ -333,10 +331,6 @@ impl Memory {
         Ok(self.fabric.cpu_package_inputs())
     }
 
-    /// Re-resolve the current connector graph after host-side card state changes
-    /// such as elapsed UART time, modem inputs or debugger injection. No CPU pin
-    /// is changed and no interrupt is synthesized: the installed cards refresh
-    /// their cached drives and PINT/PRDY reach the CPU package through S-100.
     pub(super) fn cycle_refresh_external_inputs(
         &mut self,
         display: DisplayControlLines,
@@ -355,9 +349,21 @@ impl Memory {
         self.fabric.cpu_latched_status_word()
     }
 
-    /// Compatibility helper for old aggregate timing fixtures. Rebuild the
-    /// compatibility card with the requested physical wait-state value while
-    /// copying its current bytes into the replacement card.
+    pub(super) fn full_ram_machine_cycle_timing(
+        &self,
+        address: u16,
+        memory_access: bool,
+        m1: bool,
+        base_t_states: u32,
+    ) -> u32 {
+        self.fabric
+            .full_ram_machine_cycle_timing(address, memory_access, m1, base_t_states)
+    }
+
+    pub(super) fn full_ram_internal_t_states(&self, t_states: u32) {
+        self.fabric.full_ram_internal_t_states(t_states);
+    }
+
     pub(super) fn configure_board_profile(&mut self, profile: RamBoardProfile) {
         let bytes = (0..self.ram_size.bytes())
             .map(|address| {
@@ -476,11 +482,6 @@ impl Memory {
         None
     }
 
-    /// Full executes through the S-100 address decode compiled when cards are
-    /// installed. A unique RAM responder is a direct bus dispatch to that
-    /// physical card's shared storage, exactly like a decoded TTL chip-select.
-    /// No CPU-to-RAM reference exists: Full calls the bus-owned fabric, and
-    /// overlapping cards fall back to the generic electrical resolver.
     pub(super) fn read(&mut self, address: u16) -> u8 {
         if let Some(value) = self.compatibility_read_override(address) {
             return value;
@@ -498,10 +499,6 @@ impl Memory {
         }
     }
 
-    /// Full writes use the same bus-owned compiled S-100 decode. A single
-    /// selected RAM card receives the write and enforces its physical protection
-    /// latch; overlap falls back to the generic electrical transaction so every
-    /// selected card observes MWRT/DO.
     pub(super) fn write(&mut self, address: u16, value: u8) {
         if address == u16::MAX && self.basic32_probe_guard {
             self.basic32_probe_write = Some(value);
@@ -518,8 +515,6 @@ impl Memory {
         }
     }
 
-    /// T3 helper used only for the BASIC 3.2 compatibility guard and panel-side
-    /// diagnostics. Ordinary Partial memory reads sample live S-100 DI directly.
     pub(super) fn cycle_read(&mut self, address: u16) -> u8 {
         self.compatibility_read_override(address)
             .unwrap_or_else(|| self.resolved_preview(address))
@@ -567,6 +562,22 @@ impl super::AltairBus {
     pub(crate) fn cycle_live_s100_status_word(&self) -> u8 {
         self.memory.cycle_latched_status_word()
     }
+
+    pub(crate) fn cycle_full_ram_machine_cycle_timing(
+        &self,
+        address: u16,
+        memory_access: bool,
+        m1: bool,
+        base_t_states: u32,
+    ) -> u32 {
+        self.memory
+            .full_ram_machine_cycle_timing(address, memory_access, m1, base_t_states)
+    }
+
+    pub(crate) fn cycle_full_ram_internal_t_states(&self, t_states: u32) {
+        self.memory.full_ram_internal_t_states(t_states);
+    }
+
     pub(crate) fn cycle_mark_full_execution_desynced(&mut self) {
         let signals = self.s100.signals();
         debug_assert!(!signals.wait && !signals.hlda);
