@@ -75,13 +75,13 @@ impl AudioEngine {
     pub fn set_altair_muted(&mut self, muted: bool) {
         if self.altair_muted == muted { return; }
         self.altair_muted = muted;
-        if muted { self.stop_domain_loops(AudioDomain::Altair); }
+        self.set_domain_loop_volume(AudioDomain::Altair, if muted { 0.0 } else { 1.0 });
     }
 
     pub fn set_asr33_muted(&mut self, muted: bool) {
         if self.asr33_muted == muted { return; }
         self.asr33_muted = muted;
-        if muted { self.stop_domain_loops(AudioDomain::Asr33); }
+        self.set_domain_loop_volume(AudioDomain::Asr33, if muted { 0.0 } else { 1.0 });
     }
 
     fn domain_muted(&self, domain: AudioDomain) -> bool {
@@ -113,12 +113,15 @@ impl AudioEngine {
     }
 
     fn start_loop_for(&mut self, domain: AudioDomain, name: &str, path: impl AsRef<Path>) {
-        if self.domain_muted(domain) || self.loops.contains_key(name) { return; }
+        if self.loops.contains_key(name) { return; }
         let Some(stream) = &self.stream else { return };
         let Some(path) = path.as_ref().to_str() else { return };
         let Some(bytes) = embedded_assets::get(path) else { return };
         let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
         let sink = Sink::connect_new(stream.mixer());
+        if self.domain_muted(domain) {
+            sink.set_volume(0.0);
+        }
         sink.append(source.repeat_infinite());
         self.loops.insert(name.to_owned(), ActiveLoop { sink, domain });
     }
@@ -135,15 +138,12 @@ impl AudioEngine {
         if let Some(active) = self.loops.remove(name) { active.sink.stop(); }
     }
 
-    fn stop_domain_loops(&mut self, domain: AudioDomain) {
-        self.loops.retain(|_, active| {
+    fn set_domain_loop_volume(&mut self, domain: AudioDomain, volume: f32) {
+        for active in self.loops.values() {
             if active.domain == domain {
-                active.sink.stop();
-                false
-            } else {
-                true
+                active.sink.set_volume(volume);
             }
-        });
+        }
     }
 
     pub fn stop_all_loops(&mut self) {
