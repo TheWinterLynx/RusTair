@@ -283,11 +283,11 @@ impl RuntimeRamState {
                         self.m1_phi2_count = self.m1_phi2_count.saturating_add(1);
                     }
 
-                    // The 88-S4K hides refresh in the fourth T-state of M1 while
-                    // RUNning. In STOP/HLTA its control logic does not wait for
-                    // another instruction fetch; refresh proceeds from PHI2 and
-                    // never asserts PRDY.
-                    let hidden_m1_slot = run && m1 && self.m1_phi2_count >= 4;
+                    // The 88-S4K hides refresh on the fourth PHI2 of sM1 while
+                    // RUNning. A request that becomes pending on a later M1 edge
+                    // must wait for the next M1 instead of being pulled backward
+                    // in time into the already-passed T4 slot.
+                    let hidden_m1_slot = run && m1 && self.m1_phi2_count == 4;
                     let parked_refresh_slot = (!run || halt_ack) && self.refresh_pending;
                     if self.refresh_pending && (hidden_m1_slot || parked_refresh_slot) {
                         self.complete_refresh_cycle();
@@ -378,8 +378,8 @@ impl RuntimeRamState {
 
     /// Arithmetic PHI2 fast-forward for the 88-S4K. Full calls this in chunks
     /// smaller than one 64-edge divider period, so at most one new request can
-    /// arise. Once sM1 has reached its fourth PHI2, a pending request is hidden
-    /// immediately exactly as in `advance_refresh_timing`.
+    /// arise. Only a request pending by the fourth PHI2 of sM1 is consumed there;
+    /// a request born on a later M1 edge remains pending for the next M1.
     fn full_advance_s4k_phi2(&mut self, edges: u32, m1: bool) {
         if edges == 0 {
             self.previous_m1 = m1;
@@ -403,13 +403,16 @@ impl RuntimeRamState {
 
         if m1 {
             let before_m1 = u32::from(self.m1_phi2_count);
-            let hidden_edge = if before_m1 >= 4 { 1 } else { 4 - before_m1 };
-            let hidden_slot_reached = edges >= hidden_edge;
+            let hidden_edge = (before_m1 < 4).then_some(4 - before_m1);
             self.m1_phi2_count = before_m1
                 .saturating_add(edges)
                 .min(u32::from(u8::MAX)) as u8;
-            if hidden_slot_reached && (pending_before || became_due) {
-                self.complete_refresh_cycle();
+            if let Some(hidden_edge) = hidden_edge {
+                let hidden_slot_reached = edges >= hidden_edge;
+                let pending_at_hidden = pending_before || (became_due && to_due <= hidden_edge);
+                if hidden_slot_reached && pending_at_hidden {
+                    self.complete_refresh_cycle();
+                }
             }
         }
 
@@ -1086,6 +1089,37 @@ mod tests {
     }
 
     #[test]
+    fn s4k_refresh_due_after_t4_waits_for_the_next_m1() {
+        let (mut card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        for _ in 0..59 {
+            s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+        }
+        for _ in 0..4 {
+            s4k_phi2_pulse(&mut card, 0x0010, true, true, false);
+        }
+        assert!(!handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
+
+        // The request is born on M1/T5. T4 has already passed, so it must not
+        // be serviced retroactively in this M1.
+        s4k_phi2_pulse(&mut card, 0x0010, true, true, false);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
+
+        s4k_phi2_pulse(&mut card, 0x0010, false, true, false);
+        for _ in 0..4 {
+            s4k_phi2_pulse(&mut card, 0x0010, true, true, false);
+        }
+        assert!(!handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
+    }
+
+    #[test]
     fn full_s4k_timing_consumes_pending_refresh_without_waiting() {
         let (_card, handle) = RuntimeRamCard::historical(
             S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
@@ -1099,6 +1133,28 @@ mod tests {
         assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
         assert_eq!(handle.state.borrow().refresh_cycles, 1);
         assert!(!handle.state.borrow().refresh_pending);
+    }
+
+    #[test]
+    fn full_s4k_request_born_on_m1_t5_remains_pending_until_next_m1() {
+        let (_card, handle) = RuntimeRamCard::historical(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KSynchronous88S4K, 0),
+            RamInit::Zeroed,
+        )
+        .unwrap();
+
+        handle.full_internal_t_states(59);
+        assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
+        assert!(!handle.state.borrow().refresh_pending);
+        handle.full_internal_t_states(1);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 0);
+
+        assert_eq!(handle.full_machine_cycle_timing(0x0010, true, false, 3), 0);
+        assert!(handle.state.borrow().refresh_pending);
+        assert_eq!(handle.full_machine_cycle_timing(0x0010, true, true, 4), 0);
+        assert!(!handle.state.borrow().refresh_pending);
+        assert_eq!(handle.state.borrow().refresh_cycles, 1);
     }
 
     #[test]
