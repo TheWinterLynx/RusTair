@@ -7,11 +7,12 @@ use super::execution_clock::UNLIMITED_CHUNK_T_STATES;
 const SERVICE_SLICE_T_STATES: u32 = 4_096;
 const UNLIMITED_SERVICE_SLICE_T_STATES: u32 = 65_536;
 pub(super) const CPU_FRAME_TIME: Duration = Duration::from_millis(8);
-/// Unlimited is explicitly host-throughput driven. A 100 ms CPU burst still
-/// repaints progress at an interactive rate while amortizing renderer/vsync idle
-/// time that otherwise turns an 8 ms CPU slice into roughly half-duty execution
-/// on a 60 Hz desktop.
-const UNLIMITED_CPU_FRAME_TIME: Duration = Duration::from_millis(100);
+/// Unlimited remains host-throughput driven, but it must yield often enough for
+/// the egui event/render loop to stay interactive. The CPU executes on this same
+/// thread, so a 100 ms burst hard-limited the GUI to roughly 10 FPS. A 12 ms
+/// deadline preserves the large service slices while returning control within a
+/// normal interactive frame budget.
+const UNLIMITED_CPU_FRAME_TIME: Duration = Duration::from_millis(12);
 
 #[inline]
 fn host_profile(budget: u32, requested_limit: Duration) -> (u32, Duration) {
@@ -25,9 +26,10 @@ fn host_profile(budget: u32, requested_limit: Duration) -> (u32, Duration) {
 /// Yield between exact engine budgets. This changes host scheduling only: all
 /// serviced T-states remain on the authoritative CPU and serial-card timeline.
 /// Throttled modes use short slices and the caller's normal 8 ms UI deadline.
-/// Unlimited receives the sentinel budget from `ExecutionClock` and uses larger
-/// service slices plus a longer host burst so repaint cadence cannot throttle the
-/// emulated CPU. The deadline can overrun by one slice, never by the full budget.
+/// Unlimited receives the sentinel budget from `ExecutionClock`, keeps larger
+/// service slices for throughput, and yields on a short host deadline so the
+/// renderer is not starved. The deadline can overrun by one slice, never by the
+/// full budget.
 pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Duration) -> u64 {
     let (service_slice_t_states, effective_limit) = host_profile(budget, limit);
     let started = Instant::now();
@@ -102,6 +104,10 @@ mod tests {
         assert_eq!(
             host_profile(UNLIMITED_CHUNK_T_STATES, CPU_FRAME_TIME),
             (UNLIMITED_SERVICE_SLICE_T_STATES, UNLIMITED_CPU_FRAME_TIME)
+        );
+        assert!(
+            UNLIMITED_CPU_FRAME_TIME <= Duration::from_millis(16),
+            "Unlimited must yield within an interactive GUI frame budget"
         );
         assert_eq!(
             host_profile(400_000, CPU_FRAME_TIME),
