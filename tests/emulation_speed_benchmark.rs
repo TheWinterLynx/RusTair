@@ -6,10 +6,10 @@ use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
 const ALTAIR_CLOCK_HZ: f64 = 2_000_000.0;
-const WARMUP_T_STATES: u64 = 250_000;
-const MEASURE_T_STATES: u64 = 5_000_000;
-const SERVICE_CHUNK_T_STATES: u32 = 100_000;
-const BENCH_ROUNDS: usize = 3;
+const WARMUP_T_STATES: u64 = 2_000_000;
+const MEASURE_T_STATES: u64 = 50_000_000;
+const SERVICE_CHUNK_T_STATES: u32 = 1_000_000;
+const BENCH_ROUNDS: usize = 5;
 
 // NOP ; JMP 0000h
 //
