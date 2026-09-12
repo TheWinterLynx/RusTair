@@ -102,20 +102,38 @@ fn s100_hardware_opens_a_dedicated_editor_viewport() {
 }
 
 #[test]
-fn runtime_menu_is_navigation_only_and_machine_state_uses_readable_status_bar() {
+fn runtime_menu_is_navigation_only_and_status_bar_is_minimal_stable_and_responsive() {
     assert!(RUNTIME_SOURCE.contains("super::ui::draw_main_menu(self, ctx);"));
     assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_FONT_SIZE: f32 = 16.0;"));
-    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_STATE_WIDTH: f32 = 170.0;"));
-    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_REGISTERS_WIDTH: f32 = 275.0;"));
-    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_SPEED_WIDTH: f32 = 160.0;"));
-    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_SEPARATOR_WIDTH * 3.0"));
-    assert!(RUNTIME_SOURCE.contains("PC {:04X}  SP {:04X}  A {:02X}  F {:02X}"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_STATE_WIDTH: f32 = 150.0;"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_PC_WIDTH: f32 = 105.0;"));
+    assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_SPEED_WIDTH: f32 = 165.0;"));
+    assert!(RUNTIME_SOURCE.contains("ui.allocate_exact_size("));
+    assert!(RUNTIME_SOURCE.contains("let message_rect = egui::Rect::from_min_max("));
+    assert!(RUNTIME_SOURCE.contains("ui.painter().line_segment("));
+    assert!(RUNTIME_SOURCE.contains("format!(\"PC {:04X}\", cpu.pc)"));
     assert!(RUNTIME_SOURCE.contains("RichText::new(execution_state)"));
-    assert!(RUNTIME_SOURCE.contains(".size(STATUS_BAR_FONT_SIZE)"));
+    assert!(RUNTIME_SOURCE.contains("Speed: Unlimited"));
+    assert!(RUNTIME_SOURCE.contains("Saved configuration loaded"));
+    assert!(RUNTIME_SOURCE.contains("self.status.starts_with(\"Ready —\")"));
     assert!(RUNTIME_SOURCE.contains(".truncate()"));
-    assert!(RUNTIME_SOURCE.contains("\"Ready\""));
-    assert!(!RUNTIME_SOURCE.contains("Core: {}"));
-    assert!(!RUNTIME_SOURCE.contains("Layout::right_to_left"));
+
+    for forbidden in [
+        "Core: {}",
+        "PC {:04X}  SP {:04X}",
+        "A {:02X}",
+        "F {:02X}",
+        "RichText::new(\"│\")",
+        "STATUS_BAR_REGISTERS_WIDTH",
+        "STATUS_BAR_SEPARATOR_WIDTH",
+        "Layout::right_to_left",
+    ] {
+        assert!(
+            !RUNTIME_SOURCE.contains(forbidden),
+            "status bar must not contain obsolete or unstable field: {forbidden}"
+        );
+    }
+
     assert!(!RUNTIME_SOURCE.contains("ASR-33 TELETYPE"));
     assert!(!RUNTIME_SOURCE.contains("EXEC HISTORY"));
     assert!(!RUNTIME_SOURCE.contains("PANEL OPERATOR"));
