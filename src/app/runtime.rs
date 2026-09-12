@@ -1,5 +1,7 @@
 use super::*;
 
+const STATUS_BAR_FONT_SIZE: f32 = 16.0;
+
 impl eframe::App for RusTairApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = Instant::now();
@@ -139,18 +141,30 @@ impl eframe::App for RusTairApp {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.small(&self.status);
+                ui.label(egui::RichText::new(&self.status).size(STATUS_BAR_FONT_SIZE));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.small(format!("Core: {}", self.machine.engine().label()));
+                    ui.label(
+                        egui::RichText::new(format!("Core: {}", self.machine.engine().label()))
+                            .size(STATUS_BAR_FONT_SIZE),
+                    );
                     ui.separator();
-                    ui.small(speed_label.as_str());
+                    ui.label(
+                        egui::RichText::new(speed_label.as_str()).size(STATUS_BAR_FONT_SIZE),
+                    );
                     ui.separator();
-                    ui.small(format!(
-                        "PC {:04X}  SP {:04X}  A {:02X}  F {:02X}",
-                        cpu.pc, cpu.sp, cpu.a, cpu.flags
-                    ));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "PC {:04X}  SP {:04X}  A {:02X}  F {:02X}",
+                            cpu.pc, cpu.sp, cpu.a, cpu.flags
+                        ))
+                        .size(STATUS_BAR_FONT_SIZE),
+                    );
                     ui.separator();
-                    ui.strong(execution_state);
+                    ui.label(
+                        egui::RichText::new(execution_state)
+                            .size(STATUS_BAR_FONT_SIZE)
+                            .strong(),
+                    );
                 });
             });
         });
