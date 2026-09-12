@@ -57,7 +57,6 @@ Performance work must not weaken electrical or timing fidelity.
 The supported base machine should not be reopened generically; add work only for a demonstrated regression or source-backed discrepancy.
 
 - [ ] Re-audit `docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md` after architecture cleanup and update any statements made obsolete by the unified physical-card runtime.
-- [ ] Finish any remaining dynamic-RAM timing/refresh behavior that is still explicitly marked non-PASS in the card model/UI.
 - [ ] Implement the MITS 88-VI only as a real S-100 card with raw VI inputs/arbitration; serial cards must never fabricate restart opcodes themselves.
 - [ ] Add further RAM/I/O/CPU boards only after the base Altair remains green and the card can be represented through normal S-100 ownership.
 
