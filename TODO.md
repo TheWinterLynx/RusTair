@@ -66,7 +66,7 @@ Implementation contract: [`docs/88_DCDD_FD400_IMPLEMENTATION_PLAN.md`](docs/88_D
 
 - [x] **Phase 0 — source-backed hardware contract:** ports, polarities, controller-board wiring, drive selection/topology, base timing, interrupt option and the first physical-media contract are locked down from MITS documentation; unresolved schematic/mechanical details are explicitly deferred rather than guessed.
 - [x] **Phase 1 — physical topology/config skeleton:** add the source-backed DCDD S-100 card set, documented inter-board/controller harness and external drive-bus ownership with no direct CPU/card shortcuts and no intentional idle per-T-state work.
-- [ ] **Phase 2 — decode/reset/register surface:** implement real S-100 I/O decode and controller state/reset behavior without media, proving accesses through public 8080/S-100 cycles and preserving front-panel visibility.
+- [x] **Phase 2 — decode/reset/register surface:** implement real S-100 I/O decode and controller state/reset behavior without media, proving accesses through public 8080/S-100 cycles and preserving front-panel visibility.
 - [ ] **Phase 3 — FD-400 mechanics/time engine:** implement rotational phase, hard-sector/index position, track/head/step state and source-backed deadlines using virtual-time epochs/events rather than per-T-state ticking.
 - [ ] **Phase 4 — media abstraction/read-only surface:** mount/eject a validated physical hard-sector image below the drive electronics, with disk-present/write-protect state separate from host file/path handling.
 - [ ] **Phase 5 — authentic read path:** reproduce synchronization/data-ready cadence and late-service behavior end to end through FD-400 -> DCDD -> S-100 -> 8080, using arithmetic catch-up where observationally equivalent.
