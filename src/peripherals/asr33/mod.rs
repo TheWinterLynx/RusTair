@@ -6,5 +6,5 @@ mod paper_tape;
 
 pub use answerback::Answerback;
 pub use keyboard::*;
-pub use model::*;
 pub(crate) use mechanics::MechanicsState;
+pub use model::*;

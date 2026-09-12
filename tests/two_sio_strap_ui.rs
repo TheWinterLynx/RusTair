@@ -29,8 +29,7 @@ fn endpoints_derive_labels_from_the_slot_native_hardware_inventory() {
             "{name} must inspect the installed S-100 card inventory"
         );
         assert!(
-            !source.contains("machine.serial_board")
-                && !source.contains("machine.two_sio_straps"),
+            !source.contains("machine.serial_board") && !source.contains("machine.two_sio_straps"),
             "{name} must not use removed global serial-card state"
         );
     }

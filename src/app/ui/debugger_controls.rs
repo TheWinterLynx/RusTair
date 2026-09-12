@@ -1,9 +1,9 @@
-use super::super::{egui, RusTairApp};
+use super::super::{RusTairApp, egui};
 use super::execution_position::current_instruction_address;
 use super::s100_memory_inspection::{mapping_detail, mapping_summary};
 use crate::backend::{DebugStopReason, MemoryWatchAccess};
-use crate::callstack8080::{infer_call_stack_8080, CallKind8080};
-use crate::decoder8080::{decode_8080, ControlFlow};
+use crate::callstack8080::{CallKind8080, infer_call_stack_8080};
+use crate::decoder8080::{ControlFlow, decode_8080};
 
 const DEBUG_STATUS_LINE_HEIGHT: f32 = 20.0;
 const DEBUG_LIST_HEIGHT: f32 = 105.0;
@@ -36,8 +36,10 @@ impl Default for DebuggerControlsUiState {
 impl RusTairApp {
     fn debugger_controls_state(ctx: &egui::Context) -> DebuggerControlsUiState {
         ctx.data(|data| {
-            data.get_temp::<DebuggerControlsUiState>(egui::Id::new("rustair-debugger-controls-state"))
-                .unwrap_or_default()
+            data.get_temp::<DebuggerControlsUiState>(egui::Id::new(
+                "rustair-debugger-controls-state",
+            ))
+            .unwrap_or_default()
         })
     }
 
@@ -81,11 +83,19 @@ impl RusTairApp {
             .to_uppercase();
     }
 
-    fn current_debug_instruction(&mut self) -> Option<(u16, [u8; 3], crate::decoder8080::DecodedInstruction)> {
+    fn current_debug_instruction(
+        &mut self,
+    ) -> Option<(u16, [u8; 3], crate::decoder8080::DecodedInstruction)> {
         let address = current_instruction_address(self);
         let b0 = self.machine.peek_memory(address)?;
-        let b1 = self.machine.peek_memory(address.wrapping_add(1)).unwrap_or(0);
-        let b2 = self.machine.peek_memory(address.wrapping_add(2)).unwrap_or(0);
+        let b1 = self
+            .machine
+            .peek_memory(address.wrapping_add(1))
+            .unwrap_or(0);
+        let b2 = self
+            .machine
+            .peek_memory(address.wrapping_add(2))
+            .unwrap_or(0);
         let decoded = decode_8080(b0, b1, b2);
         Some((address, [b0, b1, b2], decoded))
     }
@@ -105,14 +115,18 @@ impl RusTairApp {
         let return_address = pc.wrapping_add(u16::from(decoded.length));
         match decoded.control_flow {
             ControlFlow::Call { .. } | ControlFlow::Restart { .. } => {
-                self.machine.debugger_run_to_with_sp(return_address, start_sp);
+                self.machine
+                    .debugger_run_to_with_sp(return_address, start_sp);
                 format!(
                     "Step over: running to ${return_address:04X} only after SP returns to ${start_sp:04X}."
                 )
             }
             _ => {
                 self.machine.debugger_step_instruction();
-                format!("Step over: {} is not a call, so execution advanced to the next instruction boundary.", decoded.text())
+                format!(
+                    "Step over: {} is not a call, so execution advanced to the next instruction boundary.",
+                    decoded.text()
+                )
             }
         }
     }
@@ -120,7 +134,9 @@ impl RusTairApp {
     fn debugger_step_out(&mut self) -> String {
         let sp = self.machine.intel8080_state().sp;
         let Some(target) = self.candidate_return_address() else {
-            return format!("Cannot read a two-byte return candidate from uniquely mapped RAM at SP=${sp:04X}.");
+            return format!(
+                "Cannot read a two-byte return candidate from uniquely mapped RAM at SP=${sp:04X}."
+            );
         };
         let caller_sp = sp.wrapping_add(2);
         self.machine.debugger_run_to_with_sp(target, caller_sp);
@@ -129,11 +145,7 @@ impl RusTairApp {
         )
     }
 
-    fn debug_stop_reason_text(
-        &mut self,
-        running: bool,
-        execution_address: u16,
-    ) -> String {
+    fn debug_stop_reason_text(&mut self, running: bool, execution_address: u16) -> String {
         if running {
             return String::new();
         }
@@ -497,7 +509,9 @@ impl RusTairApp {
         parent_ctx: &egui::Context,
         state: &mut DebuggerControlsUiState,
     ) {
-        if !state.call_stack_open { return; }
+        if !state.call_stack_open {
+            return;
+        }
 
         parent_ctx.show_viewport_immediate(
             egui::ViewportId::from_hash_of("rustair-8080-call-stack-viewport"),
@@ -508,7 +522,9 @@ impl RusTairApp {
                 .with_resizable(true),
             |stack_ctx, _class| {
                 self.draw_call_stack_viewport_contents(stack_ctx);
-                if stack_ctx.input(|input| input.viewport().close_requested()) { state.call_stack_open = false; }
+                if stack_ctx.input(|input| input.viewport().close_requested()) {
+                    state.call_stack_open = false;
+                }
             },
         );
     }
@@ -526,7 +542,9 @@ impl RusTairApp {
                     .with_resizable(true),
                 |debugger_ctx, _class| {
                     self.draw_debugger_controls_viewport_contents(debugger_ctx, &mut state);
-                    if debugger_ctx.input(|input| input.viewport().close_requested()) { state.window_open = false; }
+                    if debugger_ctx.input(|input| input.viewport().close_requested()) {
+                        state.window_open = false;
+                    }
                 },
             );
         }

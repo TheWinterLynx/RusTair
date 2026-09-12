@@ -100,21 +100,61 @@ pub(super) const fn decode(opcode: u8) -> Instruction {
             return Instruction::Nop;
         }
         0x02 => return Instruction::Stax(RegisterPair::BC),
-        0x07 => return Instruction::AluRegister { op: AluOp::Rlc, src: Register8::A },
+        0x07 => {
+            return Instruction::AluRegister {
+                op: AluOp::Rlc,
+                src: Register8::A,
+            };
+        }
         0x0a => return Instruction::Ldax(RegisterPair::BC),
-        0x0f => return Instruction::AluRegister { op: AluOp::Rrc, src: Register8::A },
+        0x0f => {
+            return Instruction::AluRegister {
+                op: AluOp::Rrc,
+                src: Register8::A,
+            };
+        }
         0x12 => return Instruction::Stax(RegisterPair::DE),
-        0x17 => return Instruction::AluRegister { op: AluOp::Ral, src: Register8::A },
+        0x17 => {
+            return Instruction::AluRegister {
+                op: AluOp::Ral,
+                src: Register8::A,
+            };
+        }
         0x1a => return Instruction::Ldax(RegisterPair::DE),
-        0x1f => return Instruction::AluRegister { op: AluOp::Rar, src: Register8::A },
+        0x1f => {
+            return Instruction::AluRegister {
+                op: AluOp::Rar,
+                src: Register8::A,
+            };
+        }
         0x22 => return Instruction::ShldDirect,
-        0x27 => return Instruction::AluRegister { op: AluOp::Daa, src: Register8::A },
+        0x27 => {
+            return Instruction::AluRegister {
+                op: AluOp::Daa,
+                src: Register8::A,
+            };
+        }
         0x2a => return Instruction::LhldDirect,
-        0x2f => return Instruction::AluRegister { op: AluOp::Cma, src: Register8::A },
+        0x2f => {
+            return Instruction::AluRegister {
+                op: AluOp::Cma,
+                src: Register8::A,
+            };
+        }
         0x32 => return Instruction::StaDirect,
-        0x37 => return Instruction::AluRegister { op: AluOp::Stc, src: Register8::A },
+        0x37 => {
+            return Instruction::AluRegister {
+                op: AluOp::Stc,
+                src: Register8::A,
+            };
+        }
         0x3a => return Instruction::LdaDirect,
-        0x3f => return Instruction::AluRegister { op: AluOp::Cmc, src: Register8::A },
+        0x3f => {
+            return Instruction::AluRegister {
+                op: AluOp::Cmc,
+                src: Register8::A,
+            };
+        }
         0x76 => return Instruction::Hlt,
         // Undocumented aliases present on original 8080 silicon and already
         // reproduced by RusTair's validated fast core.
@@ -219,7 +259,12 @@ mod tests {
 
     #[test]
     fn decodes_register_pair_families() {
-        let pairs = [RegisterPair::BC, RegisterPair::DE, RegisterPair::HL, RegisterPair::SP];
+        let pairs = [
+            RegisterPair::BC,
+            RegisterPair::DE,
+            RegisterPair::HL,
+            RegisterPair::SP,
+        ];
         for (index, pair) in pairs.into_iter().enumerate() {
             let base = (index as u8) << 4;
             assert_eq!(decode(base | 0x01), Instruction::Lxi(pair));
@@ -232,11 +277,22 @@ mod tests {
     #[test]
     fn decodes_accumulator_only_operations_on_the_four_t_state_alu_path() {
         for (opcode, op) in [
-            (0x07, AluOp::Rlc), (0x0f, AluOp::Rrc), (0x17, AluOp::Ral),
-            (0x1f, AluOp::Rar), (0x27, AluOp::Daa), (0x2f, AluOp::Cma),
-            (0x37, AluOp::Stc), (0x3f, AluOp::Cmc),
+            (0x07, AluOp::Rlc),
+            (0x0f, AluOp::Rrc),
+            (0x17, AluOp::Ral),
+            (0x1f, AluOp::Rar),
+            (0x27, AluOp::Daa),
+            (0x2f, AluOp::Cma),
+            (0x37, AluOp::Stc),
+            (0x3f, AluOp::Cmc),
         ] {
-            assert_eq!(decode(opcode), Instruction::AluRegister { op, src: Register8::A });
+            assert_eq!(
+                decode(opcode),
+                Instruction::AluRegister {
+                    op,
+                    src: Register8::A
+                }
+            );
         }
     }
 
@@ -250,7 +306,13 @@ mod tests {
         for alu_code in 0u8..8 {
             let op = AluOp::from_code(alu_code);
             let base = 0x80 | (alu_code << 3);
-            assert_eq!(decode(base), Instruction::AluRegister { op, src: Register8::B });
+            assert_eq!(
+                decode(base),
+                Instruction::AluRegister {
+                    op,
+                    src: Register8::B
+                }
+            );
             assert_eq!(decode(base | 6), Instruction::AluMemory { op });
         }
     }
@@ -263,9 +325,18 @@ mod tests {
 
         for code in 0u8..8 {
             let condition = Condition::from_code(code);
-            assert_eq!(decode(0xc2 | (code << 3)), Instruction::JumpConditional(condition));
-            assert_eq!(decode(0xc4 | (code << 3)), Instruction::CallConditional(condition));
-            assert_eq!(decode(0xc0 | (code << 3)), Instruction::RetConditional(condition));
+            assert_eq!(
+                decode(0xc2 | (code << 3)),
+                Instruction::JumpConditional(condition)
+            );
+            assert_eq!(
+                decode(0xc4 | (code << 3)),
+                Instruction::CallConditional(condition)
+            );
+            assert_eq!(
+                decode(0xc0 | (code << 3)),
+                Instruction::RetConditional(condition)
+            );
             assert_eq!(decode(0xc7 | (code << 3)), Instruction::Rst(code));
         }
         for code in 0u8..4 {
@@ -316,7 +387,10 @@ mod tests {
         assert_eq!(decode(0x02), Instruction::Stax(RegisterPair::BC));
         assert_eq!(decode(0x22), Instruction::ShldDirect);
         assert_eq!(decode(0x36), Instruction::MviMemory);
-        assert_eq!(decode(0x46), Instruction::MovFromMemory { dst: Register8::B });
+        assert_eq!(
+            decode(0x46),
+            Instruction::MovFromMemory { dst: Register8::B }
+        );
         assert_eq!(decode(0x70), Instruction::MovToMemory { src: Register8::B });
     }
 }

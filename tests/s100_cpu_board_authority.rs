@@ -1,5 +1,7 @@
 use rustair::backend::BackendHost;
-use rustair::config::{FastRamCompatibilityConfig, RamInit, S100HardwareConfig, S100InstalledCardConfig};
+use rustair::config::{
+    FastRamCompatibilityConfig, RamInit, S100HardwareConfig, S100InstalledCardConfig,
+};
 use rustair::s100_chassis::S100ChassisConfig;
 
 fn cpu_in_slot_four() -> S100HardwareConfig {
@@ -24,7 +26,10 @@ fn adaptive_cycle_executes_with_cpu_board_installed_outside_slot_one() {
     let hardware = cpu_in_slot_four();
     let mut machine = BackendHost::default();
     machine.configure_s100_hardware(hardware, RamInit::Zeroed);
-    assert_eq!(machine.s100_hardware().cpu_slots().collect::<Vec<_>>(), vec![4]);
+    assert_eq!(
+        machine.s100_hardware().cpu_slots().collect::<Vec<_>>(),
+        vec![4]
+    );
 
     machine.load_bytes(0, &[0x00, 0x76]); // NOP; HLT
     machine.power(true);
@@ -34,5 +39,8 @@ fn adaptive_cycle_executes_with_cpu_board_installed_outside_slot_one() {
     machine.run_cycles(64);
 
     let cpu = machine.intel8080_state();
-    assert!(cpu.pc >= 1, "Adaptive Cycle did not execute through the installed CPU board");
+    assert!(
+        cpu.pc >= 1,
+        "Adaptive Cycle did not execute through the installed CPU board"
+    );
 }

@@ -26,7 +26,14 @@ fn function_section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 
 #[test]
 fn main_menu_uses_six_clear_top_level_sections() {
-    for section in ["File", "Machine", "Peripherals", "View", "Tools", "Settings"] {
+    for section in [
+        "File",
+        "Machine",
+        "Peripherals",
+        "View",
+        "Tools",
+        "Settings",
+    ] {
         let needle = format!("ui.menu_button(\"{section}\"");
         assert!(
             MENU_SOURCE.contains(needle.as_str()),
@@ -55,11 +62,8 @@ fn tools_group_debug_and_inspection_windows_instead_of_flat_toolbar_buttons() {
 
 #[test]
 fn peripherals_owns_device_window_launchers_not_transport_configuration() {
-    let peripherals = function_section(
-        MENU_SOURCE,
-        "fn draw_peripherals_menu",
-        "fn draw_view_menu",
-    );
+    let peripherals =
+        function_section(MENU_SOURCE, "fn draw_peripherals_menu", "fn draw_view_menu");
 
     assert!(peripherals.contains("ASR-33 Teletype"));
     assert!(peripherals.contains("app.asr33.window_open = true"));
@@ -104,11 +108,8 @@ fn settings_owns_external_tcp_and_com_configuration() {
 
 #[test]
 fn peripheral_speed_controls_live_only_in_their_device_windows() {
-    let peripherals = function_section(
-        MENU_SOURCE,
-        "fn draw_peripherals_menu",
-        "fn draw_view_menu",
-    );
+    let peripherals =
+        function_section(MENU_SOURCE, "fn draw_peripherals_menu", "fn draw_view_menu");
 
     for forbidden in [
         "Asr33Speed::ALL",
@@ -212,9 +213,9 @@ fn resizable_tool_windows_wrap_controls_and_scroll_real_tables() {
     assert!(ASR33_WINDOW_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
 
     assert!(DEBUGGER_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
-    assert!(DEBUGGER_SOURCE.contains(
-        "egui::ScrollArea::both().id_salt(\"debugger-watchpoint-list\")"
-    ));
+    assert!(
+        DEBUGGER_SOURCE.contains("egui::ScrollArea::both().id_salt(\"debugger-watchpoint-list\")")
+    );
     assert!(DEBUGGER_SOURCE.contains(".with_min_inner_size([680.0, 620.0])"));
 
     assert!(LOOP_INSPECTOR_SOURCE.contains("egui::ScrollArea::both()"));
@@ -224,12 +225,10 @@ fn resizable_tool_windows_wrap_controls_and_scroll_real_tables() {
     assert!(MEMORY_ACTIVITY_SOURCE.contains("egui::ScrollArea::both()"));
     assert!(MEMORY_ACTIVITY_SOURCE.contains(".with_min_inner_size([760.0, 480.0])"));
 
-    assert!(BUS_TEACHER_SOURCE.contains(
-        "const BUS_TEACHER_TWO_COLUMN_MIN_WIDTH: f32 = 1160.0;"
-    ));
-    assert!(BUS_TEACHER_SOURCE.contains(
-        "if ui.available_width() >= BUS_TEACHER_TWO_COLUMN_MIN_WIDTH"
-    ));
+    assert!(BUS_TEACHER_SOURCE.contains("const BUS_TEACHER_TWO_COLUMN_MIN_WIDTH: f32 = 1160.0;"));
+    assert!(
+        BUS_TEACHER_SOURCE.contains("if ui.available_width() >= BUS_TEACHER_TWO_COLUMN_MIN_WIDTH")
+    );
     assert!(BUS_TEACHER_SOURCE.contains("ui.horizontal_wrapped(|ui|"));
     assert!(
         !BUS_TEACHER_SOURCE.contains(".exact_height(38.0)"),

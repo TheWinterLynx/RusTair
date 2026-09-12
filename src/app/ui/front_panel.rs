@@ -43,10 +43,7 @@ fn led_display_settings() -> LedDisplaySettings {
 /// untouched. The calibrated curve remains fixed; the two live controls are
 /// multipliers layered on top so 1.00x / 1.00x reproduces the current default
 /// exactly and Reset to default is deterministic.
-fn led_visual_response(
-    intensity: f32,
-    settings: LedDisplaySettings,
-) -> Option<LedVisualResponse> {
+fn led_visual_response(intensity: f32, settings: LedDisplaySettings) -> Option<LedVisualResponse> {
     let electrical = intensity.clamp(0.0, 1.0);
     if electrical < LED_VISIBLE_THRESHOLD {
         return None;
@@ -55,10 +52,7 @@ fn led_visual_response(
     Some(LedVisualResponse {
         // Aura controls only the diffuse outer glow. It never changes the
         // electrical activity or the LED body itself.
-        halo_alpha: optical_alpha(
-            LED_HALO_MAX_ALPHA,
-            electrical.powf(1.25) * settings.aura,
-        ),
+        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, electrical.powf(1.25) * settings.aura),
         // Brightness controls emitted light from the red body, luminous core
         // and high-intensity white hot-spot while preserving their relative
         // optical response curves.
@@ -164,8 +158,12 @@ impl RusTairApp {
         powered: bool,
         settings: LedDisplaySettings,
     ) {
-        if !powered { return; }
-        let Some(light) = led_visual_response(intensity, settings) else { return; };
+        if !powered {
+            return;
+        }
+        let Some(light) = led_visual_response(intensity, settings) else {
+            return;
+        };
         let center = origin + Vec2::new(x * scale, y * scale);
 
         // The unlit LED/lens is part of the panel texture. These overlays model
@@ -202,21 +200,45 @@ impl RusTairApp {
         self.tex.switch_sprites.get(sprite.asset().path)
     }
 
-    fn draw_switch_sprite(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32, switch: SwitchConfig, position: SwitchPosition) {
-        let Some(pose) = switch.pose(position) else { return; };
+    fn draw_switch_sprite(
+        &self,
+        ui: &mut egui::Ui,
+        origin: Pos2,
+        scale: f32,
+        switch: SwitchConfig,
+        position: SwitchPosition,
+    ) {
+        let Some(pose) = switch.pose(position) else {
+            return;
+        };
         let asset = pose.sprite.asset();
-        let Some(texture) = self.switch_texture(pose.sprite) else { return; };
+        let Some(texture) = self.switch_texture(pose.sprite) else {
+            return;
+        };
         let crop_min = Vec2::new(asset.crop_min.0, asset.crop_min.1);
         let crop_max = Vec2::new(asset.crop_max.0, asset.crop_max.1);
         let pivot_px = Vec2::new(asset.pivot.0, asset.pivot.1);
         let crop_size = crop_max - crop_min;
         let pivot_in_crop = pivot_px - crop_min;
-        let socket = origin + Vec2::new((switch.socket.0 + pose.offset.0) * scale, (switch.socket.1 + pose.offset.1) * scale);
+        let socket = origin
+            + Vec2::new(
+                (switch.socket.0 + pose.offset.0) * scale,
+                (switch.socket.1 + pose.offset.1) * scale,
+            );
         let source_to_screen = asset.source_to_panel * pose.scale * scale;
-        let rect = Rect::from_min_size(socket - pivot_in_crop * source_to_screen, crop_size * source_to_screen);
+        let rect = Rect::from_min_size(
+            socket - pivot_in_crop * source_to_screen,
+            crop_size * source_to_screen,
+        );
         let uv = Rect::from_min_max(
-            Pos2::new(crop_min.x / asset.canvas_size.0, crop_min.y / asset.canvas_size.1),
-            Pos2::new(crop_max.x / asset.canvas_size.0, crop_max.y / asset.canvas_size.1),
+            Pos2::new(
+                crop_min.x / asset.canvas_size.0,
+                crop_min.y / asset.canvas_size.1,
+            ),
+            Pos2::new(
+                crop_max.x / asset.canvas_size.0,
+                crop_max.y / asset.canvas_size.1,
+            ),
         );
         ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
     }
@@ -224,18 +246,36 @@ impl RusTairApp {
     fn sense_switch(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32, bit: usize) {
         let switch = SENSE_SWITCHES[bit];
         debug_assert_eq!(switch.kind, SwitchKind::TwoPosition);
-        let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
+        let hit = Self::centered_rect(
+            origin,
+            scale,
+            switch.socket.0,
+            switch.socket.1,
+            switch.hit_size.0,
+            switch.hit_size.1,
+        );
         let response = ui.allocate_rect(hit, Sense::click());
         let (primary_pressed, pointer_pos) = ui.ctx().input(|input| {
-            (input.pointer.primary_pressed(), input.pointer.interact_pos())
+            (
+                input.pointer.primary_pressed(),
+                input.pointer.interact_pos(),
+            )
         });
         if sense_switch_activates_on_press(primary_pressed, pointer_pos, hit) {
             self.machine.toggle_sense_switch(bit);
             self.audio.play_once("assets/click.mp3");
             ui.ctx().request_repaint();
         }
-        if response.hovered() { response.clone().on_hover_text(format!("Sense switch {}", switch.name)); }
-        let position = if self.machine.switch_register() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
+        if response.hovered() {
+            response
+                .clone()
+                .on_hover_text(format!("Sense switch {}", switch.name));
+        }
+        let position = if self.machine.switch_register() & (1u16 << bit) != 0 {
+            SwitchPosition::Up
+        } else {
+            SwitchPosition::Down
+        };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
@@ -249,126 +289,184 @@ impl RusTairApp {
     ) -> MomentarySwitchInteraction {
         debug_assert_eq!(switch.kind, SwitchKind::ThreePosition);
         debug_assert!(switch.center.is_some());
-        let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
+        let hit = Self::centered_rect(
+            origin,
+            scale,
+            switch.socket.0,
+            switch.socket.1,
+            switch.hit_size.0,
+            switch.hit_size.1,
+        );
         let response = ui.allocate_rect(hit, Sense::click_and_drag());
         if response.hovered() {
             response.clone().on_hover_text(format!("{label}\nHold for 3 seconds to keep the switch actuated; click it again to release."));
         }
 
         let now = Instant::now();
-        let (primary_down, primary_pressed, primary_released, pointer_pos) = ui.ctx().input(|input| {
-            (input.pointer.primary_down(), input.pointer.primary_pressed(), input.pointer.primary_released(), input.pointer.interact_pos())
-        });
+        let (primary_down, primary_pressed, primary_released, pointer_pos) =
+            ui.ctx().input(|input| {
+                (
+                    input.pointer.primary_down(),
+                    input.pointer.primary_pressed(),
+                    input.pointer.primary_released(),
+                    input.pointer.interact_pos(),
+                )
+            });
         let pointer_inside = pointer_pos.is_some_and(|p| hit.contains(p));
-        let pointer_position = if pointer_pos.map(|p| p.y >= origin.y + switch.socket.1 * scale).unwrap_or(false) {
+        let pointer_position = if pointer_pos
+            .map(|p| p.y >= origin.y + switch.socket.1 * scale)
+            .unwrap_or(false)
+        {
             SwitchPosition::Down
         } else {
             SwitchPosition::Up
         };
         let state_id = egui::Id::new(("rustair-momentary-switch", switch.name));
 
-        let (position, action, pressed, released, just_latched, released_latch, tracking_press) = ui.ctx().data_mut(|data| {
-            let state = data.get_temp_mut_or(state_id, MomentarySwitchUiState::default());
-            let mut action = None;
-            let mut pressed = None;
-            let mut released = None;
-            let mut just_latched = false;
-            let mut released_latch = false;
+        let (position, action, pressed, released, just_latched, released_latch, tracking_press) =
+            ui.ctx().data_mut(|data| {
+                let state = data.get_temp_mut_or(state_id, MomentarySwitchUiState::default());
+                let mut action = None;
+                let mut pressed = None;
+                let mut released = None;
+                let mut just_latched = false;
+                let mut released_latch = false;
 
-            if primary_pressed && pointer_inside && state.press_started.is_none() {
-                let already_latched = state.latched.is_some();
-                state.press_started = Some(now);
-                state.press_direction = Some(pointer_position);
-                state.press_began_on_latched = already_latched;
-                state.long_latched_this_press = false;
-                if !already_latched {
-                    pressed = Some(pointer_position == SwitchPosition::Down);
-                }
-            }
-
-            if state.press_started.is_some() && primary_down
-                && !state.press_began_on_latched
-                && state.latched.is_none()
-                && !state.long_latched_this_press
-                && state.press_started.is_some_and(|started| now.duration_since(started) >= MOMENTARY_LATCH_HOLD)
-            {
-                let direction = state.press_direction.unwrap_or(pointer_position);
-                state.latched = Some(direction);
-                state.long_latched_this_press = true;
-                action = Some(direction == SwitchPosition::Down);
-                just_latched = true;
-            }
-
-            if state.press_started.is_some() && primary_released {
-                if state.press_began_on_latched {
-                    let direction = state.latched.unwrap_or(pointer_position);
-                    state.latched = None;
-                    released = Some(direction == SwitchPosition::Down);
-                    released_latch = true;
-                } else if !state.long_latched_this_press {
-                    let direction = state.press_direction.unwrap_or(pointer_position);
-                    let down = direction == SwitchPosition::Down;
-                    action = Some(down);
-                    released = Some(down);
-                }
-                state.press_started = None;
-                state.press_direction = None;
-                state.press_began_on_latched = false;
-                state.long_latched_this_press = false;
-            } else if state.press_started.is_some() && !primary_down && !primary_released {
-                if !state.press_began_on_latched && !state.long_latched_this_press {
-                    if let Some(direction) = state.press_direction {
-                        released = Some(direction == SwitchPosition::Down);
+                if primary_pressed && pointer_inside && state.press_started.is_none() {
+                    let already_latched = state.latched.is_some();
+                    state.press_started = Some(now);
+                    state.press_direction = Some(pointer_position);
+                    state.press_began_on_latched = already_latched;
+                    state.long_latched_this_press = false;
+                    if !already_latched {
+                        pressed = Some(pointer_position == SwitchPosition::Down);
                     }
                 }
-                state.press_started = None;
-                state.press_direction = None;
-                state.press_began_on_latched = false;
-                state.long_latched_this_press = false;
-            }
 
-            let tracking_press = state.press_started.is_some() && primary_down;
-            let position = if tracking_press {
-                if state.press_began_on_latched {
-                    state.latched.unwrap_or(SwitchPosition::Center)
-                } else {
-                    state.latched.or(state.press_direction).unwrap_or(SwitchPosition::Center)
+                if state.press_started.is_some()
+                    && primary_down
+                    && !state.press_began_on_latched
+                    && state.latched.is_none()
+                    && !state.long_latched_this_press
+                    && state
+                        .press_started
+                        .is_some_and(|started| now.duration_since(started) >= MOMENTARY_LATCH_HOLD)
+                {
+                    let direction = state.press_direction.unwrap_or(pointer_position);
+                    state.latched = Some(direction);
+                    state.long_latched_this_press = true;
+                    action = Some(direction == SwitchPosition::Down);
+                    just_latched = true;
                 }
-            } else {
-                state.latched.unwrap_or(SwitchPosition::Center)
-            };
-            (position, action, pressed, released, just_latched, released_latch, tracking_press)
-        });
+
+                if state.press_started.is_some() && primary_released {
+                    if state.press_began_on_latched {
+                        let direction = state.latched.unwrap_or(pointer_position);
+                        state.latched = None;
+                        released = Some(direction == SwitchPosition::Down);
+                        released_latch = true;
+                    } else if !state.long_latched_this_press {
+                        let direction = state.press_direction.unwrap_or(pointer_position);
+                        let down = direction == SwitchPosition::Down;
+                        action = Some(down);
+                        released = Some(down);
+                    }
+                    state.press_started = None;
+                    state.press_direction = None;
+                    state.press_began_on_latched = false;
+                    state.long_latched_this_press = false;
+                } else if state.press_started.is_some() && !primary_down && !primary_released {
+                    if !state.press_began_on_latched && !state.long_latched_this_press {
+                        if let Some(direction) = state.press_direction {
+                            released = Some(direction == SwitchPosition::Down);
+                        }
+                    }
+                    state.press_started = None;
+                    state.press_direction = None;
+                    state.press_began_on_latched = false;
+                    state.long_latched_this_press = false;
+                }
+
+                let tracking_press = state.press_started.is_some() && primary_down;
+                let position = if tracking_press {
+                    if state.press_began_on_latched {
+                        state.latched.unwrap_or(SwitchPosition::Center)
+                    } else {
+                        state
+                            .latched
+                            .or(state.press_direction)
+                            .unwrap_or(SwitchPosition::Center)
+                    }
+                } else {
+                    state.latched.unwrap_or(SwitchPosition::Center)
+                };
+                (
+                    position,
+                    action,
+                    pressed,
+                    released,
+                    just_latched,
+                    released_latch,
+                    tracking_press,
+                )
+            });
 
         self.draw_switch_sprite(ui, origin, scale, switch, position);
-        if tracking_press { ui.ctx().request_repaint_after(Duration::from_millis(8)); }
+        if tracking_press {
+            ui.ctx().request_repaint_after(Duration::from_millis(8));
+        }
 
         if let Some(down) = action {
             self.audio.play_once("assets/click.mp3");
             if just_latched {
-                self.status = format!("{label} held {} — click the switch to release it", if down { "DOWN" } else { "UP" });
+                self.status = format!(
+                    "{label} held {} — click the switch to release it",
+                    if down { "DOWN" } else { "UP" }
+                );
             }
         } else if released_latch {
             self.audio.play_once("assets/click.mp3");
             self.status = format!("{label} released to center");
         }
 
-        MomentarySwitchInteraction { action, pressed, released }
+        MomentarySwitchInteraction {
+            action,
+            pressed,
+            released,
+        }
     }
 
     fn draw_power(&mut self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
         let switch = SWITCH_POWER;
-        let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
+        let hit = Self::centered_rect(
+            origin,
+            scale,
+            switch.socket.0,
+            switch.socket.1,
+            switch.hit_size.0,
+            switch.hit_size.1,
+        );
         let response = ui.allocate_rect(hit, Sense::click());
         let powered = self.machine.powered();
-        if response.clicked() { self.set_altair_power(!powered); }
-        if response.hovered() { response.clone().on_hover_text("OFF / ON"); }
-        let position = if self.machine.powered() { SwitchPosition::Down } else { SwitchPosition::Up };
+        if response.clicked() {
+            self.set_altair_power(!powered);
+        }
+        if response.hovered() {
+            response.clone().on_hover_text("OFF / ON");
+        }
+        let position = if self.machine.powered() {
+            SwitchPosition::Down
+        } else {
+            SwitchPosition::Up
+        };
         self.draw_switch_sprite(ui, origin, scale, switch, position);
     }
 
     pub(in crate::app) fn set_altair_power(&mut self, on: bool) {
-        let historical_power_on = self.config.compatibility.historical_undefined_run_latch_power_on;
+        let historical_power_on = self
+            .config
+            .compatibility
+            .historical_undefined_run_latch_power_on;
         self.machine
             .power_with_historical_run_latch(on, historical_power_on);
         let now = Instant::now();
@@ -383,8 +481,7 @@ impl RusTairApp {
                     "Power on — historical undefined RUN/STOP latch resolved to RUN; CPU may execute immediately"
                         .into()
                 } else {
-                    "Power on — historical undefined RUN/STOP latch resolved to STOP"
-                        .into()
+                    "Power on — historical undefined RUN/STOP latch resolved to STOP".into()
                 }
             } else {
                 "Power on — safe STOP latch default; original Altair still requires RESET before normal use"
@@ -404,28 +501,167 @@ impl RusTairApp {
         let lamps = panel.lamps;
 
         let available = ui.available_size();
-        let scale = (available.x / PANEL_W).min(available.y / PANEL_H).clamp(0.2, 2.5);
-        let (whole, _) = ui.allocate_exact_size(Vec2::new(PANEL_W * scale, PANEL_H * scale), Sense::hover());
+        let scale = (available.x / PANEL_W)
+            .min(available.y / PANEL_H)
+            .clamp(0.2, 2.5);
+        let (whole, _) =
+            ui.allocate_exact_size(Vec2::new(PANEL_W * scale, PANEL_H * scale), Sense::hover());
         let origin = whole.min;
-        if let Some(t) = &self.tex.panel { Self::image(ui, t, whole); }
-        else { ui.painter().rect_filled(whole, 0.0, Color32::from_rgb(20, 25, 28)); }
+        if let Some(t) = &self.tex.panel {
+            Self::image(ui, t, whole);
+        } else {
+            ui.painter()
+                .rect_filled(whole, 0.0, Color32::from_rgb(20, 25, 28));
+        }
 
-        for bit in 0..16 { self.sense_switch(ui, origin, scale, bit); }
-        for bit in 0..16 { self.draw_led(ui, origin, scale, ADDR_LED_X[bit], ADDR_LED_Y, lamps.address[bit], panel.powered, led_settings); }
-        for bit in 0..8 { self.draw_led(ui, origin, scale, DATA_LED_X[bit], DATA_LED_Y, lamps.data[bit], panel.powered, led_settings); }
+        for bit in 0..16 {
+            self.sense_switch(ui, origin, scale, bit);
+        }
+        for bit in 0..16 {
+            self.draw_led(
+                ui,
+                origin,
+                scale,
+                ADDR_LED_X[bit],
+                ADDR_LED_Y,
+                lamps.address[bit],
+                panel.powered,
+                led_settings,
+            );
+        }
+        for bit in 0..8 {
+            self.draw_led(
+                ui,
+                origin,
+                scale,
+                DATA_LED_X[bit],
+                DATA_LED_Y,
+                lamps.data[bit],
+                panel.powered,
+                led_settings,
+            );
+        }
 
-        self.draw_led(ui, origin, scale, STATUS_LED_X[0], STATUS_LED_Y, lamps.inte, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[1], STATUS_LED_Y, lamps.prot, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[2], STATUS_LED_Y, lamps.memr, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[3], STATUS_LED_Y, lamps.inp, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[4], STATUS_LED_Y, lamps.m1, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[5], STATUS_LED_Y, lamps.out, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[6], STATUS_LED_Y, lamps.hlta, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[7], STATUS_LED_Y, lamps.stack, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[8], STATUS_LED_Y, lamps.wo, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, STATUS_LED_X[9], STATUS_LED_Y, lamps.int_ack, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, WAIT_LED.0, WAIT_LED.1, lamps.wait, panel.powered, led_settings);
-        self.draw_led(ui, origin, scale, HLDA_LED.0, HLDA_LED.1, lamps.hlda, panel.powered, led_settings);
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[0],
+            STATUS_LED_Y,
+            lamps.inte,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[1],
+            STATUS_LED_Y,
+            lamps.prot,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[2],
+            STATUS_LED_Y,
+            lamps.memr,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[3],
+            STATUS_LED_Y,
+            lamps.inp,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[4],
+            STATUS_LED_Y,
+            lamps.m1,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[5],
+            STATUS_LED_Y,
+            lamps.out,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[6],
+            STATUS_LED_Y,
+            lamps.hlta,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[7],
+            STATUS_LED_Y,
+            lamps.stack,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[8],
+            STATUS_LED_Y,
+            lamps.wo,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            STATUS_LED_X[9],
+            STATUS_LED_Y,
+            lamps.int_ack,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            WAIT_LED.0,
+            WAIT_LED.1,
+            lamps.wait,
+            panel.powered,
+            led_settings,
+        );
+        self.draw_led(
+            ui,
+            origin,
+            scale,
+            HLDA_LED.0,
+            HLDA_LED.1,
+            lamps.hlda,
+            panel.powered,
+            led_settings,
+        );
 
         self.draw_power(ui, origin, scale);
 
@@ -451,7 +687,8 @@ impl RusTairApp {
             self.machine.release_run_stop(run);
         }
 
-        let single_step = self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
+        let single_step =
+            self.momentary_switch(ui, origin, scale, SWITCH_SINGLE_STEP, "SINGLE STEP");
         // The selected backend defines the physical stepping granularity: the
         // cycle-accurate core advances one machine cycle; the fast core retains
         // its instruction-level approximation.
@@ -461,21 +698,30 @@ impl RusTairApp {
             }
         }
 
-        let examine = self.momentary_switch(ui, origin, scale, SWITCH_EXAMINE, "EXAMINE / EXAMINE NEXT");
-        if let Some(next) = examine.action { self.machine.examine(next); }
+        let examine =
+            self.momentary_switch(ui, origin, scale, SWITCH_EXAMINE, "EXAMINE / EXAMINE NEXT");
+        if let Some(next) = examine.action {
+            self.machine.examine(next);
+        }
 
-        let deposit = self.momentary_switch(ui, origin, scale, SWITCH_DEPOSIT, "DEPOSIT / DEPOSIT NEXT");
-        if let Some(next) = deposit.action { self.machine.deposit(next); }
+        let deposit =
+            self.momentary_switch(ui, origin, scale, SWITCH_DEPOSIT, "DEPOSIT / DEPOSIT NEXT");
+        if let Some(next) = deposit.action {
+            self.machine.deposit(next);
+        }
 
         let reset = self.momentary_switch(ui, origin, scale, SWITCH_RESET, "RESET / CLR");
         if let Some(clear) = reset.pressed {
             if clear {
                 self.machine.assert_front_panel_clear();
-                self.status = "CLR held: S-100 EXT CLR asserted; installed I/O boards cleared".into();
+                self.status =
+                    "CLR held: S-100 EXT CLR asserted; installed I/O boards cleared".into();
             } else {
                 self.machine.assert_front_panel_reset();
                 self.execution_clock.reset_at(Instant::now());
-                self.status = "RESET held: ADDRESS/DATA on, status lamps off; RUN/STOP latch preserved".into();
+                self.status =
+                    "RESET held: ADDRESS/DATA on, status lamps off; RUN/STOP latch preserved"
+                        .into();
             }
             ui.ctx().request_repaint();
         }
@@ -495,8 +741,11 @@ impl RusTairApp {
             ui.ctx().request_repaint();
         }
 
-        let protect = self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT");
-        if let Some(unprotect) = protect.action { self.machine.protect_current_board(!unprotect); }
+        let protect =
+            self.momentary_switch(ui, origin, scale, SWITCH_PROTECT, "PROTECT / UNPROTECT");
+        if let Some(unprotect) = protect.action {
+            self.machine.protect_current_board(!unprotect);
+        }
 
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX1, "AUX 1 (unassigned)");
         let _ = self.momentary_switch(ui, origin, scale, SWITCH_AUX2, "AUX 2 (unassigned)");
@@ -554,7 +803,10 @@ mod tests {
         assert!(half.body_alpha > quarter.body_alpha);
         assert!(half.core_alpha > quarter.core_alpha);
         assert!(half.glare_alpha > quarter.glare_alpha);
-        assert!(quarter.body_alpha < 128, "25% duty should no longer render as a 50% body");
+        assert!(
+            quarter.body_alpha < 128,
+            "25% duty should no longer render as a 50% body"
+        );
     }
 
     #[test]

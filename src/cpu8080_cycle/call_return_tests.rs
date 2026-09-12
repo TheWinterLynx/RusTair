@@ -1,5 +1,5 @@
-use super::*;
 use super::alu::FLAG_Z;
+use super::*;
 
 fn input(data_in: u8, ready: bool) -> Cpu8080Inputs {
     Cpu8080Inputs {

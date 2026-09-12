@@ -190,7 +190,10 @@ impl RuntimeSerialCardHandle {
         match self.board {
             SerialBoard::Sio88 => port == state.sio_hardware().address.data(),
             SerialBoard::TwoSio88 => {
-                matches!(state.two_sio_straps().address.offset(port), Some(1) | Some(3))
+                matches!(
+                    state.two_sio_straps().address.offset(port),
+                    Some(1) | Some(3)
+                )
             }
         }
     }
@@ -230,12 +233,7 @@ impl RuntimeSerialCardHandle {
         self.state.borrow().modem_lines(port_index)
     }
 
-    pub(crate) fn set_modem_inputs(
-        &self,
-        port_index: usize,
-        cts: bool,
-        dcd: bool,
-    ) -> bool {
+    pub(crate) fn set_modem_inputs(&self, port_index: usize, cts: bool, dcd: bool) -> bool {
         let accepted = self
             .state
             .borrow_mut()

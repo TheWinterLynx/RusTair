@@ -23,9 +23,11 @@ fn function_body<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
 #[test]
 fn app_mounts_slot_native_s100_hardware_at_every_runtime_configuration_boundary() {
     let app = compact(APP_SOURCE);
-    assert!(app.contains(
-        "self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init);"
-    ));
+    assert!(
+        app.contains(
+            "self.machine.configure_s100_hardware(hardware,self.config.machine.ram_init);"
+        )
+    );
 
     let persisted_apply = function_body(
         PERSISTENCE_SOURCE,
@@ -41,7 +43,10 @@ fn app_mounts_slot_native_s100_hardware_at_every_runtime_configuration_boundary(
     assert!(!persisted_apply.contains("configure_two_sio_straps("));
 
     assert!(S100_UI_SOURCE.contains("app.apply_s100_hardware_configuration(valid, action)"));
-    assert!(RUNTIME_SOURCE.contains("self.machine.s100_hardware() != self.config.machine.s100_hardware"));
+    assert!(
+        RUNTIME_SOURCE
+            .contains("self.machine.s100_hardware() != self.config.machine.s100_hardware")
+    );
 }
 
 #[test]

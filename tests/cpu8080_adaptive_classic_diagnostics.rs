@@ -2,7 +2,9 @@ use std::time::{Duration, Instant};
 
 use rustair::adaptive_metrics;
 use rustair::backend::{BackendHost, BackendSerialPort};
-use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring, TwoSioStraps};
+use rustair::config::{
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring, TwoSioStraps,
+};
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
@@ -31,10 +33,12 @@ fn full_64k_two_sio_hardware() -> S100HardwareConfig {
         hardware
             .set_slot(
                 slot,
-                Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                    S100RamBoardModel::Mits16KStatic88_16Mcs,
-                    base,
-                ))),
+                Some(S100InstalledCardConfig::Ram(
+                    S100RamCardConfig::fully_populated(
+                        S100RamBoardModel::Mits16KStatic88_16Mcs,
+                        base,
+                    ),
+                )),
             )
             .unwrap();
     }
@@ -122,16 +126,19 @@ fn prepare_machine(image: &[u8], reference: Reference, name: &str) -> BackendHos
         // Port 1's physical strap is 9600. Program the MC6850 exactly as guest
         // software would: /16, 8N1. This setup runs before the diagnostic meter
         // begins at 0100h, so it does not alter the classic reference totals.
-        0x3e, 0x15,             // MVI A,15h
-        0xd3, 0x12,             // OUT 12h (88-2SIO Port 1 control)
-        0x3e, 0x76,             // MVI A,HLT
-        0x32, 0x00, 0x00,       // STA 0000h
-        0xc3, 0x00, 0x01,       // JMP 0100h
+        0x3e, 0x15, // MVI A,15h
+        0xd3, 0x12, // OUT 12h (88-2SIO Port 1 control)
+        0x3e, 0x76, // MVI A,HLT
+        0x32, 0x00, 0x00, // STA 0000h
+        0xc3, 0x00, 0x01, // JMP 0100h
     ];
     page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
 
     let image_end = CPM_COM_LOAD_ADDRESS as usize + image.len();
-    assert!(image_end < BDOS_BASE as usize, "diagnostic image overlaps BDOS");
+    assert!(
+        image_end < BDOS_BASE as usize,
+        "diagnostic image overlaps BDOS"
+    );
     machine.load_bytes(0, &page_zero);
     machine.load_bytes(CPM_COM_LOAD_ADDRESS, image);
     machine.load_bytes(BDOS_BASE, &build_bdos());
@@ -206,7 +213,10 @@ fn run_diagnostic(
     loop {
         let now_t = machine.intel8080_state().total_t_states.unwrap_or(start_t);
         let executed = now_t.saturating_sub(start_t);
-        assert!(executed <= max_t_states, "{name}: exceeded {max_t_states} actual Adaptive Cycle T-states");
+        assert!(
+            executed <= max_t_states,
+            "{name}: exceeded {max_t_states} actual Adaptive Cycle T-states"
+        );
 
         machine.run_cycles(service_chunk);
         drain_console(&mut machine, &mut output);
@@ -240,8 +250,14 @@ fn run_diagnostic(
 
         if let Some(result) = machine.take_cpu_diagnostic_result() {
             drain_console(&mut machine, &mut output);
-            assert_eq!(result.instructions, reference.instructions, "{name}: normalized instruction count");
-            assert_eq!(result.t_states, reference.t_states, "{name}: normalized reference T-state count");
+            assert_eq!(
+                result.instructions, reference.instructions,
+                "{name}: normalized instruction count"
+            );
+            assert_eq!(
+                result.t_states, reference.t_states,
+                "{name}: normalized reference T-state count"
+            );
             let final_t = machine.intel8080_state().total_t_states.unwrap_or(now_t);
             let actual_t = final_t.saturating_sub(start_t);
             let stats = adaptive_metrics::end_measurement();
@@ -252,19 +268,22 @@ fn run_diagnostic(
             );
             let elapsed = started.elapsed();
             let mhz = actual_t as f64 / elapsed.as_secs_f64() / 1_000_000.0;
-            assert!(!output.is_empty(), "{name}: diagnostic produced no 88-2SIO console output");
+            assert!(
+                !output.is_empty(),
+                "{name}: diagnostic produced no 88-2SIO console output"
+            );
             eprintln!(
                 "[FULL SYSTEM] {name}: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz [Adaptive backend + MITS CPU board + S-100 + 64K static RAM + physical 88-2SIO Port 1 @ 9600 baud, 8N1 + front panel]",
-                result.instructions,
-                result.t_states,
-                actual_t,
-                elapsed,
+                result.instructions, result.t_states, actual_t, elapsed,
             );
             print_strategy_metrics(name, stats);
             return (mhz, actual_t, output);
         }
 
-        assert!(machine.running(), "{name}: machine stopped before diagnostic meter completed");
+        assert!(
+            machine.running(),
+            "{name}: machine stopped before diagnostic meter completed"
+        );
     }
 }
 
@@ -273,7 +292,10 @@ fn full_system_runs_8080pre_with_reference_totals() {
     let _ = run_diagnostic(
         "8080PRE.COM",
         include_bytes!("../assets/cpu-tests/8080PRE.COM"),
-        Reference { instructions: 1_061, t_states: 7_817 },
+        Reference {
+            instructions: 1_061,
+            t_states: 7_817,
+        },
         SHORT_MAX_T_STATES,
     );
 }
@@ -283,7 +305,10 @@ fn full_system_runs_tst8080_with_reference_totals() {
     let _ = run_diagnostic(
         "TST8080.COM",
         include_bytes!("../assets/cpu-tests/TST8080.COM"),
-        Reference { instructions: 651, t_states: 4_924 },
+        Reference {
+            instructions: 651,
+            t_states: 4_924,
+        },
         SHORT_MAX_T_STATES,
     );
 }
@@ -294,7 +319,10 @@ fn full_system_runs_cputest_with_reference_totals() {
     let _ = run_diagnostic(
         "CPUTEST.COM",
         include_bytes!("../assets/cpu-tests/CPUTEST.COM"),
-        Reference { instructions: 33_971_311, t_states: 255_653_383 },
+        Reference {
+            instructions: 33_971_311,
+            t_states: 255_653_383,
+        },
         CPUTEST_MAX_T_STATES,
     );
 }
@@ -305,7 +333,10 @@ fn full_system_runs_8080exm_with_reference_totals() {
     let _ = run_diagnostic(
         "8080EXM.COM",
         include_bytes!("../assets/cpu-tests/8080EXM.COM"),
-        Reference { instructions: 2_919_050_698, t_states: 23_803_381_171 },
+        Reference {
+            instructions: 2_919_050_698,
+            t_states: 23_803_381_171,
+        },
         EXM_MAX_T_STATES,
     );
 }

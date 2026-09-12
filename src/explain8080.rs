@@ -21,7 +21,11 @@ pub struct InstructionExplanation {
 }
 
 fn operand(decoded: &DecodedInstruction, index: usize) -> &str {
-    decoded.operands.get(index).map(String::as_str).unwrap_or("?")
+    decoded
+        .operands
+        .get(index)
+        .map(String::as_str)
+        .unwrap_or("?")
 }
 
 fn summary(decoded: &DecodedInstruction) -> String {
@@ -116,7 +120,9 @@ fn register_effects(decoded: &DecodedInstruction) -> (String, String) {
         "LDA" => ("memory".into(), "A".into()),
         "ADD" | "ADC" | "SUB" | "SBB" | "ANA" | "XRA" | "ORA" => (format!("A, {a}"), "A".into()),
         "CMP" => (format!("A, {a}"), "flags only".into()),
-        "ADI" | "ACI" | "SUI" | "SBI" | "ANI" | "XRI" | "ORI" => ("A, immediate byte".into(), "A".into()),
+        "ADI" | "ACI" | "SUI" | "SBI" | "ANI" | "XRI" | "ORI" => {
+            ("A, immediate byte".into(), "A".into())
+        }
         "CPI" => ("A, immediate byte".into(), "flags only".into()),
         "PUSH" => (format!("{a}, SP"), "SP, stack memory".into()),
         "POP" => ("SP, stack memory".into(), format!("{a}, SP")),
@@ -129,9 +135,18 @@ fn register_effects(decoded: &DecodedInstruction) -> (String, String) {
         "CALL" | "RST" => ("PC, SP".into(), "PC, SP, stack memory".into()),
         "RET" => ("SP, stack memory".into(), "PC, SP".into()),
         mnemonic if mnemonic.starts_with('J') => ("condition flags".into(), "PC when taken".into()),
-        mnemonic if mnemonic.starts_with('C') => ("condition flags, PC, SP".into(), "PC/SP/stack when taken".into()),
-        mnemonic if mnemonic.starts_with('R') => ("condition flags, SP/stack when taken".into(), "PC/SP when taken".into()),
-        _ => ("see instruction semantics".into(), "see instruction semantics".into()),
+        mnemonic if mnemonic.starts_with('C') => (
+            "condition flags, PC, SP".into(),
+            "PC/SP/stack when taken".into(),
+        ),
+        mnemonic if mnemonic.starts_with('R') => (
+            "condition flags, SP/stack when taken".into(),
+            "PC/SP when taken".into(),
+        ),
+        _ => (
+            "see instruction semantics".into(),
+            "see instruction semantics".into(),
+        ),
     }
 }
 
@@ -140,16 +155,12 @@ fn memory_text(decoded: &DecodedInstruction) -> String {
         (
             MemoryAccess::StackWrite,
             ControlFlow::Call {
-                condition: Some(_),
-                ..
+                condition: Some(_), ..
             },
         ) => "Writes the stack through SP only when the call condition is taken.".into(),
-        (
-            MemoryAccess::StackRead,
-            ControlFlow::Return {
-                condition: Some(_),
-            },
-        ) => "Reads the stack through SP only when the return condition is taken.".into(),
+        (MemoryAccess::StackRead, ControlFlow::Return { condition: Some(_) }) => {
+            "Reads the stack through SP only when the return condition is taken.".into()
+        }
         (MemoryAccess::None, _) => "No data-memory access beyond instruction fetch.".into(),
         (MemoryAccess::Read, _) => "Reads data memory.".into(),
         (MemoryAccess::Write, _) => "Writes data memory.".into(),
@@ -170,13 +181,25 @@ fn io_text(decoded: &DecodedInstruction) -> String {
 
 fn flow_text(decoded: &DecodedInstruction, flags: u8) -> String {
     match decoded.control_flow {
-        ControlFlow::Jump { condition: Some(condition), .. }
-        | ControlFlow::Call { condition: Some(condition), .. }
-        | ControlFlow::Return { condition: Some(condition) } => format!(
+        ControlFlow::Jump {
+            condition: Some(condition),
+            ..
+        }
+        | ControlFlow::Call {
+            condition: Some(condition),
+            ..
+        }
+        | ControlFlow::Return {
+            condition: Some(condition),
+        } => format!(
             "{} Current condition {} is {}.",
             decoded.flow_label(),
             condition.label(),
-            if condition.evaluate(flags) { "TRUE / TAKEN" } else { "FALSE / NOT TAKEN" }
+            if condition.evaluate(flags) {
+                "TRUE / TAKEN"
+            } else {
+                "FALSE / NOT TAKEN"
+            }
         ),
         _ => decoded.flow_label(),
     }
@@ -206,15 +229,23 @@ pub fn explain_instruction(
     }
 
     if matches!(decoded.control_flow, ControlFlow::IndirectJump) {
-        context.push(format!("Current HL=${:04X}; PCHL would therefore continue at that address.", cpu.hl()));
+        context.push(format!(
+            "Current HL=${:04X}; PCHL would therefore continue at that address.",
+            cpu.hl()
+        ));
     }
 
-    if matches!(decoded.memory, MemoryAccess::StackRead | MemoryAccess::StackWrite | MemoryAccess::StackReadWrite) {
+    if matches!(
+        decoded.memory,
+        MemoryAccess::StackRead | MemoryAccess::StackWrite | MemoryAccess::StackReadWrite
+    ) {
         context.push(format!("Current SP=${:04X}.", cpu.sp));
     }
 
     if decoded.undocumented_alias {
-        context.push("This byte is an undocumented 8080 alias accepted by the RusTair CPU cores.".into());
+        context.push(
+            "This byte is an undocumented 8080 alias accepted by the RusTair CPU cores.".into(),
+        );
     }
 
     InstructionExplanation {
@@ -237,28 +268,59 @@ mod tests {
     #[test]
     fn explains_m_as_memory_at_live_hl() {
         let decoded = decode_8080(0x7e, 0, 0); // MOV A,M
-        let cpu = Intel8080State { h: 0x12, l: 0x34, ..Intel8080State::default() };
+        let cpu = Intel8080State {
+            h: 0x12,
+            l: 0x34,
+            ..Intel8080State::default()
+        };
         let explanation = explain_instruction(&decoded, cpu, MemoryValue8080::Known(0x5a));
         assert!(explanation.summary.contains("Copy M into A"));
-        assert!(explanation.context.iter().any(|line| line.contains("HL=$1234")));
+        assert!(
+            explanation
+                .context
+                .iter()
+                .any(|line| line.contains("HL=$1234"))
+        );
         assert!(explanation.context.iter().any(|line| line.contains("$5A")));
     }
 
     #[test]
     fn unknown_historical_m_is_not_described_as_uninstalled_ram() {
         let decoded = decode_8080(0x7e, 0, 0);
-        let cpu = Intel8080State { h: 0x12, l: 0x34, ..Intel8080State::default() };
+        let cpu = Intel8080State {
+            h: 0x12,
+            l: 0x34,
+            ..Intel8080State::default()
+        };
         let unknown = explain_instruction(&decoded, cpu, MemoryValue8080::Unknown);
         let unmapped = explain_instruction(&decoded, cpu, MemoryValue8080::Unmapped);
-        assert!(unknown.context.iter().any(|line| line.contains("not known")));
-        assert!(!unknown.context.iter().any(|line| line.contains("no physical RAM")));
-        assert!(unmapped.context.iter().any(|line| line.contains("no physical RAM")));
+        assert!(
+            unknown
+                .context
+                .iter()
+                .any(|line| line.contains("not known"))
+        );
+        assert!(
+            !unknown
+                .context
+                .iter()
+                .any(|line| line.contains("no physical RAM"))
+        );
+        assert!(
+            unmapped
+                .context
+                .iter()
+                .any(|line| line.contains("no physical RAM"))
+        );
     }
 
     #[test]
     fn conditional_flow_uses_live_flags() {
         let decoded = decode_8080(0xc2, 0x34, 0x12); // JNZ 1234h
-        let cpu = Intel8080State { flags: 0, ..Intel8080State::default() };
+        let cpu = Intel8080State {
+            flags: 0,
+            ..Intel8080State::default()
+        };
         let explanation = explain_instruction(&decoded, cpu, MemoryValue8080::Unknown);
         assert!(explanation.flow.contains("TRUE / TAKEN"));
     }
@@ -271,11 +333,7 @@ mod tests {
             cpu,
             MemoryValue8080::Unknown,
         );
-        let ret = explain_instruction(
-            &decode_8080(0xc0, 0, 0),
-            cpu,
-            MemoryValue8080::Unknown,
-        );
+        let ret = explain_instruction(&decode_8080(0xc0, 0, 0), cpu, MemoryValue8080::Unknown);
         assert!(call.memory.contains("only when"));
         assert!(ret.memory.contains("only when"));
     }
@@ -288,16 +346,8 @@ mod tests {
             cpu,
             MemoryValue8080::Unknown,
         );
-        let ret = explain_instruction(
-            &decode_8080(0xc9, 0, 0),
-            cpu,
-            MemoryValue8080::Unknown,
-        );
-        let rst = explain_instruction(
-            &decode_8080(0xcf, 0, 0),
-            cpu,
-            MemoryValue8080::Unknown,
-        );
+        let ret = explain_instruction(&decode_8080(0xc9, 0, 0), cpu, MemoryValue8080::Unknown);
+        let rst = explain_instruction(&decode_8080(0xcf, 0, 0), cpu, MemoryValue8080::Unknown);
         assert!(!call.summary.contains("condition"));
         assert!(!ret.summary.contains("condition"));
         assert!(!rst.summary.contains("condition"));

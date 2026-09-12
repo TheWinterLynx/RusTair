@@ -35,17 +35,16 @@ impl eframe::App for RusTairApp {
             *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
         });
         let io_capture_requested = ctx.data_mut(|data| {
-            *data.get_temp_mut_or(
-                egui::Id::new("rustair-io-inspector-capture-enabled"),
-                true,
-            )
+            *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-capture-enabled"), true)
         });
         let io_capture_active = io_inspector_open && io_capture_requested;
         if self.machine.io_trace_enabled() != io_capture_active {
             self.machine.set_io_trace_enabled(io_capture_active);
         }
         if self.external_serial.server.network_trace_enabled() != io_capture_active {
-            self.external_serial.server.set_network_trace_enabled(io_capture_active);
+            self.external_serial
+                .server
+                .set_network_trace_enabled(io_capture_active);
         }
         if self.external_com.port.trace_enabled() != io_capture_active {
             self.external_com.port.set_trace_enabled(io_capture_active);
@@ -143,10 +142,9 @@ impl eframe::App for RusTairApp {
             "STOPPED"
         };
         let speed_label = match self.effective_emulation_speed() {
-            EmulationSpeed::Authentic => format!(
-                "Speed: {:.1} MHz",
-                board.clock_hz() as f32 / 1_000_000.0
-            ),
+            EmulationSpeed::Authentic => {
+                format!("Speed: {:.1} MHz", board.clock_hz() as f32 / 1_000_000.0)
+            }
             EmulationSpeed::X2 => "Speed: 2x".into(),
             EmulationSpeed::X5 => "Speed: 5x".into(),
             EmulationSpeed::X10 => "Speed: 10x".into(),
@@ -245,11 +243,9 @@ impl eframe::App for RusTairApp {
 
             ui.put(
                 message_rect,
-                egui::Label::new(
-                    egui::RichText::new(status_text).size(STATUS_BAR_FONT_SIZE),
-                )
-                .truncate()
-                .halign(egui::Align::LEFT),
+                egui::Label::new(egui::RichText::new(status_text).size(STATUS_BAR_FONT_SIZE))
+                    .truncate()
+                    .halign(egui::Align::LEFT),
             );
             ui.put(
                 state_rect,
@@ -273,11 +269,9 @@ impl eframe::App for RusTairApp {
             );
             ui.put(
                 speed_rect,
-                egui::Label::new(
-                    egui::RichText::new(speed_label).size(STATUS_BAR_FONT_SIZE),
-                )
-                .truncate()
-                .halign(egui::Align::Center),
+                egui::Label::new(egui::RichText::new(speed_label).size(STATUS_BAR_FONT_SIZE))
+                    .truncate()
+                    .halign(egui::Align::Center),
             );
         });
 

@@ -3,7 +3,11 @@
 /// Register state belongs to the emulated chip, never to a host terminal or
 /// teletype. Serial bit timing is advanced explicitly by the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Parity { None, Even, Odd }
+pub(crate) enum Parity {
+    None,
+    Even,
+    Odd,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WordFormat {
@@ -58,14 +62,46 @@ impl Default for Mc6850 {
 impl Mc6850 {
     pub(crate) fn word_format(&self) -> WordFormat {
         match (self.control >> 2) & 7 {
-            0 => WordFormat { data_bits: 7, parity: Parity::Even, stop_bits: 2 },
-            1 => WordFormat { data_bits: 7, parity: Parity::Odd, stop_bits: 2 },
-            2 => WordFormat { data_bits: 7, parity: Parity::Even, stop_bits: 1 },
-            3 => WordFormat { data_bits: 7, parity: Parity::Odd, stop_bits: 1 },
-            4 => WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 2 },
-            5 => WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 1 },
-            6 => WordFormat { data_bits: 8, parity: Parity::Even, stop_bits: 1 },
-            _ => WordFormat { data_bits: 8, parity: Parity::Odd, stop_bits: 1 },
+            0 => WordFormat {
+                data_bits: 7,
+                parity: Parity::Even,
+                stop_bits: 2,
+            },
+            1 => WordFormat {
+                data_bits: 7,
+                parity: Parity::Odd,
+                stop_bits: 2,
+            },
+            2 => WordFormat {
+                data_bits: 7,
+                parity: Parity::Even,
+                stop_bits: 1,
+            },
+            3 => WordFormat {
+                data_bits: 7,
+                parity: Parity::Odd,
+                stop_bits: 1,
+            },
+            4 => WordFormat {
+                data_bits: 8,
+                parity: Parity::None,
+                stop_bits: 2,
+            },
+            5 => WordFormat {
+                data_bits: 8,
+                parity: Parity::None,
+                stop_bits: 1,
+            },
+            6 => WordFormat {
+                data_bits: 8,
+                parity: Parity::Even,
+                stop_bits: 1,
+            },
+            _ => WordFormat {
+                data_bits: 8,
+                parity: Parity::Odd,
+                stop_bits: 1,
+            },
         }
     }
 
@@ -74,8 +110,12 @@ impl Mc6850 {
         1 + f.data_bits + u8::from(f.parity != Parity::None) + f.stop_bits
     }
 
-    fn receive_interrupt_enabled(&self) -> bool { self.control & 0x80 != 0 }
-    fn transmit_interrupt_enabled(&self) -> bool { self.control & 0x60 == 0x20 }
+    fn receive_interrupt_enabled(&self) -> bool {
+        self.control & 0x80 != 0
+    }
+    fn transmit_interrupt_enabled(&self) -> bool {
+        self.control & 0x60 == 0x20
+    }
 
     /// Physical logic level driven on the MC6850 RTS output pin.
     ///
@@ -84,17 +124,27 @@ impl Mc6850 {
     /// other three transmitter-control combinations drive RTS LOW. This matters
     /// directly for the MITS 88-TYA ReaderRun+ circuit, which uses RTS HIGH to
     /// energize the paper-tape reader relay.
-    pub(crate) fn rts_high(&self) -> bool { self.control & 0x60 == 0x40 }
+    pub(crate) fn rts_high(&self) -> bool {
+        self.control & 0x60 == 0x40
+    }
 
     /// CR6:CR5=11 forces a continuous spacing/BREAK level on Tx Data and keeps
     /// RTS LOW. The board wrapper owns serial-clock progression; this accessor
     /// exposes the ACIA control-pin state without conflating BREAK with a byte.
-    pub(crate) fn break_active(&self) -> bool { self.control & 0x60 == 0x60 }
+    pub(crate) fn break_active(&self) -> bool {
+        self.control & 0x60 == 0x60
+    }
 
-    pub(crate) fn cts_high(&self) -> bool { self.cts_high }
-    pub(crate) fn dcd_high(&self) -> bool { self.dcd_input_high }
+    pub(crate) fn cts_high(&self) -> bool {
+        self.cts_high
+    }
+    pub(crate) fn dcd_high(&self) -> bool {
+        self.dcd_input_high
+    }
 
-    pub(crate) fn set_cts_high(&mut self, high: bool) { self.cts_high = high; }
+    pub(crate) fn set_cts_high(&mut self, high: bool) {
+        self.cts_high = high;
+    }
 
     pub(crate) fn set_dcd_high(&mut self, high: bool) {
         if high && !self.dcd_input_high {
@@ -106,7 +156,9 @@ impl Mc6850 {
 
     pub(crate) fn write_control(&mut self, value: u8) {
         self.control = value;
-        if value & 3 == 3 { self.master_reset(); }
+        if value & 3 == 3 {
+            self.master_reset();
+        }
     }
 
     pub(crate) fn master_reset(&mut self) {
@@ -148,15 +200,21 @@ impl Mc6850 {
             | (u8::from(self.interrupt_request()) << 7)
     }
 
-    pub(crate) fn peek_status(&self) -> u8 { self.status_value() }
+    pub(crate) fn peek_status(&self) -> u8 {
+        self.status_value()
+    }
 
     pub(crate) fn read_status(&mut self) -> u8 {
         let value = self.status_value();
-        if value & 0x04 != 0 { self.dcd_status_seen = true; }
+        if value & 0x04 != 0 {
+            self.dcd_status_seen = true;
+        }
         value
     }
 
-    pub(crate) fn peek_data(&self) -> u8 { self.rdr }
+    pub(crate) fn peek_data(&self) -> u8 {
+        self.rdr
+    }
 
     pub(crate) fn read_data(&mut self) -> u8 {
         let value = self.rdr;
@@ -177,7 +235,9 @@ impl Mc6850 {
         if self.dcd_status_seen {
             self.dcd_irq_pending = false;
             self.dcd_status_seen = false;
-            if !self.dcd_input_high { self.dcd_status_latched = false; }
+            if !self.dcd_input_high {
+                self.dcd_status_latched = false;
+            }
         }
         value
     }
@@ -190,13 +250,19 @@ impl Mc6850 {
             return;
         }
         let format = self.word_format();
-        self.rdr = if format.data_bits == 7 { value & 0x7f } else { value };
+        self.rdr = if format.data_bits == 7 {
+            value & 0x7f
+        } else {
+            value
+        };
         self.rdr_full = true;
         self.framing_error = framing_error;
         self.parity_error = format.parity != Parity::None && parity_error;
     }
 
-    pub(crate) fn receive_len(&self) -> usize { usize::from(self.rdrf()) }
+    pub(crate) fn receive_len(&self) -> usize {
+        usize::from(self.rdrf())
+    }
 
     pub(crate) fn clear_receive_for_debugger(&mut self) {
         self.rdr_full = false;
@@ -206,19 +272,29 @@ impl Mc6850 {
         self.overrun_visible = false;
     }
 
-    pub(crate) fn write_data(&mut self, value: u8) { self.tdr = Some(value); }
+    pub(crate) fn write_data(&mut self, value: u8) {
+        self.tdr = Some(value);
+    }
 
     /// Transfer TDR -> transmit shift register. This transition, not completion
     /// at the terminal, is what raises TDRE.
     pub(crate) fn transfer_tdr_to_shift_if_idle(&mut self) -> bool {
-        if self.cts_high || self.tx_shift.is_some() { return false; }
-        let Some(value) = self.tdr.take() else { return false; };
+        if self.cts_high || self.tx_shift.is_some() {
+            return false;
+        }
+        let Some(value) = self.tdr.take() else {
+            return false;
+        };
         self.tx_shift = Some(value);
         true
     }
 
-    pub(crate) fn tx_shift_front(&self) -> Option<u8> { self.tx_shift }
-    pub(crate) fn transmit_busy(&self) -> bool { self.tdr.is_some() || self.tx_shift.is_some() }
+    pub(crate) fn tx_shift_front(&self) -> Option<u8> {
+        self.tx_shift
+    }
+    pub(crate) fn transmit_busy(&self) -> bool {
+        self.tdr.is_some() || self.tx_shift.is_some()
+    }
 
     pub(crate) fn complete_tx_shift(&mut self) -> Option<u8> {
         let completed = self.tx_shift.take()?;
@@ -233,7 +309,12 @@ impl Mc6850 {
 
     #[cfg(test)]
     fn clock_divider(&self) -> Option<u8> {
-        match self.control & 3 { 0 => Some(1), 1 => Some(16), 2 => Some(64), _ => None }
+        match self.control & 3 {
+            0 => Some(1),
+            1 => Some(16),
+            2 => Some(64),
+            _ => None,
+        }
     }
 }
 
@@ -246,7 +327,14 @@ mod tests {
         let mut a = Mc6850::default();
         a.write_control(0x11); // /16, 8N2, CR6:CR5=00
         assert_eq!(a.clock_divider(), Some(16));
-        assert_eq!(a.word_format(), WordFormat { data_bits: 8, parity: Parity::None, stop_bits: 2 });
+        assert_eq!(
+            a.word_format(),
+            WordFormat {
+                data_bits: 8,
+                parity: Parity::None,
+                stop_bits: 2
+            }
+        );
         assert_eq!(a.frame_bits(), 11);
         assert!(!a.rts_high());
         assert!(!a.break_active());

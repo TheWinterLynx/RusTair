@@ -184,8 +184,7 @@ impl Teletype {
 
         if byte == 0x07 {
             events.push(PrintEvent::Bell);
-        } else if (0x20..=0x7e).contains(&byte)
-            && self.column == self.paper_width.saturating_sub(8)
+        } else if (0x20..=0x7e).contains(&byte) && self.column == self.paper_width.saturating_sub(8)
         {
             events.push(PrintEvent::Bell);
         }
@@ -198,8 +197,7 @@ impl Teletype {
             }
             b'\n' => {
                 self.output.push('\n');
-                self.output
-                    .extend(std::iter::repeat_n(' ', self.column));
+                self.output.extend(std::iter::repeat_n(' ', self.column));
                 events.push(PrintEvent::LineFeed);
             }
             0x20..=0x7e => {

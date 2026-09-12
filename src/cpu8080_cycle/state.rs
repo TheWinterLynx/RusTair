@@ -1,8 +1,8 @@
-use crate::cpu8080::Cpu8080;
 #[cfg(test)]
 use crate::cpu8080::Bus;
+use crate::cpu8080::Cpu8080;
 
-use super::decode::{decode, Instruction};
+use super::decode::{Instruction, decode};
 use super::{Cpu8080Cycle, Cpu8080Pins, MachineCycle, TState};
 
 /// Programmer-visible Intel 8080 register state.
@@ -305,8 +305,12 @@ mod tests {
             memory: [u8; 16],
         }
         impl Bus for TestBus {
-            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
-            fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
+            fn read(&mut self, address: u16) -> u8 {
+                self.memory[address as usize]
+            }
+            fn write(&mut self, address: u16, value: u8) {
+                self.memory[address as usize] = value;
+            }
         }
 
         let mut cpu = Cpu8080Cycle::new();
@@ -329,8 +333,12 @@ mod tests {
             memory: [u8; 16],
         }
         impl Bus for TestBus {
-            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
-            fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
+            fn read(&mut self, address: u16) -> u8 {
+                self.memory[address as usize]
+            }
+            fn write(&mut self, address: u16, value: u8) {
+                self.memory[address as usize] = value;
+            }
         }
 
         let mut cpu = Cpu8080Cycle::new();
@@ -359,8 +367,12 @@ mod tests {
             memory: [u8; 16],
         }
         impl Bus for TestBus {
-            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
-            fn write(&mut self, address: u16, value: u8) { self.memory[address as usize] = value; }
+            fn read(&mut self, address: u16) -> u8 {
+                self.memory[address as usize]
+            }
+            fn write(&mut self, address: u16, value: u8) {
+                self.memory[address as usize] = value;
+            }
         }
 
         let registers = Registers {
@@ -397,9 +409,21 @@ mod tests {
                 assert!(trace.fault.is_none());
             }
 
-            assert_eq!(full.registers(), exact.registers(), "DAD {opcode:02x} registers");
-            assert_eq!(full.total_t_states(), exact.total_t_states(), "DAD {opcode:02x} T-states");
-            assert_eq!(full.completed_instructions(), exact.completed_instructions(), "DAD {opcode:02x} instruction count");
+            assert_eq!(
+                full.registers(),
+                exact.registers(),
+                "DAD {opcode:02x} registers"
+            );
+            assert_eq!(
+                full.total_t_states(),
+                exact.total_t_states(),
+                "DAD {opcode:02x} T-states"
+            );
+            assert_eq!(
+                full.completed_instructions(),
+                exact.completed_instructions(),
+                "DAD {opcode:02x} instruction count"
+            );
             assert_eq!(exact.machine_cycle(), MachineCycle::InstructionFetch);
             assert_eq!(exact.t_state(), TState::T1);
         }
@@ -412,15 +436,22 @@ mod tests {
             inte_change: Option<bool>,
         }
         impl Bus for DiBus {
-            fn read(&mut self, address: u16) -> u8 { self.memory[address as usize] }
+            fn read(&mut self, address: u16) -> u8 {
+                self.memory[address as usize]
+            }
             fn write(&mut self, _address: u16, _value: u8) {}
-            fn set_inte(&mut self, enabled: bool) { self.inte_change = Some(enabled); }
+            fn set_inte(&mut self, enabled: bool) {
+                self.inte_change = Some(enabled);
+            }
         }
 
         let mut cpu = Cpu8080Cycle::new();
         cpu.inte = true;
         cpu.pins.inte = true;
-        let mut bus = DiBus { memory: [0xf3], inte_change: None };
+        let mut bus = DiBus {
+            memory: [0xf3],
+            inte_change: None,
+        };
 
         assert_eq!(cpu.execute_full_instruction(&mut bus, 0xf3), Some(4));
         assert!(!cpu.interrupts_enabled());
@@ -434,8 +465,13 @@ mod tests {
     fn full_executor_rejects_io_halt_and_ei_without_touching_bus() {
         struct CountingBus(usize);
         impl Bus for CountingBus {
-            fn read(&mut self, _address: u16) -> u8 { self.0 += 1; 0 }
-            fn write(&mut self, _address: u16, _value: u8) { self.0 += 1; }
+            fn read(&mut self, _address: u16) -> u8 {
+                self.0 += 1;
+                0
+            }
+            fn write(&mut self, _address: u16, _value: u8) {
+                self.0 += 1;
+            }
         }
 
         for opcode in [0xdb, 0xd3, 0x76, 0xfb] {

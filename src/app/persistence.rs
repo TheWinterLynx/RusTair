@@ -1,11 +1,10 @@
 use super::super::*;
 use crate::app::asr33_state::{TapeBitOrder, TapeTransportSpeed};
 use crate::config::{
-    ComDataBits, ComFlowControl, ComModemInputMode, ComParity, ComStopBits,
-    ExternalComConfig, ExternalSerialCharacterMode, ExternalSerialConfig,
-    ExternalSerialSpeed, RamBoardProfile, RamSize, S100HardwareConfig,
-    S100InstalledCardConfig, SioHardwareConfig, TcpListenScope, TerminalDuplex,
-    TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
+    ComDataBits, ComFlowControl, ComModemInputMode, ComParity, ComStopBits, ExternalComConfig,
+    ExternalSerialCharacterMode, ExternalSerialConfig, ExternalSerialSpeed, RamBoardProfile,
+    RamSize, S100HardwareConfig, S100InstalledCardConfig, SioHardwareConfig, TcpListenScope,
+    TerminalDuplex, TwoSioAddressBlock, TwoSioBaudTap, TwoSioInterruptTarget,
     TwoSioInterruptWiring, TwoSioSignalInterface, TwoSioStraps,
 };
 use crate::peripherals::asr33::Mode as TtyMode;
@@ -251,7 +250,10 @@ impl SavedSettings {
                 }
                 "compatibility.historical_undefined_run_latch_power_on" => {
                     if let Ok(v) = value.parse() {
-                        saved.config.compatibility.historical_undefined_run_latch_power_on = v;
+                        saved
+                            .config
+                            .compatibility
+                            .historical_undefined_run_latch_power_on = v;
                     }
                 }
                 "preferences.auto_open_basic_console" => {
@@ -502,7 +504,9 @@ impl SavedSettings {
         let _ = writeln!(
             out,
             "compatibility.historical_undefined_run_latch_power_on={}",
-            self.config.compatibility.historical_undefined_run_latch_power_on
+            self.config
+                .compatibility
+                .historical_undefined_run_latch_power_on
         );
         let _ = writeln!(
             out,
@@ -791,9 +795,7 @@ impl RusTairApp {
     ) -> SavedSettings {
         SavedSettings {
             config: self.config,
-            asr_connection: self
-                .serial_router
-                .connection(SerialDevice::InternalAsr33),
+            asr_connection: self.serial_router.connection(SerialDevice::InternalAsr33),
             terminal_connection: self.serial_router.connection(SerialDevice::TextTerminal),
             external_tcp_connection: self.serial_router.connection(SerialDevice::ExternalTcp),
             external_com_connection: self.serial_router.connection(SerialDevice::ExternalCom),
@@ -875,9 +877,7 @@ fn config_path() -> PathBuf {
         }
     }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg)
-            .join("rustair")
-            .join("config.ini");
+        return PathBuf::from(xdg).join("rustair").join("config.ini");
     }
     if let Some(home) = std::env::var_os("HOME") {
         return PathBuf::from(home)
@@ -1347,14 +1347,17 @@ mod tests {
         let rewritten = decoded.to_text();
         assert!(rewritten.contains("audio.altair_muted=true"));
         assert!(rewritten.contains("audio.asr33_muted=true"));
-        assert!(!rewritten.lines().any(|line| line.starts_with("audio.muted=")));
+        assert!(
+            !rewritten
+                .lines()
+                .any(|line| line.starts_with("audio.muted="))
+        );
     }
 
     #[test]
     fn independent_audio_mutes_round_trip_without_collapsing() {
-        let decoded = SavedSettings::from_text(
-            "audio.altair_muted=true\naudio.asr33_muted=false\n",
-        );
+        let decoded =
+            SavedSettings::from_text("audio.altair_muted=true\naudio.asr33_muted=false\n");
         assert!(decoded.altair_muted);
         assert!(!decoded.asr33_muted);
         assert_eq!(SavedSettings::from_text(&decoded.to_text()), decoded);
@@ -1362,17 +1365,17 @@ mod tests {
 
     #[test]
     fn obsolete_engine_key_is_ignored_and_not_rewritten() {
-        let decoded = SavedSettings::from_text(
-            "engine=anything\npreferences.emulation_speed=5x\n",
-        );
+        let decoded = SavedSettings::from_text("engine=anything\npreferences.emulation_speed=5x\n");
         assert_eq!(
             decoded.config.preferences.emulation_speed,
             EmulationSpeed::X5
         );
-        assert!(!decoded
-            .to_text()
-            .lines()
-            .any(|line| line.starts_with("engine=")));
+        assert!(
+            !decoded
+                .to_text()
+                .lines()
+                .any(|line| line.starts_with("engine="))
+        );
     }
 
     #[test]
@@ -1509,19 +1512,11 @@ mod tests {
             SerialConnection::Port1
         );
         assert_eq!(
-            valid_connection(
-                hardware,
-                SerialDevice::ExternalCom,
-                SerialConnection::Port0
-            ),
+            valid_connection(hardware, SerialDevice::ExternalCom, SerialConnection::Port0),
             SerialConnection::Port0
         );
         assert_eq!(
-            valid_connection(
-                hardware,
-                SerialDevice::ExternalCom,
-                SerialConnection::Port1
-            ),
+            valid_connection(hardware, SerialDevice::ExternalCom, SerialConnection::Port1),
             SerialConnection::Disconnected
         );
         assert_eq!(
@@ -1576,7 +1571,10 @@ mod tests {
         let mut saved = SavedSettings::default();
         saved.external_com.modem_inputs = ComModemInputMode::HostPins;
         let decoded = SavedSettings::from_text(&saved.to_text());
-        assert_eq!(decoded.external_com.modem_inputs, ComModemInputMode::HostPins);
+        assert_eq!(
+            decoded.external_com.modem_inputs,
+            ComModemInputMode::HostPins
+        );
     }
 
     #[test]
@@ -1593,8 +1591,7 @@ mod tests {
 
         let mut saved = SavedSettings::default();
         saved.save_to_path(&path).unwrap();
-        saved.config.machine.s100_hardware =
-            S100HardwareConfig::historical_8800b_18_slot_starter();
+        saved.config.machine.s100_hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         saved.save_to_path(&path).unwrap();
 
         let text = fs::read_to_string(&path).unwrap();

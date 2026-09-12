@@ -24,14 +24,22 @@ pub(super) fn ram_driver_line(driver: &RuntimeRamDriver) -> String {
         start,
         end,
         driver.value,
-        if driver.protected { "PROTECTED" } else { "writable" },
+        if driver.protected {
+            "PROTECTED"
+        } else {
+            "writable"
+        },
     )
 }
 
 pub(super) fn mapping_summary(inspection: &RuntimeMemoryInspection) -> String {
     match inspection.drivers.as_slice() {
         [] => format!("UNMAPPED · open bus {:02X}h", S100_OPEN_BUS_VALUE),
-        [driver] => format!("Slot {:02} · {}", driver.slot, ram_config_label(driver.config)),
+        [driver] => format!(
+            "Slot {:02} · {}",
+            driver.slot,
+            ram_config_label(driver.config)
+        ),
         drivers => format!(
             "OVERLAP · slots {}{}",
             drivers
@@ -39,7 +47,11 @@ pub(super) fn mapping_summary(inspection: &RuntimeMemoryInspection) -> String {
                 .map(|driver| format!("{:02}", driver.slot))
                 .collect::<Vec<_>>()
                 .join(" + "),
-            if inspection.electrically_contended() { " · CONTENTION" } else { "" },
+            if inspection.electrically_contended() {
+                " · CONTENTION"
+            } else {
+                ""
+            },
         ),
     }
 }
@@ -63,12 +75,18 @@ pub(super) fn mapping_cell_text(inspection: &RuntimeMemoryInspection) -> String 
     } else if inspection.electrically_contended() {
         "!!".into()
     } else {
-        format!("{:02X}", visible_ram_value(inspection).expect("non-contended RAM drivers"))
+        format!(
+            "{:02X}",
+            visible_ram_value(inspection).expect("non-contended RAM drivers")
+        )
     }
 }
 
 pub(super) fn mapping_detail(address: u16, inspection: &RuntimeMemoryInspection) -> String {
-    let mut text = format!("S-100 mapping at {address:04X}h: {}", mapping_summary(inspection));
+    let mut text = format!(
+        "S-100 mapping at {address:04X}h: {}",
+        mapping_summary(inspection)
+    );
     if inspection.drivers.is_empty() {
         text.push_str("\nNo RAM card decodes this address. A guest memory read sees the S-100 open-bus value FFh.");
         return text;
@@ -114,13 +132,25 @@ mod tests {
     fn presentation_reports_unmapped_unique_and_overlap_from_runtime_inspection() {
         let chassis = S100ChassisConfig::altair_8800b(6);
         let mut hardware = S100HardwareConfig::empty(chassis).unwrap();
-        hardware.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        hardware.set_slot(2, Some(S100InstalledCardConfig::FastRamCompatibility(
-            FastRamCompatibilityConfig::no_wait(0x0000, 0x1000),
-        ))).unwrap();
-        hardware.set_slot(3, Some(S100InstalledCardConfig::FastRamCompatibility(
-            FastRamCompatibilityConfig::no_wait(0x0800, 0x1000),
-        ))).unwrap();
+        hardware
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        hardware
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::FastRamCompatibility(
+                    FastRamCompatibilityConfig::no_wait(0x0000, 0x1000),
+                )),
+            )
+            .unwrap();
+        hardware
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::FastRamCompatibility(
+                    FastRamCompatibilityConfig::no_wait(0x0800, 0x1000),
+                )),
+            )
+            .unwrap();
         let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
 
         let unmapped = fabric.inspect_memory(0x2000);
@@ -142,10 +172,8 @@ mod tests {
 
     #[test]
     fn presentation_never_invents_one_byte_for_electrical_contention() {
-        let config = RuntimeRamConfig::Compatibility(FastRamCompatibilityConfig::no_wait(
-            0x2000,
-            0x1000,
-        ));
+        let config =
+            RuntimeRamConfig::Compatibility(FastRamCompatibilityConfig::no_wait(0x2000, 0x1000));
         let inspection = RuntimeMemoryInspection {
             drivers: vec![
                 RuntimeRamDriver {

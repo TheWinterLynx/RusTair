@@ -26,10 +26,16 @@ impl MemoryActivity8080 {
     pub fn last_sequence(self) -> Option<u64> {
         let mut latest = self.last_execute_sequence;
         if let Some(sequence) = self.last_read_sequence {
-            latest = Some(match latest { Some(current) => current.max(sequence), None => sequence });
+            latest = Some(match latest {
+                Some(current) => current.max(sequence),
+                None => sequence,
+            });
         }
         if let Some(sequence) = self.last_write_sequence {
-            latest = Some(match latest { Some(current) => current.max(sequence), None => sequence });
+            latest = Some(match latest {
+                Some(current) => current.max(sequence),
+                None => sequence,
+            });
         }
         latest
     }
@@ -50,7 +56,9 @@ impl MemoryActivityMap8080 {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (u16, MemoryActivity8080)> + '_ {
-        self.by_address.iter().map(|(&address, &activity)| (address, activity))
+        self.by_address
+            .iter()
+            .map(|(&address, &activity)| (address, activity))
     }
 
     pub fn active_addresses(&self) -> usize {
@@ -70,7 +78,9 @@ pub fn summarize_memory_activity_8080(
         dropped_entries: metadata.dropped_entries,
         ..MemoryActivityMap8080::default()
     };
-    let Some(first) = history.first() else { return result; };
+    let Some(first) = history.first() else {
+        return result;
+    };
     result.first_sequence = Some(first.sequence);
     result.last_sequence = history.last().map(|entry| entry.sequence);
 
@@ -99,8 +109,7 @@ pub fn summarize_memory_activity_8080(
                     activity.write_count = activity.write_count.saturating_add(1);
                     activity.last_write_sequence = Some(entry.sequence);
                 }
-                InstructionEffect8080::IoRead { .. }
-                | InstructionEffect8080::IoWrite { .. } => {}
+                InstructionEffect8080::IoRead { .. } | InstructionEffect8080::IoWrite { .. } => {}
             }
         }
     }
@@ -113,15 +122,25 @@ mod tests {
     use super::*;
     use crate::trace8080::CpuSnapshot8080;
 
-    fn trace(sequence: u64, address: u16, effects: Vec<InstructionEffect8080>) -> InstructionTraceEntry {
+    fn trace(
+        sequence: u64,
+        address: u16,
+        effects: Vec<InstructionEffect8080>,
+    ) -> InstructionTraceEntry {
         InstructionTraceEntry {
             sequence,
             address,
             bytes: [0, 0, 0],
             length: 1,
             t_states: 4,
-            before: CpuSnapshot8080 { pc: address, ..CpuSnapshot8080::default() },
-            after: CpuSnapshot8080 { pc: address.wrapping_add(1), ..CpuSnapshot8080::default() },
+            before: CpuSnapshot8080 {
+                pc: address,
+                ..CpuSnapshot8080::default()
+            },
+            after: CpuSnapshot8080 {
+                pc: address.wrapping_add(1),
+                ..CpuSnapshot8080::default()
+            },
             effects,
         }
     }
@@ -137,9 +156,30 @@ mod tests {
     #[test]
     fn separates_execute_read_and_write_activity() {
         let history = vec![
-            trace(1, 0x0100, vec![InstructionEffect8080::MemoryRead { address: 0x0200, value: 0x11 }]),
-            trace(2, 0x0101, vec![InstructionEffect8080::MemoryWrite { address: 0x0200, value: 0x22 }]),
-            trace(3, 0x0100, vec![InstructionEffect8080::StackWrite { address: 0x0ffe, value: 0x01 }]),
+            trace(
+                1,
+                0x0100,
+                vec![InstructionEffect8080::MemoryRead {
+                    address: 0x0200,
+                    value: 0x11,
+                }],
+            ),
+            trace(
+                2,
+                0x0101,
+                vec![InstructionEffect8080::MemoryWrite {
+                    address: 0x0200,
+                    value: 0x22,
+                }],
+            ),
+            trace(
+                3,
+                0x0100,
+                vec![InstructionEffect8080::StackWrite {
+                    address: 0x0ffe,
+                    value: 0x01,
+                }],
+            ),
         ];
         let map = summarize_memory_activity_8080(&history, metadata(0));
         let code = map.get(0x0100);
@@ -155,10 +195,8 @@ mod tests {
 
     #[test]
     fn high_sequence_after_clear_is_not_loss_without_metadata() {
-        let fresh_after_clear = summarize_memory_activity_8080(
-            &[trace(8, 0, Vec::new())],
-            metadata(0),
-        );
+        let fresh_after_clear =
+            summarize_memory_activity_8080(&[trace(8, 0, Vec::new())], metadata(0));
         assert!(!fresh_after_clear.incomplete());
     }
 
@@ -173,10 +211,7 @@ mod tests {
 
     #[test]
     fn explicit_ring_eviction_is_reported() {
-        let truncated = summarize_memory_activity_8080(
-            &[trace(42, 0, Vec::new())],
-            metadata(17),
-        );
+        let truncated = summarize_memory_activity_8080(&[trace(42, 0, Vec::new())], metadata(17));
         assert_eq!(truncated.dropped_entries, 17);
         assert!(truncated.incomplete());
     }

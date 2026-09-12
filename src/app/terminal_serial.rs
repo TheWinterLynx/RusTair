@@ -10,7 +10,10 @@ impl RusTairApp {
             return;
         };
         let machine = &mut self.machine;
-        if let Some(delay) = self.terminal.receive_output(Instant::now(), || machine.serial_tx_complete(port)) {
+        if let Some(delay) = self
+            .terminal
+            .receive_output(Instant::now(), || machine.serial_tx_complete(port))
+        {
             ctx.request_repaint_after(delay);
         }
     }

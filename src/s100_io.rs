@@ -11,7 +11,7 @@
 use crate::config::{
     S100HardwareConfig, S100InstalledCardConfig, SioInterruptTarget, TwoSioInterruptTarget,
 };
-use crate::s100_backplane::{s100_slot_mask, S100SlotMask};
+use crate::s100_backplane::{S100SlotMask, s100_slot_mask};
 
 pub const S100_IO_PORT_COUNT: usize = 256;
 
@@ -96,11 +96,7 @@ impl S100IoDecodeIndex {
         }
     }
 
-    fn add_two_sio_interrupt(
-        &mut self,
-        target: TwoSioInterruptTarget,
-        slot_mask: S100SlotMask,
-    ) {
+    fn add_two_sio_interrupt(&mut self, target: TwoSioInterruptTarget, slot_mask: S100SlotMask) {
         if target.drives_pint() {
             self.pint_drivers |= slot_mask;
         }
@@ -149,8 +145,7 @@ mod tests {
     use crate::s100_chassis::S100ChassisConfig;
 
     fn six_slot_with_cpu() -> S100HardwareConfig {
-        let mut hardware =
-            S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+        let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
         hardware
             .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
             .unwrap();

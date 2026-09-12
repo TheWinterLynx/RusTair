@@ -74,13 +74,8 @@ impl super::AltairBus {
     /// implemented by the installed 88-2SIO card's S-100 `observe_bus()` path;
     /// the CPU board must not fabricate a second wait source.
     pub(crate) fn drive_cycle_cpu_board_edge<E>(&mut self, _edge: E, pins: Cpu8080Pins) {
-        self.s100.drive_cpu_board_edge(
-            pins.phi1,
-            pins.phi2,
-            pins.sync,
-            pins.dbin,
-            pins.wr_n,
-        );
+        self.s100
+            .drive_cpu_board_edge(pins.phi1, pins.phi2, pins.sync, pins.dbin, pins.wr_n);
         if pins.phi1 && pins.sync {
             if let Some(word) = pins.data_out {
                 self.s100.latch_cpu_status(word);
@@ -89,15 +84,25 @@ impl super::AltairBus {
     }
 
     #[cfg(test)]
-    pub(crate) fn raw_s100_phi1(&self) -> Option<bool> { self.s100.signals().phi1 }
+    pub(crate) fn raw_s100_phi1(&self) -> Option<bool> {
+        self.s100.signals().phi1
+    }
     #[cfg(test)]
-    pub(crate) fn raw_s100_phi2(&self) -> Option<bool> { self.s100.signals().phi2 }
+    pub(crate) fn raw_s100_phi2(&self) -> Option<bool> {
+        self.s100.signals().phi2
+    }
     #[cfg(test)]
-    pub(crate) fn raw_s100_psync(&self) -> bool { self.s100.signals().psync }
+    pub(crate) fn raw_s100_psync(&self) -> bool {
+        self.s100.signals().psync
+    }
     #[cfg(test)]
-    pub(crate) fn raw_s100_pdbin(&self) -> bool { self.s100.signals().pdbin }
+    pub(crate) fn raw_s100_pdbin(&self) -> bool {
+        self.s100.signals().pdbin
+    }
     #[cfg(test)]
-    pub(crate) fn raw_s100_pwr_n(&self) -> bool { self.s100.signals().pwr_n }
+    pub(crate) fn raw_s100_pwr_n(&self) -> bool {
+        self.s100.signals().pwr_n
+    }
 }
 
 /// Adapter for the edge/T-state Intel 8080 core.
@@ -181,12 +186,16 @@ mod tests {
             instruction_t_states: 5,
         };
 
-        let sample = Cycle8080S100Adapter::sample_with_front_panel_direct(&trace, None, false, true);
+        let sample =
+            Cycle8080S100Adapter::sample_with_front_panel_direct(&trace, None, false, true);
         assert_eq!(sample.address, Some(0x2000));
         assert_eq!(sample.cpu_data, Some(0x82));
         assert_eq!(sample.data_in, None);
         assert_eq!(sample.data_out, Some(0x82));
-        assert_eq!(sample.status_word, None, "exact status latch belongs to SYNC+PHI1, not T1 projection");
+        assert_eq!(
+            sample.status_word, None,
+            "exact status latch belongs to SYNC+PHI1, not T1 projection"
+        );
         assert!(sample.inte);
         assert!(sample.ready);
     }
@@ -256,17 +265,14 @@ mod tests {
             total_t_states: 7,
             instruction_t_states: 7,
         };
-        let memory = Cycle8080S100Adapter::sample_with_front_panel_direct(&trace, Some(0x5a), false, true);
+        let memory =
+            Cycle8080S100Adapter::sample_with_front_panel_direct(&trace, Some(0x5a), false, true);
         assert_eq!(memory.cpu_data, Some(0x5a));
         assert_eq!(memory.data_in, Some(0x5a));
         assert_eq!(memory.data_out, None);
 
-        let jam = Cycle8080S100Adapter::sample_with_front_panel_direct(
-            &trace,
-            Some(0xc3),
-            true,
-            true,
-        );
+        let jam =
+            Cycle8080S100Adapter::sample_with_front_panel_direct(&trace, Some(0xc3), true, true);
         assert_eq!(jam.cpu_data, Some(0xc3));
         assert_eq!(jam.data_in, None);
         assert_eq!(jam.data_out, Some(0xc3));
@@ -278,7 +284,10 @@ mod tests {
         bus.s100.set_hlda(true);
         bus.cycle_set_hold_request(false);
         assert!(!bus.s100.signals().hold);
-        assert!(bus.s100.signals().hlda, "HLDA must remain CPU-owned until the next exact sample");
+        assert!(
+            bus.s100.signals().hlda,
+            "HLDA must remain CPU-owned until the next exact sample"
+        );
     }
 
     #[test]
@@ -286,13 +295,24 @@ mod tests {
         let mut chassis = super::super::AltairChassis::default();
         chassis.cycle_power_chassis(true, true, 0, false);
         chassis.bus.s100.drive_cpu_t_state(
-            Some(0), Some(0xa2), None, Some(0xa2), Some(0xa2), false, false,
-            true, false, false,
+            Some(0),
+            Some(0xa2),
+            None,
+            Some(0xa2),
+            Some(0xa2),
+            false,
+            false,
+            true,
+            false,
+            false,
         );
         chassis.cycle_set_running(false);
         let stopped_request = chassis.bus.s100.signals();
         assert!(!stopped_request.run);
         assert!(!stopped_request.ready);
-        assert!(!stopped_request.wait, "lowering READY is not itself a WAIT acknowledgement");
+        assert!(
+            !stopped_request.wait,
+            "lowering READY is not itself a WAIT acknowledgement"
+        );
     }
 }

@@ -1,9 +1,9 @@
-use super::super::{egui, RusTairApp};
+use super::super::{RusTairApp, egui};
 use super::execution_position::current_instruction_address;
-use crate::backend::{Intel8080State, InstructionTraceEntry};
+use crate::backend::{InstructionTraceEntry, Intel8080State};
 use crate::debugger8080::detect_simple_backward_loop;
-use crate::decoder8080::{decode_8080, ControlFlow};
-use crate::explain8080::{explain_instruction, MemoryValue8080};
+use crate::decoder8080::{ControlFlow, decode_8080};
+use crate::explain8080::{MemoryValue8080, explain_instruction};
 use crate::trace8080::{CpuSnapshot8080, InstructionEffect8080};
 
 const HISTORY_LIST_HEIGHT: f32 = 260.0;
@@ -37,8 +37,10 @@ impl Default for InstructionHistoryUiState {
 impl RusTairApp {
     fn instruction_history_state(ctx: &egui::Context) -> InstructionHistoryUiState {
         ctx.data(|data| {
-            data.get_temp::<InstructionHistoryUiState>(egui::Id::new("rustair-instruction-history-state"))
-                .unwrap_or_default()
+            data.get_temp::<InstructionHistoryUiState>(egui::Id::new(
+                "rustair-instruction-history-state",
+            ))
+            .unwrap_or_default()
         })
     }
 
@@ -100,7 +102,10 @@ impl RusTairApp {
         macro_rules! delta8 {
             ($name:literal, $field:ident) => {
                 if before.$field != after.$field {
-                    deltas.push(format!("{} {:02X} -> {:02X}", $name, before.$field, after.$field));
+                    deltas.push(format!(
+                        "{} {:02X} -> {:02X}",
+                        $name, before.$field, after.$field
+                    ));
                 }
             };
         }
@@ -119,10 +124,18 @@ impl RusTairApp {
             deltas.push(format!("PC {:04X} -> {:04X}", before.pc, after.pc));
         }
         if before.inte != after.inte {
-            deltas.push(format!("INTE {} -> {}", u8::from(before.inte), u8::from(after.inte)));
+            deltas.push(format!(
+                "INTE {} -> {}",
+                u8::from(before.inte),
+                u8::from(after.inte)
+            ));
         }
         if before.halted != after.halted {
-            deltas.push(format!("HALT {} -> {}", u8::from(before.halted), u8::from(after.halted)));
+            deltas.push(format!(
+                "HALT {} -> {}",
+                u8::from(before.halted),
+                u8::from(after.halted)
+            ));
         }
         deltas
     }
@@ -156,7 +169,10 @@ impl RusTairApp {
                         if taken { "TAKEN" } else { "NOT TAKEN" },
                         entry.after.pc,
                     ),
-                    None => format!("Observed CALL -> PC=${:04X}, SP=${:04X}", entry.after.pc, entry.after.sp),
+                    None => format!(
+                        "Observed CALL -> PC=${:04X}, SP=${:04X}",
+                        entry.after.pc, entry.after.sp
+                    ),
                 }
             }
             ControlFlow::Return { condition } => {
@@ -170,13 +186,22 @@ impl RusTairApp {
                         if taken { "TAKEN" } else { "NOT TAKEN" },
                         entry.after.pc,
                     ),
-                    None => format!("Observed RET -> PC=${:04X}, SP=${:04X}", entry.after.pc, entry.after.sp),
+                    None => format!(
+                        "Observed RET -> PC=${:04X}, SP=${:04X}",
+                        entry.after.pc, entry.after.sp
+                    ),
                 }
             }
-            ControlFlow::Restart { vector } => format!("Observed RST -> PC=${vector:04X}, SP=${:04X}", entry.after.sp),
+            ControlFlow::Restart { vector } => format!(
+                "Observed RST -> PC=${vector:04X}, SP=${:04X}",
+                entry.after.sp
+            ),
             ControlFlow::IndirectJump => format!("Observed PCHL -> PC=${:04X}", entry.after.pc),
             ControlFlow::Halt => format!("Observed HLT -> HALT={}", u8::from(entry.after.halted)),
-            ControlFlow::Linear => format!("Observed linear flow -> PC=${:04X} (sequential ${sequential:04X})", entry.after.pc),
+            ControlFlow::Linear => format!(
+                "Observed linear flow -> PC=${:04X} (sequential ${sequential:04X})",
+                entry.after.pc
+            ),
         }
     }
 
@@ -200,14 +225,19 @@ impl RusTairApp {
         match labels.as_slice() {
             [] => None,
             [only] => Some(format!("Current physical mapping: {only}")),
-            _ => Some(format!("Current physical contention: {}", labels.join(" + "))),
+            _ => Some(format!(
+                "Current physical contention: {}",
+                labels.join(" + ")
+            )),
         }
     }
 
     fn effect_context(&self, effect: InstructionEffect8080) -> String {
         match effect {
             InstructionEffect8080::IoRead { port, .. }
-            | InstructionEffect8080::IoWrite { port, .. } => self.io_port_context(port).unwrap_or_default(),
+            | InstructionEffect8080::IoWrite { port, .. } => {
+                self.io_port_context(port).unwrap_or_default()
+            }
             InstructionEffect8080::MemoryWrite { .. }
             | InstructionEffect8080::StackWrite { .. } => "guest write transfer/attempt".into(),
             _ => String::new(),
@@ -255,7 +285,10 @@ impl RusTairApp {
             .iter()
             .find_map(|effect| match effect {
                 InstructionEffect8080::MemoryRead { address, value }
-                    if *address == entry.before.hl() => Some(*value),
+                    if *address == entry.before.hl() =>
+                {
+                    Some(*value)
+                }
                 _ => None,
             })
             .map(MemoryValue8080::Known)
@@ -268,12 +301,31 @@ impl RusTairApp {
             HISTORY_DETAIL_SUMMARY_HEIGHT,
             |ui| {
                 ui.horizontal(|ui| {
-                    ui.add_sized([82.0, 20.0], egui::Label::new(egui::RichText::new(format!("#{:06}", entry.sequence)).strong()));
-                    ui.add_sized([64.0, 20.0], egui::Label::new(egui::RichText::new(format!("${:04X}", entry.address)).monospace()));
-                    ui.add_sized([92.0, 20.0], egui::Label::new(egui::RichText::new(entry.bytes_text()).monospace()));
-                    ui.add_sized([180.0, 20.0], egui::Label::new(egui::RichText::new(decoded.text()).monospace()));
+                    ui.add_sized(
+                        [82.0, 20.0],
+                        egui::Label::new(
+                            egui::RichText::new(format!("#{:06}", entry.sequence)).strong(),
+                        ),
+                    );
+                    ui.add_sized(
+                        [64.0, 20.0],
+                        egui::Label::new(
+                            egui::RichText::new(format!("${:04X}", entry.address)).monospace(),
+                        ),
+                    );
+                    ui.add_sized(
+                        [92.0, 20.0],
+                        egui::Label::new(egui::RichText::new(entry.bytes_text()).monospace()),
+                    );
+                    ui.add_sized(
+                        [180.0, 20.0],
+                        egui::Label::new(egui::RichText::new(decoded.text()).monospace()),
+                    );
                     ui.separator();
-                    ui.add_sized([56.0, 20.0], egui::Label::new(format!("{} T", entry.t_states)));
+                    ui.add_sized(
+                        [56.0, 20.0],
+                        egui::Label::new(format!("{} T", entry.t_states)),
+                    );
                 });
                 ui.add_sized(
                     [ui.available_width(), 22.0],
@@ -375,13 +427,34 @@ impl RusTairApp {
                         .num_columns(3)
                         .spacing([10.0, 3.0])
                         .show(ui, |ui| {
-                            ui.strong(""); ui.strong("BEFORE"); ui.strong("AFTER"); ui.end_row();
-                            ui.strong("AF"); ui.monospace(format!("{:04X}", entry.before.af())); ui.monospace(format!("{:04X}", entry.after.af())); ui.end_row();
-                            ui.strong("BC"); ui.monospace(format!("{:04X}", entry.before.bc())); ui.monospace(format!("{:04X}", entry.after.bc())); ui.end_row();
-                            ui.strong("DE"); ui.monospace(format!("{:04X}", entry.before.de())); ui.monospace(format!("{:04X}", entry.after.de())); ui.end_row();
-                            ui.strong("HL"); ui.monospace(format!("{:04X}", entry.before.hl())); ui.monospace(format!("{:04X}", entry.after.hl())); ui.end_row();
-                            ui.strong("SP"); ui.monospace(format!("{:04X}", entry.before.sp)); ui.monospace(format!("{:04X}", entry.after.sp)); ui.end_row();
-                            ui.strong("PC"); ui.monospace(format!("{:04X}", entry.before.pc)); ui.monospace(format!("{:04X}", entry.after.pc)); ui.end_row();
+                            ui.strong("");
+                            ui.strong("BEFORE");
+                            ui.strong("AFTER");
+                            ui.end_row();
+                            ui.strong("AF");
+                            ui.monospace(format!("{:04X}", entry.before.af()));
+                            ui.monospace(format!("{:04X}", entry.after.af()));
+                            ui.end_row();
+                            ui.strong("BC");
+                            ui.monospace(format!("{:04X}", entry.before.bc()));
+                            ui.monospace(format!("{:04X}", entry.after.bc()));
+                            ui.end_row();
+                            ui.strong("DE");
+                            ui.monospace(format!("{:04X}", entry.before.de()));
+                            ui.monospace(format!("{:04X}", entry.after.de()));
+                            ui.end_row();
+                            ui.strong("HL");
+                            ui.monospace(format!("{:04X}", entry.before.hl()));
+                            ui.monospace(format!("{:04X}", entry.after.hl()));
+                            ui.end_row();
+                            ui.strong("SP");
+                            ui.monospace(format!("{:04X}", entry.before.sp));
+                            ui.monospace(format!("{:04X}", entry.after.sp));
+                            ui.end_row();
+                            ui.strong("PC");
+                            ui.monospace(format!("{:04X}", entry.before.pc));
+                            ui.monospace(format!("{:04X}", entry.after.pc));
+                            ui.end_row();
                         });
                 },
             );

@@ -16,7 +16,10 @@ fn adaptive_cycle_breakpoint_can_be_armed_while_loop_is_already_running() {
 
     host.set_running(true);
     host.run_cycles(128);
-    assert!(host.running(), "loop should still be running before breakpoint is armed");
+    assert!(
+        host.running(),
+        "loop should still be running before breakpoint is armed"
+    );
 
     // This is the exact UI use case: the debugger window is opened while RUN
     // is already active and the operator arms an execute breakpoint live.
@@ -24,7 +27,10 @@ fn adaptive_cycle_breakpoint_can_be_armed_while_loop_is_already_running() {
     assert_eq!(host.debugger_breakpoints(), vec![0x0000]);
 
     host.run_cycles(256);
-    assert!(!host.running(), "live-armed breakpoint must stop the running loop");
+    assert!(
+        !host.running(),
+        "live-armed breakpoint must stop the running loop"
+    );
     assert_eq!(
         host.intel8080_state().pc,
         0x0000,

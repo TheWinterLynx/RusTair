@@ -1,4 +1,4 @@
-use crate::decoder8080::{decode_8080, ControlFlow};
+use crate::decoder8080::{ControlFlow, decode_8080};
 use crate::trace8080::{InstructionTraceEntry, InstructionTraceMetadata};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,14 +32,20 @@ pub fn infer_call_stack_8080(
     metadata: InstructionTraceMetadata,
 ) -> InferredCallStack8080 {
     let mut result = InferredCallStack8080::default();
-    let Some(first) = history.first() else { return result; };
+    let Some(first) = history.first() else {
+        return result;
+    };
 
     if metadata.dropped_entries != 0 {
         result.incomplete = true;
         result.diagnostic = Some(format!(
             "{} older trace entr{} evicted from the bounded history",
             metadata.dropped_entries,
-            if metadata.dropped_entries == 1 { "y was" } else { "ies were" },
+            if metadata.dropped_entries == 1 {
+                "y was"
+            } else {
+                "ies were"
+            },
         ));
     }
 
@@ -204,7 +210,11 @@ mod tests {
             0x0103,
             0x1000,
         )];
-        assert!(infer_call_stack_8080(&history, metadata()).frames.is_empty());
+        assert!(
+            infer_call_stack_8080(&history, metadata())
+                .frames
+                .is_empty()
+        );
     }
 
     #[test]
@@ -224,7 +234,10 @@ mod tests {
     fn explicit_eviction_marks_retained_stack_incomplete() {
         let mut meta = metadata();
         meta.dropped_entries = 7;
-        let stack = infer_call_stack_8080(&[entry(42, 0x0200, [0x00, 0, 0], 0x1000, 0x0201, 0x1000)], meta);
+        let stack = infer_call_stack_8080(
+            &[entry(42, 0x0200, [0x00, 0, 0], 0x1000, 0x0201, 0x1000)],
+            meta,
+        );
         assert!(stack.incomplete);
     }
 }

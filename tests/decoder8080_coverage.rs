@@ -1,13 +1,12 @@
 use rustair::cpu8080::{Bus, Cpu8080};
-use rustair::decoder8080::{decode_8080, ControlFlow, IoAccess, MemoryAccess};
+use rustair::decoder8080::{ControlFlow, IoAccess, MemoryAccess, decode_8080};
 
 #[test]
 fn all_256_8080_opcode_values_decode_as_instructions_or_known_aliases() {
     for opcode in 0u8..=u8::MAX {
         let decoded = decode_8080(opcode, 0x34, 0x12);
         assert_ne!(
-            decoded.mnemonic,
-            "DB",
+            decoded.mnemonic, "DB",
             "opcode {opcode:02X} fell through the structured 8080 decoder"
         );
         assert!((1..=3).contains(&decoded.length), "opcode {opcode:02X}");

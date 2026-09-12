@@ -7,15 +7,12 @@
 //! COM2502 or MC6850 implementation beside the already-tested one.
 
 use crate::s100::{
-    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole,
-    S100Signal,
+    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
 };
 use crate::s100_backplane::{S100BusSample, S100CardDrive, S100ElectricalCard};
 
-const PWR: S100CardContact =
-    S100CardContact::new(S100Signal::Plus8V, S100ContactRole::Power);
-const GND: S100CardContact =
-    S100CardContact::new(S100Signal::Ground, S100ContactRole::Power);
+const PWR: S100CardContact = S100CardContact::new(S100Signal::Plus8V, S100ContactRole::Power);
+const GND: S100CardContact = S100CardContact::new(S100Signal::Ground, S100ContactRole::Power);
 
 const S100_IO_COMMON_CONTACTS: &[S100CardContact] = &[
     PWR,
@@ -201,17 +198,23 @@ pub trait S100IoRegisterDevice {
 
     /// Observe card-wide bus timing that is not itself a register strobe.
     /// This keeps board-specific edge logic behind the register-device boundary.
-    fn observe_bus(&mut self, _sample: &S100BusSample, _selected: bool) -> bool { false }
+    fn observe_bus(&mut self, _sample: &S100BusSample, _selected: bool) -> bool {
+        false
+    }
 
     /// Return true only for a device whose board-wide logic genuinely needs to
     /// inspect unrelated bus deltas while neither sINP nor sOUT is active. The
     /// adapter itself still preserves POC edges and the transition leaving an
     /// I/O window, so ordinary decoded register cards can remain quiescent.
-    fn requires_idle_bus_observation(&self) -> bool { false }
+    fn requires_idle_bus_observation(&self) -> bool {
+        false
+    }
 
     /// Whether state changed through a host connector or independent device
     /// clock since the adapter last rebuilt its cached S-100 outputs.
-    fn external_drive_dirty(&self) -> bool { true }
+    fn external_drive_dirty(&self) -> bool {
+        true
+    }
 }
 
 /// Converts S-100 I/O strobes into register operations without owning the
@@ -271,12 +274,7 @@ impl<D> S100IoCardAdapter<D> {
 }
 
 impl<D: S100IoRegisterDevice> S100IoCardAdapter<D> {
-    pub fn new(
-        descriptor: &'static S100CardDescriptor,
-        base: u8,
-        width: u8,
-        device: D,
-    ) -> Self {
+    pub fn new(descriptor: &'static S100CardDescriptor, base: u8, width: u8, device: D) -> Self {
         assert!(width != 0, "S-100 I/O card must decode at least one port");
         assert!(
             u16::from(base) + u16::from(width) <= 256,
@@ -419,7 +417,7 @@ impl<D: S100IoRegisterDevice> S100ElectricalCard for S100IoCardAdapter<D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::s100_backplane::{s100_slot_mask, S100Backplane};
+    use crate::s100_backplane::{S100Backplane, s100_slot_mask};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -501,27 +499,37 @@ mod tests {
         let selected = s100_slot_mask(2);
 
         let idle_a = drive_io(0x44, false, false, false, true, 0x11);
-        backplane.resolve_selected_drives(selected, &[idle_a]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[idle_a])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().bus_observations, 0);
 
         let idle_b = drive_io(0x45, false, false, true, true, 0x22);
-        backplane.resolve_selected_drives(selected, &[idle_b]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[idle_b])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().bus_observations, 0);
 
         let io_window = drive_io(0x44, true, false, false, true, 0);
-        backplane.resolve_selected_drives(selected, &[io_window]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[io_window])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().bus_observations, 1);
 
         let leave_io = drive_io(0x44, false, false, false, true, 0);
-        backplane.resolve_selected_drives(selected, &[leave_io]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[leave_io])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().bus_observations, 2);
 
         let idle_c = drive_io(0x46, false, false, true, true, 0x33);
-        backplane.resolve_selected_drives(selected, &[idle_c]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[idle_c])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().bus_observations, 2);
     }
@@ -530,31 +538,39 @@ mod tests {
     fn input_register_side_effect_occurs_once_even_across_multiple_bus_deltas() {
         let state = Rc::new(RefCell::new(FakeState::default()));
         state.borrow_mut().read_values[1] = 0x5a;
-        let card = S100IoCardAdapter::new(
-            &MITS_88_SIO_IO_CARD,
-            0x06,
-            2,
-            FakeDevice(Rc::clone(&state)),
-        );
+        let card =
+            S100IoCardAdapter::new(&MITS_88_SIO_IO_CARD, 0x06, 2, FakeDevice(Rc::clone(&state)));
         let mut backplane = S100Backplane::new(3);
         backplane.insert(2, Box::new(card)).unwrap();
         let selected = s100_slot_mask(2);
 
         let before_dbin = drive_io(0x07, true, false, false, true, 0);
-        backplane.resolve_selected_drives(selected, &[before_dbin]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[before_dbin])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().reads, 0);
 
         let dbin = drive_io(0x07, true, false, true, true, 0);
-        backplane.resolve_selected_drives(selected, &[dbin.clone()]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[dbin.clone()])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().reads, 1);
 
-        backplane.resolve_selected_drives(selected, &[dbin.clone()]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[dbin.clone()])
+            .unwrap();
         assert_eq!(backplane.sample().data_in(), Some(0x5a));
         backplane.observe_selected_cards(selected);
-        backplane.resolve_selected_drives(selected, &[dbin]).unwrap();
-        assert_eq!(state.borrow().reads, 1, "same DBIN strobe must not read twice");
+        backplane
+            .resolve_selected_drives(selected, &[dbin])
+            .unwrap();
+        assert_eq!(
+            state.borrow().reads,
+            1,
+            "same DBIN strobe must not read twice"
+        );
         assert_eq!(backplane.sample().data_in(), Some(0x5a));
     }
 
@@ -562,20 +578,20 @@ mod tests {
     fn io_decode_uses_only_a0_through_a7() {
         let state = Rc::new(RefCell::new(FakeState::default()));
         state.borrow_mut().read_values[0] = 0x3c;
-        let card = S100IoCardAdapter::new(
-            &MITS_88_SIO_IO_CARD,
-            0x44,
-            2,
-            FakeDevice(Rc::clone(&state)),
-        );
+        let card =
+            S100IoCardAdapter::new(&MITS_88_SIO_IO_CARD, 0x44, 2, FakeDevice(Rc::clone(&state)));
         let mut backplane = S100Backplane::new(2);
         backplane.insert(2, Box::new(card)).unwrap();
         let selected = s100_slot_mask(2);
         let dbin = drive_io_low_address_only(0x44, true, false, true, true, 0);
 
-        backplane.resolve_selected_drives(selected, &[dbin.clone()]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[dbin.clone()])
+            .unwrap();
         backplane.observe_selected_cards(selected);
-        backplane.resolve_selected_drives(selected, &[dbin]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[dbin])
+            .unwrap();
 
         assert_eq!(state.borrow().reads, 1);
         assert_eq!(backplane.sample().data_in(), Some(0x3c));
@@ -591,29 +607,33 @@ mod tests {
     #[test]
     fn output_register_side_effect_occurs_once_while_pwr_remains_asserted() {
         let state = Rc::new(RefCell::new(FakeState::default()));
-        let card = S100IoCardAdapter::new(
-            &MITS_88_SIO_IO_CARD,
-            0x06,
-            2,
-            FakeDevice(Rc::clone(&state)),
-        );
+        let card =
+            S100IoCardAdapter::new(&MITS_88_SIO_IO_CARD, 0x06, 2, FakeDevice(Rc::clone(&state)));
         let mut backplane = S100Backplane::new(3);
         backplane.insert(2, Box::new(card)).unwrap();
         let selected = s100_slot_mask(2);
 
         let before_pwr = drive_io(0x07, false, true, false, true, 0xa5);
-        backplane.resolve_selected_drives(selected, &[before_pwr]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[before_pwr])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert!(state.borrow().writes.is_empty());
 
         let pwr = drive_io(0x07, false, true, false, false, 0xa5);
-        backplane.resolve_selected_drives(selected, &[pwr.clone()]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[pwr.clone()])
+            .unwrap();
         backplane.observe_selected_cards(selected);
         assert_eq!(state.borrow().writes, vec![(1, 0xa5)]);
 
         backplane.resolve_selected_drives(selected, &[pwr]).unwrap();
         backplane.observe_selected_cards(selected);
-        assert_eq!(state.borrow().writes, vec![(1, 0xa5)], "held pWR must not duplicate DATA OUT");
+        assert_eq!(
+            state.borrow().writes,
+            vec![(1, 0xa5)],
+            "held pWR must not duplicate DATA OUT"
+        );
     }
 
     #[test]
@@ -648,14 +668,26 @@ mod tests {
         let selected = s100_slot_mask(2) | s100_slot_mask(4);
         let dbin = drive_io(0x44, true, false, true, true, 0);
 
-        backplane.resolve_selected_drives(selected, &[dbin.clone()]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[dbin.clone()])
+            .unwrap();
         backplane.observe_selected_cards(selected);
-        backplane.resolve_selected_drives(selected, &[dbin]).unwrap();
+        backplane
+            .resolve_selected_drives(selected, &[dbin])
+            .unwrap();
 
         assert_eq!(a.borrow().reads, 1);
         assert_eq!(b.borrow().reads, 1);
-        assert!(backplane.sample().signal_is_contended(S100Signal::DataIn(0)));
-        assert!(backplane.sample().signal_is_contended(S100Signal::DataIn(7)));
+        assert!(
+            backplane
+                .sample()
+                .signal_is_contended(S100Signal::DataIn(0))
+        );
+        assert!(
+            backplane
+                .sample()
+                .signal_is_contended(S100Signal::DataIn(7))
+        );
         assert_eq!(backplane.sample().data_in(), None);
     }
 
@@ -678,17 +710,26 @@ mod tests {
         backplane.resolve_current_drives(&[]).unwrap();
 
         assert_eq!(
-            backplane.sample().signal_level(S100Signal::InterruptRequest),
+            backplane
+                .sample()
+                .signal_level(S100Signal::InterruptRequest),
             Some(false)
         );
         assert_eq!(
-            backplane.sample().signal_level(S100Signal::VectorInterrupt(3)),
+            backplane
+                .sample()
+                .signal_level(S100Signal::VectorInterrupt(3)),
             Some(false)
         );
         assert_eq!(
-            backplane.sample().signal_level(S100Signal::VectorInterrupt(2)),
+            backplane
+                .sample()
+                .signal_level(S100Signal::VectorInterrupt(2)),
             Some(true)
         );
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(false)
+        );
     }
 }

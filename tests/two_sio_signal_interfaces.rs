@@ -10,8 +10,7 @@ const APP: &str = include_str!("../src/app/mod.rs");
 const PERSISTENCE: &str = include_str!("../src/app/persistence.rs");
 
 fn hardware_with_straps(straps: TwoSioStraps) -> S100HardwareConfig {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
@@ -68,8 +67,13 @@ fn documented_signal_families_are_explicit_not_boolean_aliases() {
 
 #[test]
 fn direct_endpoint_matrix_never_invents_a_level_converter() {
-    assert!(ROUTER.contains("Self::InternalAsr33 => matches!(interface, TwoSioSignalInterface::Tty20mA)"));
-    assert!(ROUTER.contains("Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232)"));
+    assert!(
+        ROUTER
+            .contains("Self::InternalAsr33 => matches!(interface, TwoSioSignalInterface::Tty20mA)")
+    );
+    assert!(
+        ROUTER.contains("Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232)")
+    );
     assert!(ROUTER.contains("Self::TextTerminal | Self::ExternalTcp => true"));
     assert!(APP.contains("supports_two_sio_interface"));
     assert!(APP.contains("two_sio_requirement_label"));

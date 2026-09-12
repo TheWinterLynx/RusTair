@@ -2,8 +2,8 @@ use super::*;
 use crate::adaptive_metrics;
 use crate::backend::MachineBackend;
 use crate::config::{
-    RamInit, S100HardwareConfig, S100InstalledCardConfig, SioHardwareConfig,
-    SioInterruptTarget, SioInterruptWiring,
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, SioHardwareConfig, SioInterruptTarget,
+    SioInterruptWiring,
 };
 use crate::cpu8080_cycle::{MachineCycle, Registers};
 use crate::s100_chassis::S100ChassisConfig;
@@ -90,7 +90,10 @@ fn compiled_full_ei_lhld_keeps_delay_and_continues_same_window_when_pint_is_low(
         assert!(trace.fault.is_none());
     }
 
-    assert_eq!(stats.full_windows, 1, "EI->LHLD with PINT low must not fragment Full");
+    assert_eq!(
+        stats.full_windows, 1,
+        "EI->LHLD with PINT low must not fragment Full"
+    );
     assert_eq!(stats.full_t_states, 24);
     assert_eq!(stats.partial_t_states, 16);
     assert_eq!(stats.fallbacks.opcode_barrier, 0);
@@ -102,9 +105,18 @@ fn compiled_full_ei_lhld_keeps_delay_and_continues_same_window_when_pint_is_low(
         partial.machine.bus.raw_panel_lamp_duty(),
         "EI delayed INTE transition must have exact T-state lamp duty",
     );
-    assert_eq!(compiled.machine.bus.raw_s100_inte(), partial.machine.bus.raw_s100_inte());
-    assert_eq!(compiled.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_status_word());
-    assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
+    assert_eq!(
+        compiled.machine.bus.raw_s100_inte(),
+        partial.machine.bus.raw_s100_inte()
+    );
+    assert_eq!(
+        compiled.machine.bus.raw_s100_status_word(),
+        partial.machine.bus.raw_s100_status_word()
+    );
+    assert_eq!(
+        compiled.machine.bus.raw_panel_data(),
+        partial.machine.bus.raw_panel_data()
+    );
 }
 
 #[test]
@@ -124,10 +136,12 @@ fn pending_pint_keeps_ei_lhld_entirely_on_exact_partial() {
             .bus
             .debugger_output_port(sio.address.status(), 0x01);
         assert!(!backend.machine.bus.cpu_control_lines().interrupt);
-        assert!(backend
-            .machine
-            .bus
-            .debugger_inject_serial_rx(sio.address.data(), b'I'));
+        assert!(
+            backend
+                .machine
+                .bus
+                .debugger_inject_serial_rx(sio.address.data(), b'I')
+        );
         assert!(backend.machine.bus.cpu_control_lines().interrupt);
         assert!(!backend.cpu.interrupts_enabled());
     }
@@ -142,7 +156,10 @@ fn pending_pint_keeps_ei_lhld_entirely_on_exact_partial() {
         assert!(trace.fault.is_none());
     }
 
-    assert_eq!(stats.full_t_states, 0, "pending PINT must conservatively reject Full EI");
+    assert_eq!(
+        stats.full_t_states, 0,
+        "pending PINT must conservatively reject Full EI"
+    );
     assert_eq!(stats.partial_t_states, u64::from(BUDGET));
     assert_eq!(stats.fallbacks.opcode_barrier, 1);
     assert_eq!(compiled.cpu.machine_cycle(), MachineCycle::InterruptAck);
@@ -155,8 +172,14 @@ fn pending_pint_keeps_ei_lhld_entirely_on_exact_partial() {
         partial.machine.bus.raw_panel_lamp_duty(),
         "pending-PINT Partial ownership must preserve exact panel duty through INTA T1",
     );
-    assert_eq!(compiled.machine.bus.raw_s100_status_word(), partial.machine.bus.raw_s100_status_word());
-    assert_eq!(compiled.machine.bus.raw_panel_data(), partial.machine.bus.raw_panel_data());
+    assert_eq!(
+        compiled.machine.bus.raw_s100_status_word(),
+        partial.machine.bus.raw_s100_status_word()
+    );
+    assert_eq!(
+        compiled.machine.bus.raw_panel_data(),
+        partial.machine.bus.raw_panel_data()
+    );
 }
 
 #[test]
@@ -171,6 +194,9 @@ fn unpaired_ei_remains_on_partial_and_preserves_ei_then_di_cancellation() {
 
     assert_eq!(stats.full_t_states, 0);
     assert_eq!(stats.partial_t_states, u64::from(BUDGET));
-    assert!(!backend.cpu.interrupts_enabled(), "DI immediately after EI must still win");
+    assert!(
+        !backend.cpu.interrupts_enabled(),
+        "DI immediately after EI must still win"
+    );
     assert_eq!(backend.cpu.registers().pc, 2);
 }

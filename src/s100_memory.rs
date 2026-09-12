@@ -591,8 +591,16 @@ mod tests {
         ] {
             assert!(contacts.iter().any(|contact| contact.signal == signal));
         }
-        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Clock));
-        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Ready));
+        assert!(
+            !contacts
+                .iter()
+                .any(|contact| contact.signal == S100Signal::Clock)
+        );
+        assert!(
+            !contacts
+                .iter()
+                .any(|contact| contact.signal == S100Signal::Ready)
+        );
     }
 
     #[test]
@@ -609,7 +617,15 @@ mod tests {
         ] {
             assert!(contacts.iter().any(|contact| contact.signal == signal));
         }
-        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Clock));
-        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Ready));
+        assert!(
+            !contacts
+                .iter()
+                .any(|contact| contact.signal == S100Signal::Clock)
+        );
+        assert!(
+            !contacts
+                .iter()
+                .any(|contact| contact.signal == S100Signal::Ready)
+        );
     }
 }

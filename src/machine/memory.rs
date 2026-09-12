@@ -307,8 +307,12 @@ impl Memory {
         m1: bool,
         base_t_states: u32,
     ) -> u32 {
-        self.active_full_ram_timing()
-            .machine_cycle_timing(address, memory_access, m1, base_t_states)
+        self.active_full_ram_timing().machine_cycle_timing(
+            address,
+            memory_access,
+            m1,
+            base_t_states,
+        )
     }
 
     #[inline(always)]

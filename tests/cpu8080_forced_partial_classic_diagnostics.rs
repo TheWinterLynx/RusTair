@@ -3,8 +3,7 @@ use std::time::{Duration, Instant};
 use rustair::adaptive_metrics;
 use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{
-    RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring,
-    TwoSioStraps,
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioInterruptWiring, TwoSioStraps,
 };
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -122,17 +121,16 @@ fn prepare_machine(image: &[u8], reference: Reference, name: &str) -> BackendHos
     let [bdos_lo, bdos_hi] = BDOS_BASE.to_le_bytes();
     page_zero[0x0005..0x0008].copy_from_slice(&[0xc3, bdos_lo, bdos_hi]);
     let boot = [
-        0x31, bdos_lo, bdos_hi,
-        0x3e, 0x15,
-        0xd3, 0x12,
-        0x3e, 0x76,
-        0x32, 0x00, 0x00,
-        0xc3, 0x00, 0x01,
+        0x31, bdos_lo, bdos_hi, 0x3e, 0x15, 0xd3, 0x12, 0x3e, 0x76, 0x32, 0x00, 0x00, 0xc3, 0x00,
+        0x01,
     ];
     page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
 
     let image_end = CPM_COM_LOAD_ADDRESS as usize + image.len();
-    assert!(image_end < BDOS_BASE as usize, "diagnostic image overlaps BDOS");
+    assert!(
+        image_end < BDOS_BASE as usize,
+        "diagnostic image overlaps BDOS"
+    );
     machine.load_bytes(0, &page_zero);
     machine.load_bytes(CPM_COM_LOAD_ADDRESS, image);
     machine.load_bytes(BDOS_BASE, &build_bdos());
@@ -216,17 +214,17 @@ fn full_system_forced_partial_runs_cputest_with_reference_totals() {
             let final_t = machine.intel8080_state().total_t_states.unwrap_or(now_t);
             let actual_t = final_t.saturating_sub(start_t);
             let stats = adaptive_metrics::end_measurement();
-            assert_eq!(stats.full_t_states, 0, "17T host chunks must make Full impossible");
+            assert_eq!(
+                stats.full_t_states, 0,
+                "17T host chunks must make Full impossible"
+            );
             assert_eq!(stats.partial_t_states, actual_t);
             assert!(!output.is_empty());
             let elapsed = started.elapsed();
             let mhz = actual_t as f64 / elapsed.as_secs_f64() / 1_000_000.0;
             eprintln!(
                 "[FULL SYSTEM FORCED PARTIAL] CPUTEST.COM: {} reference instructions, {} reference T-states, {} actual machine T-states, {:.3?}, {mhz:.2} MHz [Cpu8080Cycle exact + MITS CPU board + S-100 + 64K static RAM + physical 88-2SIO + front panel; Full=0%]",
-                result.instructions,
-                result.t_states,
-                actual_t,
-                elapsed,
+                result.instructions, result.t_states, actual_t, elapsed,
             );
             break;
         }
@@ -267,7 +265,10 @@ fn full_system_forced_partial_samples_8080exm_50m_t_states() {
         .saturating_sub(start_t);
     let stats = adaptive_metrics::end_measurement();
     assert_eq!(actual_t, EXM_SAMPLE_T_STATES);
-    assert_eq!(stats.full_t_states, 0, "17T host chunks must make Full impossible");
+    assert_eq!(
+        stats.full_t_states, 0,
+        "17T host chunks must make Full impossible"
+    );
     assert_eq!(stats.partial_t_states, actual_t);
     assert!(machine.running());
 

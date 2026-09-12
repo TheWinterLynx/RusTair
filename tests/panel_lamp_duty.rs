@@ -29,7 +29,9 @@ fn two_nop_fetches_have_exact_raw_address_and_status_duty() {
     assert_eq!(cycle.cpu().registers().pc, 0x0002);
     assert_eq!(cycle.cpu().total_t_states(), 8);
 
-    cycle.commit_panel_activity(Duration::from_millis(16)).unwrap();
+    cycle
+        .commit_panel_activity(Duration::from_millis(16))
+        .unwrap();
     let duty = cycle.machine().bus.raw_panel_lamp_duty();
 
     assert_close(duty.address[0], 0.5, "A0 duty");

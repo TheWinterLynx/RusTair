@@ -6,14 +6,23 @@ const PORT0_CONTROL: u8 = 0x10;
 const PORT0_STATUS: u8 = 0x10;
 
 fn exercise_two_sio_modem_pin_contract(bus: &mut AltairBus) {
-    assert_eq!(bus.serial_modem_lines(0), Some((false, false, false, false)));
-    assert_eq!(bus.serial_modem_lines(1), Some((false, false, false, false)));
+    assert_eq!(
+        bus.serial_modem_lines(0),
+        Some((false, false, false, false))
+    );
+    assert_eq!(
+        bus.serial_modem_lines(1),
+        Some((false, false, false, false))
+    );
     assert_eq!(bus.serial_modem_lines(2), None);
 
     // Historical 88-TYA documentation names these exact values: 021 octal
     // (11h) keeps Reader Run/RTS low; 121 octal (51h) raises physical RTS.
     bus.debugger_output_port(PORT0_CONTROL, 0x11);
-    assert_eq!(bus.serial_modem_lines(0), Some((false, false, false, false)));
+    assert_eq!(
+        bus.serial_modem_lines(0),
+        Some((false, false, false, false))
+    );
     bus.debugger_output_port(PORT0_CONTROL, 0x51);
     assert_eq!(bus.serial_modem_lines(0), Some((true, false, false, false)));
 
@@ -53,7 +62,12 @@ fn adaptive_cycle_exposes_only_the_modem_pins_of_the_installed_physical_card() {
         None,
         "default physical 88-SIO must not fabricate MC6850 modem pins"
     );
-    assert!(!sio_cycle.machine_mut().bus.set_serial_modem_inputs(0, true, true));
+    assert!(
+        !sio_cycle
+            .machine_mut()
+            .bus
+            .set_serial_modem_inputs(0, true, true)
+    );
 
     let mut two_sio_cycle = CycleAccurateMachineBackend::default();
     two_sio_cycle

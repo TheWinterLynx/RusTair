@@ -105,17 +105,17 @@ fn cpu_address_data_pin_truth_requires_exact_sample_or_stable_stop_wait() {
     assert!(source.contains("projected back into the 8080 package"));
     assert!(source.contains("RESET RELEASED / STOP-WAIT is a special stable control state"));
     assert!(source.contains("CPU owns the address bus at PC=0000h"));
-    assert!(source.contains(
-        "memory DI passes through the CPU-board input buffer onto the processor D bus"
-    ));
+    assert!(
+        source.contains(
+            "memory DI passes through the CPU-board input buffer onto the processor D bus"
+        )
+    );
 }
 
 #[test]
 fn reconstructed_fast_bus_is_explicitly_not_cpu_package_pin_truth() {
     let source = include_str!("../src/app/ui/cpu_pin_diagram.rs");
-    assert!(source.contains(
-        "RECONSTRUCTED: Fast mode can show the front-panel DATA observation"
-    ));
+    assert!(source.contains("RECONSTRUCTED: Fast mode can show the front-panel DATA observation"));
     assert!(
         source.contains("DI, DO and 8080 D0-D7 remain unknown rather than being inferred from it")
     );
@@ -140,9 +140,9 @@ fn cpu_control_pin_renderer_uses_backend_pin_truth_without_reconstructing_signal
     }
     assert!(source.contains("canonical S-100 PINT line"));
     assert!(source.contains("this UI never reconstructs a"));
-    assert!(source.contains(
-        "signal from S-100 lamps, machine-cycle names or other presentation state"
-    ));
+    assert!(
+        source.contains("signal from S-100 lamps, machine-cycle names or other presentation state")
+    );
 }
 
 #[test]

@@ -36,7 +36,9 @@ pub struct AudioEngine {
 }
 
 impl Default for AudioEngine {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AudioEngine {
@@ -57,18 +59,28 @@ impl AudioEngine {
         }
     }
 
-    pub fn available(&self) -> bool { self.stream.is_some() }
-    pub fn altair_muted(&self) -> bool { self.altair_muted }
-    pub fn asr33_muted(&self) -> bool { self.asr33_muted }
+    pub fn available(&self) -> bool {
+        self.stream.is_some()
+    }
+    pub fn altair_muted(&self) -> bool {
+        self.altair_muted
+    }
+    pub fn asr33_muted(&self) -> bool {
+        self.asr33_muted
+    }
 
     pub fn set_altair_muted(&mut self, muted: bool) {
-        if self.altair_muted == muted { return; }
+        if self.altair_muted == muted {
+            return;
+        }
         self.altair_muted = muted;
         self.set_domain_loop_volume(AudioDomain::Altair, if muted { 0.0 } else { 1.0 });
     }
 
     pub fn set_asr33_muted(&mut self, muted: bool) {
-        if self.asr33_muted == muted { return; }
+        if self.asr33_muted == muted {
+            return;
+        }
         self.asr33_muted = muted;
         self.set_domain_loop_volume(AudioDomain::Asr33, if muted { 0.0 } else { 1.0 });
     }
@@ -81,11 +93,19 @@ impl AudioEngine {
     }
 
     fn play_once_for(&self, domain: AudioDomain, path: impl AsRef<Path>) {
-        if self.domain_muted(domain) { return; }
+        if self.domain_muted(domain) {
+            return;
+        }
         let Some(stream) = &self.stream else { return };
-        let Some(path) = path.as_ref().to_str() else { return };
-        let Some(bytes) = embedded_assets::get(path) else { return };
-        let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
+        let Some(path) = path.as_ref().to_str() else {
+            return;
+        };
+        let Some(bytes) = embedded_assets::get(path) else {
+            return;
+        };
+        let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else {
+            return;
+        };
         let sink = Sink::connect_new(stream.mixer());
         sink.append(source);
         sink.detach();
@@ -102,17 +122,26 @@ impl AudioEngine {
     }
 
     fn start_loop_for(&mut self, domain: AudioDomain, name: &str, path: impl AsRef<Path>) {
-        if self.loops.contains_key(name) { return; }
+        if self.loops.contains_key(name) {
+            return;
+        }
         let Some(stream) = &self.stream else { return };
-        let Some(path) = path.as_ref().to_str() else { return };
-        let Some(bytes) = embedded_assets::get(path) else { return };
-        let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else { return };
+        let Some(path) = path.as_ref().to_str() else {
+            return;
+        };
+        let Some(bytes) = embedded_assets::get(path) else {
+            return;
+        };
+        let Ok(source) = Decoder::try_from(Cursor::new(bytes)) else {
+            return;
+        };
         let sink = Sink::connect_new(stream.mixer());
         if self.domain_muted(domain) {
             sink.set_volume(0.0);
         }
         sink.append(source.repeat_infinite());
-        self.loops.insert(name.to_owned(), ActiveLoop { sink, domain });
+        self.loops
+            .insert(name.to_owned(), ActiveLoop { sink, domain });
     }
 
     pub fn start_loop(&mut self, name: &str, path: impl AsRef<Path>) {
@@ -124,7 +153,9 @@ impl AudioEngine {
     }
 
     pub fn stop_loop(&mut self, name: &str) {
-        if let Some(active) = self.loops.remove(name) { active.sink.stop(); }
+        if let Some(active) = self.loops.remove(name) {
+            active.sink.stop();
+        }
     }
 
     fn set_domain_loop_volume(&mut self, domain: AudioDomain, volume: f32) {
@@ -136,6 +167,8 @@ impl AudioEngine {
     }
 
     pub fn stop_all_loops(&mut self) {
-        for (_, active) in self.loops.drain() { active.sink.stop(); }
+        for (_, active) in self.loops.drain() {
+            active.sink.stop();
+        }
     }
 }

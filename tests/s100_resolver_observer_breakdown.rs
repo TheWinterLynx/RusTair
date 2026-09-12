@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use rustair::config::RamInit;
 use rustair::cpu8080_cycle::Cpu8080Pins;
-use rustair::s100_backplane::{s100_slot_mask, S100Backplane, S100BusChange};
+use rustair::s100_backplane::{S100Backplane, S100BusChange, s100_slot_mask};
 use rustair::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 use rustair::s100_runtime::DisplayControlLines;
@@ -162,7 +162,10 @@ fn profile_s100_resolver_and_observer_breakdown() {
     for _ in 0..ITER {
         backplane.observe_selected_cards(selected);
     }
-    report("O3 CPU + RAM observe_s100 only, stable sample", start.elapsed());
+    report(
+        "O3 CPU + RAM observe_s100 only, stable sample",
+        start.elapsed(),
+    );
 
     let (mut backplane, _cpu, _selected) = two_card_backplane();
     let start = Instant::now();
@@ -198,6 +201,10 @@ fn profile_s100_resolver_and_observer_breakdown() {
     report("O6 CPU + RAM observe + drive_s100/compare", start.elapsed());
 
     println!();
-    println!("Interpret R2-R1, R4-R3 and R6-R5 as approximate resolver costs for ADDRESS, DBIN and DO transitions.");
-    println!("Interpret O4-O1 and O5-O2 as the extra drive_s100/cache-compare bookkeeping after each card observation.");
+    println!(
+        "Interpret R2-R1, R4-R3 and R6-R5 as approximate resolver costs for ADDRESS, DBIN and DO transitions."
+    );
+    println!(
+        "Interpret O4-O1 and O5-O2 as the extra drive_s100/cache-compare bookkeeping after each card observation."
+    );
 }

@@ -97,7 +97,11 @@ pub struct FastRamCompatibilityConfig {
 
 impl FastRamCompatibilityConfig {
     pub const fn no_wait(base_address: u16, populated_bytes: usize) -> Self {
-        Self { base_address, populated_bytes, read_wait_states: 0 }
+        Self {
+            base_address,
+            populated_bytes,
+            read_wait_states: 0,
+        }
     }
 
     pub fn validate(self) -> Result<Self, S100HardwareConfigError> {
@@ -139,11 +143,21 @@ impl S100InstalledCardConfig {
             Self::Mits8080Cpu => S100InstalledCardKind::Mits8080Cpu,
             Self::Ram(config) => match config.model {
                 S100RamBoardModel::Mits1KStatic88Mcs => S100InstalledCardKind::Mits1KStatic88Mcs,
-                S100RamBoardModel::Mits4KDynamic88_4Mcd => S100InstalledCardKind::Mits4KDynamic88_4Mcd,
-                S100RamBoardModel::Mits4KSynchronous88S4K => S100InstalledCardKind::Mits4KSynchronous88S4K,
-                S100RamBoardModel::Mits4KStatic88_4Mcs => S100InstalledCardKind::Mits4KStatic88_4Mcs,
-                S100RamBoardModel::Mits16KStatic88_16Mcs => S100InstalledCardKind::Mits16KStatic88_16Mcs,
-                S100RamBoardModel::Mits16KDynamic88_16Mcd => S100InstalledCardKind::Mits16KDynamic88_16Mcd,
+                S100RamBoardModel::Mits4KDynamic88_4Mcd => {
+                    S100InstalledCardKind::Mits4KDynamic88_4Mcd
+                }
+                S100RamBoardModel::Mits4KSynchronous88S4K => {
+                    S100InstalledCardKind::Mits4KSynchronous88S4K
+                }
+                S100RamBoardModel::Mits4KStatic88_4Mcs => {
+                    S100InstalledCardKind::Mits4KStatic88_4Mcs
+                }
+                S100RamBoardModel::Mits16KStatic88_16Mcs => {
+                    S100InstalledCardKind::Mits16KStatic88_16Mcs
+                }
+                S100RamBoardModel::Mits16KDynamic88_16Mcd => {
+                    S100InstalledCardKind::Mits16KDynamic88_16Mcd
+                }
             },
             Self::Mits88Sio(_) => S100InstalledCardKind::Mits88Sio,
             Self::Mits88TwoSio { .. } => S100InstalledCardKind::Mits88TwoSio,
@@ -203,7 +217,10 @@ impl S100HardwareConfig {
         let chassis = chassis
             .validate()
             .map_err(S100HardwareConfigError::InvalidChassis)?;
-        Ok(Self { chassis, slots: [None; MAX_S100_SLOTS] })
+        Ok(Self {
+            chassis,
+            slots: [None; MAX_S100_SLOTS],
+        })
     }
 
     pub const fn fitted_connectors(self) -> usize {
@@ -235,7 +252,10 @@ impl S100HardwareConfig {
         Ok(())
     }
 
-    pub fn set_chassis(&mut self, chassis: S100ChassisConfig) -> Result<(), S100HardwareConfigError> {
+    pub fn set_chassis(
+        &mut self,
+        chassis: S100ChassisConfig,
+    ) -> Result<(), S100HardwareConfigError> {
         let chassis = chassis
             .validate()
             .map_err(S100HardwareConfigError::InvalidChassis)?;
@@ -303,10 +323,12 @@ impl S100HardwareConfig {
     /// A temporarily invalid POWER-OFF edit may return `None`; validated runtime
     /// configurations contain exactly one CPU card.
     pub fn active_cpu_board_slot(self) -> Option<(usize, CpuBoard)> {
-        let mut boards = self.installed_cards().filter_map(|(slot, card)| match card {
-            S100InstalledCardConfig::Mits8080Cpu => Some((slot, CpuBoard::Mits8080)),
-            _ => None,
-        });
+        let mut boards = self
+            .installed_cards()
+            .filter_map(|(slot, card)| match card {
+                S100InstalledCardConfig::Mits8080Cpu => Some((slot, CpuBoard::Mits8080)),
+                _ => None,
+            });
         let board = boards.next()?;
         boards.next().is_none().then_some(board)
     }
@@ -334,27 +356,29 @@ impl S100HardwareConfig {
     }
 
     pub fn active_sio_hardware(self) -> Option<SioHardwareConfig> {
-        self.active_serial_card_slot().and_then(|(_, card)| match card {
-            S100InstalledCardConfig::Mits88Sio(config) => Some(config),
-            _ => None,
-        })
+        self.active_serial_card_slot()
+            .and_then(|(_, card)| match card {
+                S100InstalledCardConfig::Mits88Sio(config) => Some(config),
+                _ => None,
+            })
     }
 
     pub fn active_two_sio_straps(self) -> Option<TwoSioStraps> {
-        self.active_serial_card_slot().and_then(|(_, card)| match card {
-            S100InstalledCardConfig::Mits88TwoSio { straps, .. } => Some(straps),
-            _ => None,
-        })
+        self.active_serial_card_slot()
+            .and_then(|(_, card)| match card {
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. } => Some(straps),
+                _ => None,
+            })
     }
 
     pub fn active_two_sio_interrupt_wiring(self) -> Option<TwoSioInterruptWiring> {
-        self.active_serial_card_slot().and_then(|(_, card)| match card {
-            S100InstalledCardConfig::Mits88TwoSio {
-                interrupt_wiring,
-                ..
-            } => Some(interrupt_wiring),
-            _ => None,
-        })
+        self.active_serial_card_slot()
+            .and_then(|(_, card)| match card {
+                S100InstalledCardConfig::Mits88TwoSio {
+                    interrupt_wiring, ..
+                } => Some(interrupt_wiring),
+                _ => None,
+            })
     }
 
     pub fn installed_ram_bytes(self) -> usize {
@@ -516,10 +540,9 @@ impl S100HardwareConfig {
     pub fn historical_8800b_18_slot_starter() -> Self {
         let mut config = Self::empty(S100ChassisConfig::altair_8800b(18)).expect("valid 8800b");
         config.slots[0] = Some(S100InstalledCardConfig::Mits8080Cpu);
-        config.slots[1] = Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits16KStatic88_16Mcs,
-            0x0000,
-        )));
+        config.slots[1] = Some(S100InstalledCardConfig::Ram(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits16KStatic88_16Mcs, 0x0000),
+        ));
         config.slots[2] = Some(S100InstalledCardConfig::Mits88TwoSio {
             straps: TwoSioStraps::default(),
             interrupt_wiring: TwoSioInterruptWiring::default(),
@@ -537,15 +560,15 @@ impl Default for S100HardwareConfig {
         let mut config = Self::empty(S100ChassisConfig::original_8800(1))
             .expect("default original Altair chassis is valid");
         config.slots[0] = Some(S100InstalledCardConfig::Mits8080Cpu);
-        config.slots[1] = Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits4KStatic88_4Mcs,
-            0x0000,
-        )));
-        config.slots[2] = Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits4KStatic88_4Mcs,
-            0x1000,
-        )));
-        config.slots[3] = Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()));
+        config.slots[1] = Some(S100InstalledCardConfig::Ram(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000),
+        ));
+        config.slots[2] = Some(S100InstalledCardConfig::Ram(
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x1000),
+        ));
+        config.slots[3] = Some(S100InstalledCardConfig::Mits88Sio(
+            SioHardwareConfig::default(),
+        ));
         config
     }
 }
@@ -553,13 +576,28 @@ impl Default for S100HardwareConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum S100HardwareConfigError {
     InvalidChassis(S100ChassisConfigError),
-    InvalidSlot { slot: usize, fitted_connectors: usize },
-    CardOutsideFittedConnectors { slot: usize, fitted_connectors: usize },
+    InvalidSlot {
+        slot: usize,
+        fitted_connectors: usize,
+    },
+    CardOutsideFittedConnectors {
+        slot: usize,
+        fitted_connectors: usize,
+    },
     InvalidRamCard(S100RamConfigError),
-    InvalidCompatibilityRamWindow { base_address: u16, populated_bytes: usize },
+    InvalidCompatibilityRamWindow {
+        base_address: u16,
+        populated_bytes: usize,
+    },
     UnsupportedCpuCardCount(usize),
-    InvalidDcddControllerPair { board1_count: usize, board2_count: usize },
-    NonAdjacentDcddControllerPair { board1_slot: usize, board2_slot: usize },
+    InvalidDcddControllerPair {
+        board1_count: usize,
+        board2_count: usize,
+    },
+    NonAdjacentDcddControllerPair {
+        board1_slot: usize,
+        board2_slot: usize,
+    },
 }
 
 /// UI-friendly connector populations documented by the chassis model.
@@ -577,12 +615,16 @@ mod tests {
 
     #[test]
     fn migration_ram_is_not_a_user_selectable_card_kind() {
-        assert!(!S100InstalledCardKind::ALL
-            .iter()
-            .any(|kind| *kind == S100InstalledCardKind::FastRamCompatibility));
-        assert!(!S100InstalledCardKind::ALL
-            .iter()
-            .any(|kind| kind.label() == "8K RAM"));
+        assert!(
+            !S100InstalledCardKind::ALL
+                .iter()
+                .any(|kind| *kind == S100InstalledCardKind::FastRamCompatibility)
+        );
+        assert!(
+            !S100InstalledCardKind::ALL
+                .iter()
+                .any(|kind| kind.label() == "8K RAM")
+        );
         assert_eq!(
             S100InstalledCardKind::Mits16KStatic88_16Mcs.ram_model(),
             Some(S100RamBoardModel::Mits16KStatic88_16Mcs)
@@ -591,9 +633,10 @@ mod tests {
 
     #[test]
     fn dcdd_half_boards_are_not_exposed_as_independent_editor_choices() {
-        assert!(!S100InstalledCardKind::ALL
-            .iter()
-            .any(|kind| matches!(kind, S100InstalledCardKind::Mits88DcddBoard1 | S100InstalledCardKind::Mits88DcddBoard2)));
+        assert!(!S100InstalledCardKind::ALL.iter().any(|kind| matches!(
+            kind,
+            S100InstalledCardKind::Mits88DcddBoard1 | S100InstalledCardKind::Mits88DcddBoard2
+        )));
     }
 
     #[test]
@@ -633,10 +676,15 @@ mod tests {
                 ..
             }))
         ));
-        assert!(matches!(config.slot(4), Some(S100InstalledCardConfig::Mits88Sio(_))));
-        assert!(!config
-            .installed_cards()
-            .any(|(_, card)| matches!(card, S100InstalledCardConfig::FastRamCompatibility(_))));
+        assert!(matches!(
+            config.slot(4),
+            Some(S100InstalledCardConfig::Mits88Sio(_))
+        ));
+        assert!(
+            !config
+                .installed_cards()
+                .any(|(_, card)| matches!(card, S100InstalledCardConfig::FastRamCompatibility(_)))
+        );
         config.validate().unwrap();
     }
 
@@ -651,21 +699,33 @@ mod tests {
                 )),
             )
             .unwrap();
-        hardware.set_slot(5, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        hardware
+            .set_slot(5, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
         let hardware = hardware.validate().unwrap();
-        assert_eq!(hardware.active_cpu_board_slot(), Some((5, CpuBoard::Mits8080)));
+        assert_eq!(
+            hardware.active_cpu_board_slot(),
+            Some((5, CpuBoard::Mits8080))
+        );
         assert_eq!(hardware.active_cpu_board(), Some(CpuBoard::Mits8080));
     }
 
     #[test]
     fn active_serial_identity_and_straps_come_from_the_installed_card() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
         let mut sio = SioHardwareConfig::default();
         sio.address = crate::config::SioAddressPair::try_new(0x06).unwrap();
-        config.set_slot(5, Some(S100InstalledCardConfig::Mits88Sio(sio))).unwrap();
+        config
+            .set_slot(5, Some(S100InstalledCardConfig::Mits88Sio(sio)))
+            .unwrap();
         let config = config.validate().unwrap();
-        assert_eq!(config.active_serial_card_slot(), Some((5, S100InstalledCardConfig::Mits88Sio(sio))));
+        assert_eq!(
+            config.active_serial_card_slot(),
+            Some((5, S100InstalledCardConfig::Mits88Sio(sio)))
+        );
         assert_eq!(config.active_serial_board(), Some(SerialBoard::Sio88));
         assert_eq!(config.active_sio_hardware(), Some(sio));
         assert_eq!(config.active_two_sio_straps(), None);
@@ -674,12 +734,26 @@ mod tests {
     #[test]
     fn validation_preserves_multiple_serial_cards_for_physical_bus_resolution() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        config.set_slot(2, Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig::default()))).unwrap();
-        config.set_slot(3, Some(S100InstalledCardConfig::Mits88TwoSio {
-            straps: TwoSioStraps::default(),
-            interrupt_wiring: TwoSioInterruptWiring::default(),
-        })).unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        config
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::Mits88Sio(
+                    SioHardwareConfig::default(),
+                )),
+            )
+            .unwrap();
+        config
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps: TwoSioStraps::default(),
+                    interrupt_wiring: TwoSioInterruptWiring::default(),
+                }),
+            )
+            .unwrap();
         let config = config.validate().unwrap();
         assert_eq!(config.serial_slots().count(), 2);
         assert_eq!(config.active_serial_card_slot(), None);
@@ -688,8 +762,12 @@ mod tests {
     #[test]
     fn dcdd_requires_one_adjacent_board1_board2_pair() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        config.set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        config
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
         assert_eq!(
             config.validate(),
             Err(S100HardwareConfigError::InvalidDcddControllerPair {
@@ -698,7 +776,9 @@ mod tests {
             })
         );
 
-        config.set_slot(5, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        config
+            .set_slot(5, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
         assert_eq!(
             config.validate(),
             Err(S100HardwareConfigError::NonAdjacentDcddControllerPair {
@@ -708,7 +788,9 @@ mod tests {
         );
 
         config.set_slot(5, None).unwrap();
-        config.set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
+        config
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
         let config = config.validate().unwrap();
         assert_eq!(config.dcdd_controller_slots(), Some((3, 4)));
     }
@@ -716,10 +798,18 @@ mod tests {
     #[test]
     fn dcdd_duplicate_half_board_is_rejected() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        config.set_slot(2, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
-        config.set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard2)).unwrap();
-        config.set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard1)).unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        config
+            .set_slot(2, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
+        config
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
+        config
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
         assert_eq!(
             config.validate(),
             Err(S100HardwareConfigError::InvalidDcddControllerPair {
@@ -732,10 +822,17 @@ mod tests {
     #[test]
     fn shrinking_chassis_never_silently_drops_cards() {
         let mut config = S100HardwareConfig::historical_8800b_18_slot_starter();
-        config.set_slot(18, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits1KStatic88Mcs,
-            0xfc00,
-        )))).unwrap();
+        config
+            .set_slot(
+                18,
+                Some(S100InstalledCardConfig::Ram(
+                    S100RamCardConfig::fully_populated(
+                        S100RamBoardModel::Mits1KStatic88Mcs,
+                        0xfc00,
+                    ),
+                )),
+            )
+            .unwrap();
         assert!(matches!(
             config.set_chassis(S100ChassisConfig::altair_8800b(12)),
             Err(S100HardwareConfigError::CardOutsideFittedConnectors { slot: 18, .. })
@@ -746,35 +843,56 @@ mod tests {
     #[test]
     fn overlapping_ram_is_preserved_for_electrical_contention_instead_of_rejected() {
         let mut config = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(18)).unwrap();
-        config.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        let ram = S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000);
-        config.set_slot(2, Some(S100InstalledCardConfig::Ram(ram))).unwrap();
-        config.set_slot(3, Some(S100InstalledCardConfig::Ram(ram))).unwrap();
+        config
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        let ram =
+            S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000);
+        config
+            .set_slot(2, Some(S100InstalledCardConfig::Ram(ram)))
+            .unwrap();
+        config
+            .set_slot(3, Some(S100InstalledCardConfig::Ram(ram)))
+            .unwrap();
         config.validate().unwrap();
     }
 
     #[test]
     fn unique_low_ram_prefix_stops_at_first_gap_or_overlap() {
         let mut gap = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
-        gap.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
-        gap.set_slot(2, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits4KStatic88_4Mcs,
-            0x0000,
-        )))).unwrap();
-        gap.set_slot(3, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits4KStatic88_4Mcs,
-            0x2000,
-        )))).unwrap();
+        gap.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
+        gap.set_slot(
+            2,
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000),
+            )),
+        )
+        .unwrap();
+        gap.set_slot(
+            3,
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x2000),
+            )),
+        )
+        .unwrap();
         assert_eq!(gap.installed_ram_bytes(), 8 * 1024);
         assert_eq!(gap.unique_ram_prefix_bytes(), 4 * 1024);
         assert!(gap.ram_range_is_uniquely_mapped(0x0000, 0x1000));
         assert!(!gap.ram_range_is_uniquely_mapped(0x0000, 0x2000));
 
         let mut overlap = gap;
-        overlap.set_slot(3, Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-            S100RamBoardModel::Mits1KStatic88Mcs,
-            0x0800,
-        )))).unwrap();
+        overlap
+            .set_slot(
+                3,
+                Some(S100InstalledCardConfig::Ram(
+                    S100RamCardConfig::fully_populated(
+                        S100RamBoardModel::Mits1KStatic88Mcs,
+                        0x0800,
+                    ),
+                )),
+            )
+            .unwrap();
         assert_eq!(overlap.ram_responder_count(0x07ff), 1);
         assert_eq!(overlap.ram_responder_count(0x0800), 2);
         assert_eq!(overlap.unique_ram_prefix_bytes(), 0x0800);
@@ -783,8 +901,17 @@ mod tests {
 
     #[test]
     fn connector_choices_follow_the_selected_chassis() {
-        assert_eq!(fitted_connector_choices(AltairChassisModel::Altair8800), &[4, 8, 12, 16]);
-        assert_eq!(fitted_connector_choices(AltairChassisModel::Altair8800A), &[18]);
-        assert_eq!(fitted_connector_choices(AltairChassisModel::Altair8800B), &[6, 12, 18]);
+        assert_eq!(
+            fitted_connector_choices(AltairChassisModel::Altair8800),
+            &[4, 8, 12, 16]
+        );
+        assert_eq!(
+            fitted_connector_choices(AltairChassisModel::Altair8800A),
+            &[18]
+        );
+        assert_eq!(
+            fitted_connector_choices(AltairChassisModel::Altair8800B),
+            &[6, 12, 18]
+        );
     }
 }

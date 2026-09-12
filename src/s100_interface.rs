@@ -11,12 +11,10 @@
 //! only through `S100BusCard` and the resolved S-100 backplane.
 
 pub use crate::s100::{
-    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole,
-    S100Signal,
+    S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
 };
 pub use crate::s100_backplane::{
-    S100BusSample, S100CardDrive, S100ElectricalCard as S100BusCard, S100PinDrive,
-    S100ResolvedPin,
+    S100BusSample, S100CardDrive, S100ElectricalCard as S100BusCard, S100PinDrive, S100ResolvedPin,
 };
 
 #[cfg(test)]

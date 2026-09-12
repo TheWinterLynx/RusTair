@@ -23,7 +23,10 @@ fn two_sio_input_adds_one_t_state_on_adaptive_cycle() {
     host.run_cycles(11);
     let after = host.intel8080_state();
 
-    assert_eq!(after.pc, 0x0002, "Adaptive Cycle must complete exactly one IN");
+    assert_eq!(
+        after.pc, 0x0002,
+        "Adaptive Cycle must complete exactly one IN"
+    );
     assert_eq!(
         after.total_t_states.unwrap_or(0) - before,
         11,
@@ -71,9 +74,16 @@ fn cycle_88_2sio_input_exposes_one_real_tw_and_releases_prdy_in_tw() {
         }
     }
 
-    assert_eq!(input_samples.len(), 4, "one 88-2SIO IN must contain exactly one TW");
     assert_eq!(
-        input_samples.iter().map(|sample| sample.t_state).collect::<Vec<_>>(),
+        input_samples.len(),
+        4,
+        "one 88-2SIO IN must contain exactly one TW"
+    );
+    assert_eq!(
+        input_samples
+            .iter()
+            .map(|sample| sample.t_state)
+            .collect::<Vec<_>>(),
         vec![BusTState::T1, BusTState::T2, BusTState::Tw, BusTState::T3],
     );
 
@@ -83,9 +93,21 @@ fn cycle_88_2sio_input_exposes_one_real_tw_and_releases_prdy_in_tw() {
     let t3 = input_samples[3];
 
     assert_eq!(t1.ready, Some(true));
-    assert_eq!(t2.ready, Some(false), "SINP/V must pull PRDY low at the T2 READY sample");
-    assert_eq!(tw.ready, Some(true), "PWAIT clears V so PRDY is released during the sole TW");
-    assert_eq!(tw.pins.wait, Some(true), "the 8080 must expose a real WAIT/TW output");
+    assert_eq!(
+        t2.ready,
+        Some(false),
+        "SINP/V must pull PRDY low at the T2 READY sample"
+    );
+    assert_eq!(
+        tw.ready,
+        Some(true),
+        "PWAIT clears V so PRDY is released during the sole TW"
+    );
+    assert_eq!(
+        tw.pins.wait,
+        Some(true),
+        "the 8080 must expose a real WAIT/TW output"
+    );
     assert_eq!(t3.ready, Some(true));
 
     // DBIN is active through T2 and the inserted TW, so the card must keep the
@@ -94,8 +116,15 @@ fn cycle_88_2sio_input_exposes_one_real_tw_and_releases_prdy_in_tw() {
     // return DI to Hi-Z rather than continuing to drive stale register data.
     assert_eq!(t2.s100_di, Some(0x02));
     assert_eq!(tw.s100_di, Some(0x02));
-    assert_eq!(t3.cpu_data, Some(0x02), "empty MC6850 status currently reports TDRE");
-    assert_eq!(t3.s100_di, None, "the 88-2SIO must release DI once DBIN ends in T3");
+    assert_eq!(
+        t3.cpu_data,
+        Some(0x02),
+        "empty MC6850 status currently reports TDRE"
+    );
+    assert_eq!(
+        t3.s100_di, None,
+        "the 88-2SIO must release DI once DBIN ends in T3"
+    );
 
     let cpu = host.intel8080_state();
     assert_eq!(cpu.pc, 0x0002);

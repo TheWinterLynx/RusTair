@@ -124,7 +124,8 @@ impl TcpSerialServer {
         match TcpListener::bind(address) {
             Ok(listener) => {
                 if let Err(error) = listener.set_nonblocking(true) {
-                    self.last_error = Some(format!("Could not make TCP listener non-blocking: {error}"));
+                    self.last_error =
+                        Some(format!("Could not make TCP listener non-blocking: {error}"));
                     return;
                 }
                 self.listener = Some(listener);
@@ -277,7 +278,9 @@ impl TcpSerialServer {
     }
 
     pub(crate) fn pop_rx(&mut self) -> Option<(u8, SocketAddr)> {
-        self.rx_queue.pop_front().map(|entry| (entry.byte, entry.peer))
+        self.rx_queue
+            .pop_front()
+            .map(|entry| (entry.byte, entry.peer))
     }
 
     pub(crate) fn clear_rx(&mut self) {

@@ -20,14 +20,13 @@ const GO_RECORD_SYNC: u8 = 0x78;
 const BASIC32_IMAGE: &[u8; 4096] = include_bytes!("../assets/4kbas32.bin");
 
 const BASIC32_4K_88_SIO: [u8; 20] = [
-    0x21, 0xAE, 0x0F, 0x31, 0x12, 0x00, 0xDB, 0x00, 0x0F, 0xD8,
-    0xDB, 0x01, 0xBD, 0xC8, 0x2D, 0x77, 0xC0, 0xE9, 0x03, 0x00,
+    0x21, 0xAE, 0x0F, 0x31, 0x12, 0x00, 0xDB, 0x00, 0x0F, 0xD8, 0xDB, 0x01, 0xBD, 0xC8, 0x2D, 0x77,
+    0xC0, 0xE9, 0x03, 0x00,
 ];
 
 const BASIC32_4K_88_2SIO: [u8; 28] = [
-    0x3E, 0x03, 0xD3, 0x10, 0x3E, 0x11, 0xD3, 0x10, 0x21, 0xAE,
-    0x0F, 0x31, 0x1A, 0x00, 0xDB, 0x10, 0x0F, 0xD0, 0xDB, 0x11,
-    0xBD, 0xC8, 0x2D, 0x77, 0xC0, 0xE9, 0x0B, 0x00,
+    0x3E, 0x03, 0xD3, 0x10, 0x3E, 0x11, 0xD3, 0x10, 0x21, 0xAE, 0x0F, 0x31, 0x1A, 0x00, 0xDB, 0x10,
+    0x0F, 0xD0, 0xDB, 0x11, 0xBD, 0xC8, 0x2D, 0x77, 0xC0, 0xE9, 0x0B, 0x00,
 ];
 
 #[derive(Clone, Copy)]
@@ -50,18 +49,16 @@ fn bootstrap_for(board: SerialBoard) -> TestBootstrap {
 }
 
 fn hardware_for(board: SerialBoard) -> S100HardwareConfig {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
     hardware
         .set_slot(
             2,
-            Some(S100InstalledCardConfig::Ram(S100RamCardConfig::fully_populated(
-                S100RamBoardModel::Mits4KStatic88_4Mcs,
-                0x0000,
-            ))),
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000),
+            )),
         )
         .unwrap();
     hardware
@@ -356,8 +353,7 @@ fn validate_external_tape_path() -> PathBuf {
 }
 
 fn read_external_tape(path: &Path) -> Vec<u8> {
-    std::fs::read(path)
-        .unwrap_or_else(|error| panic!("Could not read {}: {error}", path.display()))
+    std::fs::read(path).unwrap_or_else(|error| panic!("Could not read {}: {error}", path.display()))
 }
 
 fn synthetic_basic32_tape(record_data: &[u8], checksum_delta: u8, include_go: bool) -> Vec<u8> {
@@ -408,7 +404,10 @@ fn mits_basic32_tape_parser_accepts_records_and_go_record() {
 fn mits_basic32_tape_parser_reports_checksum_failure() {
     let tape = synthetic_basic32_tape(&[0xAA, 0x55, 0x10], 1, true);
     let error = parse_basic32_tape(&tape).unwrap_err();
-    assert!(error.contains("Checksum failure"), "unexpected error: {error}");
+    assert!(
+        error.contains("Checksum failure"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

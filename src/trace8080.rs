@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use crate::cpu8080::FLAG_1;
-use crate::decoder8080::{decode_8080, ControlFlow, DecodedInstruction};
+use crate::decoder8080::{ControlFlow, DecodedInstruction, decode_8080};
 
 pub const DEFAULT_INSTRUCTION_HISTORY_LIMIT: usize = 4096;
 
@@ -22,10 +22,18 @@ pub struct CpuSnapshot8080 {
 }
 
 impl CpuSnapshot8080 {
-    pub const fn af(self) -> u16 { ((self.a as u16) << 8) | self.flags as u16 }
-    pub const fn bc(self) -> u16 { ((self.b as u16) << 8) | self.c as u16 }
-    pub const fn de(self) -> u16 { ((self.d as u16) << 8) | self.e as u16 }
-    pub const fn hl(self) -> u16 { ((self.h as u16) << 8) | self.l as u16 }
+    pub const fn af(self) -> u16 {
+        ((self.a as u16) << 8) | self.flags as u16
+    }
+    pub const fn bc(self) -> u16 {
+        ((self.b as u16) << 8) | self.c as u16
+    }
+    pub const fn de(self) -> u16 {
+        ((self.d as u16) << 8) | self.e as u16
+    }
+    pub const fn hl(self) -> u16 {
+        ((self.h as u16) << 8) | self.l as u16
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -48,10 +56,18 @@ pub enum InstructionEffect8080 {
 impl InstructionEffect8080 {
     pub fn label(self) -> String {
         match self {
-            Self::MemoryRead { address, value } => format!("READ  [${address:04X}] -> ${value:02X}"),
-            Self::MemoryWrite { address, value } => format!("WRITE [${address:04X}] <- ${value:02X}"),
-            Self::StackRead { address, value } => format!("STACK READ  [${address:04X}] -> ${value:02X}"),
-            Self::StackWrite { address, value } => format!("STACK WRITE [${address:04X}] <- ${value:02X}"),
+            Self::MemoryRead { address, value } => {
+                format!("READ  [${address:04X}] -> ${value:02X}")
+            }
+            Self::MemoryWrite { address, value } => {
+                format!("WRITE [${address:04X}] <- ${value:02X}")
+            }
+            Self::StackRead { address, value } => {
+                format!("STACK READ  [${address:04X}] -> ${value:02X}")
+            }
+            Self::StackWrite { address, value } => {
+                format!("STACK WRITE [${address:04X}] <- ${value:02X}")
+            }
             Self::IoRead { port, value } => format!("IN  ${port:02X} -> ${value:02X}"),
             Self::IoWrite { port, value } => format!("OUT ${port:02X} <- ${value:02X}"),
         }
@@ -71,13 +87,18 @@ pub struct InstructionTraceEntry {
 }
 
 impl InstructionTraceEntry {
-    pub fn opcode(&self) -> u8 { self.bytes[0] }
+    pub fn opcode(&self) -> u8 {
+        self.bytes[0]
+    }
 
     pub fn bytes_text(&self) -> String {
         match self.length {
             1 => format!("{:02X}", self.bytes[0]),
             2 => format!("{:02X} {:02X}", self.bytes[0], self.bytes[1]),
-            _ => format!("{:02X} {:02X} {:02X}", self.bytes[0], self.bytes[1], self.bytes[2]),
+            _ => format!(
+                "{:02X} {:02X} {:02X}",
+                self.bytes[0], self.bytes[1], self.bytes[2]
+            ),
         }
     }
 }
@@ -114,11 +135,7 @@ fn stack_write(effects: &mut Vec<InstructionEffect8080>, address: u16, value: u8
 /// second at SP-2. Keep trace effects in electrical/temporal order so a pair of
 /// stack watchpoints reports the same first transfer the CPU actually performs.
 fn stack_push_word(effects: &mut Vec<InstructionEffect8080>, before_sp: u16, value: u16) {
-    stack_write(
-        effects,
-        before_sp.wrapping_sub(1),
-        (value >> 8) as u8,
-    );
+    stack_write(effects, before_sp.wrapping_sub(1), (value >> 8) as u8);
     stack_write(effects, before_sp.wrapping_sub(2), value as u8);
 }
 
@@ -158,9 +175,10 @@ fn pushed_pair(snapshot: CpuSnapshot8080, operand: &str) -> Option<u16> {
 
 fn pre_memory_read(effects: &[InstructionEffect8080], address: u16) -> Option<u8> {
     effects.iter().find_map(|effect| match *effect {
-        InstructionEffect8080::MemoryRead { address: candidate, value } if candidate == address => {
-            Some(value)
-        }
+        InstructionEffect8080::MemoryRead {
+            address: candidate,
+            value,
+        } if candidate == address => Some(value),
         _ => None,
     })
 }
@@ -183,11 +201,18 @@ where
 
     match decoded.mnemonic {
         "MOV" if op1 == Some("M") => read_effect(&mut effects, before.hl(), &mut guest_read),
-        "ADD" | "ADC" | "SUB" | "SBB" | "ANA" | "XRA" | "ORA" | "CMP"
-            if op0 == Some("M") => read_effect(&mut effects, before.hl(), &mut guest_read),
-        "INR" | "DCR" if op0 == Some("M") => read_effect(&mut effects, before.hl(), &mut guest_read),
+        "ADD" | "ADC" | "SUB" | "SBB" | "ANA" | "XRA" | "ORA" | "CMP" if op0 == Some("M") => {
+            read_effect(&mut effects, before.hl(), &mut guest_read)
+        }
+        "INR" | "DCR" if op0 == Some("M") => {
+            read_effect(&mut effects, before.hl(), &mut guest_read)
+        }
         "LDAX" => {
-            let address = if op0 == Some("B") { before.bc() } else { before.de() };
+            let address = if op0 == Some("B") {
+                before.bc()
+            } else {
+                before.de()
+            };
             read_effect(&mut effects, address, &mut guest_read);
         }
         "LDA" => {
@@ -209,8 +234,10 @@ where
             stack_read_effect(&mut effects, before.sp, &mut guest_read);
             stack_read_effect(&mut effects, before.sp.wrapping_add(1), &mut guest_read);
         }
-        _ if matches!(decoded.control_flow, ControlFlow::Return { condition: Some(_) })
-            && branch_taken(&decoded, before) =>
+        _ if matches!(
+            decoded.control_flow,
+            ControlFlow::Return { condition: Some(_) }
+        ) && branch_taken(&decoded, before) =>
         {
             stack_read_effect(&mut effects, before.sp, &mut guest_read);
             stack_read_effect(&mut effects, before.sp.wrapping_add(1), &mut guest_read);
@@ -258,7 +285,11 @@ pub fn collect_post_instruction_effects(
             }
         }
         "STAX" => {
-            let address = if op0 == Some("B") { before.bc() } else { before.de() };
+            let address = if op0 == Some("B") {
+                before.bc()
+            } else {
+                before.de()
+            };
             memory_write(&mut effects, address, before.a);
         }
         "STA" => {
@@ -289,8 +320,13 @@ pub fn collect_post_instruction_effects(
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
             stack_push_word(&mut effects, before.sp, return_address);
         }
-        _ if matches!(decoded.control_flow, ControlFlow::Call { condition: Some(_), .. })
-            && branch_taken(&decoded, before) =>
+        _ if matches!(
+            decoded.control_flow,
+            ControlFlow::Call {
+                condition: Some(_),
+                ..
+            }
+        ) && branch_taken(&decoded, before) =>
         {
             let return_address = before.pc.wrapping_add(u16::from(decoded.length));
             stack_push_word(&mut effects, before.sp, return_address);
@@ -301,12 +337,18 @@ pub fn collect_post_instruction_effects(
     match decoded.mnemonic {
         "IN" => {
             if let Some(port) = decoded.immediate8 {
-                effects.push(InstructionEffect8080::IoRead { port, value: after.a });
+                effects.push(InstructionEffect8080::IoRead {
+                    port,
+                    value: after.a,
+                });
             }
         }
         "OUT" => {
             if let Some(port) = decoded.immediate8 {
-                effects.push(InstructionEffect8080::IoWrite { port, value: before.a });
+                effects.push(InstructionEffect8080::IoWrite {
+                    port,
+                    value: before.a,
+                });
             }
         }
         _ => {}
@@ -326,7 +368,9 @@ pub struct InstructionTraceBuffer {
 }
 
 impl Default for InstructionTraceBuffer {
-    fn default() -> Self { Self::new(DEFAULT_INSTRUCTION_HISTORY_LIMIT) }
+    fn default() -> Self {
+        Self::new(DEFAULT_INSTRUCTION_HISTORY_LIMIT)
+    }
 }
 
 impl InstructionTraceBuffer {
@@ -342,7 +386,9 @@ impl InstructionTraceBuffer {
         }
     }
 
-    pub fn enabled(&self) -> bool { self.enabled }
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
 
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -422,8 +468,14 @@ mod tests {
             history.push(
                 address,
                 [0x00, 0, 0],
-                CpuSnapshot8080 { pc: address, ..CpuSnapshot8080::default() },
-                CpuSnapshot8080 { pc: address + 1, ..CpuSnapshot8080::default() },
+                CpuSnapshot8080 {
+                    pc: address,
+                    ..CpuSnapshot8080::default()
+                },
+                CpuSnapshot8080 {
+                    pc: address + 1,
+                    ..CpuSnapshot8080::default()
+                },
                 4,
             );
         }
@@ -442,46 +494,117 @@ mod tests {
     #[test]
     fn disabled_history_has_zero_runtime_entries() {
         let mut history = InstructionTraceBuffer::default();
-        history.push(0, [0, 0, 0], CpuSnapshot8080::default(), CpuSnapshot8080::default(), 4);
+        history.push(
+            0,
+            [0, 0, 0],
+            CpuSnapshot8080::default(),
+            CpuSnapshot8080::default(),
+            4,
+        );
         assert!(history.snapshot().is_empty());
     }
 
     #[test]
     fn derives_m_read_write_and_io_effects() {
-        let before = CpuSnapshot8080 { h: 0x12, l: 0x34, a: 0x55, sp: 0x0200, ..CpuSnapshot8080::default() };
-        let after = CpuSnapshot8080 { h: 0x12, l: 0x34, a: 0x66, sp: 0x0200, ..before };
+        let before = CpuSnapshot8080 {
+            h: 0x12,
+            l: 0x34,
+            a: 0x55,
+            sp: 0x0200,
+            ..CpuSnapshot8080::default()
+        };
+        let after = CpuSnapshot8080 {
+            h: 0x12,
+            l: 0x34,
+            a: 0x66,
+            sp: 0x0200,
+            ..before
+        };
 
         let pre = collect_pre_instruction_effects([0x7e, 0, 0], before, |address| {
             if address == 0x1234 { 0x66 } else { 0 }
         });
-        assert_eq!(pre, vec![InstructionEffect8080::MemoryRead { address: 0x1234, value: 0x66 }]);
+        assert_eq!(
+            pre,
+            vec![InstructionEffect8080::MemoryRead {
+                address: 0x1234,
+                value: 0x66
+            }]
+        );
 
         let post = collect_post_instruction_effects([0x77, 0, 0], before, after, &[]);
-        assert_eq!(post, vec![InstructionEffect8080::MemoryWrite { address: 0x1234, value: 0x55 }]);
+        assert_eq!(
+            post,
+            vec![InstructionEffect8080::MemoryWrite {
+                address: 0x1234,
+                value: 0x55
+            }]
+        );
 
         let input = collect_post_instruction_effects([0xdb, 0x10, 0], before, after, &[]);
-        assert_eq!(input, vec![InstructionEffect8080::IoRead { port: 0x10, value: 0x66 }]);
+        assert_eq!(
+            input,
+            vec![InstructionEffect8080::IoRead {
+                port: 0x10,
+                value: 0x66
+            }]
+        );
         let output = collect_post_instruction_effects([0xd3, 0x11, 0], before, after, &[]);
-        assert_eq!(output, vec![InstructionEffect8080::IoWrite { port: 0x11, value: 0x55 }]);
+        assert_eq!(
+            output,
+            vec![InstructionEffect8080::IoWrite {
+                port: 0x11,
+                value: 0x55
+            }]
+        );
     }
 
     #[test]
     fn protected_or_uninstalled_write_value_does_not_depend_on_post_ram() {
-        let before = CpuSnapshot8080 { h: 0x20, l: 0x00, a: 0xa5, ..CpuSnapshot8080::default() };
+        let before = CpuSnapshot8080 {
+            h: 0x20,
+            l: 0x00,
+            a: 0xa5,
+            ..CpuSnapshot8080::default()
+        };
         let post = collect_post_instruction_effects([0x77, 0, 0], before, before, &[]);
-        assert_eq!(post, vec![InstructionEffect8080::MemoryWrite { address: 0x2000, value: 0xa5 }]);
+        assert_eq!(
+            post,
+            vec![InstructionEffect8080::MemoryWrite {
+                address: 0x2000,
+                value: 0xa5
+            }]
+        );
     }
 
     #[test]
     fn inr_m_reports_read_and_attempted_write() {
-        let before = CpuSnapshot8080 { h: 0x01, l: 0x00, ..CpuSnapshot8080::default() };
+        let before = CpuSnapshot8080 {
+            h: 0x01,
+            l: 0x00,
+            ..CpuSnapshot8080::default()
+        };
         let pre = collect_pre_instruction_effects([0x34, 0, 0], before, |_| 0xff);
         let mut effects = pre.clone();
-        effects.extend(collect_post_instruction_effects([0x34, 0, 0], before, before, &pre));
-        assert_eq!(effects, vec![
-            InstructionEffect8080::MemoryRead { address: 0x0100, value: 0xff },
-            InstructionEffect8080::MemoryWrite { address: 0x0100, value: 0x00 },
-        ]);
+        effects.extend(collect_post_instruction_effects(
+            [0x34, 0, 0],
+            before,
+            before,
+            &pre,
+        ));
+        assert_eq!(
+            effects,
+            vec![
+                InstructionEffect8080::MemoryRead {
+                    address: 0x0100,
+                    value: 0xff
+                },
+                InstructionEffect8080::MemoryWrite {
+                    address: 0x0100,
+                    value: 0x00
+                },
+            ]
+        );
     }
 
     #[test]
@@ -500,8 +623,14 @@ mod tests {
         assert_eq!(
             collect_post_instruction_effects([0xc5, 0, 0], before, after_push, &[]),
             vec![
-                InstructionEffect8080::StackWrite { address: 0xffff, value: 0x12 },
-                InstructionEffect8080::StackWrite { address: 0xfffe, value: 0x34 },
+                InstructionEffect8080::StackWrite {
+                    address: 0xffff,
+                    value: 0x12
+                },
+                InstructionEffect8080::StackWrite {
+                    address: 0xfffe,
+                    value: 0x34
+                },
             ]
         );
 
@@ -514,8 +643,14 @@ mod tests {
         assert_eq!(
             collect_post_instruction_effects([0xcd, 0x34, 0x12], before, after_call, &[]),
             vec![
-                InstructionEffect8080::StackWrite { address: 0xffff, value: 0x00 },
-                InstructionEffect8080::StackWrite { address: 0xfffe, value: 0x02 },
+                InstructionEffect8080::StackWrite {
+                    address: 0xffff,
+                    value: 0x00
+                },
+                InstructionEffect8080::StackWrite {
+                    address: 0xfffe,
+                    value: 0x02
+                },
             ]
         );
     }

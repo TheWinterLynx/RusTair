@@ -18,7 +18,9 @@ type DriverCountPlanes = [PinMask; DRIVER_COUNT_BITS];
 // operations in the emulator. This is the same physical pin mapping returned by
 // `S100Signal::pin`; avoiding sixteen/eight enum matches for every CPU delta is
 // purely an implementation acceleration.
-const ADDRESS_PINS: [u8; 16] = [79, 80, 81, 31, 30, 29, 82, 83, 84, 34, 37, 87, 33, 85, 86, 32];
+const ADDRESS_PINS: [u8; 16] = [
+    79, 80, 81, 31, 30, 29, 82, 83, 84, 34, 37, 87, 33, 85, 86, 32,
+];
 const DATA_OUT_PINS: [u8; 8] = [36, 35, 88, 89, 38, 39, 40, 90];
 const DATA_IN_PINS: [u8; 8] = [95, 94, 41, 42, 91, 92, 93, 43];
 const ADDRESS_PIN_MASK: PinMask = [0x27e0000000, 0x00ff8000];
@@ -230,10 +232,7 @@ impl S100CardDrive {
 
     pub fn drive_tristate(&mut self, signal: S100Signal, level: Option<bool>) {
         let pin = signal.pin().expect("valid S-100 signal");
-        self.set_pin(
-            pin,
-            level.map_or(S100PinDrive::HighZ, S100PinDrive::Driven),
-        );
+        self.set_pin(pin, level.map_or(S100PinDrive::HighZ, S100PinDrive::Driven));
     }
 
     pub fn pull_low(&mut self, signal: S100Signal, asserted: bool) {
@@ -374,10 +373,8 @@ impl S100BusSample {
             let driven = low | high;
             let contention = low & high;
             self.contention[word] = contention;
-            self.defined[word] =
-                (passive_defined[word] & !driven) | (driven & !contention);
-            self.high[word] =
-                (passive_high[word] & !driven) | (high & !low);
+            self.defined[word] = (passive_defined[word] & !driven) | (driven & !contention);
+            self.high[word] = (passive_high[word] & !driven) | (high & !low);
         }
         self.refresh_cached_buses();
     }
@@ -437,10 +434,8 @@ impl S100BusSample {
             let driven = low | high;
             let contention = low & high;
             self.contention[word] = contention;
-            self.defined[word] =
-                (passive_defined[word] & !driven) | (driven & !contention);
-            self.high[word] =
-                (passive_high[word] & !driven) | (high & !low);
+            self.defined[word] = (passive_defined[word] & !driven) | (driven & !contention);
+            self.high[word] = (passive_high[word] & !driven) | (high & !low);
         }
         let change = self.electrical_change_from(old_defined, old_high, old_contention);
         self.refresh_cached_buses_for_change(change);
@@ -525,8 +520,7 @@ impl S100BusSample {
     }
 
     pub fn contended_pins(&self) -> impl Iterator<Item = u8> + '_ {
-        (1..=S100_CONTACT_COUNT as u8)
-            .filter(|&pin| mask_contains(&self.contention, pin as usize))
+        (1..=S100_CONTACT_COUNT as u8).filter(|&pin| mask_contains(&self.contention, pin as usize))
     }
 }
 
@@ -836,10 +830,7 @@ impl S100Backplane {
         (passive.defined, passive.high)
     }
 
-    fn resolve_against_passive(
-        passive: &S100BusSample,
-        drives: &[S100CardDrive],
-    ) -> S100BusSample {
+    fn resolve_against_passive(passive: &S100BusSample, drives: &[S100CardDrive]) -> S100BusSample {
         let mut sample = passive.clone();
         let passive_defined = passive.defined;
         let passive_high = passive.high;
@@ -947,9 +938,8 @@ impl S100Backplane {
         selected: S100SlotMask,
     ) -> Result<S100SlotMask, S100BackplaneError> {
         let observed = &self.sample;
-        let mut pending = (forced | self.observers_for_change(change))
-            & selected
-            & self.occupied_slots;
+        let mut pending =
+            (forced | self.observers_for_change(change)) & selected & self.occupied_slots;
         let mut drive_changed = 0;
         while pending != 0 {
             let index = pending.trailing_zeros() as usize;
@@ -1491,7 +1481,10 @@ mod tests {
         assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 1);
         backplane.resolve_selected_drives(0, &[]).unwrap();
         assert_eq!(backplane.sample().signal(S100Signal::Ready).low_drivers, 0);
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(true));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(true)
+        );
     }
 
     #[test]
@@ -1499,10 +1492,16 @@ mod tests {
         let mut backplane = S100Backplane::new(1);
         backplane.insert(1, Box::new(ready_card(true))).unwrap();
         backplane.resolve_current_drives(&[]).unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(false)
+        );
         backplane.observe_cards();
         backplane.resolve_current_drives(&[]).unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1514,11 +1513,17 @@ mod tests {
         backplane
             .resolve_selected_drives(s100_slot_mask(2), &[])
             .unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(true));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(true)
+        );
 
         backplane
             .resolve_selected_drives(s100_slot_mask(1) | s100_slot_mask(2), &[])
             .unwrap();
-        assert_eq!(backplane.sample().signal_level(S100Signal::Ready), Some(false));
+        assert_eq!(
+            backplane.sample().signal_level(S100Signal::Ready),
+            Some(false)
+        );
     }
 }

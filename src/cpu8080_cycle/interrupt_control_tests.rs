@@ -1,11 +1,20 @@
 use super::*;
 
 fn input(data_in: u8, ready: bool) -> Cpu8080Inputs {
-    Cpu8080Inputs { data_in, ready, ..Cpu8080Inputs::default() }
+    Cpu8080Inputs {
+        data_in,
+        ready,
+        ..Cpu8080Inputs::default()
+    }
 }
 
 fn irq_input(data_in: u8, ready: bool) -> Cpu8080Inputs {
-    Cpu8080Inputs { data_in, ready, interrupt: true, ..Cpu8080Inputs::default() }
+    Cpu8080Inputs {
+        data_in,
+        ready,
+        interrupt: true,
+        ..Cpu8080Inputs::default()
+    }
 }
 
 fn fetch(cpu: &mut Cpu8080Cycle, opcode: u8) -> [TickTrace; 4] {
@@ -31,7 +40,7 @@ fn complete_rst_after_ack_t3(cpu: &mut Cpu8080Cycle) -> TickTrace {
     cpu.tick(input(0, true)); // stack write M2 T3
     cpu.tick(input(0, true)); // stack write M3 T1
     cpu.tick(input(0, true)); // stack write M3 T2
-    cpu.tick(input(0, true))  // stack write M3 T3
+    cpu.tick(input(0, true)) // stack write M3 T3
 }
 
 #[test]
@@ -142,7 +151,10 @@ fn ei_followed_by_hlt_enables_inte_when_hlt_completes_and_reset_releases_halt() 
     assert!(cpu.interrupts_enabled());
     assert!(cpu.pins().inte);
 
-    let reset = cpu.tick(Cpu8080Inputs { reset: true, ..Cpu8080Inputs::default() });
+    let reset = cpu.tick(Cpu8080Inputs {
+        reset: true,
+        ..Cpu8080Inputs::default()
+    });
     assert!(reset.reset);
     assert!(!cpu.is_halted());
     assert!(!cpu.interrupts_enabled());

@@ -86,21 +86,43 @@ impl TwoSioPort {
         *self = Self::new(baud_tap);
     }
 
-    pub(super) fn read_status(&mut self) -> u8 { self.acia.read_status() }
-    pub(super) fn peek_status(&self) -> u8 { self.acia.peek_status() }
-    pub(super) fn read_data(&mut self) -> u8 { self.acia.read_data() }
-    pub(super) fn peek_data(&self) -> u8 { self.acia.peek_data() }
-    pub(super) fn interrupt_request(&self) -> bool { self.acia.interrupt_request() }
+    pub(super) fn read_status(&mut self) -> u8 {
+        self.acia.read_status()
+    }
+    pub(super) fn peek_status(&self) -> u8 {
+        self.acia.peek_status()
+    }
+    pub(super) fn read_data(&mut self) -> u8 {
+        self.acia.read_data()
+    }
+    pub(super) fn peek_data(&self) -> u8 {
+        self.acia.peek_data()
+    }
+    pub(super) fn interrupt_request(&self) -> bool {
+        self.acia.interrupt_request()
+    }
 
     /// Physical modem/control pins of this MC6850 channel. The 88-2SIO board
     /// does not reinterpret their polarity: attached cables/peripherals decide
     /// what a TTL HIGH/LOW means at the far end.
-    pub(super) fn rts_high(&self) -> bool { self.acia.rts_high() }
-    pub(super) fn break_active(&self) -> bool { self.acia.break_active() }
-    pub(super) fn cts_high(&self) -> bool { self.acia.cts_high() }
-    pub(super) fn dcd_high(&self) -> bool { self.acia.dcd_high() }
-    pub(super) fn set_cts_high(&mut self, high: bool) { self.acia.set_cts_high(high); }
-    pub(super) fn set_dcd_high(&mut self, high: bool) { self.acia.set_dcd_high(high); }
+    pub(super) fn rts_high(&self) -> bool {
+        self.acia.rts_high()
+    }
+    pub(super) fn break_active(&self) -> bool {
+        self.acia.break_active()
+    }
+    pub(super) fn cts_high(&self) -> bool {
+        self.acia.cts_high()
+    }
+    pub(super) fn dcd_high(&self) -> bool {
+        self.acia.dcd_high()
+    }
+    pub(super) fn set_cts_high(&mut self, high: bool) {
+        self.acia.set_cts_high(high);
+    }
+    pub(super) fn set_dcd_high(&mut self, high: bool) {
+        self.acia.set_dcd_high(high);
+    }
 
     /// Host-facing pending receive depth. This intentionally counts a character
     /// still in the timed receiver shift path as pending even while MC6850 RDRF
@@ -121,7 +143,9 @@ impl TwoSioPort {
     }
 
     fn start_break_frame_if_idle(&mut self) {
-        if !self.rx_break_active || self.rx_shift.is_some() { return; }
+        if !self.rx_break_active || self.rx_shift.is_some() {
+            return;
+        }
         self.rx_shift = Some((0, true, self.break_parity_error()));
         self.rx_bits_remaining = self.acia.frame_bits();
         self.rx_shift_from_break = true;
@@ -132,7 +156,9 @@ impl TwoSioPort {
     /// stop bit. Holding it across multiple frame times can therefore produce
     /// normal MC6850 FE/RDRF and delayed OVRN behavior.
     pub(super) fn set_receive_break(&mut self, active: bool) {
-        if self.rx_break_active == active { return; }
+        if self.rx_break_active == active {
+            return;
+        }
         self.rx_break_active = active;
         if active {
             self.start_break_frame_if_idle();
@@ -339,7 +365,9 @@ impl TwoSioPort {
     /// by CR1:CR0 (/1, /16 or /64). Accumulating `tap*16` against
     /// `cpu_clock*divider` preserves fractional rates such as 27.5 baud exactly.
     pub(super) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
-        if t_states == 0 || cpu_clock_hz == 0 { return; }
+        if t_states == 0 || cpu_clock_hz == 0 {
+            return;
+        }
         let Some(divider) = self.clock_divider() else {
             self.bit_phase_numerator = 0;
             return;
@@ -375,7 +403,10 @@ mod tests {
         assert!(!port.dcd_high());
 
         port.write_control(0x51);
-        assert!(port.rts_high(), "MITS 121-octal/51h reader-control value must drive RTS physically HIGH");
+        assert!(
+            port.rts_high(),
+            "MITS 121-octal/51h reader-control value must drive RTS physically HIGH"
+        );
         assert!(!port.break_active());
 
         port.write_control(0x71);
@@ -398,7 +429,11 @@ mod tests {
         assert_eq!(port.peek_status() & 0x84, 0x84);
         port.set_dcd_high(false);
         assert!(!port.dcd_high());
-        assert_eq!(port.peek_status() & 0x84, 0x84, "DCD transition remains latched until status/data clear sequence");
+        assert_eq!(
+            port.peek_status() & 0x84,
+            0x84,
+            "DCD transition remains latched until status/data clear sequence"
+        );
         let _ = port.read_status();
         let _ = port.read_data();
         assert_eq!(port.peek_status() & 0x84, 0);
@@ -429,7 +464,10 @@ mod tests {
         port.write_data(b'A');
         port.advance_t_states(2_292, TWO_MHZ);
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
-        assert!(port.interrupt_request(), "TDR is empty regardless of endpoint presentation delay");
+        assert!(
+            port.interrupt_request(),
+            "TDR is empty regardless of endpoint presentation delay"
+        );
 
         port.advance_t_states(20_000, TWO_MHZ);
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
@@ -442,15 +480,30 @@ mod tests {
         let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
         port.write_control(0x75); // /16, 8N1, CR6:CR5=11 BREAK
         port.write_data(b'B');
-        assert_eq!(port.peek_status() & 0x02, 0, "TDR is full before the first transmitter boundary");
+        assert_eq!(
+            port.peek_status() & 0x02,
+            0,
+            "TDR is full before the first transmitter boundary"
+        );
 
         port.advance_t_states(209, TWO_MHZ);
-        assert_eq!(port.peek_status() & 0x02, 0x02, "BREAK must not inhibit the normal TDR->TSR transfer");
+        assert_eq!(
+            port.peek_status() & 0x02,
+            0x02,
+            "BREAK must not inhibit the normal TDR->TSR transfer"
+        );
         assert!(port.endpoint_tx_pending_or_hardware_busy());
 
         port.advance_t_states(2_100, TWO_MHZ);
-        assert!(!port.endpoint_tx_pending_or_hardware_busy(), "TSR continues clocking internally while BREAK holds TxD spacing");
-        assert_eq!(port.endpoint_tx_front(), None, "a frame transmitted under BREAK is not a valid downstream byte");
+        assert!(
+            !port.endpoint_tx_pending_or_hardware_busy(),
+            "TSR continues clocking internally while BREAK holds TxD spacing"
+        );
+        assert_eq!(
+            port.endpoint_tx_front(),
+            None,
+            "a frame transmitted under BREAK is not a valid downstream byte"
+        );
     }
 
     #[test]
@@ -468,11 +521,19 @@ mod tests {
         assert!(!port.break_active());
 
         port.advance_t_states(2_000, TWO_MHZ);
-        assert_eq!(port.endpoint_tx_front(), None, "releasing BREAK cannot repair an already corrupted frame");
+        assert_eq!(
+            port.endpoint_tx_front(),
+            None,
+            "releasing BREAK cannot repair an already corrupted frame"
+        );
 
         port.write_data(b'Z');
         port.advance_t_states(2_300, TWO_MHZ);
-        assert_eq!(port.endpoint_tx_front(), Some(b'Z'), "the next complete post-BREAK frame is valid again");
+        assert_eq!(
+            port.endpoint_tx_front(),
+            Some(b'Z'),
+            "the next complete post-BREAK frame is valid again"
+        );
     }
 
     #[test]
@@ -504,13 +565,28 @@ mod tests {
 
         port.advance_t_states(181_819, TWO_MHZ);
         assert_eq!(port.peek_data(), 0x00);
-        assert_eq!(port.peek_status() & 0x11, 0x11, "BREAK frame reaches RDR as zero with FE");
-        assert!(!port.receive_line_idle(), "held BREAK immediately starts the next frame");
+        assert_eq!(
+            port.peek_status() & 0x11,
+            0x11,
+            "BREAK frame reaches RDR as zero with FE"
+        );
+        assert!(
+            !port.receive_line_idle(),
+            "held BREAK immediately starts the next frame"
+        );
 
         port.advance_t_states(181_819, TWO_MHZ);
-        assert_eq!(port.peek_status() & 0x21, 0x01, "MC6850 overrun remains delayed while old RDR is unread");
+        assert_eq!(
+            port.peek_status() & 0x21,
+            0x01,
+            "MC6850 overrun remains delayed while old RDR is unread"
+        );
         assert_eq!(port.read_data(), 0x00);
-        assert_eq!(port.peek_status() & 0x21, 0x21, "reading the valid BREAK character exposes delayed OVRN");
+        assert_eq!(
+            port.peek_status() & 0x21,
+            0x21,
+            "reading the valid BREAK character exposes delayed OVRN"
+        );
 
         port.set_receive_break(false);
         assert!(port.receive_line_idle());
@@ -547,13 +623,20 @@ mod tests {
         port.queue_received_character(b'A');
         port.advance_t_states(181_819, TWO_MHZ);
         assert_eq!(port.peek_status() & 0x01, 0x01);
-        assert!(port.receive_line_idle(), "RDRF must not masquerade as raw line busy");
+        assert!(
+            port.receive_line_idle(),
+            "RDRF must not masquerade as raw line busy"
+        );
 
         // Exercise the card primitive directly: a real source can begin its next
         // frame even while software has left the previous RDR unread.
         port.queue_received_character(b'B');
         port.advance_t_states(181_819, TWO_MHZ);
-        assert_eq!(port.peek_status() & 0x21, 0x01, "overrun remains latent until valid RDR is read");
+        assert_eq!(
+            port.peek_status() & 0x21,
+            0x01,
+            "overrun remains latent until valid RDR is read"
+        );
         assert_eq!(port.read_data(), b'A');
         assert_eq!(port.peek_status() & 0x21, 0x21);
     }

@@ -523,7 +523,10 @@ mod tests {
     #[test]
     fn default_machine_exposes_one_valid_slot_native_s100_assembly() {
         let config = AppConfig::default();
-        assert_eq!(config.machine.s100_hardware.cpu_slots().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            config.machine.s100_hardware.cpu_slots().collect::<Vec<_>>(),
+            vec![1]
+        );
         assert!(config.machine.s100_hardware.validate().is_ok());
     }
 
@@ -540,7 +543,10 @@ mod tests {
     fn peripheral_timing_defaults_are_independent() {
         let config = AppConfig::default();
         assert_eq!(config.peripherals.asr33_speed, Asr33Speed::Authentic110);
-        assert_eq!(config.peripherals.asr33_speed.char_time(), Duration::from_millis(100));
+        assert_eq!(
+            config.peripherals.asr33_speed.char_time(),
+            Duration::from_millis(100)
+        );
         assert_eq!(config.peripherals.terminal_speed, TerminalSpeed::Baud9600);
     }
 
@@ -579,8 +585,13 @@ mod tests {
         let mut hardware = AppConfig::default().machine.s100_hardware;
         let mut sio = SioHardwareConfig::default();
         sio.address = SioAddressPair::try_new(0x06).unwrap();
-        hardware.set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(sio))).unwrap();
-        let machine = MachineConfig { s100_hardware: hardware, ..MachineConfig::default() };
+        hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(sio)))
+            .unwrap();
+        let machine = MachineConfig {
+            s100_hardware: hardware,
+            ..MachineConfig::default()
+        };
         assert_eq!(machine.serial_status_port(), Some(0x06));
         assert_eq!(machine.serial_data_port(), Some(0x07));
     }
@@ -588,14 +599,24 @@ mod tests {
     #[test]
     fn two_sio_exposes_both_pairs_from_its_installed_straps() {
         let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
-        hardware.set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu)).unwrap();
+        hardware
+            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+            .unwrap();
         let mut straps = TwoSioStraps::default();
         straps.address = TwoSioAddressBlock::try_new(0x44).unwrap();
-        hardware.set_slot(2, Some(S100InstalledCardConfig::Mits88TwoSio {
-            straps,
-            interrupt_wiring: TwoSioInterruptWiring::default(),
-        })).unwrap();
-        let machine = MachineConfig { s100_hardware: hardware, ..MachineConfig::default() };
+        hardware
+            .set_slot(
+                2,
+                Some(S100InstalledCardConfig::Mits88TwoSio {
+                    straps,
+                    interrupt_wiring: TwoSioInterruptWiring::default(),
+                }),
+            )
+            .unwrap();
+        let machine = MachineConfig {
+            s100_hardware: hardware,
+            ..MachineConfig::default()
+        };
         assert_eq!(machine.serial_board(), Some(SerialBoard::TwoSio88));
         assert_eq!(machine.serial_status_port(), Some(0x44));
         assert_eq!(machine.serial_data_port(), Some(0x45));

@@ -113,5 +113,8 @@ fn profile_8080exm_dynamic_successors_after_ei() {
     }
 
     assert_eq!(ei_count, EXPECTED_EI, "dynamic EI reference count changed");
-    assert_eq!(successor_total, ei_count, "every EI must have one dynamic successor");
+    assert_eq!(
+        successor_total, ei_count,
+        "every EI must have one dynamic successor"
+    );
 }

@@ -8,8 +8,7 @@ use rustair::config::{
 use rustair::s100_chassis::S100ChassisConfig;
 
 fn hardware_with_sio(config: SioHardwareConfig) -> S100HardwareConfig {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
@@ -36,22 +35,41 @@ fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
     let mut backend = BackendHost::default();
     backend.power(true);
     backend.set_running(false);
-    assert_eq!(backend.peek_io_port(0x00), 0x01, "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7");
+    assert_eq!(
+        backend.peek_io_port(0x00),
+        0x01,
+        "Rev1 idle status is not-RDA on D0 with active-low TBMT ready on D7"
+    );
 
     backend.serial_receive(BackendSerialPort::Port0, b'R');
-    assert_eq!(backend.peek_io_port(0x00) & 0x01, 0x01, "RDA must not change until the serial frame completes");
+    assert_eq!(
+        backend.peek_io_port(0x00) & 0x01,
+        0x01,
+        "RDA must not change until the serial frame completes"
+    );
     assert_eq!(backend.peek_io_port(0x01), 0x00);
 
     backend.commit_panel_activity(Duration::from_millis(100));
-    assert_eq!(backend.peek_io_port(0x00) & 0xc1, 0x00, "completed Rev1 RX drives D0 low and must never fabricate D6");
+    assert_eq!(
+        backend.peek_io_port(0x00) & 0xc1,
+        0x00,
+        "completed Rev1 RX drives D0 low and must never fabricate D6"
+    );
     assert_eq!(backend.peek_io_port(0x01), b'R');
     assert_eq!(backend.debugger_input_port(0x01), b'R');
     assert_eq!(backend.peek_io_port(0x00) & 0x01, 0x01);
 
     backend.debugger_output_port(0x01, b'T');
-    assert_eq!(backend.serial_tx_front(BackendSerialPort::Port0), None, "TX byte must cross the COM2502 shift register before reaching the endpoint");
+    assert_eq!(
+        backend.serial_tx_front(BackendSerialPort::Port0),
+        None,
+        "TX byte must cross the COM2502 shift register before reaching the endpoint"
+    );
     backend.commit_panel_activity(Duration::from_millis(100));
-    assert_eq!(backend.serial_tx_front(BackendSerialPort::Port0), Some(b'T'));
+    assert_eq!(
+        backend.serial_tx_front(BackendSerialPort::Port0),
+        Some(b'T')
+    );
 }
 
 #[test]
@@ -77,15 +95,34 @@ fn rev0_exposes_uart_flags_and_external_device_ready_as_independent_status_sourc
     });
     let bus = &mut cycle.machine_mut().bus;
 
-    assert_eq!(bus.peek_io_port(0x00), 0x83, "Rev0 starts with external D0/D7 ready latches reset and COM2502 TBMT on D1");
+    assert_eq!(
+        bus.peek_io_port(0x00),
+        0x83,
+        "Rev0 starts with external D0/D7 ready latches reset and COM2502 TBMT on D1"
+    );
     assert!(bus.debugger_inject_serial_rx(0x01, b'A'));
-    assert_eq!(bus.peek_io_port(0x00) & 0xa3, 0xa3, "COM2502 RDA/TBMT must not fabricate RIN/ROT device-ready state");
+    assert_eq!(
+        bus.peek_io_port(0x00) & 0xa3,
+        0xa3,
+        "COM2502 RDA/TBMT must not fabricate RIN/ROT device-ready state"
+    );
     assert!(bus.pulse_sio_input_device_ready());
-    assert_eq!(bus.peek_io_port(0x00) & 0x21, 0x20, "explicit RIN ready pulls D0 low while RDA remains independently high");
+    assert_eq!(
+        bus.peek_io_port(0x00) & 0x21,
+        0x20,
+        "explicit RIN ready pulls D0 low while RDA remains independently high"
+    );
     assert_eq!(bus.sio_handshake_lines(), Some((true, false, true, false)));
     assert_eq!(bus.debugger_input_port(0x01), b'A');
-    assert_eq!(bus.peek_io_port(0x00) & 0x21, 0x01, "DATA IN clears RDA and the Rev0 input-ready latch");
-    assert_eq!(bus.sio_handshake_lines(), Some((false, false, false, false)));
+    assert_eq!(
+        bus.peek_io_port(0x00) & 0x21,
+        0x01,
+        "DATA IN clears RDA and the Rev0 input-ready latch"
+    );
+    assert_eq!(
+        bus.sio_handshake_lines(),
+        Some((false, false, false, false))
+    );
 }
 
 #[test]

@@ -46,7 +46,9 @@ impl RusTairApp {
         } else {
             &self.tex.tty_key_mid
         };
-        let Some(texture) = texture else { return; };
+        let Some(texture) = texture else {
+            return;
+        };
 
         let (socket_x, socket_y) = (x + w * 0.5, y + h * 0.5);
         let texture_size = texture.size_vec2();
@@ -95,7 +97,9 @@ impl RusTairApp {
         let legend = legend_override
             .map(str::to_owned)
             .unwrap_or_else(|| Self::teletype_key_legend(kind));
-        if legend.is_empty() { return; }
+        if legend.is_empty() {
+            return;
+        }
 
         let multiline = legend.contains('\n');
         let special_y_nudge = if special { -2.0 } else { 0.0 };
@@ -162,7 +166,9 @@ impl RusTairApp {
         } else {
             &self.tex.tty_spacebar_mid
         };
-        let Some(texture) = texture else { return; };
+        let Some(texture) = texture else {
+            return;
+        };
 
         let socket_x = x + w * 0.5;
         let socket_y = y + _h * 0.5;
@@ -204,36 +210,22 @@ impl RusTairApp {
             );
 
             if matches!(key.kind, KeyKind::Space) {
-                self.draw_spacebar_pose(
-                    ui,
-                    origin,
-                    scale,
-                    key.x,
-                    key.y,
-                    key.w,
-                    key.h,
-                    pose,
-                );
+                self.draw_spacebar_pose(ui, origin, scale, key.x, key.y, key.w, key.h, pose);
             } else {
                 self.draw_key_pose(
-                    ui,
-                    origin,
-                    scale,
-                    key.kind,
-                    key.x,
-                    key.y,
-                    key.w,
-                    key.h,
-                    pose,
-                    None,
+                    ui, origin, scale, key.kind, key.x, key.y, key.w, key.h, pose, None,
                 );
             }
         }
     }
 
     fn paper_feed_offset(&self, now: Instant, line_height: f32) -> f32 {
-        let Some(until) = self.asr33.mechanics.paper_feed_until else { return 0.0; };
-        let Some(remaining) = until.checked_duration_since(now) else { return 0.0; };
+        let Some(until) = self.asr33.mechanics.paper_feed_until else {
+            return 0.0;
+        };
+        let Some(remaining) = until.checked_duration_since(now) else {
+            return 0.0;
+        };
         let total = PAPER_FEED_TIME.as_secs_f32().max(0.001);
         line_height * (remaining.as_secs_f32() / total).clamp(0.0, 1.0)
     }
@@ -316,7 +308,9 @@ impl RusTairApp {
         origin: Pos2,
         scale: f32,
     ) {
-        if self.tty.output.is_empty() { return; }
+        if self.tty.output.is_empty() {
+            return;
+        }
 
         let roller = self.paper_roller_rect(origin, scale);
         let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
@@ -330,7 +324,9 @@ impl RusTairApp {
         }
 
         let pointer_down = ui.ctx().input(|i| i.pointer.primary_down());
-        let dragging = ui.ctx().data(|data| data.get_temp::<bool>(drag_id).unwrap_or(false));
+        let dragging = ui
+            .ctx()
+            .data(|data| data.get_temp::<bool>(drag_id).unwrap_or(false));
         if dragging && pointer_down {
             let delta_y = ui.ctx().input(|i| i.pointer.delta().y);
             if delta_y.abs() > f32::EPSILON {
@@ -346,33 +342,37 @@ impl RusTairApp {
     }
 
     fn draw_virtual_paper(&self, ui: &mut egui::Ui, machine: Rect, origin: Pos2, scale: f32) {
-        if self.tty.output.is_empty() { return; }
+        if self.tty.output.is_empty() {
+            return;
+        }
 
         let line_height = self.paper_line_height(scale);
         let baseline_inset = TTY_H * 0.024 * scale;
         let print_baseline = origin.y + teletype::PRINT_TOP * scale - baseline_inset;
         let feed_offset = self.paper_feed_offset(Instant::now(), line_height);
         let line_count = self.tty.output.split('\n').count().max(1) as f32;
-        let rewind_offset = self.paper_view_offset_lines(ui).min(self.max_paper_rewind_lines())
+        let rewind_offset = self
+            .paper_view_offset_lines(ui)
+            .min(self.max_paper_rewind_lines())
             * line_height;
 
         const LEADER_LINES: f32 = 2.0;
-        let sheet_top = print_baseline
-            - (line_count + LEADER_LINES) * line_height
+        let sheet_top = print_baseline - (line_count + LEADER_LINES) * line_height
             + feed_offset
             + rewind_offset;
 
         let emergence_y = self.paper_emergence_y();
         const PAPER_OVERLAP: f32 = 3.0;
         let sheet_bottom = origin.y + (emergence_y + PAPER_OVERLAP) * scale;
-        if sheet_top >= sheet_bottom { return; }
+        if sheet_top >= sheet_bottom {
+            return;
+        }
 
         let char_pitch = self.paper_char_pitch_image_px();
         let side_margin = char_pitch * 1.8 * scale;
         let bottom_left = origin.x + teletype::PRINT_LEFT * scale - side_margin;
-        let bottom_right = origin.x
-            + (teletype::PRINT_LEFT + self.paper_printable_width()) * scale
-            + side_margin;
+        let bottom_right =
+            origin.x + (teletype::PRINT_LEFT + self.paper_printable_width()) * scale + side_margin;
 
         let taper = (char_pitch * 0.38 * scale).max(0.8 * scale);
         let top_left = bottom_left + taper;
@@ -422,7 +422,10 @@ impl RusTairApp {
 
         if sheet_top > machine.top() + 1.0 {
             painter.line_segment(
-                [Pos2::new(top_left, top_left_y), Pos2::new(top_right, top_right_y)],
+                [
+                    Pos2::new(top_left, top_left_y),
+                    Pos2::new(top_right, top_right_y),
+                ],
                 egui::Stroke::new(
                     (0.65 * scale).max(0.45),
                     Color32::from_rgba_unmultiplied(255, 255, 248, 72),
@@ -464,14 +467,17 @@ impl RusTairApp {
     }
 
     fn draw_paper_foreground(&self, ui: &mut egui::Ui, origin: Pos2, scale: f32) {
-        if self.tty.output.is_empty() { return; }
-        let Some(body) = &self.tex.tty_body else { return; };
+        if self.tty.output.is_empty() {
+            return;
+        }
+        let Some(body) = &self.tex.tty_body else {
+            return;
+        };
 
         let char_pitch = self.paper_char_pitch_image_px();
         let side_margin = char_pitch * 2.4;
         let left = (teletype::PRINT_LEFT - side_margin).max(0.0);
-        let right = (teletype::PRINT_LEFT + self.paper_printable_width() + side_margin)
-            .min(TTY_W);
+        let right = (teletype::PRINT_LEFT + self.paper_printable_width() + side_margin).min(TTY_W);
 
         let top = self.paper_emergence_y().clamp(0.0, TTY_H);
         let bottom = (top + TTY_H * 0.025).min(TTY_H);
@@ -484,7 +490,8 @@ impl RusTairApp {
             Pos2::new(left / TTY_W, top / TTY_H),
             Pos2::new(right / TTY_W, bottom / TTY_H),
         );
-        ui.painter().image(body.id(), target, source, Color32::WHITE);
+        ui.painter()
+            .image(body.id(), target, source, Color32::WHITE);
     }
 
     fn draw_paper_text(&self, ui: &mut egui::Ui, paper: Rect, scale: f32) {
@@ -501,7 +508,9 @@ impl RusTairApp {
         let now = Instant::now();
         let feed_offset = self.paper_feed_offset(now, line_height);
         let extra_line = usize::from(feed_offset > 0.01);
-        let rewind_lines = self.paper_view_offset_lines(ui).min(self.max_paper_rewind_lines());
+        let rewind_lines = self
+            .paper_view_offset_lines(ui)
+            .min(self.max_paper_rewind_lines());
         let rewind_extra = rewind_lines.ceil() as usize;
 
         let lines: Vec<&str> = self.tty.output.split('\n').collect();
@@ -515,17 +524,16 @@ impl RusTairApp {
 
         for (row, line) in visible.iter().enumerate() {
             let from_bottom = visible.len() - 1 - row;
-            let baseline = print_baseline
-                - from_bottom as f32 * line_height
-                + feed_offset
-                + rewind_offset;
+            let baseline =
+                print_baseline - from_bottom as f32 * line_height + feed_offset + rewind_offset;
             let absolute_line = first + row;
 
             for (column, byte) in line.bytes().take(self.tty.paper_width).enumerate() {
                 if byte == b' ' {
                     continue;
                 }
-                let (jitter_x, jitter_y, ink) = Self::ink_character_style(absolute_line, column, byte);
+                let (jitter_x, jitter_y, ink) =
+                    Self::ink_character_style(absolute_line, column, byte);
                 let blue = ink.saturating_sub(3);
 
                 painter.text(
@@ -543,8 +551,12 @@ impl RusTairApp {
     }
 
     fn print_head_lift(&self, now: Instant) -> f32 {
-        let Some(until) = self.asr33.mechanics.print_head_raise_until else { return 0.0; };
-        let Some(remaining) = until.checked_duration_since(now) else { return 0.0; };
+        let Some(until) = self.asr33.mechanics.print_head_raise_until else {
+            return 0.0;
+        };
+        let Some(remaining) = until.checked_duration_since(now) else {
+            return 0.0;
+        };
         let total = PRINT_HEAD_STRIKE_TIME.as_secs_f32().max(0.001);
         let elapsed = (1.0 - remaining.as_secs_f32() / total).clamp(0.0, 1.0);
 
@@ -559,8 +571,12 @@ impl RusTairApp {
     }
 
     fn draw_print_head(&self, ui: &mut egui::Ui, rect: Rect, origin: Pos2, scale: f32) {
-        if self.tty.mode == TtyMode::Off { return; }
-        let Some(head) = &self.tex.tty_head else { return; };
+        if self.tty.mode == TtyMode::Off {
+            return;
+        }
+        let Some(head) = &self.tex.tty_head else {
+            return;
+        };
 
         let now = Instant::now();
         let lift = self.print_head_lift(now);
@@ -615,26 +631,21 @@ impl RusTairApp {
         let sill_y = self.paper_emergence_y();
 
         let head_rect = Rect::from_min_size(
-            origin + Vec2::new(
-                (center_x - head_width * 0.5) * scale,
-                top_y * scale,
-            ),
+            origin + Vec2::new((center_x - head_width * 0.5) * scale, top_y * scale),
             Vec2::new(head_width * scale, head_height * scale),
         );
 
-        let glass_clip = Rect::from_min_max(
-            rect.min,
-            Pos2::new(rect.right(), origin.y + sill_y * scale),
-        );
+        let glass_clip =
+            Rect::from_min_max(rect.min, Pos2::new(rect.right(), origin.y + sill_y * scale));
         let clipped = ui.painter().with_clip_rect(glass_clip);
 
         const WHEEL_FRACTION: f32 = 0.70;
-        let mount_source = Rect::from_min_max(
-            Pos2::new(0.0, WHEEL_FRACTION),
-            Pos2::new(1.0, 1.0),
-        );
+        let mount_source = Rect::from_min_max(Pos2::new(0.0, WHEEL_FRACTION), Pos2::new(1.0, 1.0));
         let mount_target = Rect::from_min_max(
-            Pos2::new(head_rect.left(), head_rect.top() + head_rect.height() * WHEEL_FRACTION),
+            Pos2::new(
+                head_rect.left(),
+                head_rect.top() + head_rect.height() * WHEEL_FRACTION,
+            ),
             head_rect.max,
         );
         let base_shade = (226.0 + 29.0 * lift).round() as u8;
@@ -648,10 +659,7 @@ impl RusTairApp {
         let wheel_width = head_width * (1.0 - 0.058 * slot_pose.abs());
         let wheel_center_x = center_x + slot_pose * head_width * 0.070;
         let wheel_target = Rect::from_min_size(
-            origin + Vec2::new(
-                (wheel_center_x - wheel_width * 0.5) * scale,
-                top_y * scale,
-            ),
+            origin + Vec2::new((wheel_center_x - wheel_width * 0.5) * scale, top_y * scale),
             Vec2::new(wheel_width * scale, head_height * WHEEL_FRACTION * scale),
         );
         let wheel_mid_x = wheel_target.center().x;
@@ -659,10 +667,8 @@ impl RusTairApp {
             wheel_target.min,
             Pos2::new(wheel_mid_x, wheel_target.bottom()),
         );
-        let right_target = Rect::from_min_max(
-            Pos2::new(wheel_mid_x, wheel_target.top()),
-            wheel_target.max,
-        );
+        let right_target =
+            Rect::from_min_max(Pos2::new(wheel_mid_x, wheel_target.top()), wheel_target.max);
 
         let uv_shift = slot_pose * 0.035;
         let left_source = Rect::from_min_max(
@@ -697,7 +703,9 @@ impl RusTairApp {
 
     pub(in crate::app) fn draw_teletype(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
-        let scale = (available.x / TTY_W).min(available.y / TTY_H).clamp(0.12, 1.5);
+        let scale = (available.x / TTY_W)
+            .min(available.y / TTY_H)
+            .clamp(0.12, 1.5);
         let (rect, response) = ui.allocate_exact_size(
             Vec2::new(TTY_W * scale, TTY_H * scale),
             Sense::click_and_drag(),
@@ -707,28 +715,33 @@ impl RusTairApp {
         self.reset_paper_view_for_printing(ui);
         self.update_paper_roller_interaction(ui, &response, origin, scale);
 
-        if let Some(t) = &self.tex.tty_body { Self::image(ui, t, rect); }
-        if let Some(t) = &self.tex.tty_keys { Self::image(ui, t, rect); }
+        if let Some(t) = &self.tex.tty_body {
+            Self::image(ui, t, rect);
+        }
+        if let Some(t) = &self.tex.tty_keys {
+            Self::image(ui, t, rect);
+        }
 
         self.draw_virtual_paper(ui, rect, origin, scale);
 
         let paper = Rect::from_min_max(
             origin + Vec2::new(teletype::PRINT_LEFT * scale, 0.0),
-            origin + Vec2::new(
-                (teletype::PRINT_LEFT + self.paper_printable_width()) * scale,
-                teletype::PRINT_TOP * scale,
-            ),
+            origin
+                + Vec2::new(
+                    (teletype::PRINT_LEFT + self.paper_printable_width()) * scale,
+                    teletype::PRINT_TOP * scale,
+                ),
         );
         self.draw_paper_text(ui, paper, scale);
         self.draw_paper_foreground(ui, origin, scale);
         self.draw_print_head(ui, rect, origin, scale);
 
-        let selector_size = Vec2::new(
-            TTY_W * 0.18 * scale,
-            288.0 * (TTY_W * 0.18 / 349.0) * scale,
-        );
+        let selector_size = Vec2::new(TTY_W * 0.18 * scale, 288.0 * (TTY_W * 0.18 / 349.0) * scale);
         let mut selector = Rect::from_min_size(
-            Pos2::new(rect.right() - selector_size.x, rect.bottom() - selector_size.y),
+            Pos2::new(
+                rect.right() - selector_size.x,
+                rect.bottom() - selector_size.y,
+            ),
             selector_size,
         );
 
@@ -749,7 +762,9 @@ impl RusTairApp {
             ui.ctx().request_repaint_after(PANEL_FRAME);
         }
 
-        if let Some(t) = &self.tex.tty_line_local { Self::image(ui, t, selector); }
+        if let Some(t) = &self.tex.tty_line_local {
+            Self::image(ui, t, selector);
+        }
 
         if response.is_pointer_button_down_on() {
             if let Some(pointer) = response.interact_pointer_pos() {

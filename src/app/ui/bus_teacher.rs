@@ -1,6 +1,6 @@
-use super::super::{egui, RusTairApp};
+use super::super::{RusTairApp, egui};
 use crate::backend::{
-    BusChassisSnapshot, BusMachineCycle, BusTeachingAccuracy, BusTeachingSnapshot, BusTState,
+    BusChassisSnapshot, BusMachineCycle, BusTState, BusTeachingAccuracy, BusTeachingSnapshot,
 };
 use crate::decoder8080::decode_8080;
 
@@ -83,7 +83,8 @@ impl RusTairApp {
                     "POWER ON - 8080 internal power-on state is undefined until RESET".into()
                 }
                 BusMachineCycle::ResetAsserted => {
-                    "RESET HIGH - CPU reset state forced; normal instruction fetch is not executing".into()
+                    "RESET HIGH - CPU reset state forced; normal instruction fetch is not executing"
+                        .into()
                 }
                 BusMachineCycle::ResetReleasedStopped => {
                     "RESET released - PC=$0000, CPU held in stable M1 STOP-WAIT read state".into()
@@ -162,13 +163,13 @@ impl RusTairApp {
             ui.strong("Engine");
             ui.label(self.machine.engine().label());
             ui.separator();
-            let accuracy = snapshot.map(|snapshot| snapshot.accuracy.label()).unwrap_or(
-                if capabilities.exact_t_state_timing {
+            let accuracy = snapshot
+                .map(|snapshot| snapshot.accuracy.label())
+                .unwrap_or(if capabilities.exact_t_state_timing {
                     "EXACT T-STATE SAMPLE - no sample yet"
                 } else {
                     "RECONSTRUCTED / APPROXIMATE"
-                },
-            );
+                });
             ui.strong(accuracy);
         });
         match snapshot.map(|snapshot| snapshot.accuracy) {
@@ -200,9 +201,27 @@ impl RusTairApp {
         let status = Self::hex8(chassis.status_word);
 
         ui.strong("CURRENT CHASSIS / S-100 (NOW)");
-        Self::draw_timing_row(ui, "RUN latch", run, "READY", Self::bool_signal(chassis.ready));
-        Self::draw_timing_row(ui, "INT/PINT", Self::bool_signal(chassis.interrupt), "HOLD", Self::bool_signal(chassis.hold));
-        Self::draw_timing_row(ui, "RESET", Self::bool_signal(chassis.reset), "EXT CLR", Self::bool_signal(chassis.ext_clear));
+        Self::draw_timing_row(
+            ui,
+            "RUN latch",
+            run,
+            "READY",
+            Self::bool_signal(chassis.ready),
+        );
+        Self::draw_timing_row(
+            ui,
+            "INT/PINT",
+            Self::bool_signal(chassis.interrupt),
+            "HOLD",
+            Self::bool_signal(chassis.hold),
+        );
+        Self::draw_timing_row(
+            ui,
+            "RESET",
+            Self::bool_signal(chassis.reset),
+            "EXT CLR",
+            Self::bool_signal(chassis.ext_clear),
+        );
         Self::draw_timing_row(ui, "S-100 address", &address, "Status", &status);
         Self::draw_timing_row(ui, "CPU D0-D7", &cpu_data, "S-100 DI", &s100_di);
         Self::draw_timing_row(ui, "S-100 DO", &s100_do, "Panel DATA", &panel_data);
@@ -217,18 +236,13 @@ impl RusTairApp {
             .machine
             .bus_teaching_snapshot()
             .is_some_and(|snapshot| snapshot.reset == Some(true));
-        let can_step = panel.powered
-            && !panel.running
-            && !reset_held
-            && !cpu.halted.unwrap_or(false);
+        let can_step =
+            panel.powered && !panel.running && !reset_held && !cpu.halted.unwrap_or(false);
 
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    panel.powered
-                        && !panel.running
-                        && !reset_held
-                        && !cpu.halted.unwrap_or(false),
+                    panel.powered && !panel.running && !reset_held && !cpu.halted.unwrap_or(false),
                     egui::Button::new("Continue"),
                 )
                 .clicked()
@@ -236,10 +250,7 @@ impl RusTairApp {
                 self.machine.set_running(true);
             }
             if ui
-                .add_enabled(
-                    panel.powered && panel.running,
-                    egui::Button::new("Pause"),
-                )
+                .add_enabled(panel.powered && panel.running, egui::Button::new("Pause"))
                 .clicked()
             {
                 self.machine.set_running(false);
@@ -395,18 +406,58 @@ impl RusTairApp {
 
     fn draw_bus_teacher_pins(ui: &mut egui::Ui, snapshot: BusTeachingSnapshot) {
         let left = [
-            ("SYNC", Self::bool_signal(snapshot.pins.sync), "T1 status synchronization in the displayed observation"),
-            ("DBIN", Self::bool_signal(snapshot.pins.dbin), "CPU input-data strobe in the displayed observation"),
-            ("/WR", Self::wr_signal(snapshot.pins.wr_n), "active-low CPU write output in the displayed observation"),
-            ("INTE", Self::bool_signal(snapshot.pins.inte), "interrupt-enable output in the displayed observation"),
-            ("WAIT", Self::bool_signal(snapshot.pins.wait), "processor WAIT output in the displayed observation"),
+            (
+                "SYNC",
+                Self::bool_signal(snapshot.pins.sync),
+                "T1 status synchronization in the displayed observation",
+            ),
+            (
+                "DBIN",
+                Self::bool_signal(snapshot.pins.dbin),
+                "CPU input-data strobe in the displayed observation",
+            ),
+            (
+                "/WR",
+                Self::wr_signal(snapshot.pins.wr_n),
+                "active-low CPU write output in the displayed observation",
+            ),
+            (
+                "INTE",
+                Self::bool_signal(snapshot.pins.inte),
+                "interrupt-enable output in the displayed observation",
+            ),
+            (
+                "WAIT",
+                Self::bool_signal(snapshot.pins.wait),
+                "processor WAIT output in the displayed observation",
+            ),
         ];
         let right = [
-            ("HLDA", Self::bool_signal(snapshot.pins.hlda), "bus-hold acknowledge in the displayed observation"),
-            ("READY", Self::bool_signal(snapshot.ready), "S-100 READY sampled by the CPU for the displayed observation"),
-            ("INT/PINT", Self::bool_signal(snapshot.interrupt), "8080 INT input sampled from canonical S-100 PINT; distinct from the front-panel INT/SINTA acknowledge status"),
-            ("HOLD", Self::bool_signal(snapshot.hold), "S-100 HOLD input sampled for the displayed observation"),
-            ("RESET", Self::bool_signal(snapshot.reset), "CPU RESET input captured for the displayed observation"),
+            (
+                "HLDA",
+                Self::bool_signal(snapshot.pins.hlda),
+                "bus-hold acknowledge in the displayed observation",
+            ),
+            (
+                "READY",
+                Self::bool_signal(snapshot.ready),
+                "S-100 READY sampled by the CPU for the displayed observation",
+            ),
+            (
+                "INT/PINT",
+                Self::bool_signal(snapshot.interrupt),
+                "8080 INT input sampled from canonical S-100 PINT; distinct from the front-panel INT/SINTA acknowledge status",
+            ),
+            (
+                "HOLD",
+                Self::bool_signal(snapshot.hold),
+                "S-100 HOLD input sampled for the displayed observation",
+            ),
+            (
+                "RESET",
+                Self::bool_signal(snapshot.reset),
+                "CPU RESET input captured for the displayed observation",
+            ),
         ];
 
         ui.columns(2, |columns| {
@@ -473,16 +524,8 @@ impl RusTairApp {
 
         ui.columns(2, |columns| {
             let (left_column, right_column) = columns.split_at_mut(1);
-            Self::draw_status_group(
-                &mut left_column[0],
-                "bus-teacher-status-left",
-                &rows[..6],
-            );
-            Self::draw_status_group(
-                &mut right_column[0],
-                "bus-teacher-status-right",
-                &rows[6..],
-            );
+            Self::draw_status_group(&mut left_column[0], "bus-teacher-status-left", &rows[..6]);
+            Self::draw_status_group(&mut right_column[0], "bus-teacher-status-right", &rows[6..]);
         });
         ui.small(
             "RAW is the S-100 status/control state captured with the displayed observation. INT/SINTA is the CPU's interrupt-acknowledge status; it is not PINT. LED is optical persistence, so it may remain non-zero after RAW changes. DATA presentation is likewise separate from CPU D/DI/DO truth. W/O ON means read/input; OFF means write/output.",
@@ -702,10 +745,16 @@ impl RusTairApp {
         let powered = self.machine.front_panel_state().powered;
         super::collapsible_section(ui, "Intel 8080 pins", true, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.selectable_label(!state.pin_table_view, "Package diagram").clicked() {
+                if ui
+                    .selectable_label(!state.pin_table_view, "Package diagram")
+                    .clicked()
+                {
                     state.pin_table_view = false;
                 }
-                if ui.selectable_label(state.pin_table_view, "Signal table").clicked() {
+                if ui
+                    .selectable_label(state.pin_table_view, "Signal table")
+                    .clicked()
+                {
                     state.pin_table_view = true;
                 }
                 ui.separator();

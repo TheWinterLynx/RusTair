@@ -1,7 +1,7 @@
 use rustair::backend::CycleAccurateMachineBackend;
 use rustair::config::{
-    RamInit, S100HardwareConfig, S100InstalledCardConfig, SioElectricalLevel,
-    SioHardwareConfig, SioInterface, SioInterruptTarget, SioInterruptWiring, SioRevision,
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, SioElectricalLevel, SioHardwareConfig,
+    SioInterface, SioInterruptTarget, SioInterruptWiring, SioRevision,
 };
 use rustair::s100_chassis::S100ChassisConfig;
 
@@ -18,8 +18,7 @@ fn configured(interface: SioInterface) -> SioHardwareConfig {
 }
 
 fn cycle_with_sio(config: SioHardwareConfig) -> CycleAccurateMachineBackend {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();

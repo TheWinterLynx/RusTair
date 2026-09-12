@@ -76,12 +76,16 @@ pub(in crate::machine) struct SioPort {
 }
 
 impl Default for SioPort {
-    fn default() -> Self { Self::new(SioHardwareConfig::default()) }
+    fn default() -> Self {
+        Self::new(SioHardwareConfig::default())
+    }
 }
 
 impl SioPort {
     #[cfg(test)]
-    pub(in crate::machine) fn rx_full(&self) -> bool { self.rx_full }
+    pub(in crate::machine) fn rx_full(&self) -> bool {
+        self.rx_full
+    }
     pub(in crate::machine) fn new(config: SioHardwareConfig) -> Self {
         Self {
             config,
@@ -105,22 +109,30 @@ impl SioPort {
     }
 
     pub(in crate::machine) fn configure(&mut self, config: SioHardwareConfig) {
-        if self.config == config { return; }
+        if self.config == config {
+            return;
+        }
         *self = Self::new(config);
     }
 
-    pub(in crate::machine) fn config(&self) -> SioHardwareConfig { self.config }
+    pub(in crate::machine) fn config(&self) -> SioHardwareConfig {
+        self.config
+    }
 
     pub(in crate::machine) fn clear(&mut self) {
         let config = self.config;
         *self = Self::new(config);
     }
 
-    pub(in crate::machine) fn receive_line_idle(&self) -> bool { self.rx_shift.is_none() }
+    pub(in crate::machine) fn receive_line_idle(&self) -> bool {
+        self.rx_shift.is_none()
+    }
     pub(in crate::machine) fn receive_len(&self) -> usize {
         usize::from(self.rx_full) + usize::from(self.rx_shift.is_some())
     }
-    pub(in crate::machine) fn tx_buffer_empty(&self) -> bool { self.tx_holding.is_none() }
+    pub(in crate::machine) fn tx_buffer_empty(&self) -> bool {
+        self.tx_holding.is_none()
+    }
 
     /// External connector RIN ready pulse. This sets only the original Rev0
     /// input-device-ready flip-flop; it is intentionally independent of RDA.
@@ -134,10 +146,13 @@ impl SioPort {
         self.output_device_ready = true;
     }
 
-
     fn parity_bit(&self, value: u8) -> bool {
         let bits = self.config.format.data_bits.bits();
-        let mask = if bits == 8 { 0xff } else { ((1u16 << bits) - 1) as u8 };
+        let mask = if bits == 8 {
+            0xff
+        } else {
+            ((1u16 << bits) - 1) as u8
+        };
         let odd_ones = (value & mask).count_ones() & 1 != 0;
         match self.config.format.parity {
             SioParity::None => true,
@@ -155,7 +170,9 @@ impl SioPort {
     }
 
     fn start_break_frame_if_idle(&mut self) {
-        if !self.rx_break_active || self.rx_shift.is_some() { return; }
+        if !self.rx_break_active || self.rx_shift.is_some() {
+            return;
+        }
         self.rx_shift = Some((0, true, self.break_parity_error()));
         self.rx_bits_remaining = self.config.format.frame_bits();
         self.rx_shift_from_break = true;
@@ -166,7 +183,9 @@ impl SioPort {
     /// frames with a missing stop bit (framing error); if it remains held, the
     /// next frame begins immediately and can naturally produce UART overrun.
     pub(in crate::machine) fn set_receive_break(&mut self, active: bool) {
-        if self.rx_break_active == active { return; }
+        if self.rx_break_active == active {
+            return;
+        }
         self.rx_break_active = active;
         if active {
             self.start_break_frame_if_idle();
@@ -188,9 +207,13 @@ impl SioPort {
         parity_error: bool,
     ) -> bool {
         let frame_bits = self.config.format.frame_bits();
-        if bits_remaining == 0 || bits_remaining > frame_bits { return true; }
+        if bits_remaining == 0 || bits_remaining > frame_bits {
+            return true;
+        }
         let index = frame_bits - bits_remaining;
-        if index == 0 { return false; } // start bit
+        if index == 0 {
+            return false;
+        } // start bit
 
         let data_bits = self.config.format.data_bits.bits();
         if index <= data_bits {
@@ -206,14 +229,21 @@ impl SioPort {
         // Stop field. A framing error represents the first expected stop bit
         // arriving as SPACE/LOW; any second configured stop bit remains MARK.
         let first_stop_index = parity_index + u8::from(parity_present);
-        if framing_error && index == first_stop_index { false } else { true }
+        if framing_error && index == first_stop_index {
+            false
+        } else {
+            true
+        }
     }
 
     fn rsi_high(&self) -> bool {
-        if self.rx_break_active { return false; }
-        self.rx_shift.map_or(true, |(value, framing_error, parity_error)| {
-            self.frame_bit(value, self.rx_bits_remaining, framing_error, parity_error)
-        })
+        if self.rx_break_active {
+            return false;
+        }
+        self.rx_shift
+            .map_or(true, |(value, framing_error, parity_error)| {
+                self.frame_bit(value, self.rx_bits_remaining, framing_error, parity_error)
+            })
     }
 
     fn tso_high(&self) -> bool {
@@ -240,7 +270,9 @@ impl SioPort {
     /// not stop the COM2502 receiver shift register; the resulting overwrite is
     /// handled only when this new frame completes.
     pub(in crate::machine) fn queue_received_character(&mut self, value: u8) {
-        if !self.receive_line_idle() || self.rx_break_active { return; }
+        if !self.receive_line_idle() || self.rx_break_active {
+            return;
+        }
         self.rx_shift = Some((value, false, false));
         self.rx_bits_remaining = self.config.format.frame_bits();
         self.rx_shift_from_break = false;
@@ -259,11 +291,16 @@ impl SioPort {
         // character is therefore overwritten.
         self.overrun = self.rx_full;
         let bits = self.config.format.data_bits.bits();
-        let mask = if bits == 8 { 0xff } else { ((1u16 << bits) - 1) as u8 };
+        let mask = if bits == 8 {
+            0xff
+        } else {
+            ((1u16 << bits) - 1) as u8
+        };
         self.rx_data = value & mask;
         self.rx_full = true;
         self.framing_error = framing_error;
-        self.parity_error = self.config.format.parity != crate::config::SioParity::None && parity_error;
+        self.parity_error =
+            self.config.format.parity != crate::config::SioParity::None && parity_error;
     }
 
     pub(in crate::machine) fn read_data(&mut self) -> u8 {
@@ -281,7 +318,9 @@ impl SioPort {
         value
     }
 
-    pub(in crate::machine) fn peek_data(&self) -> u8 { self.rx_data }
+    pub(in crate::machine) fn peek_data(&self) -> u8 {
+        self.rx_data
+    }
 
     pub(in crate::machine) fn clear_receive_for_debugger(&mut self) {
         self.rx_full = false;
@@ -304,22 +343,34 @@ impl SioPort {
         // COM2502 loads an idle transmitter shift register immediately from the
         // holding register. TBMT therefore returns HIGH even though the serial
         // character is still physically transmitting.
-        if self.tx_shift.is_none() { self.promote_tx_holding(); }
+        if self.tx_shift.is_none() {
+            self.promote_tx_holding();
+        }
     }
 
     fn promote_tx_holding(&mut self) {
-        if self.tx_shift.is_some() { return; }
-        let Some(value) = self.tx_holding.take() else { return; };
+        if self.tx_shift.is_some() {
+            return;
+        }
+        let Some(value) = self.tx_holding.take() else {
+            return;
+        };
         self.tx_shift = Some(value);
         self.tx_bits_remaining = self.config.format.frame_bits();
     }
 
-    pub(in crate::machine) fn endpoint_tx_front(&self) -> Option<u8> { self.wire_tx.front().copied() }
-    pub(in crate::machine) fn timing_is_quiet(&self) -> bool {
-        self.rx_shift.is_none() && !self.rx_break_active
-            && self.tx_holding.is_none() && self.tx_shift.is_none()
+    pub(in crate::machine) fn endpoint_tx_front(&self) -> Option<u8> {
+        self.wire_tx.front().copied()
     }
-    pub(in crate::machine) fn endpoint_tx_complete(&mut self) -> Option<u8> { self.wire_tx.pop_front() }
+    pub(in crate::machine) fn timing_is_quiet(&self) -> bool {
+        self.rx_shift.is_none()
+            && !self.rx_break_active
+            && self.tx_holding.is_none()
+            && self.tx_shift.is_none()
+    }
+    pub(in crate::machine) fn endpoint_tx_complete(&mut self) -> Option<u8> {
+        self.wire_tx.pop_front()
+    }
     pub(in crate::machine) fn endpoint_tx_pending_or_hardware_busy(&self) -> bool {
         !self.wire_tx.is_empty() || self.tx_holding.is_some() || self.tx_shift.is_some()
     }
@@ -332,8 +383,12 @@ impl SioPort {
     }
 
     pub(in crate::machine) fn debugger_complete_one_tx(&mut self) -> Option<u8> {
-        if let Some(byte) = self.wire_tx.pop_front() { return Some(byte); }
-        if self.tx_shift.is_none() { self.promote_tx_holding(); }
+        if let Some(byte) = self.wire_tx.pop_front() {
+            return Some(byte);
+        }
+        if self.tx_shift.is_none() {
+            self.promote_tx_holding();
+        }
         let byte = self.tx_shift.take()?;
         self.tx_bits_remaining = 0;
         self.promote_tx_holding();
@@ -358,9 +413,7 @@ impl SioPort {
             // Rev 1 modification: receive ready is D0 active LOW and transmit
             // buffer empty is D7 active LOW. Error positions remain D4:D2.
             SioRevision::Rev1 => {
-                errors
-                    | u8::from(!self.rx_full)
-                    | (u8::from(!self.tx_buffer_empty()) << 7)
+                errors | u8::from(!self.rx_full) | (u8::from(!self.tx_buffer_empty()) << 7)
             }
         }
     }
@@ -412,10 +465,15 @@ impl SioPort {
     /// but its internal divider yields exactly one serial bit boundary per
     /// `cpu_clock_hz / baud` elapsed chassis quanta.
     pub(in crate::machine) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
-        if t_states == 0 || cpu_clock_hz == 0 { return; }
+        if t_states == 0 || cpu_clock_hz == 0 {
+            return;
+        }
         let baud = self.config.baud.baud();
-        if baud == 0 { return; }
-        let total = self.bit_phase_numerator
+        if baud == 0 {
+            return;
+        }
+        let total = self
+            .bit_phase_numerator
             .saturating_add(t_states.saturating_mul(u64::from(baud)));
         let threshold = u64::from(cpu_clock_hz);
         let boundaries = total / threshold;
@@ -435,21 +493,40 @@ mod tests {
     const TWO_MHZ: u32 = 2_000_000;
 
     fn config(revision: SioRevision) -> SioHardwareConfig {
-        SioHardwareConfig { revision, ..SioHardwareConfig::default() }
+        SioHardwareConfig {
+            revision,
+            ..SioHardwareConfig::default()
+        }
     }
 
     #[test]
     fn rev0_and_rev1_ready_flags_have_historical_positions_and_polarity() {
         let mut rev0 = SioPort::new(config(SioRevision::Rev0));
         let mut rev1 = SioPort::new(config(SioRevision::Rev1));
-        assert_eq!(rev0.status(), 0x83, "Rev0 starts with external device-ready latches reset while TBMT is D1 active high");
-        assert_eq!(rev1.status(), 0x01, "Rev1 not-RDA is D0 high while empty; D7 low means TX ready");
+        assert_eq!(
+            rev0.status(),
+            0x83,
+            "Rev0 starts with external device-ready latches reset while TBMT is D1 active high"
+        );
+        assert_eq!(
+            rev1.status(),
+            0x01,
+            "Rev1 not-RDA is D0 high while empty; D7 low means TX ready"
+        );
 
         rev0.debugger_inject_received_character(b'R');
         rev1.debugger_inject_received_character(b'R');
         assert_eq!(rev0.status() & 0x20, 0x20, "Rev0 RDA is D5 active high");
-        assert_eq!(rev0.status() & 0x81, 0x81, "COM2502 RDA must not fabricate external Rev0 RIN/ROT ready state");
-        assert_eq!(rev1.status() & 0x01, 0x00, "Rev1 receive-ready is D0 active low");
+        assert_eq!(
+            rev0.status() & 0x81,
+            0x81,
+            "COM2502 RDA must not fabricate external Rev0 RIN/ROT ready state"
+        );
+        assert_eq!(
+            rev1.status() & 0x01,
+            0x00,
+            "Rev1 receive-ready is D0 active low"
+        );
 
         rev0.write_data(b'A');
         rev1.write_data(b'A');
@@ -459,8 +536,16 @@ mod tests {
         assert_eq!(rev1.status() & 0x80, 0x00);
         rev0.write_data(b'B');
         rev1.write_data(b'B');
-        assert_eq!(rev0.status() & 0x02, 0x00, "second byte occupies Rev0 holding register");
-        assert_eq!(rev1.status() & 0x80, 0x80, "second byte makes Rev1 active-low TX ready false");
+        assert_eq!(
+            rev0.status() & 0x02,
+            0x00,
+            "second byte occupies Rev0 holding register"
+        );
+        assert_eq!(
+            rev1.status() & 0x80,
+            0x80,
+            "second byte makes Rev1 active-low TX ready false"
+        );
     }
 
     #[test]
@@ -473,22 +558,42 @@ mod tests {
         let lines = p.handshake_lines();
         assert!(lines.input_device_ready);
         assert!(lines.bin_high);
-        assert_eq!(p.status() & 0x01, 0x00, "RIN sets the active-low D0 device-ready indication");
+        assert_eq!(
+            p.status() & 0x01,
+            0x00,
+            "RIN sets the active-low D0 device-ready indication"
+        );
         assert_eq!(p.status() & 0x20, 0x00, "RIN is not COM2502 RDA");
 
         p.debugger_inject_received_character(b'I');
-        assert_eq!(p.status() & 0x21, 0x20, "RDA may coexist with independently latched RIN ready");
+        assert_eq!(
+            p.status() & 0x21,
+            0x20,
+            "RDA may coexist with independently latched RIN ready"
+        );
         assert_eq!(p.read_data(), b'I');
-        assert_eq!(p.status() & 0x21, 0x01, "DATA IN resets both RDAR and the separate input-ready latch");
+        assert_eq!(
+            p.status() & 0x21,
+            0x01,
+            "DATA IN resets both RDAR and the separate input-ready latch"
+        );
         assert!(!p.handshake_lines().bin_high);
 
         p.pulse_output_device_ready();
         let lines = p.handshake_lines();
         assert!(lines.output_device_ready);
         assert!(lines.bot_high);
-        assert_eq!(p.status() & 0x80, 0x00, "ROT sets the active-low D7 output-device-ready indication");
+        assert_eq!(
+            p.status() & 0x80,
+            0x00,
+            "ROT sets the active-low D7 output-device-ready indication"
+        );
         p.write_data(b'O');
-        assert_eq!(p.status() & 0x80, 0x80, "DATA OUT resets F-b independently of COM2502 TBMT");
+        assert_eq!(
+            p.status() & 0x80,
+            0x80,
+            "DATA OUT resets F-b independently of COM2502 TBMT"
+        );
         assert!(!p.handshake_lines().bot_high);
     }
 
@@ -496,9 +601,15 @@ mod tests {
     fn serial_rsi_and_tso_follow_real_async_frame_bits() {
         let mut c = config(SioRevision::Rev1);
         c.baud = SioBaudRate::try_new(9_600).unwrap();
-        c.format = SioWordFormat { stop_bits: SioStopBits::One, ..SioWordFormat::default() };
+        c.format = SioWordFormat {
+            stop_bits: SioStopBits::One,
+            ..SioWordFormat::default()
+        };
         let mut p = SioPort::new(c);
-        assert!(p.handshake_lines().rsi_high && p.handshake_lines().tso_high, "idle asynchronous lines are MARK/HIGH");
+        assert!(
+            p.handshake_lines().rsi_high && p.handshake_lines().tso_high,
+            "idle asynchronous lines are MARK/HIGH"
+        );
 
         // 0x01 8N1: start LOW, D0 HIGH, D1..D7 LOW, stop HIGH.
         p.queue_received_character(0x01);
@@ -512,8 +623,14 @@ mod tests {
         assert!(!p.handshake_lines().rsi_high);
         assert!(!p.handshake_lines().tso_high);
         p.advance_t_states(1_666, TWO_MHZ);
-        assert!(p.handshake_lines().rsi_high, "completed RX frame returns RSI to idle MARK");
-        assert!(p.handshake_lines().tso_high, "completed TX frame returns TSO to idle MARK");
+        assert!(
+            p.handshake_lines().rsi_high,
+            "completed RX frame returns RSI to idle MARK"
+        );
+        assert!(
+            p.handshake_lines().tso_high,
+            "completed TX frame returns TSO to idle MARK"
+        );
     }
 
     #[test]
@@ -521,20 +638,37 @@ mod tests {
         let mut p = SioPort::new(config(SioRevision::Rev1));
         p.set_receive_break(true);
         assert!(!p.receive_line_idle());
-        assert!(!p.handshake_lines().rsi_high, "BREAK forces RSI to SPACE/LOW immediately");
+        assert!(
+            !p.handshake_lines().rsi_high,
+            "BREAK forces RSI to SPACE/LOW immediately"
+        );
 
         p.advance_t_states(200_000, TWO_MHZ); // 110 baud, default 8N2 = 11 bits
         assert_eq!(p.peek_data(), 0x00);
-        assert_eq!(p.status() & 0x09, 0x08, "RDA ready plus framing error after one BREAK frame");
-        assert!(!p.receive_line_idle(), "held BREAK immediately begins another receiver frame");
+        assert_eq!(
+            p.status() & 0x09,
+            0x08,
+            "RDA ready plus framing error after one BREAK frame"
+        );
+        assert!(
+            !p.receive_line_idle(),
+            "held BREAK immediately begins another receiver frame"
+        );
         assert!(!p.handshake_lines().rsi_high);
 
         p.advance_t_states(200_000, TWO_MHZ);
-        assert_eq!(p.status() & 0x18, 0x18, "continued BREAK can naturally overrun the unread COM2502 holding register");
+        assert_eq!(
+            p.status() & 0x18,
+            0x18,
+            "continued BREAK can naturally overrun the unread COM2502 holding register"
+        );
 
         p.set_receive_break(false);
         assert!(p.receive_line_idle());
-        assert!(p.handshake_lines().rsi_high, "releasing BREAK returns RSI to idle MARK");
+        assert!(
+            p.handshake_lines().rsi_high,
+            "releasing BREAK returns RSI to idle MARK"
+        );
         assert_eq!(p.read_data(), 0x00);
     }
 
@@ -556,30 +690,57 @@ mod tests {
         p.debugger_inject_received_character(b'A');
         p.debugger_inject_received_character(b'B');
         assert_eq!(p.status() & 0x10, 0x10);
-        assert_eq!(p.read_data(), b'B', "COM2502 transfers the new shift-register character into the holding register");
+        assert_eq!(
+            p.read_data(),
+            b'B',
+            "COM2502 transfers the new shift-register character into the holding register"
+        );
         assert_eq!(p.status() & 0x01, 0x01, "data read resets RDA");
-        assert_eq!(p.status() & 0x10, 0x10, "RDAR does not fabricate an error clear");
+        assert_eq!(
+            p.status() & 0x10,
+            0x10,
+            "RDAR does not fabricate an error clear"
+        );
         p.debugger_inject_received_character(b'C');
-        assert_eq!(p.status() & 0x10, 0x00, "next reception with RDA previously low refreshes overrun false");
+        assert_eq!(
+            p.status() & 0x10,
+            0x00,
+            "next reception with RDA previously low refreshes overrun false"
+        );
     }
 
     #[test]
     fn double_buffered_transmitter_returns_tbmt_before_character_finishes() {
         let mut c = config(SioRevision::Rev1);
         c.baud = SioBaudRate::try_new(9_600).unwrap();
-        c.format = SioWordFormat { stop_bits: SioStopBits::One, ..SioWordFormat::default() };
+        c.format = SioWordFormat {
+            stop_bits: SioStopBits::One,
+            ..SioWordFormat::default()
+        };
         let mut p = SioPort::new(c);
         p.write_data(b'A');
-        assert_eq!(p.status() & 0x80, 0, "holding register is already empty after idle promotion");
+        assert_eq!(
+            p.status() & 0x80,
+            0,
+            "holding register is already empty after idle promotion"
+        );
         assert_eq!(p.endpoint_tx_front(), None);
         p.write_data(b'B');
-        assert_eq!(p.status() & 0x80, 0x80, "holding register now contains the next byte");
+        assert_eq!(
+            p.status() & 0x80,
+            0x80,
+            "holding register now contains the next byte"
+        );
 
         p.advance_t_states(2_083, TWO_MHZ);
         assert_eq!(p.endpoint_tx_front(), None);
         p.advance_t_states(1, TWO_MHZ);
         assert_eq!(p.endpoint_tx_front(), Some(b'A'));
-        assert_eq!(p.status() & 0x80, 0, "B promoted at the exact A frame boundary");
+        assert_eq!(
+            p.status() & 0x80,
+            0,
+            "B promoted at the exact A frame boundary"
+        );
     }
 
     #[test]
@@ -588,7 +749,9 @@ mod tests {
         p.queue_received_character(b'A');
         p.advance_t_states(200_000, TWO_MHZ); // 110 baud, 8N2 => 100 ms
         assert!(!p.receive_line_idle() || p.rx_full());
-        if !p.receive_line_idle() { p.advance_t_states(1, TWO_MHZ); }
+        if !p.receive_line_idle() {
+            p.advance_t_states(1, TWO_MHZ);
+        }
         assert!(p.rx_full());
         assert!(p.receive_line_idle());
         p.queue_received_character(b'B');

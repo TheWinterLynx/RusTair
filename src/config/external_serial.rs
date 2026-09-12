@@ -17,11 +17,7 @@ pub enum ExternalSerialCharacterMode {
 }
 
 impl ExternalSerialCharacterMode {
-    pub const ALL: [Self; 3] = [
-        Self::Asr33Uppercase,
-        Self::SevenBitAscii,
-        Self::Raw8Bit,
-    ];
+    pub const ALL: [Self; 3] = [Self::Asr33Uppercase, Self::SevenBitAscii, Self::Raw8Bit];
 
     pub const fn label(self) -> &'static str {
         match self {

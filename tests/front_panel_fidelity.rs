@@ -21,9 +21,15 @@ fn ldax_d_exposes_de_on_front_panel_address_bus() {
 
     // Teaching retains the exact final S-100 memory-read sample even when no
     // presentation interval has been committed.
-    let exact = machine.bus_teaching_snapshot().expect("LDAX must retain an exact Cycle sample");
+    let exact = machine
+        .bus_teaching_snapshot()
+        .expect("LDAX must retain an exact Cycle sample");
     assert_eq!(exact.address, Some(0x8000));
-    assert_ne!(exact.address.unwrap() & 0x8000, 0, "A15 must be asserted on the exact S-100 address bus");
+    assert_ne!(
+        exact.address.unwrap() & 0x8000,
+        0,
+        "A15 must be asserted on the exact S-100 address bus"
+    );
     assert_eq!(exact.status.memr, Some(true));
     assert_eq!(exact.status.m1, Some(false));
 }
@@ -43,7 +49,9 @@ fn in_ff_exposes_ffff_on_address_bus_and_reads_sense_switches() {
     let panel = machine.front_panel_state();
     assert_eq!(panel.address, 0xffff);
 
-    let exact = machine.bus_teaching_snapshot().expect("IN FFh must retain an exact Cycle sample");
+    let exact = machine
+        .bus_teaching_snapshot()
+        .expect("IN FFh must retain an exact Cycle sample");
     assert_eq!(exact.address, Some(0xffff));
     assert_eq!(exact.status.inp, Some(true));
     assert_eq!(exact.status.memr, Some(false));

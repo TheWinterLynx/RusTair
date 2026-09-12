@@ -7,14 +7,14 @@ use crate::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Pins};
 use crate::machine::{AltairBus, FullPanelDuty};
 
 #[cfg(test)]
-#[path = "full/panel_histogram_reference.rs"]
-mod panel_histogram_reference;
-#[cfg(test)]
 #[path = "full/control_flow_tests.rs"]
 mod control_flow_tests;
 #[cfg(test)]
 #[path = "full/ei_tests.rs"]
 mod ei_tests;
+#[cfg(test)]
+#[path = "full/panel_histogram_reference.rs"]
+mod panel_histogram_reference;
 use crate::s100_memory::S100RamBoardModel;
 
 use super::super::BackendResult;
@@ -559,14 +559,7 @@ impl<'a> FullInstructionBus<'a> {
     fn project_opcode_fetch(&mut self, address: u16, opcode: u8) {
         self.prime_t1_read_data_if_stale_memr(address, opcode);
         let external_fetch_t_states = if opcode == 0xf3 { 3 } else { 4 };
-        self.project_machine_cycle(
-            address,
-            opcode,
-            0xa2,
-            external_fetch_t_states,
-            true,
-            false,
-        );
+        self.project_machine_cycle(address, opcode, 0xa2, external_fetch_t_states, true, false);
         let post_m1_t5 = opcode & 0xcf == 0xc5
             || opcode & 0xcf == 0xcd
             || opcode & 0xc7 == 0xc4
@@ -622,7 +615,8 @@ impl Bus for FullInstructionBus<'_> {
     fn set_inte(&mut self, enabled: bool) {
         if enabled && self.delayed_ei_transition_armed {
             if !self.inte {
-                self.panel.reserve_final_external_t_state_for_inte_transition();
+                self.panel
+                    .reserve_final_external_t_state_for_inte_transition();
                 debug_assert!(self.projected_t_states != 0);
                 self.projected_t_states = self.projected_t_states.saturating_sub(1);
             }
@@ -842,11 +836,7 @@ impl CycleAccurateMachineBackend {
 
         let opcode_table = full_opcode_table();
         let first_address = self.cpu.registers().pc;
-        let first_opcode = self
-            .machine
-            .bus
-            .peek_memory(first_address)
-            .unwrap_or(0xff);
+        let first_opcode = self.machine.bus.peek_memory(first_address).unwrap_or(0xff);
         let first_is_safe_ei_pair = first_opcode == EI_OPCODE
             && full_ei_lhld_pair_is_safe(
                 &self.machine.bus,
@@ -1307,12 +1297,7 @@ mod tests {
             FullInstructionBus::read_cache_index(0x41)
         );
         for _ in 0..3 {
-            for (address, expected) in [
-                (0xffff, 0xff),
-                (0, 0x12),
-                (0x41, 0x34),
-                (0x0fff, 0x56),
-            ] {
+            for (address, expected) in [(0xffff, 0xff), (0, 0x12), (0x41, 0x34), (0x0fff, 0x56)] {
                 assert_eq!(bus.guest_read(address), expected);
                 assert_eq!(bus.guest_read(address), expected);
             }
@@ -1424,15 +1409,17 @@ mod tests {
                 "remaining budget must rejoin exact Partial"
             );
             assert_eq!(
-                stats.fallbacks.opcode_barrier,
-                0,
+                stats.fallbacks.opcode_barrier, 0,
                 "PUSH {opcode:02x} must not be a Full barrier"
             );
 
             for _ in 0..BUDGET {
                 let ready = partial.machine.bus.cycle_front_panel_ready_input();
                 let trace = partial.tick_once(ready);
-                assert!(trace.fault.is_none(), "PUSH {opcode:02x} Partial oracle faulted");
+                assert!(
+                    trace.fault.is_none(),
+                    "PUSH {opcode:02x} Partial oracle faulted"
+                );
             }
 
             assert_eq!(compiled.cpu.total_t_states(), partial.cpu.total_t_states());

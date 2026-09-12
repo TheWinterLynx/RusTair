@@ -1,4 +1,4 @@
-use crate::decoder8080::{decode_8080, Condition, ControlFlow, DecodedInstruction};
+use crate::decoder8080::{Condition, ControlFlow, DecodedInstruction, decode_8080};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstructionAt {
@@ -131,11 +131,7 @@ where
 /// of a proven instruction. That distinction matters on the cycle-accurate core,
 /// whose architectural PC advances during the instruction; accepting operand
 /// positions prevents UI flicker without accepting arbitrary data as code.
-pub fn detect_simple_backward_loop<F>(
-    mut read: F,
-    pc: u16,
-    flags: u8,
-) -> Option<SimpleLoop>
+pub fn detect_simple_backward_loop<F>(mut read: F, pc: u16, flags: u8) -> Option<SimpleLoop>
 where
     F: FnMut(u16) -> Option<u8>,
 {

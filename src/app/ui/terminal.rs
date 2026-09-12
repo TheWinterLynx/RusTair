@@ -1,6 +1,4 @@
-use super::super::{
-    egui, RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed,
-};
+use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
 use crate::config::TerminalDuplex;
 
 impl RusTairApp {

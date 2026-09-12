@@ -26,10 +26,8 @@ pub(crate) const DCDD_DATA_PORT: u8 = 0x0a;
 /// active functions are false while the two unused outputs D3/D4 are driven LOW.
 const DISABLED_STATUS: u8 = 0xe7;
 
-const PWR: S100CardContact =
-    S100CardContact::new(S100Signal::Plus8V, S100ContactRole::Power);
-const GND: S100CardContact =
-    S100CardContact::new(S100Signal::Ground, S100ContactRole::Power);
+const PWR: S100CardContact = S100CardContact::new(S100Signal::Plus8V, S100ContactRole::Power);
+const GND: S100CardContact = S100CardContact::new(S100Signal::Ground, S100ContactRole::Power);
 
 /// Board #1 decodes the mirrored upper I/O-address byte. The physical CLOC input
 /// is intentionally not subscribed yet: no Phase-2 output depends on it, and the
@@ -196,7 +194,10 @@ impl Mits88DcddHarness {
     }
 
     fn drive_available(&self, address: u8) -> bool {
-        self.state.borrow().external_disk_bus.drive_available(address)
+        self.state
+            .borrow()
+            .external_disk_bus
+            .drive_available(address)
     }
 
     #[cfg(test)]
@@ -384,7 +385,14 @@ mod tests {
     use super::*;
     use crate::s100_backplane::{S100Backplane, S100PinDrive};
 
-    fn io_sample(port: u8, inp: bool, out: bool, dbin: bool, wr_n: bool, data: u8) -> S100BusSample {
+    fn io_sample(
+        port: u8,
+        inp: bool,
+        out: bool,
+        dbin: bool,
+        wr_n: bool,
+        data: u8,
+    ) -> S100BusSample {
         let backplane = S100Backplane::new(0);
         let mut source = S100CardDrive::new();
         source.drive_address(u16::from(port) << 8);
@@ -539,7 +547,10 @@ mod tests {
             }
         );
         board1.observe_s100(&io_sample(0x0b, false, true, false, false, 0x00));
-        assert_eq!(board1_harness_drive(&harness), Board1HarnessDrive::default());
+        assert_eq!(
+            board1_harness_drive(&harness),
+            Board1HarnessDrive::default()
+        );
     }
 
     #[test]

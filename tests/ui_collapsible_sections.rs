@@ -77,7 +77,10 @@ fn execution_history_dynamic_detail_sections_reserve_stable_heights() {
         "HISTORY_EFFECTS_HEIGHT",
         "HISTORY_REGISTERS_HEIGHT",
     ] {
-        assert!(history.contains(constant), "missing stable history-detail height {constant}");
+        assert!(
+            history.contains(constant),
+            "missing stable history-detail height {constant}"
+        );
     }
     assert!(history.contains("fn fixed_detail_body("));
     assert!(history.contains("instruction-history-effects-body"));
@@ -129,12 +132,19 @@ fn bus_teacher_sections_are_collapsible_and_explanation_height_is_stable() {
 #[test]
 fn auxiliary_tool_viewports_use_collapsible_conceptual_sections() {
     let loop_inspector = include_str!("../src/app/ui/loop_inspector.rs");
-    assert_sections(loop_inspector, &["Loop state / exit condition", "Loop instructions"]);
+    assert_sections(
+        loop_inspector,
+        &["Loop state / exit condition", "Loop instructions"],
+    );
 
     let memory_activity = include_str!("../src/app/ui/memory_activity.rs");
     assert_sections(
         memory_activity,
-        &["Activity meaning / capture status", "Sort / controls", "Activity table"],
+        &[
+            "Activity meaning / capture status",
+            "Sort / controls",
+            "Activity table",
+        ],
     );
 
     let io_inspector = include_str!("../src/app/ui/io_inspector.rs");
@@ -151,7 +161,14 @@ fn auxiliary_tool_viewports_use_collapsible_conceptual_sections() {
     );
 
     let terminal = include_str!("../src/app/ui/terminal.rs");
-    assert_sections(terminal, &["Command / input", "Paste / program input", "Terminal output"]);
+    assert_sections(
+        terminal,
+        &[
+            "Command / input",
+            "Paste / program input",
+            "Terminal output",
+        ],
+    );
 }
 
 #[test]
@@ -172,7 +189,11 @@ fn transport_viewports_use_shared_collapsible_sections() {
     let com = include_str!("../src/app/external_com.rs");
     assert_sections(
         com,
-        &["Transport state", "Transport actions", "How the COM bridge behaves"],
+        &[
+            "Transport state",
+            "Transport actions",
+            "How the COM bridge behaves",
+        ],
     );
 }
 

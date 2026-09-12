@@ -1,8 +1,6 @@
 use std::time::Instant;
 
-use rustair::cpu8080_cycle::{
-    Cpu8080Cycle, Cpu8080Inputs, MachineCycle, TState, TickTrace,
-};
+use rustair::cpu8080_cycle::{Cpu8080Cycle, Cpu8080Inputs, MachineCycle, TState, TickTrace};
 
 const CPM_COM_LOAD_ADDRESS: usize = 0x0100;
 const BOOT_ADDRESS: usize = 0x0080;
@@ -33,15 +31,18 @@ impl DiagnosticBus {
 
         let boot = [
             0x31, bdos_lo, bdos_hi, // LXI SP,BDOS_BASE
-            0x3e, 0x76,             // MVI A,HLT
-            0x32, 0x00, 0x00,       // STA 0000h
-            0xc3, 0x00, 0x01,       // JMP 0100h
+            0x3e, 0x76, // MVI A,HLT
+            0x32, 0x00, 0x00, // STA 0000h
+            0xc3, 0x00, 0x01, // JMP 0100h
         ];
         page_zero[BOOT_ADDRESS..BOOT_ADDRESS + boot.len()].copy_from_slice(&boot);
         memory[..page_zero.len()].copy_from_slice(&page_zero);
 
         let image_end = CPM_COM_LOAD_ADDRESS + image.len();
-        assert!(image_end < BDOS_BASE as usize, "diagnostic image overlaps BDOS");
+        assert!(
+            image_end < BDOS_BASE as usize,
+            "diagnostic image overlaps BDOS"
+        );
         memory[CPM_COM_LOAD_ADDRESS..image_end].copy_from_slice(image);
 
         let bdos = build_bdos();
@@ -288,8 +289,14 @@ fn assert_reference(
     max_ticks: u64,
 ) -> DiagnosticResult {
     let result = run_diagnostic(image, max_ticks);
-    assert!(result.halted, "{name}: warm boot must end in the installed HLT");
-    assert!(!result.output.is_empty(), "{name}: diagnostic produced no console output");
+    assert!(
+        result.halted,
+        "{name}: warm boot must end in the installed HLT"
+    );
+    assert!(
+        !result.output.is_empty(),
+        "{name}: diagnostic produced no console output"
+    );
     assert_eq!(
         result.instructions, expected_instructions,
         "{name}: normalized instruction count"
@@ -320,10 +327,7 @@ fn benchmark_reference(
     let mhz = result.actual_t_states as f64 / elapsed.as_secs_f64() / 1_000_000.0;
     eprintln!(
         "[CPU CORE ONLY] {name}: {} reference instructions, {} reference T-states, {} actual core T-states, {:.3?}, {mhz:.2} MHz [Cpu8080Cycle + minimal diagnostic bus; no chassis/S-100/front panel/UART]",
-        result.instructions,
-        result.t_states,
-        result.actual_t_states,
-        elapsed,
+        result.instructions, result.t_states, result.actual_t_states, elapsed,
     );
 }
 

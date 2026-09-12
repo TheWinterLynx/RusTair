@@ -1,7 +1,11 @@
 use super::*;
 
 fn input(data_in: u8, ready: bool) -> Cpu8080Inputs {
-    Cpu8080Inputs { data_in, ready, ..Cpu8080Inputs::default() }
+    Cpu8080Inputs {
+        data_in,
+        ready,
+        ..Cpu8080Inputs::default()
+    }
 }
 
 fn fetch(cpu: &mut Cpu8080Cycle, opcode: u8) -> [TickTrace; 4] {
@@ -165,7 +169,7 @@ fn xthl_stack_write_wait_extends_timing_and_holds_bus_stable() {
     assert_eq!(tw.pins.data_out, Some(0x55));
 
     cpu.tick(input(0, true)); // M4 T3
-    write_cycle(&mut cpu);    // M5 T1..T3
+    write_cycle(&mut cpu); // M5 T1..T3
     cpu.tick(input(0, true)); // M5 T4
     let t5 = cpu.tick(input(0, true));
     assert!(t5.instruction_complete);

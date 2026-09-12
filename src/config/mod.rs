@@ -20,12 +20,12 @@ pub use machine::{
     TerminalSpeed,
 };
 pub use s100_hardware::{
-    fitted_connector_choices, FastRamCompatibilityConfig, S100HardwareConfig,
-    S100HardwareConfigError, S100InstalledCardConfig, S100InstalledCardKind, MAX_S100_SLOTS,
+    FastRamCompatibilityConfig, MAX_S100_SLOTS, S100HardwareConfig, S100HardwareConfigError,
+    S100InstalledCardConfig, S100InstalledCardKind, fitted_connector_choices,
 };
 pub use sio::{
-    SioAddressPair, SioBaudRate, SioDataBits, SioHardwareConfig, SioInterface,
-    SioInterruptTarget, SioInterruptWiring, SioParity, SioRevision, SioStopBits, SioWordFormat,
+    SioAddressPair, SioBaudRate, SioDataBits, SioHardwareConfig, SioInterface, SioInterruptTarget,
+    SioInterruptWiring, SioParity, SioRevision, SioStopBits, SioWordFormat,
 };
 pub use sio_electrical::{SioConnectorOutputs, SioElectricalLevel};
 pub use terminal::TerminalDuplex;

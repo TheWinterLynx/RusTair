@@ -35,8 +35,7 @@ struct ResultRow {
 }
 
 fn minimal_four_k_hardware(model: S100RamBoardModel) -> S100HardwareConfig {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
@@ -196,10 +195,7 @@ fn print_relative_cost(label: &str, baseline_rows: &[ResultRow], candidate_rows:
         .map(|(baseline, candidate)| candidate.mhz / baseline.mhz)
         .collect::<Vec<_>>();
     let paired_ratio = median_f64(&paired_ratios);
-    let min_ratio = paired_ratios
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
+    let min_ratio = paired_ratios.iter().copied().fold(f64::INFINITY, f64::min);
     let max_ratio = paired_ratios
         .iter()
         .copied()
@@ -227,8 +223,12 @@ fn measure_adaptive_cycle_effective_mhz() {
         "Measurement: median of {BENCH_ROUNDS} rounds × {MEASURE_T_STATES} emulated T-states after {WARMUP_T_STATES}T warm-up"
     );
     println!("This NOP/JMP loop is a ceiling microbenchmark, not a representative workload.");
-    println!("Supported historical dynamic RAM participates in Adaptive Full; its digital refresh/WAIT timing remains accounted for rather than bypassed.");
-    println!("Relative RAM costs use the median of same-round candidate/baseline ratios to suppress host clock and scheduler drift.");
+    println!(
+        "Supported historical dynamic RAM participates in Adaptive Full; its digital refresh/WAIT timing remains accounted for rather than bypassed."
+    );
+    println!(
+        "Relative RAM costs use the median of same-round candidate/baseline ratios to suppress host clock and scheduler drift."
+    );
     println!("Reference: MITS Altair 8800 nominal CPU clock = 2.000 MHz");
     println!();
 

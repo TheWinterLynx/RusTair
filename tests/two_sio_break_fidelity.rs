@@ -33,7 +33,11 @@ fn both_engines_keep_tdr_tsr_clocking_under_break_without_fabricating_wire_bytes
         );
 
         host.debugger_output_port(0x11, b'B');
-        assert_eq!(host.peek_io_port(0x10) & 0x02, 0, "{engine:?}: TDR starts full");
+        assert_eq!(
+            host.peek_io_port(0x10) & 0x02,
+            0,
+            "{engine:?}: TDR starts full"
+        );
 
         // At the default 110-baud tap this 8N1 frame needs about 90.91 ms.
         // Chassis clocks continue while the CPU is STOPped, so 110 ms is enough
@@ -57,7 +61,8 @@ fn both_engines_keep_tdr_tsr_clocking_under_break_without_fabricating_wire_bytes
         // Releasing BREAK restores normal framing for the next complete byte.
         host.debugger_output_port(0x10, 0x15); // /16, 8N1, normal TxD
         assert!(
-            !host.serial_modem_lines(BackendSerialPort::Port0)
+            !host
+                .serial_modem_lines(BackendSerialPort::Port0)
                 .expect("88-2SIO exposes MC6850 pins")
                 .break_active,
         );

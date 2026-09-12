@@ -13,7 +13,11 @@ impl RusTairApp {
     /// every frame, so failures from the raw binary, BASIC and CP/M diagnostic
     /// loaders all use the same visible reporting path.
     pub(in crate::app) fn draw_load_error_dialog(&mut self, ctx: &egui::Context) {
-        let Some(reason) = self.status.strip_prefix(LOAD_ERROR_PREFIX).map(str::to_owned) else {
+        let Some(reason) = self
+            .status
+            .strip_prefix(LOAD_ERROR_PREFIX)
+            .map(str::to_owned)
+        else {
             return;
         };
 
@@ -42,7 +46,9 @@ impl RusTairApp {
 
     /// Select and load a raw binary image at address zero.
     pub(in crate::app) fn load_binary_dialog(&mut self) {
-        let Some(path) = rfd::FileDialog::new().pick_file() else { return; };
+        let Some(path) = rfd::FileDialog::new().pick_file() else {
+            return;
+        };
 
         match std::fs::read(&path) {
             Ok(bytes) => {
@@ -71,10 +77,9 @@ impl RusTairApp {
                 self.machine.load_bytes(0, &bytes);
                 self.status = format!("Loaded {} bytes from {}", bytes.len(), path.display());
             }
-            Err(e) => self.report_load_error(format!(
-                "Could not read binary {}: {e}",
-                path.display()
-            )),
+            Err(e) => {
+                self.report_load_error(format!("Could not read binary {}: {e}", path.display()))
+            }
         }
     }
 

@@ -35,7 +35,7 @@ pub use pins::{Cpu8080Inputs, Cpu8080Pins};
 pub use state::Registers;
 pub use timing::{MachineCycle, TState};
 
-use decode::{decode, Instruction, Register8, RegisterPair};
+use decode::{Instruction, Register8, RegisterPair, decode};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Cpu8080CycleFault {
@@ -375,7 +375,8 @@ impl Cpu8080Cycle {
                         )
                     {
                         self.begin_stack_read(self.registers.sp, 2);
-                    } else if machine_cycle == MachineCycle::StackWrite && machine_cycle_index == 5 {
+                    } else if machine_cycle == MachineCycle::StackWrite && machine_cycle_index == 5
+                    {
                         self.t_state = TState::T5;
                     } else {
                         unreachable!(
@@ -473,7 +474,8 @@ impl Cpu8080Cycle {
                     self.complete_instruction();
                 }
                 Instruction::Push(pair) => {
-                    let [high, _] = control_flow::read_stack_pair(&self.registers, pair).to_be_bytes();
+                    let [high, _] =
+                        control_flow::read_stack_pair(&self.registers, pair).to_be_bytes();
                     self.registers.sp = self.registers.sp.wrapping_sub(1);
                     self.begin_stack_write(self.registers.sp, high, 2);
                 }
@@ -890,11 +892,7 @@ impl Cpu8080Cycle {
                 true
             }
             (Instruction::Xthl, 4) => {
-                self.begin_stack_write(
-                    self.registers.sp.wrapping_add(1),
-                    self.registers.h,
-                    5,
-                );
+                self.begin_stack_write(self.registers.sp.wrapping_add(1), self.registers.h, 5);
                 false
             }
             (Instruction::Xthl, 5) => {
@@ -921,8 +919,8 @@ impl Cpu8080Cycle {
                 let rhs = self.read_pair(pair) as u32;
                 let sum = lhs + rhs;
                 self.write_pair(RegisterPair::HL, sum as u16);
-                self.registers.f = (self.registers.f & !alu::FLAG_C)
-                    | if sum > 0xffff { alu::FLAG_C } else { 0 };
+                self.registers.f =
+                    (self.registers.f & !alu::FLAG_C) | if sum > 0xffff { alu::FLAG_C } else { 0 };
                 self.complete_instruction();
                 true
             }
@@ -1211,21 +1209,33 @@ impl Cpu8080Cycle {
                 self.pins.wait = false;
             }
             TState::T2 => {
-                self.pins.data_out = if output_cycle { self.cycle_data_out } else { None };
+                self.pins.data_out = if output_cycle {
+                    self.cycle_data_out
+                } else {
+                    None
+                };
                 self.pins.sync = false;
                 self.pins.dbin = input_cycle;
                 self.pins.wr_n = true;
                 self.pins.wait = false;
             }
             TState::Tw => {
-                self.pins.data_out = if output_cycle { self.cycle_data_out } else { None };
+                self.pins.data_out = if output_cycle {
+                    self.cycle_data_out
+                } else {
+                    None
+                };
                 self.pins.sync = false;
                 self.pins.dbin = input_cycle;
                 self.pins.wr_n = !output_cycle;
                 self.pins.wait = true;
             }
             TState::T3 => {
-                self.pins.data_out = if output_cycle { self.cycle_data_out } else { None };
+                self.pins.data_out = if output_cycle {
+                    self.cycle_data_out
+                } else {
+                    None
+                };
                 self.pins.sync = false;
                 self.pins.dbin = false;
                 self.pins.wr_n = !output_cycle;

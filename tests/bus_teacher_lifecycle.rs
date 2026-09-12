@@ -9,7 +9,10 @@ fn lifecycle_states_are_explicitly_not_t_state_samples() {
         "ResetReleasedStopped",
         "ResetReleasedRunning",
     ] {
-        assert!(contract.contains(state), "missing Bus Teacher lifecycle state {state}");
+        assert!(
+            contract.contains(state),
+            "missing Bus Teacher lifecycle state {state}"
+        );
     }
     assert!(contract.contains("CONTROL STATE / NO T-STATE SAMPLE"));
 }
@@ -17,14 +20,22 @@ fn lifecycle_states_are_explicitly_not_t_state_samples() {
 #[test]
 fn cycle_control_snapshot_does_not_advance_the_cpu() {
     let host = include_str!("../src/backend/cycle_host.rs");
-    let start = host.find("fn control_teaching_snapshot").expect("control snapshot helper");
+    let start = host
+        .find("fn control_teaching_snapshot")
+        .expect("control snapshot helper");
     let end = host[start..]
         .find("fn debugger_step_one_t_state")
         .map(|offset| start + offset)
         .expect("next helper boundary");
     let helper = &host[start..end];
-    assert!(!helper.contains(".tick("), "POWER/RESET teaching must not fabricate a CPU T-state");
-    assert!(!helper.contains("debugger_step"), "reading teaching state must be side-effect free");
+    assert!(
+        !helper.contains(".tick("),
+        "POWER/RESET teaching must not fabricate a CPU T-state"
+    );
+    assert!(
+        !helper.contains("debugger_step"),
+        "reading teaching state must be side-effect free"
+    );
     assert!(helper.contains("cpu_control_lines"));
     assert!(helper.contains("panel_lamps"));
 }

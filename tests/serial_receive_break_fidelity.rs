@@ -8,8 +8,7 @@ use rustair::config::{
 use rustair::s100_chassis::S100ChassisConfig;
 
 fn hardware_for(board: SerialBoard, sio: SioHardwareConfig) -> S100HardwareConfig {
-    let mut hardware =
-        S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
         .unwrap();
@@ -138,5 +137,8 @@ fn asr_break_is_released_before_its_cable_is_rerouted() {
     let reroute = app
         .find("let displaced = self.serial_router.connect(device, connection)")
         .expect("serial router connection point");
-    assert!(release < reroute, "old ASR UART must leave BREAK before cable routing changes");
+    assert!(
+        release < reroute,
+        "old ASR UART must leave BREAK before cable routing changes"
+    );
 }
