@@ -6,7 +6,7 @@ use crate::cpu8080_cycle::Registers;
 use crate::s100_chassis::S100ChassisConfig;
 use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
-fn static_4k_hardware() -> S100HardwareConfig {
+fn ram_hardware(model: S100RamBoardModel) -> S100HardwareConfig {
     let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
     hardware
         .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
@@ -15,11 +15,33 @@ fn static_4k_hardware() -> S100HardwareConfig {
         .set_slot(
             2,
             Some(S100InstalledCardConfig::Ram(
-                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0),
+                S100RamCardConfig::fully_populated(model, 0),
             )),
         )
         .unwrap();
     hardware.validate().unwrap()
+}
+
+fn static_4k_hardware() -> S100HardwareConfig {
+    ram_hardware(S100RamBoardModel::Mits4KStatic88_4Mcs)
+}
+
+fn prepare_ram_backend(
+    model: S100RamBoardModel,
+    program: &[u8],
+) -> CycleAccurateMachineBackend {
+    let mut backend = CycleAccurateMachineBackend::default();
+    backend
+        .machine
+        .bus
+        .configure_s100_hardware_memory(ram_hardware(model), RamInit::Zeroed)
+        .unwrap();
+    backend.power(true).unwrap();
+    backend.assert_reset().unwrap();
+    backend.load_bytes(0, program).unwrap();
+    backend.release_reset().unwrap();
+    backend.run().unwrap();
+    backend
 }
 
 fn prepare_static_backend(program: &[u8]) -> CycleAccurateMachineBackend {
@@ -236,34 +258,85 @@ fn compiled_full_di_matches_forced_partial_inte_and_panel_exactly() {
 }
 
 #[test]
-fn dynamic_historical_ram_never_enters_compiled_full_windows() {
+fn dynamic_historical_ram_full_matches_forced_partial_exactly() {
+    const BUDGET: u32 = 12_000;
+    // MVI A,5Ah ; STA 0010h ; LDA 0010h ; JMP 0000h
+    // Exercises opcode fetches, operand reads, a real RAM write and a real RAM
+    // read while repeatedly crossing both dynamic refresh cadences.
+    const PROGRAM: [u8; 11] = [
+        0x3e, 0x5a, 0x32, 0x10, 0x00, 0x3a, 0x10, 0x00, 0xc3, 0x00, 0x00,
+    ];
+
     for model in [
         S100RamBoardModel::Mits4KDynamic88_4Mcd,
         S100RamBoardModel::Mits4KSynchronous88S4K,
         S100RamBoardModel::Mits16KDynamic88_16Mcd,
     ] {
-        let mut hardware =
-            S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
-        hardware
-            .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
-            .unwrap();
-        hardware
-            .set_slot(
-                2,
-                Some(S100InstalledCardConfig::Ram(
-                    S100RamCardConfig::fully_populated(model, 0),
-                )),
-            )
-            .unwrap();
-        let mut backend = CycleAccurateMachineBackend::default();
-        backend
-            .machine
-            .bus
-            .configure_s100_hardware_memory(hardware, RamInit::Zeroed)
-            .unwrap();
+        let mut compiled = prepare_ram_backend(model, &PROGRAM);
+        let mut partial = prepare_ram_backend(model, &PROGRAM);
         assert!(
-            !backend.compiled_full_chassis_available(),
-            "{model:?} refresh timing must remain exact Partial hardware"
+            compiled.compiled_full_chassis_available(),
+            "{model:?} must be admitted now that Full advances the same physical refresh state"
+        );
+
+        adaptive_metrics::begin_measurement();
+        compiled.service_execution_compiled(BUDGET).unwrap();
+        let stats = adaptive_metrics::end_measurement();
+        assert!(
+            stats.full_t_states > 0,
+            "{model:?} must actually execute an accelerated Full span"
+        );
+        assert_eq!(
+            stats.total_t_states(),
+            u64::from(BUDGET),
+            "{model:?} compiled service must honor its exact T-state budget"
+        );
+
+        for _ in 0..BUDGET {
+            let ready = partial.machine.bus.cycle_front_panel_ready_input();
+            let trace = partial.tick_once(ready);
+            assert!(trace.fault.is_none(), "{model:?} Partial oracle faulted");
+        }
+
+        assert_eq!(
+            compiled.cpu.total_t_states(),
+            partial.cpu.total_t_states(),
+            "{model:?} total T-states"
+        );
+        assert_eq!(
+            compiled.cpu.completed_instructions(),
+            partial.cpu.completed_instructions(),
+            "{model:?} instruction boundary progression"
+        );
+        assert_eq!(
+            compiled.cpu.registers(),
+            partial.cpu.registers(),
+            "{model:?} registers"
+        );
+        assert_eq!(
+            compiled.machine.bus.peek_memory(0x0010),
+            partial.machine.bus.peek_memory(0x0010),
+            "{model:?} guest RAM write/read result"
+        );
+        assert_eq!(
+            compiled.machine.bus.raw_panel_lamp_duty(),
+            partial.machine.bus.raw_panel_lamp_duty(),
+            "{model:?} front-panel duty"
+        );
+        assert_eq!(
+            compiled.machine.bus.raw_s100_status_word(),
+            partial.machine.bus.raw_s100_status_word(),
+            "{model:?} final 8212 status"
+        );
+        assert_eq!(
+            compiled.machine.bus.raw_panel_data(),
+            partial.machine.bus.raw_panel_data(),
+            "{model:?} final front-panel DATA"
+        );
+        assert_eq!(
+            compiled.machine.bus.raw_s100_wait(),
+            partial.machine.bus.raw_s100_wait(),
+            "{model:?} final WAIT boundary"
         );
     }
 }
