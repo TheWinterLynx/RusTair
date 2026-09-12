@@ -341,6 +341,11 @@ const MCD_CONTACTS: &[S100CardContact] = memory_contacts!(
 const S4K_CONTACTS: &[S100CardContact] = memory_contacts!(
     S100CardContact::new(S100Signal::Phi2, S100ContactRole::Input),
     S100CardContact::new(S100Signal::M1, S100ContactRole::Input),
+    // Later MITS artwork incorporates the November 1976 T4-detection fix:
+    // trailing pDBIN clocks the refresh flip-flop instead of counting phase
+    // pulses after pSYNC. Model that corrected board rather than the earlier
+    // revision whose T4 detector was known to fail in WAIT-state systems.
+    S100CardContact::new(S100Signal::DataBusIn, S100ContactRole::Input),
     S100CardContact::new(S100Signal::Run, S100ContactRole::Input),
     S100CardContact::new(S100Signal::HaltAcknowledge, S100ContactRole::Input),
 );
@@ -575,11 +580,12 @@ mod tests {
     }
 
     #[test]
-    fn synchronous_four_k_refresh_uses_phi2_m1_and_run_not_cloc() {
+    fn synchronous_four_k_refresh_uses_corrected_pdbin_t4_detection() {
         let contacts = MITS_88_S4K.contacts;
         for signal in [
             S100Signal::Phi2,
             S100Signal::M1,
+            S100Signal::DataBusIn,
             S100Signal::Run,
             S100Signal::HaltAcknowledge,
         ] {
