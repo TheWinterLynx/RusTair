@@ -78,11 +78,11 @@ In particular:
 
 - the original 1K static board retains its documented two read wait states;
 - the 88-4MCD tracks its 32-CLOC refresh cadence and asserts PRDY only when a selected memory access collides with the documented one/two-WAIT refresh window;
-- the 88-S4K derives synchronous refresh from PHI2/sM1 and performs the refresh in the hidden M1 slot without asserting PRDY; its card logic also accepts the documented STOP/HLTA refresh path;
+- the 88-S4K derives its synchronous refresh cadence from PHI2 and uses the corrected MITS pDBIN-falling-edge timing reference while sM1 is asserted to identify the hidden T4 refresh slot without asserting PRDY; its card logic also accepts the documented STOP/HLTA refresh path;
 - the 88-4MCS, 88-16MCS and 88-16MCD remain processor-no-wait boards in the digital S-100 timing model;
 - open bus, overlapping decoders, card-scoped protection and the one authoritative runtime storage remain unchanged.
 
-Dynamic historical RAM remains excluded from Adaptive Full's static-memory proof. It therefore executes through exact Partial whenever its timing can be observable rather than bypassing refresh/READY behavior for speed.
+Supported historical dynamic RAM may participate in Adaptive Full when the rest of the chassis satisfies Full's safety proof. Full does not replace those boards with a static-memory shortcut: the 88-4MCD advances the same physical card refresh phase and feeds collision TW states back into the semantic instruction timing, the 88-S4K advances the same synchronous refresh state without PRDY, and the crystal-controlled 88-16MCD remains processor-transparent at this digital boundary. Differential regressions compare long Full runs against forced Partial for T-state count, instruction progression, registers, guest RAM and front-panel state.
 
 This is deliberately **not** an analog DRAM-cell simulator. RusTair does not model capacitor leakage, charge decay, temperature-dependent retention margins or destructive failure after missed refresh. Those effects are outside the digital S-100 fidelity claim described in section 3.
 
