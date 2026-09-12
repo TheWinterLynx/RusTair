@@ -521,6 +521,9 @@ impl<'a> FullInstructionBus<'a> {
 
     #[inline]
     fn project_internal_tail(&mut self, t_states: u32) {
+        if t_states == 0 {
+            return;
+        }
         if self.last_projected_address.is_none() {
             debug_assert_eq!(t_states, 0);
             return;
