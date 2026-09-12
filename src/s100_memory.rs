@@ -350,10 +350,11 @@ const MCS4_CONTACTS: &[S100CardContact] = memory_contacts!(
     S100CardContact::new(S100Signal::ProtectStatus, S100ContactRole::TriStateOutput),
 );
 const MCS16_CONTACTS: &[S100CardContact] = memory_contacts!();
-const MCD16_CONTACTS: &[S100CardContact] = memory_contacts!(S100CardContact::new(
-    S100Signal::Clock,
-    S100ContactRole::Input
-),);
+const MCD16_CONTACTS: &[S100CardContact] = memory_contacts!(
+    S100CardContact::new(S100Signal::Phi2, S100ContactRole::Input),
+    S100CardContact::new(S100Signal::Run, S100ContactRole::Input),
+    S100CardContact::new(S100Signal::HaltAcknowledge, S100ContactRole::Input),
+);
 
 pub static MITS_88_4MCD: S100CardDescriptor = S100CardDescriptor {
     key: "mits-88-4mcd",
@@ -576,7 +577,30 @@ mod tests {
     #[test]
     fn synchronous_four_k_refresh_uses_phi2_m1_and_run_not_cloc() {
         let contacts = MITS_88_S4K.contacts;
-        for signal in [S100Signal::Phi2, S100Signal::M1, S100Signal::Run] {
+        for signal in [
+            S100Signal::Phi2,
+            S100Signal::M1,
+            S100Signal::Run,
+            S100Signal::HaltAcknowledge,
+        ] {
+            assert!(contacts.iter().any(|contact| contact.signal == signal));
+        }
+        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Clock));
+        assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Ready));
+    }
+
+    #[test]
+    fn sixteen_k_dynamic_refresh_uses_on_board_crystal_and_stop_control_not_cloc() {
+        let contacts = MITS_88_16MCD.contacts;
+        assert_eq!(
+            S100RamBoardModel::Mits16KDynamic88_16Mcd.refresh_model(),
+            S100RamRefreshModel::OnBoardCrystal,
+        );
+        for signal in [
+            S100Signal::Phi2,
+            S100Signal::Run,
+            S100Signal::HaltAcknowledge,
+        ] {
             assert!(contacts.iter().any(|contact| contact.signal == signal));
         }
         assert!(!contacts.iter().any(|contact| contact.signal == S100Signal::Clock));
