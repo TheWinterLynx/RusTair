@@ -244,24 +244,28 @@ impl RuntimeRamState {
                     unreachable!("88-4MCD must retain refresh-collision timing")
                 };
 
-                let mut became_due_on_this_clock = false;
+                // CLOC rises at PHI1 while processor SYNC for the same T1 becomes
+                // visible later, at PHI2. Preserve which collision phase the most
+                // recent CLOC established until that SYNC edge arrives. A refresh
+                // that becomes due on the immediately preceding CLOC is the
+                // documented two-WAIT case; an older pending refresh is one WAIT.
                 if clock_rising {
                     self.refresh_clock_count += 1;
                     if self.refresh_clock_count >= interval_clocks {
                         self.refresh_clock_count = 0;
                         self.refresh_pending = true;
-                        became_due_on_this_clock = true;
+                        self.refresh_collision_waits = max_waits;
+                    } else if self.refresh_pending {
+                        self.refresh_collision_waits = min_waits;
                     }
                 }
 
                 if sync_rising {
                     self.refresh_active = self.refresh_pending;
                     if self.refresh_active {
-                        self.refresh_collision_waits = if became_due_on_this_clock {
-                            max_waits
-                        } else {
-                            min_waits
-                        };
+                        if self.refresh_collision_waits == 0 {
+                            self.refresh_collision_waits = min_waits;
+                        }
                         self.complete_refresh_cycle();
                     } else {
                         self.refresh_collision_waits = 0;
@@ -296,17 +300,29 @@ impl RuntimeRamState {
             return;
         }
         let S100RamTimingModel::RefreshCollision {
-            interval_clocks, ..
+            interval_clocks,
+            min_waits,
+            max_waits,
         } = S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_model()
         else {
             unreachable!("88-4MCD must retain refresh-collision timing")
         };
         let interval = u32::from(interval_clocks);
         let total = u32::from(self.refresh_clock_count).saturating_add(clocks);
-        if total >= interval {
+        let crossed_refresh = total >= interval;
+        if crossed_refresh {
             self.refresh_pending = true;
         }
         self.refresh_clock_count = (total % interval) as u16;
+        if self.refresh_pending {
+            self.refresh_collision_waits = if crossed_refresh && total % interval == 0 {
+                max_waits
+            } else {
+                min_waits
+            };
+        } else {
+            self.refresh_collision_waits = 0;
+        }
     }
 
     fn full_four_mcd_machine_cycle(
@@ -317,27 +333,24 @@ impl RuntimeRamState {
     ) -> u32 {
         debug_assert!(base_t_states != 0);
         let S100RamTimingModel::RefreshCollision {
-            interval_clocks,
             min_waits,
             max_waits,
+            ..
         } = S100RamBoardModel::Mits4KDynamic88_4Mcd.timing_model()
         else {
             unreachable!("88-4MCD must retain refresh-collision timing")
         };
 
-        let pending_before_sync = self.refresh_pending;
-        let count_before_sync = self.refresh_clock_count;
+        // T1 PHI1 advances CLOC, then T1 PHI2 exposes SYNC. The shared collision
+        // latch therefore carries exactly the same phase information as Partial.
         self.full_advance_four_mcd_clocks(1);
-        let became_due_on_sync = !pending_before_sync
-            && self.refresh_pending
-            && u32::from(count_before_sync) + 1 >= u32::from(interval_clocks);
         let refresh_at_sync = self.refresh_pending;
         let selected_access = memory_access && self.config.contains(address);
         let waits = if refresh_at_sync && selected_access {
-            if became_due_on_sync {
-                max_waits
-            } else {
-                min_waits
+            match self.refresh_collision_waits {
+                waits if waits == max_waits => max_waits,
+                waits if waits == min_waits => min_waits,
+                _ => min_waits,
             }
         } else {
             0
@@ -347,8 +360,8 @@ impl RuntimeRamState {
             self.complete_refresh_cycle();
         }
         self.refresh_active = false;
-        self.refresh_collision_waits = 0;
         self.wait_clocks_remaining = 0;
+        self.refresh_collision_waits = 0;
         self.full_advance_four_mcd_clocks(
             base_t_states
                 .saturating_sub(1)
@@ -951,6 +964,9 @@ mod tests {
         for _ in 0..32 {
             clock_pulse(&mut card, 0x0010);
         }
+        // One later CLOC with no SYNC proves the request is already pending rather
+        // than becoming due on the CLOC immediately preceding this SYNC.
+        clock_pulse(&mut card, 0x0010);
         let resolved = observe(&mut card, read_drive(0x0010, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
         let _ = observe(&mut card, read_drive(0x0010, false, false));
@@ -968,9 +984,19 @@ mod tests {
         for _ in 0..31 {
             clock_pulse(&mut card, 0x0010);
         }
-        let resolved = observe(&mut card, read_drive(0x0010, true, true));
+
+        // Real 8080/MITS ordering: T1 PHI1 raises CLOC first, then SYNC appears
+        // at T1 PHI2. The card must carry the just-due phase across those two
+        // separate electrical observations and retain the two-WAIT collision.
+        let _ = observe(&mut card, read_drive(0x0010, false, true));
+        let resolved = observe(&mut card, read_drive(0x0010, true, false));
         assert_eq!(resolved.signal_level(S100Signal::Ready), Some(false));
+
+        // T2 PHI1 still sees SYNC high, so it must not consume either wait.
+        let t2_phi1 = observe(&mut card, read_drive(0x0010, true, true));
+        assert_eq!(t2_phi1.signal_level(S100Signal::Ready), Some(false));
         let _ = observe(&mut card, read_drive(0x0010, false, false));
+
         let first_wait = observe(&mut card, read_drive(0x0010, false, true));
         assert_eq!(first_wait.signal_level(S100Signal::Ready), Some(false));
         let _ = observe(&mut card, read_drive(0x0010, false, false));
@@ -988,6 +1014,9 @@ mod tests {
         for _ in 0..32 {
             clock_pulse(&mut card, 0x0010);
         }
+        // Keep this test on the one-WAIT phase; the two-WAIT phase is covered
+        // independently above.
+        clock_pulse(&mut card, 0x0010);
         let at_sync = observe(&mut card, write_drive(0x0010, true, false, false));
         assert_eq!(at_sync.signal_level(S100Signal::Ready), Some(true));
         let at_mwrt = observe(&mut card, write_drive(0x0010, false, false, true));
