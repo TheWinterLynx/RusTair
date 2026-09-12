@@ -26,7 +26,7 @@ pub(in crate::app) fn show_s100_hardware_editor(
         egui::ViewportBuilder::default()
             .with_title("RusTair — S-100 Hardware")
             .with_inner_size([1040.0, 780.0])
-            .with_min_inner_size([760.0, 560.0])
+            .with_min_inner_size([700.0, 520.0])
             .with_resizable(true),
         |ctx, _class| {
             egui::TopBottomPanel::top("s100-hardware-editor-summary").show(ctx, |ui| {
@@ -50,8 +50,8 @@ pub(in crate::app) fn show_s100_hardware_editor(
 
             egui::SidePanel::left("s100-hardware-inventory")
                 .resizable(true)
-                .default_width(260.0)
-                .width_range(210.0..=360.0)
+                .default_width(250.0)
+                .width_range(190.0..=360.0)
                 .show(ctx, |ui| {
                     ui.heading("Physical inventory");
                     ui.small("The list below is the mounted S-100 slot inventory used by the machine.");
@@ -60,7 +60,7 @@ pub(in crate::app) fn show_s100_hardware_editor(
                     let hardware = app.config.machine.s100_hardware;
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for slot in 1..=hardware.fitted_connectors() {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 ui.monospace(format!("{slot:02}"));
                                 ui.label(card_summary(hardware.slot(slot)));
                             });
