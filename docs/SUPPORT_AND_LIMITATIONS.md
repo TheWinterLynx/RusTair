@@ -72,6 +72,8 @@ If a historical behavior depends on one of those effects, it should be documente
 
 ## 4. RAM fidelity scope
 
+Status: **PASS — bus-visible digital RAM hardware fidelity is closed for the supported MITS RAM inventory.** Canonical closeout record: [`RAM_HARDWARE_FIDELITY.md`](RAM_HARDWARE_FIDELITY.md).
+
 The runtime uses physical installed RAM-card instances as the authoritative guest storage. The supported MITS RAM inventory now has a closed **bus-visible digital timing** model rather than a static-RAM-only PASS claim.
 
 In particular:
