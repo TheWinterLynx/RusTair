@@ -68,6 +68,14 @@ fn led_visual_response(
     })
 }
 
+fn sense_switch_activates_on_press(
+    primary_pressed: bool,
+    pointer_pos: Option<Pos2>,
+    hit: Rect,
+) -> bool {
+    primary_pressed && pointer_pos.is_some_and(|position| hit.contains(position))
+}
+
 #[derive(Default)]
 struct MomentarySwitchInteraction {
     action: Option<bool>,
@@ -218,9 +226,13 @@ impl RusTairApp {
         debug_assert_eq!(switch.kind, SwitchKind::TwoPosition);
         let hit = Self::centered_rect(origin, scale, switch.socket.0, switch.socket.1, switch.hit_size.0, switch.hit_size.1);
         let response = ui.allocate_rect(hit, Sense::click());
-        if response.clicked() {
+        let (primary_pressed, pointer_pos) = ui.ctx().input(|input| {
+            (input.pointer.primary_pressed(), input.pointer.interact_pos())
+        });
+        if sense_switch_activates_on_press(primary_pressed, pointer_pos, hit) {
             self.machine.toggle_sense_switch(bit);
             self.audio.play_once("assets/click.mp3");
+            ui.ctx().request_repaint();
         }
         if response.hovered() { response.clone().on_hover_text(format!("Sense switch {}", switch.name)); }
         let position = if self.machine.switch_register() & (1u16 << bit) != 0 { SwitchPosition::Up } else { SwitchPosition::Down };
@@ -494,6 +506,18 @@ impl RusTairApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sense_switch_changes_on_mouse_press_not_hold_or_release() {
+        let hit = Rect::from_min_max(Pos2::new(10.0, 20.0), Pos2::new(30.0, 40.0));
+        let inside = Some(Pos2::new(20.0, 30.0));
+        let outside = Some(Pos2::new(5.0, 5.0));
+
+        assert!(sense_switch_activates_on_press(true, inside, hit));
+        assert!(!sense_switch_activates_on_press(false, inside, hit));
+        assert!(!sense_switch_activates_on_press(true, outside, hit));
+        assert!(!sense_switch_activates_on_press(true, None, hit));
+    }
 
     #[test]
     fn led_optics_hide_residual_activity_below_threshold() {
