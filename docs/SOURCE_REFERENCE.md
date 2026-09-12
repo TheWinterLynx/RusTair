@@ -146,6 +146,7 @@ This layer connects the exact CPU and generic S-100 runtime into an Altair machi
 | `src/machine/mod.rs` | Machine module root and `AltairBus` composition. Owns machine memory facade, front-panel controller, canonical S-100 bus state and diagnostic metering. Exposes selected machine types/constants to backend. No hidden UART or alternate RAM. |
 | `src/machine/chassis.rs` | `AltairChassis`: physical chassis lifecycle/control wrapper (power, panel/control interaction and CPU-free machine container). RUN state derives from physical bus latch rather than a duplicate boolean authority. |
 | `src/machine/cpu_board.rs` | Adapter between `Cpu8080Cycle` package pins/control inputs and the MITS 8080 S-100 CPU-board electrical behavior. Defines CPU samples/control-line views used by exact backend. |
+| `src/machine/dcdd.rs` | MITS 88-DCDD physical two-board controller topology. Owns the one documented shared controller harness/external disk-cable boundary and constructs distinct Board #1 / Board #2 S-100 electrical cards without giving either board a software reference to the other. Phase 1 is deliberately electrically quiescent until source-backed decode/signals are activated in later phases. |
 | `src/machine/front_panel.rs` | `FrontPanelController` and switch/control-side panel state such as address/data switch handling. Physical operations are later projected onto the bus/chassis; this is not the GUI renderer. |
 | `src/machine/panel_bus.rs` | Canonical `S100BusState`, raw panel-visible signal/status state, panel lamp snapshots/integration and optimized Full panel-duty accumulation. Central front-panel fidelity file. Raw state is authoritative; brightness is derived. |
 | `src/machine/memory.rs` | Machine-facing memory facade over the live `S100RuntimeFabric`: configuration/migration helpers, physical RAM inspection/load/protection, guest reads/writes and serial-time forwarding. Must not become a second memory store. |
@@ -167,7 +168,7 @@ This layer connects the exact CPU and generic S-100 runtime into an Altair machi
 | `src/s100_interface.rs` | Canonical public/software view of a card connector. Re-exports the common card/backplane electrical interfaces and explicitly separates host inspection handles from guest bus transactions. |
 | `src/s100_backplane.rs` | Card-agnostic electrical resolver. Stores installed card drives, resolves High-Z/strong/open-collector drivers and contention, tracks changed pins/cards, caches selected drives and uses compact bitsets/driver counts on the hot path. Must never contain CPU/RAM/serial family logic. |
 | `src/s100_chassis.rs` | Historical chassis/motherboard topology: Altair 8800/8800a/8800b physical connector populations and validation. Creates empty usable backplanes; does not decide card identity. |
-| `src/s100_runtime.rs` | Live physical fabric assembler and runtime authority for installed cards. Materializes `S100HardwareConfig` into CPU/RAM/serial card instances, owns the `S100Backplane`, static memory responder table, RAM slot index and I/O decode index, and performs electrical settling/optimized guest transactions. |
+| `src/s100_runtime.rs` | Live physical fabric assembler and runtime authority for installed cards. Materializes `S100HardwareConfig` into CPU/RAM/serial/storage-controller card instances, owns the `S100Backplane`, shared 88-DCDD harness when fitted, static memory responder table, RAM slot index and I/O decode index, and performs electrical settling/optimized guest transactions. |
 | `src/s100_cpu.rs` | Live MITS 8080 CPU-board S-100 card implementation/handle. Converts CPU package state into board-level S-100 drives/status-latch behavior while exposing controlled host reconciliation/inspection hooks. |
 | `src/s100_memory.rs` | Historical RAM-board descriptions/configuration semantics used to represent real board address/population/timing/protection properties. Provides board-level validation separate from runtime byte storage. |
 | `src/s100_runtime_ram.rs` | Live RAM card implementation and handle. Owns actual RAM bytes and runtime drive/decode/protection/wait behavior for installed RAM cards. This storage is the authoritative guest memory. |
@@ -245,6 +246,7 @@ flowchart TB
     RUNTIME --> CPUB[src/s100_cpu.rs]
     RUNTIME --> RAM[src/s100_runtime_ram.rs]
     RUNTIME --> IO[src/s100_io_card.rs]
+    RUNTIME --> DCDD[src/machine/dcdd.rs]
     IO --> SERIAL[src/machine/sio.rs + two_sio.rs]
     APP --> ROUTER[src/io/serial_router.rs]
     ROUTER --> SERIAL
@@ -264,6 +266,7 @@ These are not "do not touch" files, but they sit on critical fidelity/performanc
 - `src/s100_backplane.rs` — electrical resolution for every card.
 - `src/s100_runtime.rs` — live topology plus critical hot-path specialization.
 - `src/s100_runtime_ram.rs` — authoritative guest RAM storage.
+- `src/machine/dcdd.rs` — physical two-board disk-controller ownership/harness boundary; later timing/decode changes must remain source-backed and avoid per-T-state idle work.
 - `src/machine/sio.rs`, `two_sio.rs`, `mc6850.rs` — guest-visible serial timing/status/interrupt state.
 - `src/full_boundary_reconcile.rs` — Full→Partial physical re-entry.
 - `src/app/execution_clock.rs`, `execution_frame.rs` — host scheduling must not change modeled hardware time.

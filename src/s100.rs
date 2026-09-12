@@ -192,6 +192,7 @@ pub enum S100CardClass {
     Cpu,
     Memory,
     Serial,
+    StorageController,
     InterruptController,
     FrontPanel,
     Compatibility,

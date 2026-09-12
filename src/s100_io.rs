@@ -58,6 +58,22 @@ impl S100IoDecodeIndex {
                     index.add_two_sio_interrupt(interrupt_wiring.port0, slot_mask);
                     index.add_two_sio_interrupt(interrupt_wiring.port1, slot_mask);
                 }
+                S100InstalledCardConfig::Mits88DcddBoard1
+                | S100InstalledCardConfig::Mits88DcddBoard2 => {
+                    // Board #1 owns the actual A8..A15 address decoder. Board #2
+                    // is nevertheless a physical participant in the same OUT
+                    // transactions because DCL/CD/WDS reach it over the dedicated
+                    // controller harness. Fast selection therefore keeps *both*
+                    // fitted boards present for 08h-0Ah; this mask is scheduling
+                    // metadata, not a claim that Board #2 independently decodes
+                    // an S-100 address.
+                    for port in 0x08..=0x0a {
+                        index.add_port(port, slot_mask);
+                    }
+                    // Controller interrupt wiring is intentionally Phase 7. Do
+                    // not pre-claim PINT or VI7 merely because later MITS options
+                    // exist in the source material.
+                }
                 S100InstalledCardConfig::Mits8080Cpu
                 | S100InstalledCardConfig::Ram(_)
                 | S100InstalledCardConfig::FastRamCompatibility(_) => {}
@@ -175,6 +191,27 @@ mod tests {
             assert_eq!(index.unique_port_slot(port), Some(5));
         }
         assert_eq!(index.port_responders(0x48), 0);
+    }
+
+    #[test]
+    fn dcdd_pair_compiles_fixed_ports_without_claiming_interrupt_wiring() {
+        let mut hardware = six_slot_with_cpu();
+        hardware
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
+        hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
+        let index = S100IoDecodeIndex::from_hardware(hardware.validate().unwrap());
+        let pair = s100_slot_mask(3) | s100_slot_mask(4);
+
+        assert_eq!(index.port_responders(0x07), 0);
+        assert_eq!(index.port_responders(0x08), pair);
+        assert_eq!(index.port_responders(0x09), pair);
+        assert_eq!(index.port_responders(0x0a), pair);
+        assert_eq!(index.port_responders(0x0b), 0);
+        assert_eq!(index.pint_possible_drivers(), 0);
+        assert_eq!(index.vi_possible_drivers(7), 0);
     }
 
     #[test]

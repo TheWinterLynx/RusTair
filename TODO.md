@@ -60,6 +60,31 @@ The supported base machine should not be reopened generically; add work only for
 - [ ] Implement the MITS 88-VI only as a real S-100 card with raw VI inputs/arbitration; serial cards must never fabricate restart opcodes themselves.
 - [ ] Add further RAM/I/O/CPU boards only after the base Altair remains green and the card can be represented through normal S-100 ownership.
 
+## P1 — MITS 88-DCDD / 88-DISK + Pertec FD-400
+
+Implementation contract: [`docs/88_DCDD_FD400_IMPLEMENTATION_PLAN.md`](docs/88_DCDD_FD400_IMPLEMENTATION_PLAN.md). Phase-0 source contract: [`docs/88_DCDD_FD400_HARDWARE_CONTRACT.md`](docs/88_DCDD_FD400_HARDWARE_CONTRACT.md). The authentic and accelerated disk paths must share the same physical controller/drive state machines; Fast Disk removes waits but must never become a guest-visible sector API or be implied by host `Unlimited` execution speed.
+
+- [x] **Phase 0 — source-backed hardware contract:** ports, polarities, controller-board wiring, drive selection/topology, base timing, interrupt option and the first physical-media contract are locked down from MITS documentation; unresolved schematic/mechanical details are explicitly deferred rather than guessed.
+- [x] **Phase 1 — physical topology/config skeleton:** add the source-backed DCDD S-100 card set, documented inter-board/controller harness and external drive-bus ownership with no direct CPU/card shortcuts and no intentional idle per-T-state work.
+- [ ] **Phase 2 — decode/reset/register surface:** implement real S-100 I/O decode and controller state/reset behavior without media, proving accesses through public 8080/S-100 cycles and preserving front-panel visibility.
+- [ ] **Phase 3 — FD-400 mechanics/time engine:** implement rotational phase, hard-sector/index position, track/head/step state and source-backed deadlines using virtual-time epochs/events rather than per-T-state ticking.
+- [ ] **Phase 4 — media abstraction/read-only surface:** mount/eject a validated physical hard-sector image below the drive electronics, with disk-present/write-protect state separate from host file/path handling.
+- [ ] **Phase 5 — authentic read path:** reproduce synchronization/data-ready cadence and late-service behavior end to end through FD-400 -> DCDD -> S-100 -> 8080, using arithmetic catch-up where observationally equivalent.
+- [ ] **Phase 6 — authentic write path:** reproduce write-enable/data-ready/sync/erase timing, write protection and physical media mutation without filesystem/sector shortcuts.
+- [ ] **Phase 7 — interrupts/edge cases/revisions:** implement only source-backed raw interrupt signaling, door/no-media/address/track-zero cases and separately selectable historical revisions where documentation proves a behavioral difference.
+- [ ] **Phase 8 — Fast Disk timing policy:** collapse mechanical/rotational/byte waits to the earliest safe observable transitions while preserving the exact guest protocol, state ordering and logical error conditions of the authentic hardware.
+- [ ] **Phase 9 — persistence/chassis/media UI:** persist physical cards, drive addressing and timing policy through authoritative config; add truthful mount/eject/write-protect controls without UI shadow state.
+- [ ] **Phase 10 — authentic software/bootstrap validation:** boot representative MITS disk software through CPU -> S-100 -> DCDD -> FD-400 -> media with no PC trap, memory injection or direct sector hook; run the same software unchanged in Fast mode.
+- [ ] **Phase 11 — performance/closeout:** add installed-idle, polling, continuous read/write, late-byte and many-idle-drive benchmarks; target <2% idle regression, <8% polling regression and <15% continuous-transfer regression before final fidelity/docs closeout.
+
+Phase rules:
+
+- [ ] Each phase lands only when its focused PASS gate in the implementation contract is green; do not weaken an earlier gate to unlock a later phase.
+- [ ] One vs sixteen idle drives must not create O(drives × T-states) work; rotational/mechanical state should be epoch/deadline-derived where possible.
+- [ ] Authentic peripheral timing is guest virtual time. 1x/5x/10x/Unlimited changes host throughput only and must not change the historical FD-400 clock/timing model.
+- [ ] Any new Rust source or integration-test file is added to `docs/SOURCE_REFERENCE.md` or `docs/TEST_REFERENCE.md` in the same phase.
+- [ ] Do not run GitHub Actions unless explicitly requested.
+
 ## P1 — Configuration and persistence
 
 - [ ] Keep current config schema atomic and crash-safe.
