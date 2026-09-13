@@ -29,8 +29,8 @@ pub(crate) fn get(path: &str) -> Option<&'static [u8]> {
         "assets/asrlinelocal.png" => include_bytes!("../assets/asrlinelocal.png"),
         "assets/asrlinelocalknob.png" => include_bytes!("../assets/asrlinelocalknob.png"),
         "assets/teletype.ttf" => include_bytes!("../assets/teletype.ttf"),
-        "assets/terminals/adm3a_shell.jpg" => {
-            include_bytes!("../assets/terminals/adm3a_shell.jpg")
+        "assets/terminals/adm3a_shell.png" => {
+            include_bytes!("../assets/terminals/adm3a_shell.png")
         }
 
         "assets/bellpadded.mp3" => include_bytes!("../assets/bellpadded.mp3"),
@@ -66,7 +66,7 @@ mod tests {
             "assets/asrlinelocal.png",
             "assets/asrlinelocalknob.png",
             "assets/teletype.ttf",
-            "assets/terminals/adm3a_shell.jpg",
+            "assets/terminals/adm3a_shell.png",
             "assets/bellpadded.mp3",
             "assets/click.mp3",
             "assets/crpadded.mp3",
