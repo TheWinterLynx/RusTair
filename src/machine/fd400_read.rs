@@ -5,11 +5,10 @@
 //! latch and NRDA remain owned by the MITS 88-DCDD Board #1 read circuitry.
 //! No guest I/O semantics or filesystem-sector API exists here.
 
-use super::PHYSICAL_BYTES_PER_SECTOR;
 use super::super::{
-    Fd400Time, HARD_SECTORS_PER_TRACK, PertecFd400, SECTOR_TIME_UNITS,
-    TIME_UNITS_PER_MICROSECOND,
+    Fd400Time, HARD_SECTORS_PER_TRACK, PertecFd400, SECTOR_TIME_UNITS, TIME_UNITS_PER_MICROSECOND,
 };
+use super::PHYSICAL_BYTES_PER_SECTOR;
 
 const READ_DATA_START_UNITS: u64 = 140 * TIME_UNITS_PER_MICROSECOND;
 const READ_BYTE_INTERVAL_UNITS: u64 = 32 * TIME_UNITS_PER_MICROSECOND;
@@ -36,36 +35,38 @@ impl PertecFd400 {
         let head_ready_at = self.head_ready_at?;
         let rotation = self.rotation_snapshot_without_settle(now);
 
-        let (revolution, sector, byte_offset, age_units) =
-            if rotation.sector_offset_units >= READ_DATA_START_UNITS {
-                let elapsed = rotation.sector_offset_units - READ_DATA_START_UNITS;
-                let byte_offset =
-                    (elapsed / READ_BYTE_INTERVAL_UNITS).min(LAST_PHYSICAL_BYTE as u64) as usize;
-                let due_offset =
-                    READ_DATA_START_UNITS + byte_offset as u64 * READ_BYTE_INTERVAL_UNITS;
+        let (revolution, sector, byte_offset, age_units) = if rotation.sector_offset_units
+            >= READ_DATA_START_UNITS
+        {
+            let elapsed = rotation.sector_offset_units - READ_DATA_START_UNITS;
+            let byte_offset =
+                (elapsed / READ_BYTE_INTERVAL_UNITS).min(LAST_PHYSICAL_BYTE as u64) as usize;
+            let due_offset = READ_DATA_START_UNITS + byte_offset as u64 * READ_BYTE_INTERVAL_UNITS;
+            (
+                rotation.revolution,
+                rotation.sector,
+                byte_offset,
+                rotation.sector_offset_units - due_offset,
+            )
+        } else {
+            if rotation.revolution == 0 && rotation.sector == 0 {
+                return None;
+            }
+            let (revolution, sector) = if rotation.sector == 0 {
                 (
-                    rotation.revolution,
-                    rotation.sector,
-                    byte_offset,
-                    rotation.sector_offset_units - due_offset,
+                    rotation.revolution.checked_sub(1)?,
+                    HARD_SECTORS_PER_TRACK - 1,
                 )
             } else {
-                if rotation.revolution == 0 && rotation.sector == 0 {
-                    return None;
-                }
-                let (revolution, sector) = if rotation.sector == 0 {
-                    (rotation.revolution.checked_sub(1)?, HARD_SECTORS_PER_TRACK - 1)
-                } else {
-                    (rotation.revolution, rotation.sector - 1)
-                };
-                (
-                    revolution,
-                    sector,
-                    LAST_PHYSICAL_BYTE,
-                    rotation.sector_offset_units + SECTOR_TIME_UNITS
-                        - LAST_PHYSICAL_BYTE_DUE_UNITS,
-                )
+                (rotation.revolution, rotation.sector - 1)
             };
+            (
+                revolution,
+                sector,
+                LAST_PHYSICAL_BYTE,
+                rotation.sector_offset_units + SECTOR_TIME_UNITS - LAST_PHYSICAL_BYTE_DUE_UNITS,
+            )
+        };
 
         let due_at = Fd400Time::from_units(now.units().saturating_sub(age_units));
         if due_at < head_ready_at {
@@ -149,16 +150,12 @@ mod tests {
         let sector_8 = 8 * SECTOR_TIME_UNITS;
 
         let before_first = drive
-            .latest_read_byte_event(Fd400Time::from_units(
-                sector_8 + READ_DATA_START_UNITS - 1,
-            ))
+            .latest_read_byte_event(Fd400Time::from_units(sector_8 + READ_DATA_START_UNITS - 1))
             .unwrap();
         assert_eq!(before_first.1, expected_byte(0, 7, LAST_PHYSICAL_BYTE));
 
         let first = drive
-            .latest_read_byte_event(Fd400Time::from_units(
-                sector_8 + READ_DATA_START_UNITS,
-            ))
+            .latest_read_byte_event(Fd400Time::from_units(sector_8 + READ_DATA_START_UNITS))
             .unwrap();
         assert_eq!(first.1, expected_byte(0, 8, 0));
         assert!(first.0 > before_first.0);
@@ -184,16 +181,12 @@ mod tests {
         let mut drive = readable_drive();
         let sector_9 = 9 * SECTOR_TIME_UNITS;
         let event = drive
-            .latest_read_byte_event(Fd400Time::from_units(
-                sector_9 + READ_DATA_START_UNITS - 1,
-            ))
+            .latest_read_byte_event(Fd400Time::from_units(sector_9 + READ_DATA_START_UNITS - 1))
             .unwrap();
         assert_eq!(event.1, expected_byte(0, 8, LAST_PHYSICAL_BYTE));
 
         let next = drive
-            .latest_read_byte_event(Fd400Time::from_units(
-                sector_9 + READ_DATA_START_UNITS,
-            ))
+            .latest_read_byte_event(Fd400Time::from_units(sector_9 + READ_DATA_START_UNITS))
             .unwrap();
         assert_eq!(next.1, expected_byte(0, 9, 0));
         assert_eq!(next.0, event.0 + 1);
