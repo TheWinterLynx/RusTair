@@ -1,6 +1,6 @@
 # MITS 88-DCDD / 88-DISK + Pertec FD-400 implementation plan
 
-Status: **Phases 0-3 PASS; Phase 4 is the next implementation boundary**
+Status: **Phases 0-5 PASS; Phase 6 is the next implementation boundary**
 
 This document is the staged implementation contract for adding the original Altair 8-inch floppy subsystem without weakening RusTair's hardware-fidelity architecture.
 
@@ -200,7 +200,7 @@ PASS gate:
 
 Media bytes, read-data cadence/NRDA, write-data cadence/ENWD/trim erase and interrupt assertion remain intentionally outside Phase 3.
 
-### Phase 4 — Media abstraction and read-only physical surface
+### Phase 4 — Media abstraction and read-only physical surface — PASS
 
 Deliverables:
 
@@ -210,13 +210,21 @@ Deliverables:
 - Validate image geometry/size and reject incompatible media explicitly.
 - Keep room for future preservation/flux-level media without changing controller APIs.
 
+Implemented Phase-4 evidence:
+
+- `HardSectored8InchMedia` models exactly 77 tracks × 32 hard sectors × 137 physical bytes per sector (337,568 bytes) and rejects any other byte length.
+- Track/sector/physical-byte addressing lives below the FD-400 and retains raw physical bytes rather than projecting 128-byte filesystem sectors.
+- Media insertion/ejection and write-protect metadata are independent of the payload bytes and of controller register state.
+- No controller or CPU-facing type retains a host pathname or image-format identifier.
+- Mounting/ejecting does not alter the FD-400 rotation/mechanical epoch.
+
 PASS gate:
 
 - Media can be mounted/ejected without the controller knowing a host pathname.
 - Track/sector/physical-byte addressing belongs below the drive electronics.
 - Invalid images cannot silently reshape themselves into valid disks.
 
-### Phase 5 — Authentic read path end to end
+### Phase 5 — Authentic read path end to end — PASS
 
 Deliverables:
 
@@ -225,6 +233,16 @@ Deliverables:
 - Implement the documented effect of the CPU reading too late: overwrite/loss/overrun semantics must follow hardware, not pause the disk for the guest.
 - Drive status/data through the real DCDD boards and S-100 `IN` cycles.
 - Use arithmetic catch-up for elapsed byte intervals where equivalent.
+
+Implemented Phase-5 evidence:
+
+- FD-400 read events become available 140 µs after Sector True and continue at the source-backed 32 µs byte cadence.
+- Read-event position is derived arithmetically from virtual time; large elapsed intervals do not iterate individual magnetic bits or CPU T-states.
+- Board #1 owns the read-data latch and active-low NRDA status. `IN 0Ah` returns the retained latch and clears only the current NRDA generation.
+- If the 8080 services the controller late, newer physical bytes overwrite the unread latch; the platter never stretches time to wait for software.
+- A mounted-media fixture proved the chain FD-400 -> Board #1 -> `IN 08h` NRDA -> `IN 0Ah`, including late overwrite (`8E`, `8F`, then `91` when `90` is missed).
+- The end-to-end oracle executes real 8080 instructions (`OUT 08h`, `OUT 09h`, polling `IN 08h`, `IN 0Ah`, `STA`, `HLT`) over CPU board + live S-100 + both DCDD boards + FD-400 + media. It read physical byte `8E` after 80,119 T-states without direct controller access from the guest path.
+- The complete local gate passed: `cargo fmt --all -- --check`, `$env:RUSTFLAGS='-Dwarnings'; cargo test --locked --all-targets`, and `cargo build --locked --release`.
 
 PASS gate:
 
@@ -365,4 +383,4 @@ Names may change to match repository conventions. Any new integration-test file 
 
 ## Next implementation boundary
 
-The next code phase is **Phase 4 — media abstraction/read-only physical surface**. It must add media below the drive electronics only; it must not jump ahead to guest read cadence, writes, interrupts, boot shortcuts or UI mounting semantics that belong to later phases.
+The next code phase is **Phase 6 — authentic write path**. It must add ENWD/write-data cadence, write-enable sequencing, write protection and physical-media mutation through the existing DCDD -> FD-400 -> media path. It must not jump ahead to interrupts, Fast Disk, UI mounting or boot shortcuts.
