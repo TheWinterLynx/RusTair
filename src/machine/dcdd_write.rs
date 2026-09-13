@@ -12,6 +12,9 @@ const WRITE_BYTE_INTERVAL_US: u64 = 32;
 const TRIM_ERASE_TAIL_US: u64 = 475;
 const DATA_BYTES_PER_SECTOR: u64 = 137;
 const FILL_BYTE_GENERATION: u64 = DATA_BYTES_PER_SECTOR;
+// FD-400 time is one sixth of a microsecond. One 360-RPM revolution is
+// 1,000,000 units and the hard-sector wheel divides it exactly into 32 sectors.
+const HARD_SECTOR_TIME_UNITS: u64 = 31_250;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct WriteByteAcceptance {
@@ -48,15 +51,26 @@ impl Board2WriteElectronics {
         }
     }
 
+    pub(super) fn clear(&mut self) {
+        self.window = None;
+        self.consumed_generation = None;
+        self.fill_byte_latched = false;
+    }
+
     /// WRITE ENABLE is asserted after software observes Sector True. The MITS
     /// guide defines trim erase relative to WRITE ENABLE, but ENWD relative to
     /// the beginning of the selected sector.
-    pub(super) fn begin(
+    pub(super) fn begin_for_current_sector(
         &mut self,
         write_enable_at: Fd400Time,
-        sector_start_at: Fd400Time,
-        sector_end_at: Fd400Time,
+        sector_offset_units: u64,
     ) {
+        let sector_start_at = Fd400Time::from_units(
+            write_enable_at
+                .units()
+                .saturating_sub(sector_offset_units),
+        );
+        let sector_end_at = sector_start_at.saturating_add(HARD_SECTOR_TIME_UNITS);
         self.window = Some(WriteWindow {
             write_enable_at,
             trim_erase_on_at: write_enable_at.saturating_add(
@@ -138,18 +152,20 @@ impl Board2WriteElectronics {
 mod tests {
     use super::*;
 
-    fn times() -> (Fd400Time, Fd400Time, Fd400Time) {
+    fn begin(write: &mut Board2WriteElectronics) -> Fd400Time {
         let sector_start = Fd400Time::from_microseconds(1_000);
         let write_enable = Fd400Time::from_microseconds(1_020);
-        let sector_end = Fd400Time::from_microseconds(6_208);
-        (sector_start, write_enable, sector_end)
+        write.begin_for_current_sector(
+            write_enable,
+            write_enable.saturating_duration_since(sector_start),
+        );
+        write_enable
     }
 
     #[test]
     fn trim_erase_and_first_enwd_follow_their_distinct_documented_origins() {
-        let (sector_start, write_enable, sector_end) = times();
         let mut write = Board2WriteElectronics::new();
-        write.begin(write_enable, sector_start, sector_end);
+        begin(&mut write);
 
         assert!(!write.trim_erase_active(Fd400Time::from_microseconds(1_219)));
         assert!(write.trim_erase_active(Fd400Time::from_microseconds(1_220)));
@@ -159,9 +175,8 @@ mod tests {
 
     #[test]
     fn output_clears_enwd_only_until_the_next_32_us_opportunity() {
-        let (sector_start, write_enable, sector_end) = times();
         let mut write = Board2WriteElectronics::new();
-        write.begin(write_enable, sector_start, sector_end);
+        begin(&mut write);
 
         let first_at = Fd400Time::from_microseconds(1_280);
         let first = write.consume_data(first_at, 0x81).unwrap();
@@ -174,9 +189,8 @@ mod tests {
 
     #[test]
     fn large_time_jump_resolves_directly_to_the_current_write_generation() {
-        let (sector_start, write_enable, sector_end) = times();
         let mut write = Board2WriteElectronics::new();
-        write.begin(write_enable, sector_start, sector_end);
+        begin(&mut write);
 
         let now = Fd400Time::from_microseconds(1_280 + 73 * 32);
         let accepted = write.consume_data(now, 0x5a).unwrap();
@@ -186,9 +200,8 @@ mod tests {
 
     #[test]
     fn documented_138th_byte_switches_to_fill_and_suppresses_further_enwd() {
-        let (sector_start, write_enable, sector_end) = times();
         let mut write = Board2WriteElectronics::new();
-        write.begin(write_enable, sector_start, sector_end);
+        begin(&mut write);
 
         let fill_at = Fd400Time::from_microseconds(1_280 + 137 * 32);
         assert!(write.enwd(fill_at));
@@ -201,15 +214,33 @@ mod tests {
 
     #[test]
     fn write_disables_at_sector_end_but_trim_erase_holds_move_head_475_us_longer() {
-        let (sector_start, write_enable, sector_end) = times();
         let mut write = Board2WriteElectronics::new();
-        write.begin(write_enable, sector_start, sector_end);
+        begin(&mut write);
+        let sector_end = Fd400Time::from_units(
+            Fd400Time::from_microseconds(1_000)
+                .units()
+                .saturating_add(HARD_SECTOR_TIME_UNITS),
+        );
+        let one_unit_before_end = Fd400Time::from_units(sector_end.units() - 1);
+        let trim_end = sector_end
+            .saturating_add(Fd400Time::from_microseconds(TRIM_ERASE_TAIL_US).units());
 
-        assert!(write.write_active(Fd400Time::from_microseconds(6_207)));
+        assert!(write.write_active(one_unit_before_end));
         assert!(!write.write_active(sector_end));
         assert!(write.move_head_inhibited(sector_end));
-        assert!(write.trim_erase_active(Fd400Time::from_microseconds(6_682)));
-        assert!(!write.trim_erase_active(Fd400Time::from_microseconds(6_683)));
-        assert!(!write.move_head_inhibited(Fd400Time::from_microseconds(6_683)));
+        assert!(write.trim_erase_active(Fd400Time::from_units(trim_end.units() - 1)));
+        assert!(!write.trim_erase_active(trim_end));
+        assert!(!write.move_head_inhibited(trim_end));
+    }
+
+    #[test]
+    fn clear_aborts_write_and_trim_state_immediately() {
+        let mut write = Board2WriteElectronics::new();
+        begin(&mut write);
+        write.clear();
+        let now = Fd400Time::from_microseconds(1_500);
+        assert!(!write.write_active(now));
+        assert!(!write.trim_erase_active(now));
+        assert!(!write.enwd(now));
     }
 }
