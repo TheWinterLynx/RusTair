@@ -3,8 +3,9 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
-const LED_VISIBLE_THRESHOLD: f32 = 0.0045;
-const LED_HALO_MAX_ALPHA: u8 = 72;
+const LED_VISIBLE_THRESHOLD: f32 = 0.008;
+const LED_HALO_MAX_ALPHA: u8 = 92;
+const LED_BLOOM_THRESHOLD: f32 = 0.72;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LedDisplaySettings {
@@ -26,7 +27,7 @@ struct LedVisualResponse {
     halo_alpha: u8,
     body_alpha: u8,
     core_alpha: u8,
-    glare_alpha: u8,
+    bloom_alpha: u8,
 }
 
 fn optical_alpha(max_alpha: u8, response: f32) -> u8 {
@@ -38,27 +39,40 @@ fn led_display_settings() -> LedDisplaySettings {
     LedDisplaySettings { brightness, aura }
 }
 
-/// Convert the panel integrator's electrical duty cycle into a visual LED
-/// response. This is deliberately presentation-only: CPU/S-100 activity stays
-/// untouched. The calibrated curve remains fixed; the two live controls are
-/// multipliers layered on top so 1.00x / 1.00x reproduces the current default
-/// exactly and Reset to default is deterministic.
+#[inline]
+fn remap_above_threshold(value: f32, threshold: f32) -> f32 {
+    ((value - threshold) / (1.0 - threshold)).clamp(0.0, 1.0)
+}
+
+/// Convert the panel integrator's electrical duty cycle into the optical
+/// response of the original red diffuse front-panel lamps. This remains a
+/// presentation-only transfer: CPU/S-100 activity and exact electrical duty are
+/// untouched. Compared with the previous low-duty visibility curve, this keeps
+/// substantially more contrast between transient bus activity and a lamp that
+/// is genuinely driven for most of the observation window.
 fn led_visual_response(intensity: f32, settings: LedDisplaySettings) -> Option<LedVisualResponse> {
     let electrical = intensity.clamp(0.0, 1.0);
     if electrical < LED_VISIBLE_THRESHOLD {
         return None;
     }
 
+    let body = electrical.powf(0.92);
+    let core = electrical.powf(1.16);
+    let halo = remap_above_threshold(electrical, 0.14).powf(1.55);
+    let bloom = remap_above_threshold(electrical, LED_BLOOM_THRESHOLD).powf(2.20);
+
     Some(LedVisualResponse {
-        // Aura controls only the diffuse outer glow. It never changes the
-        // electrical activity or the LED body itself.
-        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, electrical.powf(1.25) * settings.aura),
-        // Brightness controls emitted light from the red body, luminous core
-        // and high-intensity white hot-spot while preserving their relative
-        // optical response curves.
-        body_alpha: optical_alpha(255, electrical.powf(0.60) * settings.brightness),
-        core_alpha: optical_alpha(255, electrical.powf(0.82) * settings.brightness),
-        glare_alpha: optical_alpha(255, electrical.powf(1.80) * settings.brightness),
+        // A diffuse lens should not advertise weak activity with a broad aura;
+        // the halo becomes appreciable only once the electrical duty is real.
+        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, halo * settings.aura),
+        // Brightness remains a presentation multiplier, but the default curve
+        // now preserves the panel's real dynamic range instead of lifting weak
+        // activity toward the appearance of a continuously driven lamp.
+        body_alpha: optical_alpha(255, body * settings.brightness),
+        core_alpha: optical_alpha(255, core * settings.brightness),
+        // White saturation is treated as an eye/camera bloom of a strongly lit
+        // diffuse red lamp, not as a permanent specular spot on a clear LED.
+        bloom_alpha: optical_alpha(224, bloom * settings.brightness),
     })
 }
 
@@ -166,32 +180,31 @@ impl RusTairApp {
         };
         let center = origin + Vec2::new(x * scale, y * scale);
 
-        // The unlit LED/lens is part of the panel texture. These overlays model
-        // only emitted light: broad halo, red body, bright core and the small
-        // camera/eye specular highlight. Each responds differently to duty cycle
-        // instead of treating a weak LED as a transparent copy of a strong one.
+        // The unlit lens remains in the panel texture. These overlays represent
+        // emitted light from the original diffuse red lamp: a restrained aura,
+        // red body, luminous red core and only at high duty a soft central bloom.
         if light.halo_alpha > 0 {
             ui.painter().circle_filled(
                 center,
-                14.5 * scale,
-                Color32::from_rgba_unmultiplied(255, 12, 30, light.halo_alpha),
+                15.5 * scale,
+                Color32::from_rgba_unmultiplied(255, 16, 28, light.halo_alpha),
             );
         }
         ui.painter().circle_filled(
             center,
-            10.5 * scale,
-            Color32::from_rgba_unmultiplied(255, 24, 42, light.body_alpha),
+            10.4 * scale,
+            Color32::from_rgba_unmultiplied(255, 24, 38, light.body_alpha),
         );
         ui.painter().circle_filled(
             center,
-            5.8 * scale,
-            Color32::from_rgba_unmultiplied(255, 104, 116, light.core_alpha),
+            5.6 * scale,
+            Color32::from_rgba_unmultiplied(255, 96, 108, light.core_alpha),
         );
-        if light.glare_alpha > 0 {
+        if light.bloom_alpha > 0 {
             ui.painter().circle_filled(
-                center + Vec2::new(-2.8 * scale, -3.0 * scale),
-                2.0 * scale,
-                Color32::from_rgba_unmultiplied(255, 255, 255, light.glare_alpha),
+                center,
+                3.2 * scale,
+                Color32::from_rgba_unmultiplied(255, 228, 232, light.bloom_alpha),
             );
         }
     }
@@ -779,41 +792,45 @@ mod tests {
     }
 
     #[test]
-    fn led_optics_keep_weak_activity_red_without_white_glare() {
+    fn led_optics_keep_weak_activity_dim_and_red() {
         let weak = led_visual_response(0.10, LedDisplaySettings::default()).unwrap();
         assert!(weak.body_alpha > weak.core_alpha);
-        assert!(weak.core_alpha > weak.glare_alpha);
-        assert!(weak.glare_alpha <= 5);
+        assert_eq!(weak.halo_alpha, 0);
+        assert_eq!(weak.bloom_alpha, 0);
+        assert!(weak.body_alpha < 40);
     }
 
     #[test]
-    fn led_optics_reach_full_core_and_glare_at_full_duty_cycle() {
+    fn led_optics_reach_full_output_at_full_duty_cycle() {
         let full = led_visual_response(1.0, LedDisplaySettings::default()).unwrap();
         assert_eq!(full.halo_alpha, LED_HALO_MAX_ALPHA);
         assert_eq!(full.body_alpha, 255);
         assert_eq!(full.core_alpha, 255);
-        assert_eq!(full.glare_alpha, 255);
+        assert_eq!(full.bloom_alpha, 224);
     }
 
     #[test]
-    fn led_optics_preserve_more_contrast_than_old_sqrt_curve() {
+    fn led_optics_preserve_strong_dynamic_range() {
         let settings = LedDisplaySettings::default();
         let quarter = led_visual_response(0.25, settings).unwrap();
         let half = led_visual_response(0.50, settings).unwrap();
+        let strong = led_visual_response(0.90, settings).unwrap();
+
         assert!(half.body_alpha > quarter.body_alpha);
+        assert!(strong.body_alpha > half.body_alpha);
         assert!(half.core_alpha > quarter.core_alpha);
-        assert!(half.glare_alpha > quarter.glare_alpha);
-        assert!(
-            quarter.body_alpha < 128,
-            "25% duty should no longer render as a 50% body"
-        );
+        assert!(strong.core_alpha > half.core_alpha);
+        assert!(quarter.body_alpha < 96, "25% duty must remain visibly dim");
+        assert_eq!(quarter.bloom_alpha, 0);
+        assert_eq!(half.bloom_alpha, 0);
+        assert!(strong.bloom_alpha > 0);
     }
 
     #[test]
     fn led_live_controls_scale_brightness_and_aura_independently() {
-        let base = led_visual_response(0.25, LedDisplaySettings::default()).unwrap();
+        let base = led_visual_response(0.50, LedDisplaySettings::default()).unwrap();
         let brighter = led_visual_response(
-            0.25,
+            0.50,
             LedDisplaySettings {
                 brightness: 1.5,
                 aura: 1.0,
@@ -821,7 +838,7 @@ mod tests {
         )
         .unwrap();
         let more_aura = led_visual_response(
-            0.25,
+            0.50,
             LedDisplaySettings {
                 brightness: 1.0,
                 aura: 2.0,
@@ -832,11 +849,11 @@ mod tests {
         assert_eq!(brighter.halo_alpha, base.halo_alpha);
         assert!(brighter.body_alpha > base.body_alpha);
         assert!(brighter.core_alpha > base.core_alpha);
-        assert!(brighter.glare_alpha >= base.glare_alpha);
+        assert_eq!(brighter.bloom_alpha, base.bloom_alpha);
 
         assert!(more_aura.halo_alpha > base.halo_alpha);
         assert_eq!(more_aura.body_alpha, base.body_alpha);
         assert_eq!(more_aura.core_alpha, base.core_alpha);
-        assert_eq!(more_aura.glare_alpha, base.glare_alpha);
+        assert_eq!(more_aura.bloom_alpha, base.bloom_alpha);
     }
 }
