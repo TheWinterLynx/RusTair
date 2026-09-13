@@ -386,11 +386,8 @@ impl RusTairApp {
         });
         if sense_switch_activates_on_press(primary_pressed, pointer_pos, hit) {
             let current = self.machine.switch_register();
-            let (next, momentary) = sense_switch_press_value(
-                current,
-                bit,
-                self.kill_bits_momentary_enabled(ui.ctx()),
-            );
+            let (next, momentary) =
+                sense_switch_press_value(current, bit, self.kill_bits_momentary_enabled(ui.ctx()));
             self.machine.set_switch_register(next);
             if momentary {
                 self.arm_kill_bits_momentary_release(ui.ctx(), bit);
@@ -399,8 +396,8 @@ impl RusTairApp {
             ui.ctx().request_repaint();
         }
         if response.hovered() {
-            let momentary = self.kill_bits_momentary_enabled(ui.ctx())
-                && bit >= KILL_BITS_FIRST_SENSE_BIT;
+            let momentary =
+                self.kill_bits_momentary_enabled(ui.ctx()) && bit >= KILL_BITS_FIRST_SENSE_BIT;
             response.clone().on_hover_text(if momentary {
                 format!(
                     "Sense switch {} — KILL THE BIT momentary mode: one click pulses UP then returns DOWN automatically",
@@ -914,12 +911,18 @@ mod tests {
         assert!(upper_momentary);
 
         let (upper_again, upper_again_momentary) = sense_switch_press_value(upper, 15, true);
-        assert_eq!(upper_again, 0x8000, "re-clicking extends the pulse instead of toggling it off");
+        assert_eq!(
+            upper_again, 0x8000,
+            "re-clicking extends the pulse instead of toggling it off"
+        );
         assert!(upper_again_momentary);
 
         let (lower, lower_momentary) = sense_switch_press_value(0x0000, 7, true);
         assert_eq!(lower, 0x0080);
-        assert!(!lower_momentary, "A7–A0 remain ordinary latching address switches");
+        assert!(
+            !lower_momentary,
+            "A7–A0 remain ordinary latching address switches"
+        );
 
         let (normal, normal_momentary) = sense_switch_press_value(0x8000, 15, false);
         assert_eq!(normal, 0x0000);
