@@ -1,5 +1,12 @@
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
+use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_ROWS};
 use crate::config::TerminalDuplex;
+
+const ADM3A_SCREEN_LEFT: f32 = 0.289;
+const ADM3A_SCREEN_TOP: f32 = 0.161;
+const ADM3A_SCREEN_RIGHT: f32 = 0.713;
+const ADM3A_SCREEN_BOTTOM: f32 = 0.614;
+const ADM3A_CRT_ASPECT: f32 = 1.25;
 
 impl RusTairApp {
     fn draw_terminal_input(&mut self, ui: &mut egui::Ui) {
@@ -212,9 +219,143 @@ impl RusTairApp {
         egui::Id::new("rustair-adm3a-viewport-open")
     }
 
+    fn adm3a_crt_viewport_open_id() -> egui::Id {
+        egui::Id::new("rustair-adm3a-crt-viewport-open")
+    }
+
     pub(in crate::app) fn open_adm3a_viewport(&mut self, ctx: &egui::Context) {
         ctx.data_mut(|data| data.insert_temp(Self::adm3a_viewport_open_id(), true));
         ctx.request_repaint();
+    }
+
+    fn open_adm3a_crt_viewport(ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(Self::adm3a_crt_viewport_open_id(), true));
+        ctx.request_repaint();
+    }
+
+    fn draw_adm3a_connection_selector(&mut self, ui: &mut egui::Ui) {
+        let hardware = self.config.machine.s100_hardware;
+        let current = self.adm3a_connection();
+        let mut selected = current;
+
+        ui.label("RS-232 cable:");
+        egui::ComboBox::from_id_salt("adm3a-serial-connection")
+            .selected_text(Self::serial_connection_label(hardware, current))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut selected,
+                    SerialConnection::Disconnected,
+                    "Disconnected",
+                );
+                for connection in [SerialConnection::Port0, SerialConnection::Port1] {
+                    if Self::serial_connection_supported(hardware, SerialDevice::Adm3a, connection) {
+                        ui.selectable_value(
+                            &mut selected,
+                            connection,
+                            Self::serial_connection_label(hardware, connection),
+                        );
+                    }
+                }
+            });
+
+        if selected != current {
+            self.set_serial_connection(SerialDevice::Adm3a, selected);
+        }
+
+        if ![SerialConnection::Port0, SerialConnection::Port1]
+            .into_iter()
+            .any(|connection| {
+                Self::serial_connection_supported(hardware, SerialDevice::Adm3a, connection)
+            })
+        {
+            ui.small("The ADM-3A needs a physical RS-232 interface; no hidden level converter is inserted.");
+        }
+    }
+
+    fn adm3a_screen_rect(shell_rect: egui::Rect) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::Pos2::new(
+                shell_rect.left() + shell_rect.width() * ADM3A_SCREEN_LEFT,
+                shell_rect.top() + shell_rect.height() * ADM3A_SCREEN_TOP,
+            ),
+            egui::Pos2::new(
+                shell_rect.left() + shell_rect.width() * ADM3A_SCREEN_RIGHT,
+                shell_rect.top() + shell_rect.height() * ADM3A_SCREEN_BOTTOM,
+            ),
+        )
+    }
+
+    fn fit_adm3a_crt_rect(available: egui::Rect) -> egui::Rect {
+        let available_aspect = available.width() / available.height().max(1.0);
+        let size = if available_aspect > ADM3A_CRT_ASPECT {
+            egui::Vec2::new(available.height() * ADM3A_CRT_ASPECT, available.height())
+        } else {
+            egui::Vec2::new(available.width(), available.width() / ADM3A_CRT_ASPECT)
+        };
+        egui::Rect::from_center_size(available.center(), size)
+    }
+
+    fn draw_adm3a_crt(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
+        let corner_radius = ((screen_rect.height() * 0.045).clamp(4.0, 24.0)) as u8;
+        painter.rect_filled(
+            screen_rect,
+            egui::CornerRadius::same(corner_radius),
+            egui::Color32::from_rgb(10, 13, 11),
+        );
+
+        let active_rect = screen_rect.shrink2(egui::Vec2::new(
+            screen_rect.width() * 0.055,
+            screen_rect.height() * 0.070,
+        ));
+        let cell_width = active_rect.width() / ADM3A_COLS as f32;
+        let cell_height = active_rect.height() / ADM3A_ROWS as f32;
+        let font = egui::FontId::monospace((cell_height * 0.66).max(4.0));
+        let glyph_color = egui::Color32::from_rgb(191, 225, 196);
+        let clipped = painter.with_clip_rect(screen_rect);
+
+        for row in 0..ADM3A_ROWS {
+            for col in 0..ADM3A_COLS {
+                let byte = self.adm3a.row(row)[col];
+                if byte == b' ' {
+                    continue;
+                }
+                let pos = egui::Pos2::new(
+                    active_rect.left() + (col as f32 + 0.5) * cell_width,
+                    active_rect.top() + (row as f32 + 0.5) * cell_height,
+                );
+                clipped.text(
+                    pos,
+                    egui::Align2::CENTER_CENTER,
+                    char::from(byte),
+                    font.clone(),
+                    glyph_color,
+                );
+            }
+        }
+
+        let (cursor_col, cursor_row) = self.adm3a.cursor();
+        let cursor_cell = egui::Rect::from_min_size(
+            egui::Pos2::new(
+                active_rect.left() + cursor_col as f32 * cell_width,
+                active_rect.top() + cursor_row as f32 * cell_height,
+            ),
+            egui::Vec2::new(cell_width, cell_height),
+        );
+        let cursor = egui::Rect::from_min_max(
+            egui::Pos2::new(
+                cursor_cell.left() + cell_width * 0.12,
+                cursor_cell.bottom() - cell_height * 0.18,
+            ),
+            egui::Pos2::new(
+                cursor_cell.right() - cell_width * 0.12,
+                cursor_cell.bottom() - cell_height * 0.08,
+            ),
+        );
+        clipped.rect_filled(
+            cursor,
+            egui::CornerRadius::same(1),
+            egui::Color32::from_rgb(205, 238, 210),
+        );
     }
 
     fn draw_adm3a_shell(&self, ui: &mut egui::Ui) {
@@ -240,32 +381,77 @@ impl RusTairApp {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
             egui::Color32::WHITE,
         );
+        self.draw_adm3a_crt(ui.painter(), Self::adm3a_screen_rect(rect));
     }
 
-    fn show_adm3a_viewport(&mut self, parent_ctx: &egui::Context) {
-        let open = parent_ctx
-            .data_mut(|data| *data.get_temp_mut_or(Self::adm3a_viewport_open_id(), false));
+    fn show_adm3a_crt_viewport(&self, parent_ctx: &egui::Context) {
+        let open = parent_ctx.data_mut(|data| {
+            *data.get_temp_mut_or(Self::adm3a_crt_viewport_open_id(), false)
+        });
         if !open {
             return;
         }
 
         parent_ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("rustair-adm3a-terminal"),
+            egui::ViewportId::from_hash_of("rustair-adm3a-crt"),
             egui::ViewportBuilder::default()
-                .with_title("RusTair — Lear Siegler ADM-3A")
-                .with_inner_size([1040.0, 780.0])
-                .with_min_inner_size([720.0, 540.0])
+                .with_title("RusTair — ADM-3A Active CRT")
+                .with_inner_size([1000.0, 800.0])
+                .with_min_inner_size([500.0, 400.0])
                 .with_resizable(true),
-            |adm3a_ctx, _class| {
-                egui::CentralPanel::default().show(adm3a_ctx, |ui| {
-                    ui.centered_and_justified(|ui| self.draw_adm3a_shell(ui));
+            |crt_ctx, _class| {
+                egui::CentralPanel::default().show(crt_ctx, |ui| {
+                    let available = ui.available_rect_before_wrap();
+                    let rect = Self::fit_adm3a_crt_rect(available.shrink(12.0));
+                    self.draw_adm3a_crt(ui.painter(), rect);
                 });
-                if adm3a_ctx.input(|i| i.viewport().close_requested()) {
-                    adm3a_ctx
-                        .data_mut(|data| data.insert_temp(Self::adm3a_viewport_open_id(), false));
+                if crt_ctx.input(|i| i.viewport().close_requested()) {
+                    crt_ctx.data_mut(|data| {
+                        data.insert_temp(Self::adm3a_crt_viewport_open_id(), false)
+                    });
                 }
             },
         );
+    }
+
+    fn show_adm3a_viewport(&mut self, parent_ctx: &egui::Context) {
+        let open = parent_ctx
+            .data_mut(|data| *data.get_temp_mut_or(Self::adm3a_viewport_open_id(), false));
+        if open {
+            parent_ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("rustair-adm3a-terminal"),
+                egui::ViewportBuilder::default()
+                    .with_title("RusTair — Lear Siegler ADM-3A")
+                    .with_inner_size([1040.0, 780.0])
+                    .with_min_inner_size([720.0, 540.0])
+                    .with_resizable(true),
+                |adm3a_ctx, _class| {
+                    egui::TopBottomPanel::top("adm3a-controls")
+                        .resizable(false)
+                        .show(adm3a_ctx, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                self.draw_adm3a_connection_selector(ui);
+                                ui.separator();
+                                ui.label("80 × 24");
+                                ui.separator();
+                                if ui.button("Open active CRT…").clicked() {
+                                    Self::open_adm3a_crt_viewport(adm3a_ctx);
+                                }
+                            });
+                        });
+                    egui::CentralPanel::default().show(adm3a_ctx, |ui| {
+                        ui.centered_and_justified(|ui| self.draw_adm3a_shell(ui));
+                    });
+                    if adm3a_ctx.input(|i| i.viewport().close_requested()) {
+                        adm3a_ctx.data_mut(|data| {
+                            data.insert_temp(Self::adm3a_viewport_open_id(), false)
+                        });
+                    }
+                },
+            );
+        }
+
+        self.show_adm3a_crt_viewport(parent_ctx);
     }
 
     pub(in crate::app) fn show_terminal_viewport(&mut self, parent_ctx: &egui::Context) {
