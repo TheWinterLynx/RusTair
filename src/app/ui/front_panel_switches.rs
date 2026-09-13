@@ -1,6 +1,8 @@
 use super::front_panel_assets::SwitchSpriteId;
 use std::time::Instant;
 
+const TWO_POSITION_HIT_WIDTH: f32 = 64.0;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SwitchPosition {
     Up,
@@ -65,7 +67,14 @@ const fn switch_config(name: &'static str, x: f32, y: f32, kind: SwitchKind) -> 
         socket: (x, y),
         hit_size: (
             if matches!(kind, SwitchKind::TwoPosition) {
-                72.0
+                // Sense/address switches are close enough in several groups that
+                // the former 72 px hit boxes overlapped. The front-panel handler
+                // deliberately samples pointer-down globally so the electrical
+                // switch changes immediately; overlapping rectangles could thus
+                // toggle two physical switches from one mouse press. Keep the
+                // targets generous but disjoint so one gesture can own one and
+                // only one sense switch.
+                TWO_POSITION_HIT_WIDTH
             } else {
                 76.0
             },
@@ -123,3 +132,22 @@ pub(super) const SWITCH_AUX1: SwitchConfig =
     switch_config("AUX 1", 1285.8, 559.8, SwitchKind::ThreePosition);
 pub(super) const SWITCH_AUX2: SwitchConfig =
     switch_config("AUX 2", 1423.8, 562.2, SwitchKind::ThreePosition);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sense_switch_pointer_targets_never_overlap() {
+        for pair in SENSE_SWITCHES.windows(2) {
+            let center_distance = (pair[0].socket.0 - pair[1].socket.0).abs();
+            let required_distance = (pair[0].hit_size.0 + pair[1].hit_size.0) * 0.5;
+            assert!(
+                center_distance >= required_distance,
+                "{} and {} pointer targets overlap: distance={center_distance}, required={required_distance}",
+                pair[0].name,
+                pair[1].name
+            );
+        }
+    }
+}

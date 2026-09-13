@@ -3,8 +3,12 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
-const LED_VISIBLE_THRESHOLD: f32 = 0.0045;
-const LED_HALO_MAX_ALPHA: u8 = 72;
+const KILL_BITS_MOMENTARY_PULSE: Duration = Duration::from_millis(90);
+const KILL_BITS_FIRST_SENSE_BIT: usize = 8;
+const LED_VISIBLE_THRESHOLD: f32 = 0.025;
+const LED_HALO_MAX_ALPHA: u8 = 92;
+const LED_HALO_ONSET: f32 = 0.08;
+const LED_BLOOM_ONSET: f32 = 0.18;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LedDisplaySettings {
@@ -26,7 +30,7 @@ struct LedVisualResponse {
     halo_alpha: u8,
     body_alpha: u8,
     core_alpha: u8,
-    glare_alpha: u8,
+    bloom_alpha: u8,
 }
 
 fn optical_alpha(max_alpha: u8, response: f32) -> u8 {
@@ -38,27 +42,47 @@ fn led_display_settings() -> LedDisplaySettings {
     LedDisplaySettings { brightness, aura }
 }
 
-/// Convert the panel integrator's electrical duty cycle into a visual LED
-/// response. This is deliberately presentation-only: CPU/S-100 activity stays
-/// untouched. The calibrated curve remains fixed; the two live controls are
-/// multipliers layered on top so 1.00x / 1.00x reproduces the current default
-/// exactly and Reset to default is deterministic.
+#[inline]
+fn remap_above_threshold(value: f32, threshold: f32) -> f32 {
+    ((value - threshold) / (1.0 - threshold)).clamp(0.0, 1.0)
+}
+
+#[inline]
+fn saturating_optical_response(value: f32, onset: f32, steepness: f32) -> f32 {
+    let x = remap_above_threshold(value, onset);
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let normalization = 1.0 - (-steepness).exp();
+    (1.0 - (-steepness * x).exp()) / normalization
+}
+
+/// Convert exact electrical duty into the appearance of the original diffuse
+/// red front-panel lamps. KILL THE BIT is an important calibration anchor: its
+/// four LDAX D instructions put the displayed DE address on the bus for roughly
+/// one quarter of the tight display loop, yet the intended upper address lamp is
+/// visually dominant on real hardware. A near-linear alpha mapping therefore
+/// under-renders the game. Conversely, lifting every tiny duty value makes bus
+/// residue look like a real lamp. The response below has an explicit perceptual
+/// floor followed by a fast saturating shoulder, preserving both behaviours.
 fn led_visual_response(intensity: f32, settings: LedDisplaySettings) -> Option<LedVisualResponse> {
     let electrical = intensity.clamp(0.0, 1.0);
     if electrical < LED_VISIBLE_THRESHOLD {
         return None;
     }
 
+    let body = saturating_optical_response(electrical, LED_VISIBLE_THRESHOLD, 9.0);
+    let core = saturating_optical_response(electrical, LED_VISIBLE_THRESHOLD, 7.0);
+    let halo = saturating_optical_response(electrical, LED_HALO_ONSET, 5.0);
+    let bloom = saturating_optical_response(electrical, LED_BLOOM_ONSET, 6.0);
+
     Some(LedVisualResponse {
-        // Aura controls only the diffuse outer glow. It never changes the
-        // electrical activity or the LED body itself.
-        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, electrical.powf(1.25) * settings.aura),
-        // Brightness controls emitted light from the red body, luminous core
-        // and high-intensity white hot-spot while preserving their relative
-        // optical response curves.
-        body_alpha: optical_alpha(255, electrical.powf(0.60) * settings.brightness),
-        core_alpha: optical_alpha(255, electrical.powf(0.82) * settings.brightness),
-        glare_alpha: optical_alpha(255, electrical.powf(1.80) * settings.brightness),
+        halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, halo * settings.aura),
+        body_alpha: optical_alpha(255, body * settings.brightness),
+        core_alpha: optical_alpha(255, core * settings.brightness),
+        // White saturation is an eye/camera bloom from a bright diffuse red
+        // lamp, not a permanent specular dot on a modern clear-lens LED.
+        bloom_alpha: optical_alpha(224, bloom * settings.brightness),
     })
 }
 
@@ -70,6 +94,16 @@ fn sense_switch_activates_on_press(
     primary_pressed && pointer_pos.is_some_and(|position| hit.contains(position))
 }
 
+fn sense_switch_press_value(current: u16, bit: usize, momentary_enabled: bool) -> (u16, bool) {
+    let mask = 1u16 << bit;
+    let momentary = momentary_enabled && bit >= KILL_BITS_FIRST_SENSE_BIT;
+    if momentary {
+        (current | mask, true)
+    } else {
+        (current ^ mask, false)
+    }
+}
+
 #[derive(Default)]
 struct MomentarySwitchInteraction {
     action: Option<bool>,
@@ -78,6 +112,96 @@ struct MomentarySwitchInteraction {
 }
 
 impl RusTairApp {
+    fn kill_bits_momentary_mode_id() -> egui::Id {
+        egui::Id::new("rustair-kill-bits-momentary-sense-mode")
+    }
+
+    fn kill_bits_momentary_deadlines_id() -> egui::Id {
+        egui::Id::new("rustair-kill-bits-momentary-sense-deadlines")
+    }
+
+    pub(in crate::app) fn kill_bits_momentary_enabled(&self, ctx: &egui::Context) -> bool {
+        ctx.data(|data| {
+            data.get_temp::<bool>(Self::kill_bits_momentary_mode_id())
+                .unwrap_or(false)
+        })
+    }
+
+    pub(in crate::app) fn set_kill_bits_momentary_enabled(
+        &mut self,
+        ctx: &egui::Context,
+        enabled: bool,
+    ) {
+        let pending_mask = ctx.data_mut(|data| {
+            data.insert_temp(Self::kill_bits_momentary_mode_id(), enabled);
+            if enabled {
+                return 0u16;
+            }
+
+            let deadlines = data.get_temp_mut_or(
+                Self::kill_bits_momentary_deadlines_id(),
+                [None::<Instant>; 16],
+            );
+            let mut pending = 0u16;
+            for (bit, deadline) in deadlines.iter_mut().enumerate() {
+                if deadline.take().is_some() {
+                    pending |= 1u16 << bit;
+                }
+            }
+            pending
+        });
+
+        if pending_mask != 0 {
+            let switches = self.machine.switch_register();
+            self.machine.set_switch_register(switches & !pending_mask);
+        }
+        self.status = if enabled {
+            "KILL THE BIT momentary sense mode ON — A15–A8 auto-return DOWN after one short pulse (session only)".into()
+        } else {
+            "KILL THE BIT momentary sense mode OFF — A15–A8 are normal latching switches".into()
+        };
+        ctx.request_repaint();
+    }
+
+    pub(in crate::app) fn service_kill_bits_momentary_sense(
+        &mut self,
+        ctx: &egui::Context,
+        now: Instant,
+    ) {
+        let release_mask = ctx.data_mut(|data| {
+            let deadlines = data.get_temp_mut_or(
+                Self::kill_bits_momentary_deadlines_id(),
+                [None::<Instant>; 16],
+            );
+            let mut release = 0u16;
+            for (bit, deadline) in deadlines.iter_mut().enumerate() {
+                if deadline.is_some_and(|due| now >= due) {
+                    *deadline = None;
+                    release |= 1u16 << bit;
+                }
+            }
+            release
+        });
+
+        if release_mask != 0 {
+            let switches = self.machine.switch_register();
+            self.machine.set_switch_register(switches & !release_mask);
+            ctx.request_repaint();
+        }
+    }
+
+    fn arm_kill_bits_momentary_release(&mut self, ctx: &egui::Context, bit: usize) {
+        let due = Instant::now() + KILL_BITS_MOMENTARY_PULSE;
+        ctx.data_mut(|data| {
+            let deadlines = data.get_temp_mut_or(
+                Self::kill_bits_momentary_deadlines_id(),
+                [None::<Instant>; 16],
+            );
+            deadlines[bit] = Some(due);
+        });
+        ctx.request_repaint_after(KILL_BITS_MOMENTARY_PULSE);
+    }
+
     fn draw_led_visual_controls(&mut self, ctx: &egui::Context) {
         let (mut open, brightness, aura) = super::persistence::led_visual_controls_state();
         if !open {
@@ -166,32 +290,31 @@ impl RusTairApp {
         };
         let center = origin + Vec2::new(x * scale, y * scale);
 
-        // The unlit LED/lens is part of the panel texture. These overlays model
-        // only emitted light: broad halo, red body, bright core and the small
-        // camera/eye specular highlight. Each responds differently to duty cycle
-        // instead of treating a weak LED as a transparent copy of a strong one.
+        // The unlit lens remains in the panel texture. These overlays represent
+        // emitted light from the original diffuse red lamp: a restrained aura,
+        // red body, luminous red core and, at sufficient duty, central bloom.
         if light.halo_alpha > 0 {
             ui.painter().circle_filled(
                 center,
-                14.5 * scale,
-                Color32::from_rgba_unmultiplied(255, 12, 30, light.halo_alpha),
+                15.5 * scale,
+                Color32::from_rgba_unmultiplied(255, 16, 28, light.halo_alpha),
             );
         }
         ui.painter().circle_filled(
             center,
-            10.5 * scale,
-            Color32::from_rgba_unmultiplied(255, 24, 42, light.body_alpha),
+            10.4 * scale,
+            Color32::from_rgba_unmultiplied(255, 24, 38, light.body_alpha),
         );
         ui.painter().circle_filled(
             center,
-            5.8 * scale,
-            Color32::from_rgba_unmultiplied(255, 104, 116, light.core_alpha),
+            5.6 * scale,
+            Color32::from_rgba_unmultiplied(255, 96, 108, light.core_alpha),
         );
-        if light.glare_alpha > 0 {
+        if light.bloom_alpha > 0 {
             ui.painter().circle_filled(
-                center + Vec2::new(-2.8 * scale, -3.0 * scale),
-                2.0 * scale,
-                Color32::from_rgba_unmultiplied(255, 255, 255, light.glare_alpha),
+                center,
+                3.2 * scale,
+                Color32::from_rgba_unmultiplied(255, 228, 232, light.bloom_alpha),
             );
         }
     }
@@ -262,14 +385,27 @@ impl RusTairApp {
             )
         });
         if sense_switch_activates_on_press(primary_pressed, pointer_pos, hit) {
-            self.machine.toggle_sense_switch(bit);
+            let current = self.machine.switch_register();
+            let (next, momentary) =
+                sense_switch_press_value(current, bit, self.kill_bits_momentary_enabled(ui.ctx()));
+            self.machine.set_switch_register(next);
+            if momentary {
+                self.arm_kill_bits_momentary_release(ui.ctx(), bit);
+            }
             self.audio.play_once("assets/click.mp3");
             ui.ctx().request_repaint();
         }
         if response.hovered() {
-            response
-                .clone()
-                .on_hover_text(format!("Sense switch {}", switch.name));
+            let momentary =
+                self.kill_bits_momentary_enabled(ui.ctx()) && bit >= KILL_BITS_FIRST_SENSE_BIT;
+            response.clone().on_hover_text(if momentary {
+                format!(
+                    "Sense switch {} — KILL THE BIT momentary mode: one click pulses UP then returns DOWN automatically",
+                    switch.name
+                )
+            } else {
+                format!("Sense switch {}", switch.name)
+            });
         }
         let position = if self.machine.switch_register() & (1u16 << bit) != 0 {
             SwitchPosition::Up
@@ -769,44 +905,81 @@ mod tests {
     }
 
     #[test]
+    fn kill_bits_momentary_mode_only_pulses_upper_sense_switches() {
+        let (upper, upper_momentary) = sense_switch_press_value(0x0000, 15, true);
+        assert_eq!(upper, 0x8000);
+        assert!(upper_momentary);
+
+        let (upper_again, upper_again_momentary) = sense_switch_press_value(upper, 15, true);
+        assert_eq!(
+            upper_again, 0x8000,
+            "re-clicking extends the pulse instead of toggling it off"
+        );
+        assert!(upper_again_momentary);
+
+        let (lower, lower_momentary) = sense_switch_press_value(0x0000, 7, true);
+        assert_eq!(lower, 0x0080);
+        assert!(
+            !lower_momentary,
+            "A7–A0 remain ordinary latching address switches"
+        );
+
+        let (normal, normal_momentary) = sense_switch_press_value(0x8000, 15, false);
+        assert_eq!(normal, 0x0000);
+        assert!(!normal_momentary);
+    }
+
+    #[test]
     fn led_optics_hide_residual_activity_below_threshold() {
         let settings = LedDisplaySettings::default();
         assert_eq!(led_visual_response(0.0, settings), None);
-        assert_eq!(
-            led_visual_response(LED_VISIBLE_THRESHOLD * 0.5, settings),
-            None
-        );
+        assert_eq!(led_visual_response(0.02, settings), None);
     }
 
     #[test]
-    fn led_optics_keep_weak_activity_red_without_white_glare() {
-        let weak = led_visual_response(0.10, LedDisplaySettings::default()).unwrap();
-        assert!(weak.body_alpha > weak.core_alpha);
-        assert!(weak.core_alpha > weak.glare_alpha);
-        assert!(weak.glare_alpha <= 5);
+    fn led_optics_keep_small_real_activity_dim() {
+        let weak = led_visual_response(0.05, LedDisplaySettings::default()).unwrap();
+        assert!(weak.body_alpha < 65);
+        assert!(weak.core_alpha < 55);
+        assert_eq!(weak.halo_alpha, 0);
+        assert_eq!(weak.bloom_alpha, 0);
     }
 
     #[test]
-    fn led_optics_reach_full_core_and_glare_at_full_duty_cycle() {
+    fn led_optics_make_kill_the_bit_quarter_duty_dominant() {
+        // Four 7T LDAX D instructions in the 48T tight loop expose DE for 12T.
+        // The real game therefore proves that ~25% electrical duty must already
+        // look like a strong lamp rather than a quarter-transparent red dot.
+        let target = led_visual_response(0.25, LedDisplaySettings::default()).unwrap();
+        assert!(target.body_alpha >= 215);
+        assert!(target.core_alpha >= 195);
+        assert!(target.halo_alpha >= 45);
+        assert!(target.bloom_alpha >= 75);
+    }
+
+    #[test]
+    fn led_optics_reach_full_output_at_full_duty_cycle() {
         let full = led_visual_response(1.0, LedDisplaySettings::default()).unwrap();
         assert_eq!(full.halo_alpha, LED_HALO_MAX_ALPHA);
         assert_eq!(full.body_alpha, 255);
         assert_eq!(full.core_alpha, 255);
-        assert_eq!(full.glare_alpha, 255);
+        assert_eq!(full.bloom_alpha, 224);
     }
 
     #[test]
-    fn led_optics_preserve_more_contrast_than_old_sqrt_curve() {
+    fn led_optics_preserve_a_black_floor_and_monotonic_response() {
         let settings = LedDisplaySettings::default();
+        let tenth = led_visual_response(0.10, settings).unwrap();
         let quarter = led_visual_response(0.25, settings).unwrap();
         let half = led_visual_response(0.50, settings).unwrap();
-        assert!(half.body_alpha > quarter.body_alpha);
-        assert!(half.core_alpha > quarter.core_alpha);
-        assert!(half.glare_alpha > quarter.glare_alpha);
-        assert!(
-            quarter.body_alpha < 128,
-            "25% duty should no longer render as a 50% body"
-        );
+        let strong = led_visual_response(0.90, settings).unwrap();
+
+        assert!(tenth.body_alpha < quarter.body_alpha);
+        assert!(quarter.body_alpha < half.body_alpha);
+        assert!(half.body_alpha <= strong.body_alpha);
+        assert!(tenth.bloom_alpha == 0);
+        assert!(quarter.bloom_alpha > 0);
+        assert!(half.bloom_alpha > quarter.bloom_alpha);
     }
 
     #[test]
@@ -815,7 +988,7 @@ mod tests {
         let brighter = led_visual_response(
             0.25,
             LedDisplaySettings {
-                brightness: 1.5,
+                brightness: 1.15,
                 aura: 1.0,
             },
         )
@@ -824,19 +997,19 @@ mod tests {
             0.25,
             LedDisplaySettings {
                 brightness: 1.0,
-                aura: 2.0,
+                aura: 1.5,
             },
         )
         .unwrap();
 
         assert_eq!(brighter.halo_alpha, base.halo_alpha);
-        assert!(brighter.body_alpha > base.body_alpha);
-        assert!(brighter.core_alpha > base.core_alpha);
-        assert!(brighter.glare_alpha >= base.glare_alpha);
+        assert!(brighter.body_alpha >= base.body_alpha);
+        assert!(brighter.core_alpha >= base.core_alpha);
+        assert!(brighter.bloom_alpha >= base.bloom_alpha);
 
         assert!(more_aura.halo_alpha > base.halo_alpha);
         assert_eq!(more_aura.body_alpha, base.body_alpha);
         assert_eq!(more_aura.core_alpha, base.core_alpha);
-        assert_eq!(more_aura.glare_alpha, base.glare_alpha);
+        assert_eq!(more_aura.bloom_alpha, base.bloom_alpha);
     }
 }

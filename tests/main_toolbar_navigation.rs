@@ -244,9 +244,9 @@ fn runtime_menu_is_navigation_only_and_status_bar_is_stable_and_responsive() {
     assert!(RUNTIME_SOURCE.contains("super::ui::draw_main_menu(self, ctx);"));
     assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_FONT_SIZE: f32 = 16.0;"));
     assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_STATE_WIDTH: f32 = 150.0;"));
-    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_REGISTERS_COMPACT_WIDTH: f32 = 285.0"));
-    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_REGISTERS_EXTENDED_WIDTH: f32 = 555.0"));
-    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_EXTENDED_BREAKPOINT: f32 = 1120.0"));
+    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_REGISTERS_COMPACT_WIDTH: f32 = 320.0"));
+    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_REGISTERS_EXTENDED_WIDTH: f32 = 690.0"));
+    assert!(RUNTIME_SOURCE.contains("STATUS_BAR_EXTENDED_BREAKPOINT: f32 = 1340.0"));
     assert!(RUNTIME_SOURCE.contains("const STATUS_BAR_SPEED_WIDTH: f32 = 165.0;"));
     assert!(RUNTIME_SOURCE.contains("ui.allocate_exact_size("));
     assert!(RUNTIME_SOURCE.contains("let message_rect = egui::Rect::from_min_max("));
