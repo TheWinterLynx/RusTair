@@ -59,7 +59,7 @@ mod tests {
     use crate::config::RamInit;
     use crate::cpu8080_cycle::Cpu8080Cycle;
     use crate::machine::fd400::{Fd400Time, MitsDiskUnit, test_readable_media};
-    use crate::s100_backplane::S100Backplane;
+    use crate::s100_backplane::{S100Backplane, S100SlotMask};
     use crate::s100_cpu::{Mits8080CpuBoard, Mits8080CpuBoardHandle};
     use crate::s100_memory::{S100RamBoardModel, S100RamCardConfig};
     use crate::s100_runtime::DisplayControlLines;
@@ -67,22 +67,20 @@ mod tests {
 
     const FIVE_SECONDS_T_STATES: u64 = 10_000_000;
 
-    fn settle_test_bus(
-        backplane: &mut S100Backplane,
-        display: DisplayControlLines,
-        cpu_board: &Mits8080CpuBoardHandle,
-    ) {
+    fn settle_test_bus(backplane: &mut S100Backplane, display: DisplayControlLines) {
         // This is zero-time digital propagation, not guest clock advancement.
-        // Re-resolve a few deltas until CPU/status/data/card outputs have all had
-        // a chance to propagate across the same physical S-100 graph.
+        // Use the same event-driven cache/resolve/observe sequence as production
+        // so cards that correctly report external_drive_dirty() == false still
+        // publish connector changes caused by the S-100 inputs they just saw.
+        let selected = S100SlotMask::MAX;
         for _ in 0..6 {
+            backplane.refresh_cached_drives(selected).unwrap();
             let display_drive = display.drive(backplane.sample());
+            let change = backplane.resolve_cached_selected_drives(selected, &[display_drive]);
             backplane
-                .resolve_current_drives(&[display_drive])
+                .observe_changed_cards(change, 0, selected)
                 .unwrap();
-            backplane.observe_cards();
         }
-        let _ = cpu_board.package_inputs();
     }
 
     fn cpu_dcdd_fixture() -> (
@@ -175,7 +173,7 @@ mod tests {
         ];
         assert_eq!(ram.load(0, &program), program.len());
 
-        settle_test_bus(&mut backplane, display, &cpu_board);
+        settle_test_bus(&mut backplane, display);
         let mut cpu = Cpu8080Cycle::new();
         let mut halted = false;
 
@@ -183,7 +181,7 @@ mod tests {
             let initial = cpu_board.package_inputs();
             let trace = cpu.tick_with_live_phi2_inputs(initial, |_edge, pins| {
                 cpu_board.set_package_pins(pins);
-                settle_test_bus(&mut backplane, display, &cpu_board);
+                settle_test_bus(&mut backplane, display);
                 cpu_board.package_inputs()
             });
             assert_eq!(trace.fault, None);
