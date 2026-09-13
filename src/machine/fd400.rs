@@ -23,7 +23,7 @@
 #[path = "fd400_media.rs"]
 mod media;
 
-use media::{HardSectored8InchMedia, HARD_SECTORED_TRACKS, HARD_SECTORS_PER_TRACK};
+use media::{HARD_SECTORED_TRACKS, HARD_SECTORS_PER_TRACK, HardSectored8InchMedia};
 
 const TIME_UNITS_PER_MICROSECOND: u64 = 6;
 const TIME_UNITS_PER_8080_T_STATE: u64 = 3;
@@ -172,7 +172,9 @@ impl PertecFd400 {
     }
 
     pub(super) fn media_write_protected(&self) -> Option<bool> {
-        self.media.as_ref().map(HardSectored8InchMedia::write_protected)
+        self.media
+            .as_ref()
+            .map(HardSectored8InchMedia::write_protected)
     }
 
     /// A removable medium can only be inserted while the physical door is open.
@@ -734,7 +736,10 @@ mod tests {
         let now = Fd400Time::from_microseconds(5_123_456);
         let empty_snapshot = empty.snapshot(now);
         let mounted_snapshot = mounted.snapshot(now);
-        assert_eq!(empty_snapshot.selection_ready, mounted_snapshot.selection_ready);
+        assert_eq!(
+            empty_snapshot.selection_ready,
+            mounted_snapshot.selection_ready
+        );
         assert_eq!(empty_snapshot.rotation, mounted_snapshot.rotation);
         assert!(!empty_snapshot.media_present);
         assert!(mounted_snapshot.media_present);
@@ -766,7 +771,9 @@ mod tests {
         assert!(unit.insert_media(patterned_media(false)).is_ok());
         assert!(unit.drive().media_present());
         assert_eq!(unit.drive().physical_media_byte(1, 2, 3), Some(53));
-        let media = unit.eject_media().expect("default-open drive permits eject");
+        let media = unit
+            .eject_media()
+            .expect("default-open drive permits eject");
         assert!(!unit.drive().media_present());
         assert!(!media.write_protected());
     }
