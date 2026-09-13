@@ -1,6 +1,6 @@
 # MITS 88-DCDD / 88-DISK + Pertec FD-400 hardware contract
 
-Status: **Phase 0 source contract PASS; Phase 1 topology PASS; Phase 2 decode/electrical PASS; Phase 3 mechanics/time PASS**
+Status: **Phase 0 source contract PASS; Phase 1 topology PASS; Phase 2 decode/electrical PASS; Phase 3 mechanics/time PASS; Phase 4 media PASS; Phase 5 authentic read PASS**
 
 This document is the source-backed hardware contract for the first RusTair implementation of the original Altair 8-inch floppy subsystem. It deliberately separates facts that are sufficiently established for production code from behavior that remains deferred until a later phase has the corresponding schematic/mechanical evidence.
 
@@ -94,6 +94,8 @@ For the first authentic medium model:
 
 The programming guide exposes up to **137 physical bytes per sector including the sync-bearing first byte**. This is the physical-sector size relevant to the controller stream; a filesystem or operating system may use only part of those bytes as payload.
 
+Phase 4 fixes the first raw read-only medium representation at exactly **77 × 32 × 137 = 337,568 bytes**, in track-major / hard-sector-major / physical-byte order. The medium object retains payload and write-protect state only; it owns no host pathname or controller timing.
+
 No production controller code may equate a guest sector request with a 128-byte filesystem sector operation.
 
 ## 3. Fixed I/O channels
@@ -146,7 +148,7 @@ The guide explicitly states that the status truth convention is **True = 0, Fals
 
 With Disk Control disabled, D0/D1/D2/D5/D6/D7 are all false and therefore read as `1`, while D3/D4 are physically `0`. The exact disabled/no-drive status byte is therefore **`E7h` (`1110_0111b`)**. RusTair must not substitute `FFh` for this state.
 
-Phase 3 makes D1/D2/D6 guest-visible from the real selected-drive mechanics. D0 and D7 remain false until the authentic write/read phases implement ENWD and NRDA.
+Phase 3 makes D1/D2/D6 guest-visible from the real selected-drive mechanics. Phase 5 makes D7/NRDA guest-visible from Board #1's authentic read latch. D0/ENWD remains false until Phase 6 implements the write path.
 
 ## 6. Port 09h OUT — disk-function control
 
@@ -182,15 +184,19 @@ The guide states:
 
 At 360 RPM with 32 hard sectors, one revolution is approximately 166.667 ms and the sector period is approximately 5.208 ms. RusTair's Phase-3 fixed-point representation makes one revolution and each hard-sector interval exact in integer virtual-time units, avoiding floating-point drift.
 
+Phase 5 uses that same epoch to derive read-byte availability analytically: the first physical byte appears at 140 µs and subsequent physical bytes at 32 µs intervals. No per-bit or per-T-state disk loop is introduced.
+
 ## 8. Port 0Ah — serial byte path
 
 - OUT 0Ah supplies Write Data in response to ENWD.
 - IN 0Ah takes Read Data in response to NRDA.
 - Once synchronized, the documented cadence is **one byte every 32 µs**, corresponding to 250 kbit/s serial data.
 
-The Board #1 schematic shows the read strobe enabling the read-data line drivers; it does **not** establish a defined power-up value for the G3/H1 read-data latches. Therefore an `IN 0Ah` before valid disk data exists is not source-backed as either `00h`, `FFh`, or open bus. Phase 2 represents those uninitialized TTL latch bits as an indeterminate power-up byte and deliberately has no test asserting a particular value. The line drivers remain electrically enabled, which avoids falsely claiming high impedance. A valid read-data latch and NRDA side effect are introduced in the authentic read phase.
+The Board #1 schematic shows the read strobe enabling the read-data line drivers; it does **not** establish a defined power-up value for the G3/H1 read-data latches. Therefore an `IN 0Ah` before valid disk data exists is not source-backed as either `00h`, `FFh`, or open bus. Phase 2 represents those uninitialized TTL latch bits as an indeterminate power-up byte and deliberately has no test asserting a particular value. The line drivers remain electrically enabled, which avoids falsely claiming high impedance.
 
-The disk never waits for the 8080 merely because guest software failed to service NRDA/ENWD on time. Authentic mode must preserve the hardware consequence of late service.
+Phase 5 introduces the valid Board #1 read-data latch and NRDA side effect. A new physical read-byte event overwrites the retained latch even if the 8080 has not consumed the previous byte. `IN 0Ah` returns the retained latch and clears NRDA for that generation; observing the same physical event again cannot reassert NRDA. A later event can immediately replace the latch and reassert NRDA.
+
+The disk never waits for the 8080 merely because guest software failed to service NRDA/ENWD on time. Authentic mode preserves the hardware consequence of late service.
 
 ## 9. Authentic write timing contract
 
@@ -205,7 +211,7 @@ The July 1977 guide/figure establishes the following observable timing sequence 
 - At end of sector the write circuit disables automatically.
 - Trim erase remains active for approximately **475 µs after the end of the sector/write interval**.
 
-The scan's wording for the special final/fill byte must be cross-checked against the alternate scan before RusTair encodes that exact byte-value rule. Phase 3 does not implement write data, so no assumption is needed yet.
+The scan's wording for the special final/fill byte must be cross-checked against the alternate scan before RusTair encodes that exact byte-value rule. Phase 6 must resolve that ambiguity before making the corresponding byte rule production-visible.
 
 ## 10. Head movement / head status contract
 
@@ -232,7 +238,7 @@ The Board #1 schematic contains an **INTERRUPT OPTION** selecting the interrupt 
 
 Therefore the DCDD must never contain a hard-coded `RST 7` injection. It asserts the configured physical request line. If pINT is used, the normal Altair interrupt acknowledge/open-bus behavior determines what the CPU receives; if VI7 is used, any installed 88-VI-class interrupt hardware owns prioritization/vectoring.
 
-The first controller configuration type should consequently model the physical interrupt strap/wiring as `PINT` vs `VI7` (and, if the schematic/installation documentation proves a disconnected position, that state may be represented explicitly). Phase 3 does not assert either line; Phase 7 implements the dynamic interrupt behavior.
+The first controller configuration type should consequently model the physical interrupt strap/wiring as `PINT` vs `VI7` (and, if the schematic/installation documentation proves a disconnected position, that state may be represented explicitly). Phase 7 implements the dynamic interrupt behavior; Phases 0-6 do not assert either line.
 
 ## 12. Phase implementation boundaries
 
@@ -280,15 +286,38 @@ Phase 3 adds only source-backed mechanics and their controller-visible status:
 
 Mechanics remain lazy/query-derived: advancing chassis time never iterates installed disk units. Tests cover large-jump equivalence, mechanical deadlines, controller-visible status and sector movement without executing a CPU instruction. Installed-idle performance is measured with alternating paired release samples and shows no systematic regression within the <2% budget.
 
+### Phase 4 media boundary — complete
+
+Phase 4 adds only the read-only physical medium surface below the FD-400:
+
+- exact 77 × 32 × 137 raw geometry and byte-size validation;
+- track/sector/physical-byte addressing below the drive electronics;
+- removable-media ownership, inserted/ejected state and write-protect metadata;
+- no host pathname or image-format ownership in DCDD/FD-400 controller logic;
+- no read cadence, write cadence, interrupt or UI/persistence semantics.
+
+### Phase 5 authentic-read boundary — complete
+
+Phase 5 adds the source-backed read path without expanding into writes or interrupts:
+
+- FD-400 physical read events begin 140 µs after Sector True and continue every 32 µs;
+- event generation is arithmetic/query-derived, including large-time catch-up;
+- Board #1 owns the read-data latch and active-low NRDA;
+- `IN 0Ah` consumes the current latch and clears NRDA for that generation;
+- unread bytes are overwritten by later physical bytes rather than pausing virtual disk time;
+- DCDD status/data reaches the CPU only through the live S-100 path;
+- an end-to-end 8080 program selected drive 3, issued Head Load, polled Head Status and NRDA, read `IN 0Ah`, stored the byte in physical RAM and halted. The observed byte was `8E` after 80,119 T-states.
+
+The complete local format/test/release gate passed before Phase 5 was promoted to `main`.
+
 ## 13. Deferred items which are not production assumptions
 
 The following are intentionally deferred rather than guessed:
 
-- the source-backed 2 MHz controller clock functions that become observable with serial read/write timing; they will be represented by virtual-time/event logic rather than an idle per-T-state subscription;
 - exact special final/fill-byte value/rule in the write sequence where the July 1977 scan is visually ambiguous;
-- full DB-37 signal-by-signal electrical table and active polarity, to be transcribed before the external drive electronics are activated;
-- exact Pertec FD-400 connector-level electrical interface beyond the MITS-visible mechanics/timing already established;
+- full DB-37 signal-by-signal electrical table and active polarity, to be transcribed before behavior requiring those individual external signals is activated;
+- exact Pertec FD-400 connector-level electrical interface beyond the MITS-visible mechanics/read timing already established;
 - write/trim-erase-specific Move Head suppression until the corresponding write-state machinery exists;
 - NWD controller timing differences and applicability to disk/media vintages.
 
-None of these deferred points is needed for the completed Phase-3 mechanics/status surface. Each must be resolved before the phase that would make it guest-observable.
+None of these deferred points is needed for the completed Phase-5 authentic read surface. Each must be resolved before the phase that would make it guest-observable.
