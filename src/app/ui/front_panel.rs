@@ -3,9 +3,10 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
-const LED_VISIBLE_THRESHOLD: f32 = 0.0045;
+const LED_VISIBLE_THRESHOLD: f32 = 0.025;
 const LED_HALO_MAX_ALPHA: u8 = 92;
-const LED_BLOOM_THRESHOLD: f32 = 0.62;
+const LED_HALO_ONSET: f32 = 0.08;
+const LED_BLOOM_ONSET: f32 = 0.18;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LedDisplaySettings {
@@ -44,36 +45,41 @@ fn remap_above_threshold(value: f32, threshold: f32) -> f32 {
     ((value - threshold) / (1.0 - threshold)).clamp(0.0, 1.0)
 }
 
-/// Convert the panel integrator's electrical duty cycle into the optical
-/// response of the original red diffuse front-panel lamps. This remains a
-/// presentation-only transfer: CPU/S-100 activity and exact electrical duty are
-/// untouched. The low-duty shoulder is deliberately compressive because the
-/// real panel and the observer/camera integrate short LED pulses: KILL THE BIT
-/// must remain clearly readable without turning residual bus activity into a
-/// field of equally bright lamps.
+#[inline]
+fn saturating_optical_response(value: f32, onset: f32, steepness: f32) -> f32 {
+    let x = remap_above_threshold(value, onset);
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let normalization = 1.0 - (-steepness).exp();
+    (1.0 - (-steepness * x).exp()) / normalization
+}
+
+/// Convert exact electrical duty into the appearance of the original diffuse
+/// red front-panel lamps. KILL THE BIT is an important calibration anchor: its
+/// four LDAX D instructions put the displayed DE address on the bus for roughly
+/// one quarter of the tight display loop, yet the intended upper address lamp is
+/// visually dominant on real hardware. A near-linear alpha mapping therefore
+/// under-renders the game. Conversely, lifting every tiny duty value makes bus
+/// residue look like a real lamp. The response below has an explicit perceptual
+/// floor followed by a fast saturating shoulder, preserving both behaviours.
 fn led_visual_response(intensity: f32, settings: LedDisplaySettings) -> Option<LedVisualResponse> {
     let electrical = intensity.clamp(0.0, 1.0);
     if electrical < LED_VISIBLE_THRESHOLD {
         return None;
     }
 
-    let visible = remap_above_threshold(electrical, LED_VISIBLE_THRESHOLD);
-    let body = visible.powf(0.50);
-    let core = visible.powf(0.68);
-    let halo = remap_above_threshold(electrical, 0.05).powf(1.15);
-    let bloom = remap_above_threshold(electrical, LED_BLOOM_THRESHOLD).powf(1.80);
+    let body = saturating_optical_response(electrical, LED_VISIBLE_THRESHOLD, 9.0);
+    let core = saturating_optical_response(electrical, LED_VISIBLE_THRESHOLD, 7.0);
+    let halo = saturating_optical_response(electrical, LED_HALO_ONSET, 5.0);
+    let bloom = saturating_optical_response(electrical, LED_BLOOM_ONSET, 6.0);
 
     Some(LedVisualResponse {
-        // The diffuse aura remains restrained for very weak activity, then
-        // grows progressively once the lamp is visibly participating.
         halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, halo * settings.aura),
-        // Body/core use a perceptual shoulder instead of a near-linear mapping.
-        // This restores the bright moving KILL THE BIT target while the explicit
-        // visibility threshold still suppresses tiny residual duty.
         body_alpha: optical_alpha(255, body * settings.brightness),
         core_alpha: optical_alpha(255, core * settings.brightness),
-        // White saturation is treated as an eye/camera bloom of a strongly lit
-        // diffuse red lamp, not as a permanent specular spot on a clear LED.
+        // White saturation is an eye/camera bloom from a bright diffuse red
+        // lamp, not a permanent specular dot on a modern clear-lens LED.
         bloom_alpha: optical_alpha(224, bloom * settings.brightness),
     })
 }
@@ -184,7 +190,7 @@ impl RusTairApp {
 
         // The unlit lens remains in the panel texture. These overlays represent
         // emitted light from the original diffuse red lamp: a restrained aura,
-        // red body, luminous red core and only at high duty a soft central bloom.
+        // red body, luminous red core and, at sufficient duty, central bloom.
         if light.halo_alpha > 0 {
             ui.painter().circle_filled(
                 center,
@@ -787,20 +793,28 @@ mod tests {
     fn led_optics_hide_residual_activity_below_threshold() {
         let settings = LedDisplaySettings::default();
         assert_eq!(led_visual_response(0.0, settings), None);
-        assert_eq!(
-            led_visual_response(LED_VISIBLE_THRESHOLD * 0.5, settings),
-            None
-        );
+        assert_eq!(led_visual_response(0.02, settings), None);
     }
 
     #[test]
-    fn led_optics_keep_kill_the_bit_like_activity_readable() {
-        let moving_bit = led_visual_response(0.10, LedDisplaySettings::default()).unwrap();
-        assert!(moving_bit.body_alpha > moving_bit.core_alpha);
-        assert!(moving_bit.body_alpha >= 70);
-        assert!(moving_bit.core_alpha >= 45);
-        assert!(moving_bit.halo_alpha <= 6);
-        assert_eq!(moving_bit.bloom_alpha, 0);
+    fn led_optics_keep_small_real_activity_dim() {
+        let weak = led_visual_response(0.05, LedDisplaySettings::default()).unwrap();
+        assert!(weak.body_alpha < 65);
+        assert!(weak.core_alpha < 55);
+        assert_eq!(weak.halo_alpha, 0);
+        assert_eq!(weak.bloom_alpha, 0);
+    }
+
+    #[test]
+    fn led_optics_make_kill_the_bit_quarter_duty_dominant() {
+        // Four 7T LDAX D instructions in the 48T tight loop expose DE for 12T.
+        // The real game therefore proves that ~25% electrical duty must already
+        // look like a strong lamp rather than a quarter-transparent red dot.
+        let target = led_visual_response(0.25, LedDisplaySettings::default()).unwrap();
+        assert!(target.body_alpha >= 215);
+        assert!(target.core_alpha >= 195);
+        assert!(target.halo_alpha >= 45);
+        assert!(target.bloom_alpha >= 75);
     }
 
     #[test]
@@ -813,49 +827,45 @@ mod tests {
     }
 
     #[test]
-    fn led_optics_preserve_dynamic_range_while_lifting_short_pulses() {
+    fn led_optics_preserve_a_black_floor_and_monotonic_response() {
         let settings = LedDisplaySettings::default();
-        let residual = led_visual_response(0.01, settings).unwrap();
         let tenth = led_visual_response(0.10, settings).unwrap();
         let quarter = led_visual_response(0.25, settings).unwrap();
         let half = led_visual_response(0.50, settings).unwrap();
         let strong = led_visual_response(0.90, settings).unwrap();
 
-        assert!(residual.body_alpha < tenth.body_alpha);
         assert!(tenth.body_alpha < quarter.body_alpha);
         assert!(quarter.body_alpha < half.body_alpha);
-        assert!(half.body_alpha < strong.body_alpha);
-        assert!(residual.body_alpha < 24);
-        assert!((105..=145).contains(&quarter.body_alpha));
-        assert_eq!(quarter.bloom_alpha, 0);
-        assert_eq!(half.bloom_alpha, 0);
-        assert!(strong.bloom_alpha > 0);
+        assert!(half.body_alpha <= strong.body_alpha);
+        assert!(tenth.bloom_alpha == 0);
+        assert!(quarter.bloom_alpha > 0);
+        assert!(half.bloom_alpha > quarter.bloom_alpha);
     }
 
     #[test]
     fn led_live_controls_scale_brightness_and_aura_independently() {
-        let base = led_visual_response(0.50, LedDisplaySettings::default()).unwrap();
+        let base = led_visual_response(0.25, LedDisplaySettings::default()).unwrap();
         let brighter = led_visual_response(
-            0.50,
+            0.25,
             LedDisplaySettings {
-                brightness: 1.5,
+                brightness: 1.15,
                 aura: 1.0,
             },
         )
         .unwrap();
         let more_aura = led_visual_response(
-            0.50,
+            0.25,
             LedDisplaySettings {
                 brightness: 1.0,
-                aura: 2.0,
+                aura: 1.5,
             },
         )
         .unwrap();
 
         assert_eq!(brighter.halo_alpha, base.halo_alpha);
-        assert!(brighter.body_alpha > base.body_alpha);
-        assert!(brighter.core_alpha > base.core_alpha);
-        assert_eq!(brighter.bloom_alpha, base.bloom_alpha);
+        assert!(brighter.body_alpha >= base.body_alpha);
+        assert!(brighter.core_alpha >= base.core_alpha);
+        assert!(brighter.bloom_alpha >= base.bloom_alpha);
 
         assert!(more_aura.halo_alpha > base.halo_alpha);
         assert_eq!(more_aura.body_alpha, base.body_alpha);
