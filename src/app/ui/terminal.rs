@@ -215,16 +215,12 @@ impl RusTairApp {
         });
     }
 
-    fn adm3a_viewport_open_id() -> egui::Id {
-        egui::Id::new("rustair-adm3a-viewport-open")
-    }
-
     fn adm3a_crt_viewport_open_id() -> egui::Id {
         egui::Id::new("rustair-adm3a-crt-viewport-open")
     }
 
     pub(in crate::app) fn open_adm3a_viewport(&mut self, ctx: &egui::Context) {
-        ctx.data_mut(|data| data.insert_temp(Self::adm3a_viewport_open_id(), true));
+        self.adm3a.window_open = true;
         ctx.request_repaint();
     }
 
@@ -415,9 +411,7 @@ impl RusTairApp {
     }
 
     fn show_adm3a_viewport(&mut self, parent_ctx: &egui::Context) {
-        let open = parent_ctx
-            .data_mut(|data| *data.get_temp_mut_or(Self::adm3a_viewport_open_id(), false));
-        if open {
+        if self.adm3a.window_open {
             parent_ctx.show_viewport_immediate(
                 egui::ViewportId::from_hash_of("rustair-adm3a-terminal"),
                 egui::ViewportBuilder::default()
@@ -443,9 +437,7 @@ impl RusTairApp {
                         ui.centered_and_justified(|ui| self.draw_adm3a_shell(ui));
                     });
                     if adm3a_ctx.input(|i| i.viewport().close_requested()) {
-                        adm3a_ctx.data_mut(|data| {
-                            data.insert_temp(Self::adm3a_viewport_open_id(), false)
-                        });
+                        self.adm3a.window_open = false;
                     }
                 },
             );
