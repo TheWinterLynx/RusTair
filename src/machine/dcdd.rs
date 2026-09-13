@@ -7,8 +7,9 @@
 //!
 //! Phase 2 exposed the fixed 08h-0Ah register surface. Phase 3 placed the real
 //! disk-unit/buffer/FD-400 mechanics below the external controller cable. Phase 5
-//! now connects the source-backed physical read stream to Board #1's read-data
-//! latch and NRDA while keeping the drive/controller ownership boundary intact.
+//! connects the source-backed physical read stream to Board #1's read-data latch
+//! and NRDA. Phase 6 adds Board #2 WRITE ENABLE/ENWD/WDS timing over the same
+//! physical harness before media mutation is connected.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -27,6 +28,10 @@ use crate::s100_backplane::{S100BusSample, S100CardDrive, S100ElectricalCard};
 mod read_electronics;
 use read_electronics::Board1ReadElectronics;
 
+#[path = "dcdd_write.rs"]
+mod write_electronics;
+use write_electronics::Board2WriteElectronics;
+
 pub(crate) const DCDD_STATUS_CONTROL_PORT: u8 = 0x08;
 pub(crate) const DCDD_SECTOR_CONTROL_PORT: u8 = 0x09;
 pub(crate) const DCDD_DATA_PORT: u8 = 0x0a;
@@ -39,8 +44,8 @@ const PWR: S100CardContact = S100CardContact::new(S100Signal::Plus8V, S100Contac
 const GND: S100CardContact = S100CardContact::new(S100Signal::Ground, S100ContactRole::Power);
 
 /// Board #1 decodes the mirrored upper I/O-address byte. CLOC remains absent from
-/// the card subscription deliberately: disk mechanics/read cadence are derived
-/// from absolute virtual time and must not create a 2 MHz polling workload.
+/// the card subscription deliberately: disk mechanics/read/write cadence are
+/// derived from absolute virtual time and must not create a 2 MHz polling load.
 const BOARD1_CONTACTS: &[S100CardContact] = &[
     PWR,
     GND,
@@ -118,6 +123,7 @@ struct Board2HarnessDrive {
 #[derive(Debug, Default)]
 struct Mits88DcddBoard2Circuit {
     selected_drive: u8,
+    write_electronics: Board2WriteElectronics,
 }
 
 /// Physical inter-board/controller-cable signal authority. `mechanics_time` is
@@ -179,6 +185,10 @@ impl Mits88DcddHarness {
         let delta = Fd400Time::from_8080_t_states(t_states).units();
         let mut state = self.state.borrow_mut();
         state.mechanics_time = state.mechanics_time.saturating_add(delta);
+    }
+
+    fn mechanics_time(&self) -> Fd400Time {
+        self.state.borrow().mechanics_time
     }
 
     /// Propagate a Board-1 harness transition immediately. Board #2 samples its
@@ -261,6 +271,26 @@ impl Mits88DcddHarness {
             .latest_read_byte_event(now)
     }
 
+    fn write_enwd(&self) -> bool {
+        if !self.disk_enabled() {
+            return false;
+        }
+        let (now, sink) = {
+            let state = self.state.borrow();
+            (state.mechanics_time, state.board2_sink.clone())
+        };
+        sink.upgrade()
+            .is_some_and(|sink| sink.borrow().write_electronics.enwd(now))
+    }
+
+    fn begin_write_context(&self) -> Option<(Fd400Time, u64)> {
+        let snapshot = self.active_drive_snapshot()?;
+        if !snapshot.head_status {
+            return None;
+        }
+        Some((self.mechanics_time(), snapshot.rotation.sector_offset_units))
+    }
+
     fn apply_drive_control(&self, address: u8, value: u8) {
         let mut state = self.state.borrow_mut();
         let now = state.mechanics_time;
@@ -285,8 +315,8 @@ impl Mits88DcddHarness {
             (false, true) => drive.set_head_loaded(false, now),
             _ => {}
         }
-        // IE/ID/HCS/WRITE ENABLE belong to later controller phases. WDS write
-        // data likewise remains inactive until the authentic write path exists.
+        // IE/ID/HCS remain deferred. WRITE ENABLE itself belongs to Board #2's
+        // write sequencer and is handled from the same CD harness edge below.
     }
 
     #[cfg(test)]
@@ -315,10 +345,12 @@ impl Mits88DcddHarness {
 
 impl Mits88DcddBoard2Circuit {
     fn clear_disk_control(&mut self, harness: &Mits88DcddHarness) {
+        self.write_electronics.clear();
         harness.set_disk_selection(self.selected_drive, false);
     }
 
     fn apply_dcl_rising(&mut self, value: u8, harness: &Mits88DcddHarness) {
+        self.write_electronics.clear();
         if value & 0x80 != 0 {
             self.clear_disk_control(harness);
             return;
@@ -344,12 +376,22 @@ impl Mits88DcddBoard2Circuit {
         if current.cd && !previous.cd && harness.disk_enabled() {
             if let Some(value) = sample.data_out() {
                 harness.apply_drive_control(self.selected_drive, value);
+                if value & 0x80 != 0 {
+                    if let Some((now, sector_offset_units)) = harness.begin_write_context() {
+                        self.write_electronics
+                            .begin_for_current_sector(now, sector_offset_units);
+                    }
+                }
             }
         }
 
-        // The WDS edge is real, but write-data electronics/media mutation are
-        // deliberately absent until the authentic write phase.
-        let _wds_rising = current.wds && !previous.wds;
+        if current.wds && !previous.wds && harness.disk_enabled() {
+            if let Some(value) = sample.data_out() {
+                let _ = self
+                    .write_electronics
+                    .consume_data(harness.mechanics_time(), value);
+            }
+        }
     }
 }
 
@@ -401,6 +443,9 @@ impl Mits88DcddBoard1 {
         };
 
         let mut status = DISABLED_STATUS;
+        if self.harness.write_enwd() {
+            status &= !(1 << 0);
+        }
         if mechanics.move_head {
             status &= !(1 << 1);
         }
@@ -416,7 +461,6 @@ impl Mits88DcddBoard1 {
         if self.read_electronics.nrda() {
             status &= !(1 << 7);
         }
-        // D0 ENWD remains false until the authentic write phase.
         status
     }
 
@@ -957,6 +1001,57 @@ mod tests {
         println!(
             "FD-400 -> DCDD authentic read: T0/S7 byte107={first:02X}, byte108={second:02X}, late byte110={late:02X}"
         );
+    }
+
+    #[test]
+    fn write_enable_drives_enwd_at_280_us_and_wds_resets_until_next_32_us_slot() {
+        let harness = Mits88DcddHarness::new();
+        let mut board1 = Mits88DcddBoard1::new(harness.clone());
+        let (_board2, _) = board2_fixture(&harness);
+        install_powered_test_unit(&harness, 3);
+
+        board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
+        harness.advance_mechanics_t_states(FIVE_SECONDS_T_STATES);
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x04));
+        harness.advance_mechanics_t_states(FORTY_MS_T_STATES);
+        assert!(harness.test_unit_snapshot(3).unwrap().head_status);
+
+        // 5 s + 40 ms lands 10,000 fixed units before the next sector boundary.
+        // 3,334 T-states cross it by two units, still inside Sector True.
+        release_harness_strobe(&mut board1);
+        harness.advance_mechanics_t_states(3_334);
+        let at_sector_start = harness.test_unit_snapshot(3).unwrap();
+        assert!(at_sector_start.rotation.sector_true);
+        assert_eq!(at_sector_start.rotation.sector_offset_units, 2);
+
+        board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x80));
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x01, 0, "ENWD is still false");
+
+        // First ENWD is 280 us (1,680 fixed units) from Sector True. We started
+        // two units into the sector, so 559 T-states remain one unit early.
+        harness.advance_mechanics_t_states(559);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x01, 0);
+        harness.advance_mechanics_t_states(1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive.unwrap() & 0x01, 0, "ENWD True is active low");
+
+        // OUT 0Ah reaches Board #2 through WDS and resets only this request.
+        board1.observe_s100(&io_sample(0x0a, false, true, false, false, 0x81));
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x01, 0);
+
+        // One 32-us byte interval is exactly 64 Altair T-states.
+        harness.advance_mechanics_t_states(63);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x01, 0);
+        harness.advance_mechanics_t_states(1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive.unwrap() & 0x01, 0);
     }
 
     #[test]
