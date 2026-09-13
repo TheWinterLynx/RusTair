@@ -5,10 +5,10 @@
 //! control and write-side circuitry. They communicate only through the documented
 //! controller harness, never through a direct card-to-card software reference.
 //!
-//! Phase 2 exposed the fixed 08h-0Ah register surface. Phase 3 places the real
-//! disk-unit/buffer/FD-400 mechanics below the external controller cable and now
-//! exposes source-backed mechanical status through that same physical controller
-//! path while preserving a no-drive default assembly and zero per-T-state polling.
+//! Phase 2 exposed the fixed 08h-0Ah register surface. Phase 3 placed the real
+//! disk-unit/buffer/FD-400 mechanics below the external controller cable. Phase 5
+//! now connects the source-backed physical read stream to Board #1's read-data
+//! latch and NRDA while keeping the drive/controller ownership boundary intact.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -23,6 +23,10 @@ use crate::s100::{
 };
 use crate::s100_backplane::{S100BusSample, S100CardDrive, S100ElectricalCard};
 
+#[path = "dcdd_read.rs"]
+mod read_electronics;
+use read_electronics::Board1ReadElectronics;
+
 pub(crate) const DCDD_STATUS_CONTROL_PORT: u8 = 0x08;
 pub(crate) const DCDD_SECTOR_CONTROL_PORT: u8 = 0x09;
 pub(crate) const DCDD_DATA_PORT: u8 = 0x0a;
@@ -35,8 +39,8 @@ const PWR: S100CardContact = S100CardContact::new(S100Signal::Plus8V, S100Contac
 const GND: S100CardContact = S100CardContact::new(S100Signal::Ground, S100ContactRole::Power);
 
 /// Board #1 decodes the mirrored upper I/O-address byte. CLOC remains absent from
-/// the card subscription deliberately: Phase-3 mechanics are epoch/deadline
-/// derived and must not turn an idle controller into a 2 MHz polling workload.
+/// the card subscription deliberately: disk mechanics/read cadence are derived
+/// from absolute virtual time and must not create a 2 MHz polling workload.
 const BOARD1_CONTACTS: &[S100CardContact] = &[
     PWR,
     GND,
@@ -240,6 +244,23 @@ impl Mits88DcddHarness {
         )
     }
 
+    /// Sample the newest physical read byte that has reached the selected drive's
+    /// controller cable at the current absolute virtual time. No byte loop runs:
+    /// the FD-400 resolves directly to the newest event/generation.
+    fn active_read_byte_event(&self) -> Option<(u64, u8)> {
+        if !self.disk_enabled() {
+            return None;
+        }
+        let mut state = self.state.borrow_mut();
+        let address = state.board2.selected_drive;
+        let now = state.mechanics_time;
+        state
+            .external_disk_bus
+            .unit_mut(address)?
+            .drive_mut()
+            .latest_read_byte_event(now)
+    }
+
     fn apply_drive_control(&self, address: u8, value: u8) {
         let mut state = self.state.borrow_mut();
         let now = state.mechanics_time;
@@ -335,9 +356,7 @@ impl Mits88DcddBoard2Circuit {
 struct Mits88DcddBoard1 {
     harness: Mits88DcddHarness,
     read_drive: Option<u8>,
-    /// MITS does not define the power-up value of the read-data latches. Model
-    /// that TTL state as indeterminate rather than claiming 00h/FFh/open bus.
-    undefined_read_latch: u8,
+    read_electronics: Board1ReadElectronics,
 }
 
 impl Mits88DcddBoard1 {
@@ -345,7 +364,10 @@ impl Mits88DcddBoard1 {
         Self {
             harness,
             read_drive: None,
-            undefined_read_latch: rand::rng().next_u32() as u8,
+            // MITS does not define the power-up value of the G3/H1 read-data
+            // latches. Preserve that indeterminate TTL state until real data
+            // reaches Board #1.
+            read_electronics: Board1ReadElectronics::new(rand::rng().next_u32() as u8),
         }
     }
 
@@ -368,7 +390,12 @@ impl Mits88DcddBoard1 {
         }
     }
 
-    fn status_byte(&self, sample: &S100BusSample) -> u8 {
+    fn refresh_read_electronics(&mut self) {
+        self.read_electronics
+            .observe_event(self.harness.active_read_byte_event());
+    }
+
+    fn status_byte(&mut self, sample: &S100BusSample) -> u8 {
         let Some(mechanics) = self.harness.active_drive_snapshot() else {
             return DISABLED_STATUS;
         };
@@ -386,7 +413,10 @@ impl Mits88DcddBoard1 {
         if mechanics.track_zero {
             status &= !(1 << 6);
         }
-        // D0 ENWD and D7 NRDA remain false until the authentic write/read phases.
+        if self.read_electronics.nrda() {
+            status &= !(1 << 7);
+        }
+        // D0 ENWD remains false until the authentic write phase.
         status
     }
 
@@ -400,6 +430,11 @@ impl Mits88DcddBoard1 {
     }
 
     fn update_read_drive(&mut self, sample: &S100BusSample) {
+        // Catch up read electronics once at the current absolute controller time.
+        // If several 32-us byte opportunities elapsed, Board #1 retains only the
+        // newest byte and NRDA remains asserted until an IN 0Ah consumes it.
+        self.refresh_read_electronics();
+
         let read_active = sample.signal_level(S100Signal::Inp) == Some(true)
             && sample.signal_level(S100Signal::DataBusIn) == Some(true);
         if !read_active {
@@ -413,9 +448,10 @@ impl Mits88DcddBoard1 {
             // D0 is active-low Sector True, D1..D5 are sector 0..31 and the MITS
             // table fixes the otherwise-unused D6/D7 outputs at logic 1.
             Some(DCDD_SECTOR_CONTROL_PORT) => self.sector_byte(),
-            // Read-data line drivers are selected even though the latch power-up
-            // contents are undefined. Do not turn that into fictitious open bus.
-            Some(DCDD_DATA_PORT) => Some(self.undefined_read_latch),
+            // IN 0Ah takes the retained G3/H1 read-data latch and resets NRDA.
+            // The drive continues rotating; the next physical byte can overwrite
+            // this latch regardless of whether software services it in time.
+            Some(DCDD_DATA_PORT) => Some(self.read_electronics.consume_data()),
             _ => None,
         };
     }
@@ -810,7 +846,7 @@ mod tests {
     fn data_port_drives_an_indeterminate_latch_instead_of_claiming_open_bus() {
         let harness = Mits88DcddHarness::new();
         let mut board1 = Mits88DcddBoard1::new(harness);
-        board1.undefined_read_latch = 0x5a;
+        board1.read_electronics = Board1ReadElectronics::new(0x5a);
         board1.observe_s100(&io_sample(0x0a, true, false, true, true, 0));
         assert_eq!(board1.read_drive, Some(0x5a));
         assert_eq!(
@@ -819,6 +855,35 @@ mod tests {
                 .pin(S100Signal::DataIn(1).pin().unwrap()),
             Some(S100PinDrive::Driven(true))
         );
+    }
+
+    #[test]
+    fn nrda_is_active_low_and_data_in_clears_only_the_current_generation() {
+        let harness = Mits88DcddHarness::new();
+        let mut board1 = Mits88DcddBoard1::new(harness.clone());
+        let (_board2, _) = board2_fixture(&harness);
+        install_powered_test_unit(&harness, 3);
+
+        board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
+        harness.advance_mechanics_t_states(FIVE_SECONDS_T_STATES);
+        assert!(harness.disk_enabled());
+
+        board1.read_electronics.observe_event(Some((10, 0xa5)));
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        let pending_status = board1.read_drive.unwrap();
+        assert_eq!(pending_status & 0x80, 0, "NRDA True is active low");
+
+        board1.observe_s100(&io_sample(0x0a, true, false, true, true, 0));
+        assert_eq!(board1.read_drive, Some(0xa5));
+        assert!(!board1.read_electronics.nrda());
+
+        board1.read_electronics.observe_event(Some((10, 0xa5)));
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x80, 0);
+
+        board1.read_electronics.observe_event(Some((11, 0x19)));
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive.unwrap() & 0x80, 0);
     }
 
     #[test]
