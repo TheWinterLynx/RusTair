@@ -132,9 +132,17 @@ impl AltairBus {
     /// Advance independently clocked chassis peripherals by elapsed guest
     /// T-states. The memory/runtime facade fans this out to UART timing and the
     /// single O(1) DCDD mechanics epoch without iterating installed disk units.
+    ///
+    /// A DCDD mechanics-epoch increment is not itself an S-100 connector event:
+    /// Phase-3 mechanics are observed lazily by controller I/O. Only an active
+    /// UART can change PINT/VI/PRDY merely because elapsed time advanced, so an
+    /// idle/no-serial chassis must not pay for a full electrical settle here.
     pub(crate) fn advance_chassis_hardware_time(&mut self, t_states: u64) {
+        let serial_was_active = !self.memory.serial_timing_is_quiet();
         self.memory.advance_serial_time(t_states);
-        self.settle_host_serial_change();
+        if serial_was_active {
+            self.settle_host_serial_change();
+        }
     }
 
     /// Compatibility name retained for serial-specific tests and callers. The
