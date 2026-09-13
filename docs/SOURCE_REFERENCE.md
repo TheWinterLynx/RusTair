@@ -146,9 +146,11 @@ This layer connects the exact CPU and generic S-100 runtime into an Altair machi
 | `src/machine/mod.rs` | Machine module root and `AltairBus` composition. Owns machine memory facade, front-panel controller, canonical S-100 bus state and diagnostic metering. Exposes selected machine types/constants to backend. No hidden UART or alternate RAM. |
 | `src/machine/chassis.rs` | `AltairChassis`: physical chassis lifecycle/control wrapper (power, panel/control interaction and CPU-free machine container). RUN state derives from physical bus latch rather than a duplicate boolean authority. |
 | `src/machine/cpu_board.rs` | Adapter between `Cpu8080Cycle` package pins/control inputs and the MITS 8080 S-100 CPU-board electrical behavior. Defines CPU samples/control-line views used by exact backend. |
-| `src/machine/dcdd.rs` | MITS 88-DCDD physical two-board controller topology. Owns the documented Board #1/Board #2 harness, external disk-cable boundary, fixed I/O decode/register behavior and Phase-3 control routing into selected disk-unit mechanics. Cards remain separate S-100 devices and never call each other directly. |
-| `src/machine/fd400.rs` | Pertec FD-400 and MITS disk-unit/buffer mechanics plus removable-medium ownership. Keeps the O(1) epoch/deadline virtual-time model for rotation, hard-sector position, track stepping and head readiness; Phase 4 mounts media below the drive electronics without exposing host paths or guest sector shortcuts. |
-| `fd400_media.rs` | Read-only 8-inch hard-sectored physical-medium model nested under the FD-400: exact 77×32×137-byte geometry, track/sector/physical-byte addressing, immutable payload and write-protect metadata. It owns no controller timing or host pathname. |
+| `src/machine/dcdd.rs` | MITS 88-DCDD physical two-board controller topology. Owns the documented Board #1/Board #2 harness, external disk-cable boundary, fixed I/O decode/register behavior, source-backed mechanics routing and Phase-5 read-stream handoff into Board #1. Cards remain separate S-100 devices and never call each other directly. |
+| `src/machine/dcdd_read.rs` | MITS 88-DCDD Board #1 read-data latch/NRDA electronics. New physical bytes overwrite unread data, NRDA remains asserted until IN 0Ah, and re-observing the same byte generation cannot fabricate a second ready event. |
+| `src/machine/fd400.rs` | Pertec FD-400 and MITS disk-unit/buffer mechanics plus removable-medium ownership. Keeps the O(1) epoch/deadline virtual-time model for rotation, hard-sector position, track stepping and head readiness; Phase 5 exposes only the newest source-backed physical read-byte event to controller electronics, never guest I/O semantics. |
+| `src/machine/fd400_media.rs` | Read-only 8-inch hard-sectored physical-medium model nested under the FD-400: exact 77×32×137-byte geometry, track/sector/physical-byte addressing, immutable payload and write-protect metadata. It owns no controller timing or host pathname. |
+| `src/machine/fd400_read.rs` | Source-backed FD-400 read-stream timing: first physical byte 140 µs after Sector True, then 32 µs cadence, SYNC-bit qualification and O(1) catch-up to the newest byte event after large virtual-time jumps. It does not own NRDA or guest ports. |
 | `src/machine/front_panel.rs` | `FrontPanelController` and switch/control-side panel state such as address/data switch handling. Physical operations are later projected onto the bus/chassis; this is not the GUI renderer. |
 | `src/machine/panel_bus.rs` | Canonical `S100BusState`, raw panel-visible signal/status state, panel lamp snapshots/integration and optimized Full panel-duty accumulation. Central front-panel fidelity file. Raw state is authoritative; brightness is derived. |
 | `src/machine/memory.rs` | Machine-facing memory facade over the live `S100RuntimeFabric`: configuration/migration helpers, physical RAM inspection/load/protection, guest reads/writes and serial/chassis-time forwarding. Must not become a second memory store. |
@@ -249,8 +251,10 @@ flowchart TB
     RUNTIME --> RAM[src/s100_runtime_ram.rs]
     RUNTIME --> IO[src/s100_io_card.rs]
     RUNTIME --> DCDD[src/machine/dcdd.rs]
+    DCDD --> DCDDREAD[src/machine/dcdd_read.rs]
     DCDD --> FD400[src/machine/fd400.rs]
-    FD400 --> MEDIA[fd400_media.rs physical medium]
+    FD400 --> FDREAD[src/machine/fd400_read.rs]
+    FD400 --> MEDIA[src/machine/fd400_media.rs physical medium]
     IO --> SERIAL[src/machine/sio.rs + two_sio.rs]
     APP --> ROUTER[src/io/serial_router.rs]
     ROUTER --> SERIAL
@@ -270,9 +274,11 @@ These are not "do not touch" files, but they sit on critical fidelity/performanc
 - `src/s100_backplane.rs` — electrical resolution for every card.
 - `src/s100_runtime.rs` — live topology plus critical hot-path specialization.
 - `src/s100_runtime_ram.rs` — authoritative guest RAM storage.
-- `src/machine/dcdd.rs` — physical two-board disk-controller ownership/harness boundary; timing/decode changes must remain source-backed and avoid per-T-state idle work.
+- `src/machine/dcdd.rs` — physical two-board disk-controller ownership/harness boundary; timing/decode/read-latch changes must remain source-backed and avoid per-T-state idle work.
+- `src/machine/dcdd_read.rs` — Board #1 read-data/NRDA state; do not buffer multiple guest-visible bytes or pause the physical stream for late software.
 - `src/machine/fd400.rs` — disk mechanics virtual-time/deadline engine and removable-medium owner; do not replace its O(1) epoch model with per-T-state/per-drive idle polling or let controller/host shortcuts bypass the drive boundary.
-- `fd400_media.rs` — physical medium geometry/byte ownership; do not reinterpret it as filesystem sectors or store host pathname/UI state in the emulated medium.
+- `src/machine/fd400_read.rs` — physical byte-event timing; preserve 140 µs/32 µs source-backed cadence and O(1) catch-up without moving NRDA ownership into the drive.
+- `src/machine/fd400_media.rs` — physical medium geometry/byte ownership; do not reinterpret it as filesystem sectors or store host pathname/UI state in the emulated medium.
 - `src/machine/sio.rs`, `two_sio.rs`, `mc6850.rs` — guest-visible serial timing/status/interrupt state.
 - `src/full_boundary_reconcile.rs` — Full→Partial physical re-entry.
 - `src/app/execution_clock.rs`, `execution_frame.rs` — host scheduling must not change modeled hardware time.
