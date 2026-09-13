@@ -2,12 +2,12 @@ use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, Term
 use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_ROWS};
 use crate::config::TerminalDuplex;
 
-const ADM3A_SCREEN_LEFT: f32 = 0.289;
-const ADM3A_SCREEN_TOP: f32 = 0.161;
-const ADM3A_SCREEN_RIGHT: f32 = 0.713;
-const ADM3A_SCREEN_BOTTOM: f32 = 0.614;
-const ADM3A_CRT_CROP_PAD_X: f32 = 0.012;
-const ADM3A_CRT_CROP_PAD_Y: f32 = 0.018;
+const ADM3A_MASK_WIDTH: f32 = 921.0;
+const ADM3A_MASK_HEIGHT: f32 = 694.0;
+const ADM3A_SCREEN_LEFT: f32 = 252.0 / ADM3A_MASK_WIDTH;
+const ADM3A_SCREEN_TOP: f32 = 79.0 / ADM3A_MASK_HEIGHT;
+const ADM3A_SCREEN_RIGHT: f32 = 681.0 / ADM3A_MASK_WIDTH;
+const ADM3A_SCREEN_BOTTOM: f32 = 423.0 / ADM3A_MASK_HEIGHT;
 
 impl RusTairApp {
     fn draw_terminal_input(&mut self, ui: &mut egui::Ui) {
@@ -270,44 +270,24 @@ impl RusTairApp {
         }
     }
 
+    fn adm3a_screen_uv() -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::Pos2::new(ADM3A_SCREEN_LEFT, ADM3A_SCREEN_TOP),
+            egui::Pos2::new(ADM3A_SCREEN_RIGHT, ADM3A_SCREEN_BOTTOM),
+        )
+    }
+
     fn adm3a_screen_rect(shell_rect: egui::Rect) -> egui::Rect {
+        let uv = Self::adm3a_screen_uv();
         egui::Rect::from_min_max(
             egui::Pos2::new(
-                shell_rect.left() + shell_rect.width() * ADM3A_SCREEN_LEFT,
-                shell_rect.top() + shell_rect.height() * ADM3A_SCREEN_TOP,
+                shell_rect.left() + shell_rect.width() * uv.left(),
+                shell_rect.top() + shell_rect.height() * uv.top(),
             ),
             egui::Pos2::new(
-                shell_rect.left() + shell_rect.width() * ADM3A_SCREEN_RIGHT,
-                shell_rect.top() + shell_rect.height() * ADM3A_SCREEN_BOTTOM,
+                shell_rect.left() + shell_rect.width() * uv.right(),
+                shell_rect.top() + shell_rect.height() * uv.bottom(),
             ),
-        )
-    }
-
-    fn adm3a_crt_crop_uv() -> egui::Rect {
-        egui::Rect::from_min_max(
-            egui::Pos2::new(
-                (ADM3A_SCREEN_LEFT - ADM3A_CRT_CROP_PAD_X).max(0.0),
-                (ADM3A_SCREEN_TOP - ADM3A_CRT_CROP_PAD_Y).max(0.0),
-            ),
-            egui::Pos2::new(
-                (ADM3A_SCREEN_RIGHT + ADM3A_CRT_CROP_PAD_X).min(1.0),
-                (ADM3A_SCREEN_BOTTOM + ADM3A_CRT_CROP_PAD_Y).min(1.0),
-            ),
-        )
-    }
-
-    fn map_uv_rect_to_output(
-        output: egui::Rect,
-        crop_uv: egui::Rect,
-        child_uv: egui::Rect,
-    ) -> egui::Rect {
-        let map_x =
-            |u: f32| output.left() + output.width() * (u - crop_uv.left()) / crop_uv.width();
-        let map_y =
-            |v: f32| output.top() + output.height() * (v - crop_uv.top()) / crop_uv.height();
-        egui::Rect::from_min_max(
-            egui::Pos2::new(map_x(child_uv.left()), map_y(child_uv.top())),
-            egui::Pos2::new(map_x(child_uv.right()), map_y(child_uv.bottom())),
         )
     }
 
@@ -322,9 +302,10 @@ impl RusTairApp {
     }
 
     fn draw_adm3a_contents(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
-        // The photographed shell already contains the real glass aperture and
-        // bezel geometry. Do not paint a synthetic rounded rectangle over it:
-        // only the raster contents belong on top of the photograph.
+        if !self.adm3a.powered() {
+            return;
+        }
+
         let active_rect = screen_rect.shrink2(egui::Vec2::new(
             screen_rect.width() * 0.055,
             screen_rect.height() * 0.070,
@@ -397,12 +378,26 @@ impl RusTairApp {
 
         let size = source * scale;
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        let full_uv =
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
         ui.painter().image(
             texture.id(),
             rect,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            full_uv,
             egui::Color32::WHITE,
         );
+
+        let Some(mask) = &self.tex.adm3a_screen_mask else {
+            return;
+        };
+        if self.adm3a.powered() {
+            ui.painter().image(
+                mask.id(),
+                rect,
+                full_uv,
+                egui::Color32::from_rgb(8, 18, 11),
+            );
+        }
         self.draw_adm3a_contents(ui.painter(), Self::adm3a_screen_rect(rect));
     }
 
@@ -422,27 +417,27 @@ impl RusTairApp {
                 .with_resizable(true),
             |crt_ctx, _class| {
                 egui::CentralPanel::default().show(crt_ctx, |ui| {
-                    let Some(texture) = &self.tex.adm3a_shell else {
+                    let Some(mask) = &self.tex.adm3a_screen_mask else {
                         ui.centered_and_justified(|ui| {
-                            ui.label("ADM-3A shell asset unavailable");
+                            ui.label("ADM-3A screen mask unavailable");
                         });
                         return;
                     };
 
-                    let crop_uv = Self::adm3a_crt_crop_uv();
-                    let source_aspect = texture.size()[0] as f32 / texture.size()[1] as f32;
-                    let crop_aspect = source_aspect * crop_uv.width() / crop_uv.height();
+                    let screen_uv = Self::adm3a_screen_uv();
+                    let source_aspect = mask.size()[0] as f32 / mask.size()[1] as f32;
+                    let screen_aspect =
+                        source_aspect * screen_uv.width() / screen_uv.height();
                     let available = ui.available_rect_before_wrap().shrink(12.0);
-                    let crop_rect = Self::fit_aspect_rect(available, crop_aspect);
+                    let screen_rect = Self::fit_aspect_rect(available, screen_aspect);
+                    let screen_tint = if self.adm3a.powered() {
+                        egui::Color32::from_rgb(8, 18, 11)
+                    } else {
+                        egui::Color32::from_rgb(10, 12, 11)
+                    };
 
                     ui.painter()
-                        .image(texture.id(), crop_rect, crop_uv, egui::Color32::WHITE);
-
-                    let screen_uv = egui::Rect::from_min_max(
-                        egui::Pos2::new(ADM3A_SCREEN_LEFT, ADM3A_SCREEN_TOP),
-                        egui::Pos2::new(ADM3A_SCREEN_RIGHT, ADM3A_SCREEN_BOTTOM),
-                    );
-                    let screen_rect = Self::map_uv_rect_to_output(crop_rect, crop_uv, screen_uv);
+                        .image(mask.id(), screen_rect, screen_uv, screen_tint);
                     self.draw_adm3a_contents(ui.painter(), screen_rect);
                 });
                 if crt_ctx.input(|i| i.viewport().close_requested()) {
@@ -468,6 +463,11 @@ impl RusTairApp {
                         .resizable(false)
                         .show(adm3a_ctx, |ui| {
                             ui.horizontal_wrapped(|ui| {
+                                let mut powered = self.adm3a.powered();
+                                if ui.toggle_value(&mut powered, "POWER").changed() {
+                                    self.adm3a.set_powered(powered);
+                                }
+                                ui.separator();
                                 self.draw_adm3a_connection_selector(ui);
                                 ui.separator();
                                 ui.label("80 × 24");
