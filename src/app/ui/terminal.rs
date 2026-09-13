@@ -490,7 +490,10 @@ impl RusTairApp {
         ADM3A_CRT_OUTLINE
             .iter()
             .map(|(u, v)| {
-                egui::Pos2::new(rect.left() + rect.width() * *u, rect.top() + rect.height() * *v)
+                egui::Pos2::new(
+                    rect.left() + rect.width() * *u,
+                    rect.top() + rect.height() * *v,
+                )
             })
             .collect()
     }
