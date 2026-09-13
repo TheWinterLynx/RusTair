@@ -156,25 +156,29 @@ The physical panel controls also act through the machine/bus model; UI widgets d
 
 ---
 
-## 9. Host time is not guest hardware time
+## 9. Host execution speed is not peripheral clock speed
 
-Authentic/5×/10×/Unlimited are host scheduling policies. They do not change the installed MITS CPU board's historical clock definition or peripheral hardware semantics.
+Authentic/5×/10×/Unlimited are host CPU scheduling policies. They do not change the installed MITS CPU board's historical clock definition or the physical rate selected on an independently clocked peripheral.
 
-`execution_clock.rs` and `execution_frame.rs` may decide how much virtual time to advance before yielding to the GUI, but they must not:
+The 88-SIO/88-2SIO baud generator is therefore a separate physical-time domain. A configured 110-baud channel remains 110 baud in Authentic, 5×, 10× and Unlimited. Host wall time is used only by the backend scheduler to meter elapsed physical serial time into the installed card; COM2502/MC6850 bit, frame, status and interrupt state remain owned by that card and any resulting outputs still propagate through the normal S-100 connector graph.
+
+CPU/chassis-time peripherals such as the current DCDD mechanics model retain their own explicit clock path. Do not reuse the serial wall-clock scheduler to advance unrelated devices merely because both need elapsed time.
+
+`execution_clock.rs` and `execution_frame.rs` may decide how much CPU virtual time to advance before yielding to the GUI, but they must not:
 
 - skip modeled guest T-states;
-- change serial bit timing in guest time;
-- make READY/HOLD/interrupt events occur at host-frame boundaries;
+- multiply or divide a selected serial baud because CPU execution speed changed;
+- make READY/HOLD/interrupt events synthetic UI state;
 - cap Unlimited execution at repaint frequency;
-- fabricate elapsed guest time merely because the host was busy.
+- turn a presentation timer into a second hardware clock authority.
 
 ---
 
 ## 10. Serial cards own UART state
 
-The installed physical 88-SIO/88-2SIO card instance owns guest-visible status/data/interrupt state.
+The installed physical 88-SIO/88-2SIO card instance owns guest-visible status/data/interrupt state and the progress of its COM2502/MC6850 shift registers.
 
-ASR-33, text terminal, TCP and COM support are external endpoints. They may exchange bytes/signals with the installed serial card through the configured cable/router path but must not own a duplicate UART.
+ASR-33, text terminal, TCP and COM support are external endpoints. They may exchange bytes/signals with the installed serial card through the configured cable/router path but must not own a duplicate UART or complete a UART frame on the card's behalf. Endpoint mechanics/presentation may impose their own downstream rate (for example the ASR-33 printer/distributor), but that rate is not a substitute for card baud timing.
 
 Electrical interface choices and modem/control signal polarity are part of the physical configuration. Directly incompatible interfaces must not be silently connected through an invisible converter.
 
