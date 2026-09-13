@@ -1444,7 +1444,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_full_clocks_idle_two_sio_exactly_once() {
+    fn compiled_full_does_not_clock_idle_two_sio_from_cpu_t_states() {
         let hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         let mut compiled = CycleAccurateMachineBackend::default();
         let mut reference = CycleAccurateMachineBackend::default();
@@ -1462,9 +1462,11 @@ mod tests {
             backend.run().unwrap();
         }
 
+        // Full may advance CPU/chassis-time hardware such as DCDD mechanics, but
+        // CPU execution must not advance the independently clocked serial baud
+        // generator. Both UARTs therefore retain the same idle oscillator phase.
         compiled.service_execution_compiled(14_000).unwrap();
         assert_eq!(compiled.cpu.total_t_states(), 14_000);
-        reference.machine.bus.advance_serial_hardware_time(14_000);
 
         for backend in [&mut compiled, &mut reference] {
             backend.machine.bus.debugger_output_port(0x12, 0x15);
