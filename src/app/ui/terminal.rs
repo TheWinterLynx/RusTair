@@ -8,6 +8,11 @@ const ADM3A_SCREEN_LEFT: f32 = 252.0 / ADM3A_MASK_WIDTH;
 const ADM3A_SCREEN_TOP: f32 = 79.0 / ADM3A_MASK_HEIGHT;
 const ADM3A_SCREEN_RIGHT: f32 = 681.0 / ADM3A_MASK_WIDTH;
 const ADM3A_SCREEN_BOTTOM: f32 = 423.0 / ADM3A_MASK_HEIGHT;
+const ADM3A_POPUP_ASPECT: f32 = 429.0 / 344.0;
+const ADM3A_CRT_OUTLINE_SEGMENTS: usize = 96;
+const ADM3A_CRT_SUPERELLIPSE_EXPONENT: f32 = 4.6;
+const ADM3A_CRT_BARREL_X: f32 = 0.035;
+const ADM3A_CRT_BARREL_Y: f32 = 0.025;
 
 impl RusTairApp {
     fn draw_terminal_input(&mut self, ui: &mut egui::Ui) {
@@ -301,6 +306,32 @@ impl RusTairApp {
         egui::Rect::from_center_size(available.center(), size)
     }
 
+    fn adm3a_crt_outline(rect: egui::Rect) -> Vec<egui::Pos2> {
+        let center = rect.center();
+        let half_size = rect.size() * 0.5;
+        let superellipse_power = 2.0 / ADM3A_CRT_SUPERELLIPSE_EXPONENT;
+
+        (0..ADM3A_CRT_OUTLINE_SEGMENTS)
+            .map(|index| {
+                let theta = std::f32::consts::TAU * index as f32
+                    / ADM3A_CRT_OUTLINE_SEGMENTS as f32;
+                let cosine = theta.cos();
+                let sine = theta.sin();
+                let base_x = cosine.signum() * cosine.abs().powf(superellipse_power);
+                let base_y = sine.signum() * sine.abs().powf(superellipse_power);
+                let barrel_x = base_x * (1.0 + ADM3A_CRT_BARREL_X * (1.0 - base_y * base_y))
+                    / (1.0 + ADM3A_CRT_BARREL_X);
+                let barrel_y = base_y * (1.0 + ADM3A_CRT_BARREL_Y * (1.0 - base_x * base_x))
+                    / (1.0 + ADM3A_CRT_BARREL_Y);
+
+                egui::Pos2::new(
+                    center.x + barrel_x * half_size.x,
+                    center.y + barrel_y * half_size.y,
+                )
+            })
+            .collect()
+    }
+
     fn draw_adm3a_contents(&self, painter: &egui::Painter, screen_rect: egui::Rect) {
         if !self.adm3a.powered() {
             return;
@@ -408,26 +439,19 @@ impl RusTairApp {
                 .with_resizable(true),
             |crt_ctx, _class| {
                 egui::CentralPanel::default().show(crt_ctx, |ui| {
-                    let Some(mask) = &self.tex.adm3a_screen_mask else {
-                        ui.centered_and_justified(|ui| {
-                            ui.label("ADM-3A screen mask unavailable");
-                        });
-                        return;
-                    };
-
-                    let screen_uv = Self::adm3a_screen_uv();
-                    let source_aspect = mask.size()[0] as f32 / mask.size()[1] as f32;
-                    let screen_aspect = source_aspect * screen_uv.width() / screen_uv.height();
-                    let available = ui.available_rect_before_wrap().shrink(12.0);
-                    let screen_rect = Self::fit_aspect_rect(available, screen_aspect);
-                    let screen_tint = if self.adm3a.powered() {
-                        egui::Color32::from_rgb(8, 18, 11)
+                    let available = ui.available_rect_before_wrap().shrink(16.0);
+                    let screen_rect = Self::fit_aspect_rect(available, ADM3A_POPUP_ASPECT);
+                    let fill = if self.adm3a.powered() {
+                        egui::Color32::from_rgb(1, 7, 3)
                     } else {
-                        egui::Color32::from_rgb(10, 12, 11)
+                        egui::Color32::from_rgb(4, 4, 4)
                     };
-
-                    ui.painter()
-                        .image(mask.id(), screen_rect, screen_uv, screen_tint);
+                    let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(28));
+                    ui.painter().add(egui::Shape::convex_polygon(
+                        Self::adm3a_crt_outline(screen_rect),
+                        fill,
+                        stroke,
+                    ));
                     self.draw_adm3a_contents(ui.painter(), screen_rect);
                 });
                 if crt_ctx.input(|i| i.viewport().close_requested()) {
