@@ -712,7 +712,9 @@ impl CycleAccurateMachineBackend {
                     (start, start + config.populated_bytes as u32)
                 }
                 S100InstalledCardConfig::Mits88Sio(_)
-                | S100InstalledCardConfig::Mits88TwoSio { .. } => continue,
+                | S100InstalledCardConfig::Mits88TwoSio { .. }
+                | S100InstalledCardConfig::Mits88DcddBoard1
+                | S100InstalledCardConfig::Mits88DcddBoard2 => continue,
                 _ => return false,
             };
             if ranges
@@ -747,7 +749,7 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    fn compiled_full_chassis_has_serial(&self) -> bool {
+    fn compiled_full_chassis_has_clocked_peripherals(&self) -> bool {
         self.machine
             .bus
             .s100_hardware_memory()
@@ -757,6 +759,8 @@ impl CycleAccurateMachineBackend {
                     card,
                     S100InstalledCardConfig::Mits88Sio(_)
                         | S100InstalledCardConfig::Mits88TwoSio { .. }
+                        | S100InstalledCardConfig::Mits88DcddBoard1
+                        | S100InstalledCardConfig::Mits88DcddBoard2
                 )
             })
     }
@@ -939,13 +943,13 @@ impl CycleAccurateMachineBackend {
 
     fn compiled_full_window_blocker(
         &self,
-        serial_clocked: bool,
+        clocked_peripherals: bool,
         chassis_available: bool,
     ) -> Option<AdaptiveFallbackReason> {
         if !chassis_available {
             return Some(AdaptiveFallbackReason::ChassisUnsupported);
         }
-        if serial_clocked && !self.compiled_serial_timing_is_quiet() {
+        if clocked_peripherals && !self.compiled_serial_timing_is_quiet() {
             return Some(AdaptiveFallbackReason::SerialActive);
         }
         let lines = self.machine.bus.cpu_control_lines();
@@ -1032,17 +1036,17 @@ impl CycleAccurateMachineBackend {
             return self.fail_if_cpu_fault("service execution");
         }
 
-        let serial_clocked = self.compiled_full_chassis_has_serial();
+        let clocked_peripherals = self.compiled_full_chassis_has_clocked_peripherals();
         let chassis_available = self.compiled_full_chassis_available();
         let instruction_limit = self.compiled_full_instruction_limit();
         let mut remaining = t_state_budget;
-        let mut deferred_serial_t_states = 0u64;
+        let mut deferred_chassis_t_states = 0u64;
         let mut partial_start_t = None;
         let mut partial_reason = None;
         while remaining != 0 && self.machine.running() {
             let at_boundary = self.at_instruction_boundary();
             let full_window_blocker = if at_boundary {
-                self.compiled_full_window_blocker(serial_clocked, chassis_available)
+                self.compiled_full_window_blocker(clocked_peripherals, chassis_available)
             } else {
                 None
             };
@@ -1063,8 +1067,8 @@ impl CycleAccurateMachineBackend {
                     .completed_instructions()
                     .saturating_sub(before_completed);
                 adaptive_metrics::record_full_window(completed, elapsed);
-                if serial_clocked {
-                    deferred_serial_t_states = deferred_serial_t_states.saturating_add(elapsed);
+                if clocked_peripherals {
+                    deferred_chassis_t_states = deferred_chassis_t_states.saturating_add(elapsed);
                 }
                 continue;
             }
@@ -1078,11 +1082,11 @@ impl CycleAccurateMachineBackend {
                 ));
             }
 
-            if deferred_serial_t_states != 0 {
+            if deferred_chassis_t_states != 0 {
                 self.machine
                     .bus
-                    .advance_serial_hardware_time(deferred_serial_t_states);
-                deferred_serial_t_states = 0;
+                    .advance_chassis_hardware_time(deferred_chassis_t_states);
+                deferred_chassis_t_states = 0;
             }
 
             let ready = self.machine.bus.cycle_front_panel_ready_input();
@@ -1099,10 +1103,10 @@ impl CycleAccurateMachineBackend {
         }
 
         self.record_partial_metrics_span(&mut partial_start_t, &mut partial_reason);
-        if deferred_serial_t_states != 0 {
+        if deferred_chassis_t_states != 0 {
             self.machine
                 .bus
-                .advance_serial_hardware_time(deferred_serial_t_states);
+                .advance_chassis_hardware_time(deferred_chassis_t_states);
         }
         self.machine.bus.settle_serial_connector_state();
         self.fail_if_cpu_fault("service execution")
@@ -1516,7 +1520,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_full_allows_idle_serial_but_rejects_fixed_wait_ram_and_overlap() {
+    fn compiled_full_allows_idle_serial_and_dcdd_but_rejects_fixed_wait_ram_and_overlap() {
         let mut wait_hardware =
             S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
         wait_hardware
@@ -1549,8 +1553,35 @@ mod tests {
             )
             .unwrap();
         assert!(serial.compiled_full_chassis_available());
-        assert!(serial.compiled_full_chassis_has_serial());
+        assert!(serial.compiled_full_chassis_has_clocked_peripherals());
         assert!(serial.compiled_serial_timing_is_quiet());
+
+        let mut dcdd_hardware = static_4k_hardware();
+        dcdd_hardware
+            .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+            .unwrap();
+        dcdd_hardware
+            .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+            .unwrap();
+        let mut dcdd = CycleAccurateMachineBackend::default();
+        dcdd.machine
+            .bus
+            .configure_s100_hardware_memory(dcdd_hardware, RamInit::Zeroed)
+            .unwrap();
+        assert!(dcdd.compiled_full_chassis_available());
+        assert!(dcdd.compiled_full_chassis_has_clocked_peripherals());
+        assert!(dcdd.compiled_serial_timing_is_quiet());
+        dcdd.power(true).unwrap();
+        dcdd.assert_reset().unwrap();
+        dcdd.release_reset().unwrap();
+        dcdd.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]).unwrap();
+        dcdd.run().unwrap();
+        adaptive_metrics::begin_measurement();
+        dcdd.service_execution_compiled(14_000).unwrap();
+        let dcdd_stats = adaptive_metrics::end_measurement();
+        assert_eq!(dcdd_stats.total_t_states(), 14_000);
+        assert!(dcdd_stats.full_t_states > 13_000);
+        assert_eq!(dcdd_stats.fallbacks.chassis_unsupported, 0);
 
         let mut overlap = static_4k_hardware();
         overlap
