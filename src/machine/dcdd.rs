@@ -1037,7 +1037,11 @@ mod tests {
         assert_ne!(board1.read_drive.unwrap() & 0x01, 0);
         harness.advance_mechanics_t_states(1);
         board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
-        assert_eq!(board1.read_drive.unwrap() & 0x01, 0, "ENWD True is active low");
+        assert_eq!(
+            board1.read_drive.unwrap() & 0x01,
+            0,
+            "ENWD True is active low"
+        );
 
         // OUT 0Ah reaches Board #2 through WDS and resets only this request.
         board1.observe_s100(&io_sample(0x0a, false, true, false, false, 0x81));
