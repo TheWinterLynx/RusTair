@@ -1,3 +1,4 @@
+mod adm3a_state;
 mod asr33_controller;
 mod asr33_state;
 mod authentic_loader;
@@ -19,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, FontFamily, FontId, Pos2, Rect, Sense, Vec2};
 
+use self::adm3a_state::Adm3aState;
 use self::asr33_state::Asr33State;
 use self::authentic_loader::AuthenticLoaderState;
 use self::cpu_diagnostics::DiagnosticFileDialog;
@@ -122,6 +124,7 @@ struct RusTairApp {
     tty: Teletype,
     asr33: Asr33State,
     terminal: TerminalState,
+    adm3a: Adm3aState,
     audio: AudioEngine,
     last_tick: Instant,
     execution_clock: ExecutionClock,
@@ -168,6 +171,7 @@ impl RusTairApp {
             tty: Teletype::default(),
             asr33: Asr33State::new(now),
             terminal,
+            adm3a: Adm3aState::default(),
             audio: AudioEngine::new(),
             last_tick: now,
             execution_clock: ExecutionClock::new(now),
