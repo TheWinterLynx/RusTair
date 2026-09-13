@@ -65,17 +65,13 @@ impl Board2WriteElectronics {
         write_enable_at: Fd400Time,
         sector_offset_units: u64,
     ) {
-        let sector_start_at = Fd400Time::from_units(
-            write_enable_at
-                .units()
-                .saturating_sub(sector_offset_units),
-        );
+        let sector_start_at =
+            Fd400Time::from_units(write_enable_at.units().saturating_sub(sector_offset_units));
         let sector_end_at = sector_start_at.saturating_add(HARD_SECTOR_TIME_UNITS);
         self.window = Some(WriteWindow {
             write_enable_at,
-            trim_erase_on_at: write_enable_at.saturating_add(
-                Fd400Time::from_microseconds(TRIM_ERASE_START_DELAY_US).units(),
-            ),
+            trim_erase_on_at: write_enable_at
+                .saturating_add(Fd400Time::from_microseconds(TRIM_ERASE_START_DELAY_US).units()),
             first_enwd_at: sector_start_at.saturating_add(
                 Fd400Time::from_microseconds(FIRST_ENWD_FROM_SECTOR_START_US).units(),
             ),
@@ -93,9 +89,8 @@ impl Board2WriteElectronics {
     }
 
     pub(super) fn trim_erase_active(&self, now: Fd400Time) -> bool {
-        self.window.is_some_and(|window| {
-            now >= window.trim_erase_on_at && now < window.trim_erase_off_at
-        })
+        self.window
+            .is_some_and(|window| now >= window.trim_erase_on_at && now < window.trim_erase_off_at)
     }
 
     /// Move Head is inhibited from WRITE ENABLE until trim erase has completed.
@@ -222,8 +217,8 @@ mod tests {
                 .saturating_add(HARD_SECTOR_TIME_UNITS),
         );
         let one_unit_before_end = Fd400Time::from_units(sector_end.units() - 1);
-        let trim_end = sector_end
-            .saturating_add(Fd400Time::from_microseconds(TRIM_ERASE_TAIL_US).units());
+        let trim_end =
+            sector_end.saturating_add(Fd400Time::from_microseconds(TRIM_ERASE_TAIL_US).units());
 
         assert!(write.write_active(one_unit_before_end));
         assert!(!write.write_active(sector_end));
