@@ -22,6 +22,7 @@ enum ParserState {
 /// bytes will arrive here only after the selected emulated UART has completed a
 /// transmitted frame at the external cable boundary.
 pub(super) struct Adm3aState {
+    pub(super) window_open: bool,
     cells: [[u8; ADM3A_COLS]; ADM3A_ROWS],
     cursor_col: usize,
     cursor_row: usize,
@@ -32,6 +33,7 @@ pub(super) struct Adm3aState {
 impl Default for Adm3aState {
     fn default() -> Self {
         Self {
+            window_open: false,
             cells: [[b' '; ADM3A_COLS]; ADM3A_ROWS],
             cursor_col: 0,
             cursor_row: 0,
