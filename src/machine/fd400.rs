@@ -482,16 +482,32 @@ mod tests {
         let mut drive = PertecFd400::new();
         drive.set_door_open(false, Fd400Time::ZERO);
         drive.set_power(true, Fd400Time::ZERO);
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(4_999_999)).selection_ready);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(5_000_000)).selection_ready);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(4_999_999))
+                .selection_ready
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(5_000_000))
+                .selection_ready
+        );
 
         let reopened_at = Fd400Time::from_microseconds(6_000_000);
         drive.set_door_open(true, reopened_at);
         assert!(!drive.snapshot(reopened_at).selection_ready);
         let reclosed_at = Fd400Time::from_microseconds(7_000_000);
         drive.set_door_open(false, reclosed_at);
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(11_999_999)).selection_ready);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(12_000_000)).selection_ready);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(11_999_999))
+                .selection_ready
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(12_000_000))
+                .selection_ready
+        );
     }
 
     #[test]
@@ -517,17 +533,49 @@ mod tests {
         let mut drive = PertecFd400::new();
         drive.set_power(true, Fd400Time::ZERO);
         drive.set_head_loaded(true, Fd400Time::ZERO);
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(39_999)).move_head);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(40_000)).move_head);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(39_999))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(40_000))
+                .move_head
+        );
 
         let step_at = Fd400Time::from_microseconds(40_000);
         assert!(drive.step(Fd400StepDirection::In, step_at));
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(49_999)).move_head);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(50_000)).move_head);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(50_999)).move_head);
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(51_000)).move_head);
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(70_999)).move_head);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(71_000)).move_head);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(49_999))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(50_000))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(50_999))
+                .move_head
+        );
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(51_000))
+                .move_head
+        );
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(70_999))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(71_000))
+                .move_head
+        );
     }
 
     #[test]
