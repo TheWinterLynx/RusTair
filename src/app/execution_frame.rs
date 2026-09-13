@@ -1,11 +1,18 @@
 use std::time::{Duration, Instant};
 
 use crate::backend::BackendHost;
+use crate::config::EmulationSpeed;
 
 use super::execution_clock::UNLIMITED_CHUNK_T_STATES;
 
 const SERVICE_SLICE_T_STATES: u32 = 4_096;
 const UNLIMITED_SERVICE_SLICE_T_STATES: u32 = 65_536;
+/// Throttled CPU modes replay wall time as a CPU/serial timeline instead of
+/// letting egui repaint cadence become the UART clock. Four microseconds is
+/// below the fastest possible 88-2SIO bit time (9600 tap with MC6850 /1 is
+/// about 6.51 us), so even that extreme configuration cannot cross a complete
+/// serial bit boundary without returning to the physical-time scheduler.
+const SERIAL_PHYSICAL_SLICE: Duration = Duration::from_micros(4);
 pub(super) const CPU_FRAME_TIME: Duration = Duration::from_millis(8);
 /// Unlimited remains host-throughput driven, but it must yield often enough for
 /// the egui event/render loop to stay interactive. The CPU executes on this same
@@ -23,15 +30,66 @@ fn host_profile(budget: u32, requested_limit: Duration) -> (u32, Duration) {
     }
 }
 
-/// Yield between exact engine budgets. This changes host scheduling only: all
-/// serviced T-states remain on the authoritative CPU and serial-card timeline.
-/// Throttled modes use short slices and the caller's normal 8 ms UI deadline.
-/// Unlimited receives the sentinel budget from `ExecutionClock`, keeps larger
-/// service slices for throughput, and yields on a short host deadline so the
-/// renderer is not starved. The deadline can overrun by one slice, never by the
-/// full budget.
-pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Duration) -> u64 {
-    let (service_slice_t_states, effective_limit) = host_profile(budget, limit);
+#[inline]
+const fn throttled_speed_multiplier(speed: EmulationSpeed) -> Option<u32> {
+    match speed {
+        EmulationSpeed::Authentic => Some(1),
+        EmulationSpeed::X2 => Some(2),
+        EmulationSpeed::X5 => Some(5),
+        EmulationSpeed::X10 => Some(10),
+        EmulationSpeed::Unlimited => None,
+    }
+}
+
+#[inline]
+fn throttled_serial_slice_t_states(cpu_clock_hz: u32, speed: EmulationSpeed) -> u32 {
+    let multiplier = throttled_speed_multiplier(speed)
+        .expect("Unlimited never uses the managed physical serial scheduler");
+    let numerator = u128::from(cpu_clock_hz)
+        .saturating_mul(u128::from(multiplier))
+        .saturating_mul(SERIAL_PHYSICAL_SLICE.as_nanos());
+    ((numerator / 1_000_000_000).max(1).min(u128::from(u32::MAX))) as u32
+}
+
+#[inline]
+fn physical_time_for_executed_t_states(
+    t_states: u64,
+    cpu_clock_hz: u32,
+    speed: EmulationSpeed,
+) -> Duration {
+    let multiplier = throttled_speed_multiplier(speed)
+        .expect("Unlimited derives serial time directly from the host wall clock");
+    let effective_cpu_hz = u128::from(cpu_clock_hz).saturating_mul(u128::from(multiplier));
+    let numerator = u128::from(t_states).saturating_mul(1_000_000_000);
+    let nanos = numerator / effective_cpu_hz.max(1);
+    Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+}
+
+/// Yield between exact engine budgets. In throttled modes this function also
+/// owns CPU/serial physical-time interleaving: CPU speed changes only how many
+/// guest T-states fit inside one 4 us physical slice, while the installed UART
+/// receives the same elapsed duration at every speed. The UART/card remains the
+/// sole bit/frame authority; the scheduler only advances elapsed time.
+///
+/// Unlimited has no guest-CPU-to-wall-time ratio, so it retains the independent
+/// `Instant` serial source and large host-throughput slices.
+pub(super) fn run_cpu_frame(
+    machine: &mut BackendHost,
+    budget: u32,
+    limit: Duration,
+    cpu_clock_hz: u32,
+    speed: EmulationSpeed,
+) -> u64 {
+    let managed_serial = speed != EmulationSpeed::Unlimited;
+    machine.set_serial_clock_managed(managed_serial);
+
+    let (default_service_slice, effective_limit) = host_profile(budget, limit);
+    let service_slice_t_states = if managed_serial {
+        throttled_serial_slice_t_states(cpu_clock_hz, speed).min(default_service_slice)
+    } else {
+        default_service_slice
+    };
+
     let started = Instant::now();
     let before = machine
         .intel8080_state()
@@ -40,16 +98,26 @@ pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Durat
     let mut executed = 0;
     while executed < u64::from(budget) && machine.running() {
         let slice = (u64::from(budget) - executed).min(u64::from(service_slice_t_states)) as u32;
+        let before_slice = executed;
         machine.run_cycles(slice);
         let total = machine
             .intel8080_state()
             .total_t_states
             .expect("8080 T-state clock")
             - before;
-        if total == executed {
+        if total == before_slice {
             break;
         }
+
+        if managed_serial {
+            machine.advance_serial_physical_time(physical_time_for_executed_t_states(
+                total - before_slice,
+                cpu_clock_hz,
+                speed,
+            ));
+        }
         executed = total;
+
         if started.elapsed() >= effective_limit {
             break;
         }
@@ -60,7 +128,12 @@ pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Durat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{RamInit, S100HardwareConfig};
+    use crate::backend::BackendSerialPort;
+    use crate::config::{
+        RamInit, S100HardwareConfig, S100InstalledCardConfig, SioBaudRate, SioHardwareConfig,
+    };
+
+    const TWO_MHZ: u32 = 2_000_000;
 
     fn machine() -> BackendHost {
         let mut machine = BackendHost::default();
@@ -83,16 +156,111 @@ mod tests {
         machine
     }
 
+    fn sio_9600_machine() -> BackendHost {
+        let mut hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
+        let serial_slot = hardware
+            .serial_slots()
+            .map(|(slot, _)| slot)
+            .next()
+            .expect("historical fixture has one serial slot");
+        hardware
+            .set_slot(
+                serial_slot,
+                Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig {
+                    baud: SioBaudRate::try_new(9_600).unwrap(),
+                    ..SioHardwareConfig::default()
+                })),
+            )
+            .unwrap();
+
+        let mut machine = BackendHost::default();
+        machine.configure_s100_hardware(hardware.validate().unwrap(), RamInit::Zeroed);
+        machine.power(true);
+        machine.set_running(false);
+        machine.reset();
+        machine.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]);
+        machine.set_running(true);
+        machine
+    }
+
     #[test]
     fn expired_frame_yields_then_resumes_the_same_exact_timeline() {
         let mut sliced = machine();
         let mut uninterrupted = machine();
-        let first = run_cpu_frame(&mut sliced, 40_000, Duration::ZERO);
-        assert_eq!(first, u64::from(SERVICE_SLICE_T_STATES));
-        let rest = run_cpu_frame(&mut sliced, 40_000 - first as u32, Duration::from_secs(1));
+        let expected_first = throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::Authentic);
+        let first = run_cpu_frame(
+            &mut sliced,
+            40_000,
+            Duration::ZERO,
+            TWO_MHZ,
+            EmulationSpeed::Authentic,
+        );
+        assert_eq!(first, u64::from(expected_first));
+        let rest = run_cpu_frame(
+            &mut sliced,
+            40_000 - first as u32,
+            Duration::from_secs(1),
+            TWO_MHZ,
+            EmulationSpeed::Authentic,
+        );
         assert_eq!(first + rest, 40_000);
         uninterrupted.run_cycles(40_000);
         assert_eq!(sliced.intel8080_state(), uninterrupted.intel8080_state());
+    }
+
+    #[test]
+    fn throttled_modes_map_the_same_four_microseconds_to_cpu_speed_only() {
+        assert_eq!(
+            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::Authentic),
+            8
+        );
+        assert_eq!(
+            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::X2),
+            16
+        );
+        assert_eq!(
+            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::X5),
+            40
+        );
+        assert_eq!(
+            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::X10),
+            80
+        );
+    }
+
+    #[test]
+    fn physical_9600_baud_output_is_identical_across_throttled_cpu_speeds() {
+        for (speed, budget) in [
+            (EmulationSpeed::Authentic, 5_000),
+            (EmulationSpeed::X2, 10_000),
+            (EmulationSpeed::X5, 25_000),
+            (EmulationSpeed::X10, 50_000),
+        ] {
+            let mut machine = sio_9600_machine();
+            machine.set_serial_clock_managed(true);
+            machine.debugger_output_port(0x01, b'A');
+            machine.debugger_output_port(0x01, b'B');
+
+            let executed = run_cpu_frame(
+                &mut machine,
+                budget,
+                Duration::from_secs(1),
+                TWO_MHZ,
+                speed,
+            );
+            assert_eq!(executed, u64::from(budget), "speed={speed:?}");
+            assert_eq!(
+                machine.serial_tx_complete(BackendSerialPort::Port0),
+                Some(b'A'),
+                "first 9600-baud frame differs at {speed:?}"
+            );
+            assert_eq!(
+                machine.serial_tx_complete(BackendSerialPort::Port0),
+                Some(b'B'),
+                "second 9600-baud frame differs at {speed:?}"
+            );
+            assert_eq!(machine.serial_tx_complete(BackendSerialPort::Port0), None);
+        }
     }
 
     #[test]
@@ -117,6 +285,7 @@ mod tests {
         let mut uninterrupted = machine();
         // Exercise exactly one large host service slice without depending on
         // wall-clock performance of the test runner.
+        sliced.set_serial_clock_managed(false);
         let before = sliced.intel8080_state().total_t_states.unwrap();
         sliced.run_cycles(UNLIMITED_SERVICE_SLICE_T_STATES);
         let after = sliced.intel8080_state().total_t_states.unwrap();
@@ -130,7 +299,13 @@ mod tests {
         let mut machine = machine();
         machine.set_running(false);
         assert_eq!(
-            run_cpu_frame(&mut machine, UNLIMITED_CHUNK_T_STATES, CPU_FRAME_TIME),
+            run_cpu_frame(
+                &mut machine,
+                UNLIMITED_CHUNK_T_STATES,
+                CPU_FRAME_TIME,
+                TWO_MHZ,
+                EmulationSpeed::Unlimited,
+            ),
             0
         );
     }
