@@ -146,12 +146,13 @@ This layer connects the exact CPU and generic S-100 runtime into an Altair machi
 | `src/machine/mod.rs` | Machine module root and `AltairBus` composition. Owns machine memory facade, front-panel controller, canonical S-100 bus state and diagnostic metering. Exposes selected machine types/constants to backend. No hidden UART or alternate RAM. |
 | `src/machine/chassis.rs` | `AltairChassis`: physical chassis lifecycle/control wrapper (power, panel/control interaction and CPU-free machine container). RUN state derives from physical bus latch rather than a duplicate boolean authority. |
 | `src/machine/cpu_board.rs` | Adapter between `Cpu8080Cycle` package pins/control inputs and the MITS 8080 S-100 CPU-board electrical behavior. Defines CPU samples/control-line views used by exact backend. |
-| `src/machine/dcdd.rs` | MITS 88-DCDD physical two-board controller topology. Owns the one documented shared controller harness/external disk-cable boundary and constructs distinct Board #1 / Board #2 S-100 electrical cards without giving either board a software reference to the other. Phase 1 is deliberately electrically quiescent until source-backed decode/signals are activated in later phases. |
+| `src/machine/dcdd.rs` | MITS 88-DCDD physical two-board controller topology. Owns the documented Board #1/Board #2 harness, external disk-cable boundary, fixed I/O decode/register behavior and Phase-3 control routing into selected disk-unit mechanics. Cards remain separate S-100 devices and never call each other directly. |
+| `src/machine/fd400.rs` | Pertec FD-400 and MITS disk-unit/buffer mechanical timing foundation. Uses an epoch/deadline fixed-point virtual-time model for 360-RPM rotation, hard-sector position, track stepping and head-load readiness; it deliberately contains no media bytes and no per-T-state drive polling. |
 | `src/machine/front_panel.rs` | `FrontPanelController` and switch/control-side panel state such as address/data switch handling. Physical operations are later projected onto the bus/chassis; this is not the GUI renderer. |
 | `src/machine/panel_bus.rs` | Canonical `S100BusState`, raw panel-visible signal/status state, panel lamp snapshots/integration and optimized Full panel-duty accumulation. Central front-panel fidelity file. Raw state is authoritative; brightness is derived. |
-| `src/machine/memory.rs` | Machine-facing memory facade over the live `S100RuntimeFabric`: configuration/migration helpers, physical RAM inspection/load/protection, guest reads/writes and serial-time forwarding. Must not become a second memory store. |
+| `src/machine/memory.rs` | Machine-facing memory facade over the live `S100RuntimeFabric`: configuration/migration helpers, physical RAM inspection/load/protection, guest reads/writes and serial/chassis-time forwarding. Must not become a second memory store. |
 | `src/machine/serial.rs` | Historical 88-SIO-facing types/logic exposed through the machine module, including revision-specific serial behavior and shared serial abstractions. |
-| `src/machine/serial_bus.rs` | Internal serial connector/bus representation for transferring electrical/logical serial signals between card model and attached endpoint layer. |
+| `src/machine/serial_bus.rs` | Internal serial connector/bus representation for transferring electrical/logical serial signals between card model and attached endpoint layer, plus the chassis peripheral-time bridge used by UARTs and DCDD mechanics. |
 | `src/machine/serial_card.rs` | Runtime serial-card handle/device boundary used by `S100RuntimeFabric` and host inspection/endpoints. Keeps one guest-visible UART/card instance while allowing controlled host access. |
 | `src/machine/serial_devices.rs` | Installed serial device/card implementations and compatibility routing facade. Hosts the card-family behavior used by runtime serial card adapters, including common trace/activity handling. |
 | `src/machine/sio.rs` | MITS 88-SIO implementation: UART/card state, revisions, data/status port semantics, timing/handshake/interrupt behavior and physical interface rules. |
@@ -247,6 +248,7 @@ flowchart TB
     RUNTIME --> RAM[src/s100_runtime_ram.rs]
     RUNTIME --> IO[src/s100_io_card.rs]
     RUNTIME --> DCDD[src/machine/dcdd.rs]
+    DCDD --> FD400[src/machine/fd400.rs]
     IO --> SERIAL[src/machine/sio.rs + two_sio.rs]
     APP --> ROUTER[src/io/serial_router.rs]
     ROUTER --> SERIAL
@@ -266,7 +268,8 @@ These are not "do not touch" files, but they sit on critical fidelity/performanc
 - `src/s100_backplane.rs` — electrical resolution for every card.
 - `src/s100_runtime.rs` — live topology plus critical hot-path specialization.
 - `src/s100_runtime_ram.rs` — authoritative guest RAM storage.
-- `src/machine/dcdd.rs` — physical two-board disk-controller ownership/harness boundary; later timing/decode changes must remain source-backed and avoid per-T-state idle work.
+- `src/machine/dcdd.rs` — physical two-board disk-controller ownership/harness boundary; timing/decode changes must remain source-backed and avoid per-T-state idle work.
+- `src/machine/fd400.rs` — disk mechanics virtual-time/deadline engine; do not replace its O(1) epoch model with per-T-state or per-drive idle polling.
 - `src/machine/sio.rs`, `two_sio.rs`, `mc6850.rs` — guest-visible serial timing/status/interrupt state.
 - `src/full_boundary_reconcile.rs` — Full→Partial physical re-entry.
 - `src/app/execution_clock.rs`, `execution_frame.rs` — host scheduling must not change modeled hardware time.
