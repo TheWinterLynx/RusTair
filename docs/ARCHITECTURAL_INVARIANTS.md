@@ -162,6 +162,10 @@ Authentic/5×/10×/Unlimited are host CPU scheduling policies. They do not chang
 
 The 88-SIO/88-2SIO baud generator is therefore a separate physical-time domain. A configured 110-baud channel remains 110 baud in Authentic, 5×, 10× and Unlimited. Host wall time is used only by the backend scheduler to meter elapsed physical serial time into the installed card; COM2502/MC6850 bit, frame, status and interrupt state remain owned by that card and any resulting outputs still propagate through the normal S-100 connector graph.
 
+In throttled CPU modes the application replays CPU debt and serial physical time on one causal timeline. `execution_frame.rs` yields at physical-time slices no larger than 4 µs (8/16/40/80 8080 T-states at 2 MHz for Authentic/2×/5×/10×) and then advances only the UART oscillator by the corresponding elapsed duration. The 4 µs value is a **scheduler observation bound**, not a fabricated device clock: UART bit boundaries, frame completion, RDR/TDRE/RDA/TBMT and interrupts are still decided by COM2502/MC6850 state. Unlimited has no CPU-to-wall-time ratio and therefore keeps the direct `Instant` physical-time source instead.
+
+The GUI repaint cadence is never a serial clock. STOP, RESET/HOLD parking and HALT may stop CPU T-states while physical UART time continues; conversely, a fast Full CPU window must not multiply baud. Transitions between managed throttled timing and Unlimited must have one explicit handoff boundary so elapsed serial time is neither replayed twice nor dropped.
+
 CPU/chassis-time peripherals such as the current DCDD mechanics model retain their own explicit clock path. Do not reuse the serial wall-clock scheduler to advance unrelated devices merely because both need elapsed time.
 
 `execution_clock.rs` and `execution_frame.rs` may decide how much CPU virtual time to advance before yielding to the GUI, but they must not:
@@ -278,6 +282,3 @@ Before approving a hardware/core change, answer all of these:
 - Did host scheduling or debugger instrumentation accidentally become guest-visible?
 - Are configuration and persistence still describing one live topology?
 - Are the appropriate focused and broad tests present?
-- Is the current documentation still accurate?
-
-If any answer is unclear, the change is not ready for a fidelity claim.
