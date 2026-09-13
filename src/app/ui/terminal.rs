@@ -1,5 +1,7 @@
+use std::time::Instant;
+
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
-use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_ROWS};
+use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_KEYBOARD_BAUD, ADM3A_ROWS};
 use crate::config::TerminalDuplex;
 
 const ADM3A_MASK_WIDTH: f32 = 921.0;
@@ -235,6 +237,153 @@ impl RusTairApp {
         ctx.request_repaint();
     }
 
+    fn adm3a_control_byte(key: egui::Key) -> Option<u8> {
+        Some(match key {
+            egui::Key::A => 0x01,
+            egui::Key::B => 0x02,
+            egui::Key::C => 0x03,
+            egui::Key::D => 0x04,
+            egui::Key::E => 0x05,
+            egui::Key::F => 0x06,
+            egui::Key::G => 0x07,
+            egui::Key::H => 0x08,
+            egui::Key::I => 0x09,
+            egui::Key::J => 0x0a,
+            egui::Key::K => 0x0b,
+            egui::Key::L => 0x0c,
+            egui::Key::M => 0x0d,
+            egui::Key::N => 0x0e,
+            egui::Key::O => 0x0f,
+            egui::Key::P => 0x10,
+            egui::Key::Q => 0x11,
+            egui::Key::R => 0x12,
+            egui::Key::S => 0x13,
+            egui::Key::T => 0x14,
+            egui::Key::U => 0x15,
+            egui::Key::V => 0x16,
+            egui::Key::W => 0x17,
+            egui::Key::X => 0x18,
+            egui::Key::Y => 0x19,
+            egui::Key::Z => 0x1a,
+            _ => return None,
+        })
+    }
+
+    fn process_adm3a_host_keyboard(&mut self, ctx: &egui::Context) {
+        if !self.adm3a.powered()
+            || !self.machine.powered()
+            || !self.adm3a_connection().is_connected()
+        {
+            return;
+        }
+
+        let mut bytes = Vec::new();
+        ctx.input(|input| {
+            for (event_index, event) in input.events.iter().enumerate() {
+                match event {
+                    egui::Event::Text(text) => {
+                        let host_autorepeat = event_index.checked_sub(1).is_some_and(|previous| {
+                            matches!(
+                                input.events[previous],
+                                egui::Event::Key {
+                                    pressed: true,
+                                    repeat: true,
+                                    ..
+                                }
+                            )
+                        });
+                        if host_autorepeat {
+                            continue;
+                        }
+                        bytes.extend(
+                            text.chars()
+                                .filter(|ch| ch.is_ascii())
+                                .map(|ch| ch as u8)
+                                .filter(|byte| (0x20..=0x7e).contains(byte)),
+                        );
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(b'\r'),
+                    egui::Event::Key {
+                        key: egui::Key::Backspace,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x08),
+                    egui::Event::Key {
+                        key: egui::Key::Delete,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x7f),
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x1b),
+                    egui::Event::Key {
+                        key: egui::Key::ArrowLeft,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x08),
+                    egui::Event::Key {
+                        key: egui::Key::ArrowDown,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x0a),
+                    egui::Event::Key {
+                        key: egui::Key::ArrowUp,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x0b),
+                    egui::Event::Key {
+                        key: egui::Key::ArrowRight,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x0c),
+                    egui::Event::Key {
+                        key: egui::Key::Home,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    } => bytes.push(0x1e),
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } if modifiers.ctrl => {
+                        if let Some(byte) = Self::adm3a_control_byte(*key) {
+                            bytes.push(byte);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let now = Instant::now();
+        let mut queued = 0usize;
+        for byte in bytes {
+            if self.adm3a.queue_keyboard_byte(byte, now) {
+                queued += 1;
+            }
+        }
+        if queued != 0 {
+            ctx.request_repaint();
+        }
+    }
+
     fn draw_adm3a_connection_selector(&mut self, ui: &mut egui::Ui) {
         let hardware = self.config.machine.s100_hardware;
         let current = self.adm3a_connection();
@@ -423,7 +572,7 @@ impl RusTairApp {
         self.draw_adm3a_contents(ui.painter(), Self::adm3a_screen_rect(rect));
     }
 
-    fn show_adm3a_crt_viewport(&self, parent_ctx: &egui::Context) {
+    fn show_adm3a_crt_viewport(&mut self, parent_ctx: &egui::Context) {
         let open = parent_ctx
             .data_mut(|data| *data.get_temp_mut_or(Self::adm3a_crt_viewport_open_id(), false));
         if !open {
@@ -438,6 +587,7 @@ impl RusTairApp {
                 .with_min_inner_size([500.0, 400.0])
                 .with_resizable(true),
             |crt_ctx, _class| {
+                self.process_adm3a_host_keyboard(crt_ctx);
                 egui::CentralPanel::default().show(crt_ctx, |ui| {
                     let available = ui.available_rect_before_wrap().shrink(16.0);
                     let screen_rect = Self::fit_aspect_rect(available, ADM3A_POPUP_ASPECT);
@@ -473,6 +623,7 @@ impl RusTairApp {
                     .with_min_inner_size([720.0, 540.0])
                     .with_resizable(true),
                 |adm3a_ctx, _class| {
+                    self.process_adm3a_host_keyboard(adm3a_ctx);
                     egui::TopBottomPanel::top("adm3a-controls")
                         .resizable(false)
                         .show(adm3a_ctx, |ui| {
@@ -485,6 +636,12 @@ impl RusTairApp {
                                 self.draw_adm3a_connection_selector(ui);
                                 ui.separator();
                                 ui.label("80 × 24");
+                                ui.separator();
+                                ui.monospace(format!(
+                                    "KEY TX {} @ {} baud",
+                                    self.adm3a.keyboard_pending_len(),
+                                    ADM3A_KEYBOARD_BAUD
+                                ));
                                 ui.separator();
                                 if ui.button("Open active CRT…").clicked() {
                                     Self::open_adm3a_crt_viewport(adm3a_ctx);
