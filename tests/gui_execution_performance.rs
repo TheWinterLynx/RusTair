@@ -1,5 +1,5 @@
 //! Release-mode reproduction of the GUI's long execution batch and retained output.
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rustair::adaptive_metrics;
 use rustair::backend::{BackendHost, BackendSerialPort};
@@ -68,6 +68,10 @@ fn retained_output_has_identical_cpu_and_uart_results_in_full_and_observed_parti
             full.run_cycles(budget);
             partial.run_cycles(budget);
             assert_eq!(full.intel8080_state(), partial.intel8080_state());
+
+            // Equal CPU budgets no longer imply equal UART time. Let the same
+            // physical frame interval elapse before comparing retained output.
+            std::thread::sleep(Duration::from_millis(3));
             assert_eq!(full.serial_tx_front(BackendSerialPort::Port1), Some(b'A'));
             assert_eq!(
                 partial.serial_tx_front(BackendSerialPort::Port1),
@@ -101,8 +105,14 @@ fn gui_batch_with_migrated_ram_and_pending_console_output() {
             assert_eq!(stats.total_t_states(), 1_000_000);
             assert!(
                 stats.full_percent() > 99.0,
-                "completed host output and zero-wait migration RAM must not prevent Full"
+                "active independently clocked serial output and zero-wait migration RAM must not prevent Full"
             );
+
+            // CPU throughput is deliberately measured independently of UART
+            // wall time. Complete the physical frame before checking retention.
+            if output {
+                std::thread::sleep(Duration::from_millis(3));
+            }
             assert_eq!(
                 machine.serial_tx_complete(BackendSerialPort::Port1),
                 output.then_some(b'A')
