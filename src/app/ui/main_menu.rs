@@ -245,6 +245,19 @@ fn draw_settings_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
                 };
             }
             ui.small("When bundled BASIC is loaded, reveal the endpoint already connected to Port 0. This never rewires the machine.");
+
+            ui.separator();
+            let mut kill_bits_momentary = app.kill_bits_momentary_enabled(ui.ctx());
+            if ui
+                .checkbox(
+                    &mut kill_bits_momentary,
+                    "Momentary A15–A8 sense switches (KILL THE BIT)",
+                )
+                .changed()
+            {
+                app.set_kill_bits_momentary_enabled(ui.ctx(), kill_bits_momentary);
+            }
+            ui.small("Session-only convenience for KILL THE BIT: one click raises an upper sense switch, then returns it DOWN automatically after a short pulse. A7–A0 remain normal latching address switches. Best used at Authentic speed.");
         });
 
         ui.menu_button("Compatibility", |ui| {
