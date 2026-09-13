@@ -16,7 +16,7 @@ use std::rc::{Rc, Weak};
 use rand::RngCore;
 
 #[cfg(test)]
-use super::fd400::{Fd400MechanicalSnapshot, MitsDiskUnit};
+use super::fd400::{test_readable_media, Fd400MechanicalSnapshot, MitsDiskUnit};
 use super::fd400::{Fd400StepDirection, Fd400Time, Mits88DiskCableBus};
 use crate::s100::{
     S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
@@ -577,6 +577,15 @@ mod tests {
         harness.install_test_unit(unit);
     }
 
+    fn install_powered_test_unit_with_media(harness: &Mits88DcddHarness, address: u8) {
+        let mut unit = MitsDiskUnit::new(address).unwrap();
+        unit.insert_media(test_readable_media()).unwrap();
+        unit.drive_mut().set_power(true, Fd400Time::ZERO);
+        unit.drive_mut().set_door_open(false, Fd400Time::ZERO);
+        unit.drive_mut().set_motor_on(true, Fd400Time::ZERO);
+        harness.install_test_unit(unit);
+    }
+
     fn release_harness_strobe(board1: &mut Mits88DcddBoard1) {
         board1.observe_s100(&io_sample(0x00, false, false, false, true, 0));
     }
@@ -884,6 +893,66 @@ mod tests {
         board1.read_electronics.observe_event(Some((11, 0x19)));
         board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
         assert_eq!(board1.read_drive.unwrap() & 0x80, 0);
+    }
+
+    #[test]
+    fn mounted_media_reaches_nrda_and_data_port_with_authentic_cadence() {
+        let harness = Mits88DcddHarness::new();
+        let mut board1 = Mits88DcddBoard1::new(harness.clone());
+        let (_board2, _) = board2_fixture(&harness);
+        install_powered_test_unit_with_media(&harness, 3);
+
+        // Select drive 3 through the real DCL path and let the Disk Buffer's
+        // five-second inhibit expire.
+        board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
+        harness.advance_mechanics_t_states(FIVE_SECONDS_T_STATES);
+        assert!(harness.disk_enabled());
+
+        // Load the head through CD. Forty milliseconds later the platter is at
+        // sector 7, but the most recent byte event still predates Head Status.
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x04));
+        harness.advance_mechanics_t_states(FORTY_MS_T_STATES);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x80, 0, "NRDA must still be false");
+
+        // At this exact rotational phase the next source-backed 32-us byte event
+        // is 134 fixed-point units away. 44 T-states are 132 units: still early.
+        harness.advance_mechanics_t_states(44);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_ne!(board1.read_drive.unwrap() & 0x80, 0);
+
+        // One more Altair T-state crosses the physical byte deadline. Byte 107 of
+        // track 0 / sector 7 reaches Board #1 and asserts active-low NRDA.
+        harness.advance_mechanics_t_states(1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive.unwrap() & 0x80, 0);
+        board1.observe_s100(&io_sample(0x0a, true, false, true, true, 0));
+        let first = board1.read_drive.unwrap();
+        assert_eq!(first, 0x8e);
+        assert!(!board1.read_electronics.nrda());
+
+        // 64 T-states are exactly one 32-us byte interval. The following byte
+        // arrives, asserts NRDA again, and is consumed normally.
+        harness.advance_mechanics_t_states(64);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive.unwrap() & 0x80, 0);
+        board1.observe_s100(&io_sample(0x0a, true, false, true, true, 0));
+        let second = board1.read_drive.unwrap();
+        assert_eq!(second, 0x8f);
+
+        // If the CPU waits two byte intervals without IN 0Ah, byte 109 is lost
+        // and byte 110 overwrites the same physical latch. The disk never waits.
+        harness.advance_mechanics_t_states(128);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive.unwrap() & 0x80, 0);
+        board1.observe_s100(&io_sample(0x0a, true, false, true, true, 0));
+        let late = board1.read_drive.unwrap();
+        assert_eq!(late, 0x91);
+
+        println!(
+            "FD-400 -> DCDD authentic read: T0/S7 byte107={first:02X}, byte108={second:02X}, late byte110={late:02X}"
+        );
     }
 
     #[test]
