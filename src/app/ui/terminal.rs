@@ -248,7 +248,8 @@ impl RusTairApp {
                     "Disconnected",
                 );
                 for connection in [SerialConnection::Port0, SerialConnection::Port1] {
-                    if Self::serial_connection_supported(hardware, SerialDevice::Adm3a, connection) {
+                    if Self::serial_connection_supported(hardware, SerialDevice::Adm3a, connection)
+                    {
                         ui.selectable_value(
                             &mut selected,
                             connection,
@@ -385,9 +386,8 @@ impl RusTairApp {
     }
 
     fn show_adm3a_crt_viewport(&self, parent_ctx: &egui::Context) {
-        let open = parent_ctx.data_mut(|data| {
-            *data.get_temp_mut_or(Self::adm3a_crt_viewport_open_id(), false)
-        });
+        let open = parent_ctx
+            .data_mut(|data| *data.get_temp_mut_or(Self::adm3a_crt_viewport_open_id(), false));
         if !open {
             return;
         }
