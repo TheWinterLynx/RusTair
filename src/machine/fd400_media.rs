@@ -1,4 +1,4 @@
-//! Read-only removable 8-inch hard-sectored media for the Pertec FD-400.
+//! Removable 8-inch hard-sectored physical media for the Pertec FD-400.
 //!
 //! This is a physical-byte surface below the drive electronics, not a guest
 //! filesystem-sector API. The first supported representation is deliberately
@@ -40,6 +40,16 @@ pub(super) struct HardSectoredMediaSizeError {
     pub(super) actual: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HardSectoredMediaWriteError {
+    WriteProtected,
+    InvalidPhysicalAddress {
+        track: u8,
+        sector: u8,
+        offset: usize,
+    },
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(in crate::machine) struct HardSectored8InchMedia {
     bytes: Box<[u8]>,
@@ -79,6 +89,43 @@ impl HardSectored8InchMedia {
 
     pub(super) fn physical_byte(&self, track: u8, sector: u8, offset: usize) -> Option<u8> {
         self.physical_sector(track, sector)?.get(offset).copied()
+    }
+
+    /// Mutate one physical byte below the drive electronics. Controller timing,
+    /// ENWD and guest OUT cycles remain owned above this medium boundary.
+    pub(super) fn write_physical_byte(
+        &mut self,
+        track: u8,
+        sector: u8,
+        offset: usize,
+        value: u8,
+    ) -> Result<(), HardSectoredMediaWriteError> {
+        if self.write_protected {
+            return Err(HardSectoredMediaWriteError::WriteProtected);
+        }
+        let Some(start) = Self::physical_sector_offset(track, sector) else {
+            return Err(HardSectoredMediaWriteError::InvalidPhysicalAddress {
+                track,
+                sector,
+                offset,
+            });
+        };
+        let Some(byte) = self.bytes.get_mut(start.saturating_add(offset)) else {
+            return Err(HardSectoredMediaWriteError::InvalidPhysicalAddress {
+                track,
+                sector,
+                offset,
+            });
+        };
+        if offset >= PHYSICAL_BYTES_PER_SECTOR {
+            return Err(HardSectoredMediaWriteError::InvalidPhysicalAddress {
+                track,
+                sector,
+                offset,
+            });
+        }
+        *byte = value;
+        Ok(())
     }
 
     pub(super) fn into_physical_bytes(self) -> Vec<u8> {
@@ -147,6 +194,46 @@ mod tests {
         assert_eq!(media.physical_byte(77, 0, 0), None);
         assert_eq!(media.physical_byte(0, 32, 0), None);
         assert_eq!(media.physical_byte(0, 0, 137), None);
+    }
+
+    #[test]
+    fn writable_media_mutates_only_the_requested_physical_byte() {
+        let mut media = patterned_media(false);
+        let before_left = media.physical_byte(12, 7, 45).unwrap();
+        let before_right = media.physical_byte(12, 7, 47).unwrap();
+
+        assert_eq!(media.write_physical_byte(12, 7, 46, 0xa5), Ok(()));
+        assert_eq!(media.physical_byte(12, 7, 45), Some(before_left));
+        assert_eq!(media.physical_byte(12, 7, 46), Some(0xa5));
+        assert_eq!(media.physical_byte(12, 7, 47), Some(before_right));
+    }
+
+    #[test]
+    fn write_protect_rejects_mutation_and_preserves_all_physical_bytes() {
+        let mut media = patterned_media(true);
+        let before = media.bytes.to_vec();
+        assert_eq!(
+            media.write_physical_byte(12, 7, 46, 0xa5),
+            Err(HardSectoredMediaWriteError::WriteProtected)
+        );
+        assert_eq!(media.bytes.as_ref(), before.as_slice());
+    }
+
+    #[test]
+    fn invalid_physical_write_address_is_rejected_without_adjacent_mutation() {
+        let mut media = patterned_media(false);
+        let before = media.bytes.to_vec();
+        for (track, sector, offset) in [(77, 0, 0), (0, 32, 0), (0, 0, 137)] {
+            assert_eq!(
+                media.write_physical_byte(track, sector, offset, 0x5a),
+                Err(HardSectoredMediaWriteError::InvalidPhysicalAddress {
+                    track,
+                    sector,
+                    offset,
+                })
+            );
+        }
+        assert_eq!(media.bytes.as_ref(), before.as_slice());
     }
 
     #[test]
