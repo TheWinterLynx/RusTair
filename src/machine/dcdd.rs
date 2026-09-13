@@ -16,7 +16,7 @@ use std::rc::{Rc, Weak};
 use rand::RngCore;
 
 #[cfg(test)]
-use super::fd400::{test_readable_media, Fd400MechanicalSnapshot, MitsDiskUnit};
+use super::fd400::{Fd400MechanicalSnapshot, MitsDiskUnit, test_readable_media};
 use super::fd400::{Fd400StepDirection, Fd400Time, Mits88DiskCableBus};
 use crate::s100::{
     S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
@@ -914,7 +914,11 @@ mod tests {
         board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x04));
         harness.advance_mechanics_t_states(FORTY_MS_T_STATES);
         board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
-        assert_ne!(board1.read_drive.unwrap() & 0x80, 0, "NRDA must still be false");
+        assert_ne!(
+            board1.read_drive.unwrap() & 0x80,
+            0,
+            "NRDA must still be false"
+        );
 
         // At this exact rotational phase the next source-backed 32-us byte event
         // is 134 fixed-point units away. 44 T-states are 132 units: still early.
