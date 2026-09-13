@@ -12,6 +12,9 @@ const MEASURE_T_STATES: u64 = 250_000_000;
 const METRICS_T_STATES: u64 = 5_000_000;
 const SERVICE_CHUNK_T_STATES: u32 = 1_000_000;
 const BENCH_ROUNDS: usize = 5;
+const DCDD_WARMUP_T_STATES: u64 = 20_000_000;
+const DCDD_MEASURE_T_STATES: u64 = 1_000_000_000;
+const DCDD_BENCH_ROUNDS: usize = 7;
 
 // NOP ; JMP 0000h
 //
@@ -140,13 +143,18 @@ fn prepare_benchmark_machine(hardware: S100HardwareConfig) -> BackendHost {
     machine
 }
 
-fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> ResultRow {
+fn benchmark_one_with_budget(
+    scenario: &'static str,
+    hardware: S100HardwareConfig,
+    warmup_t_states: u64,
+    measure_t_states: u64,
+) -> ResultRow {
     let mut machine = prepare_benchmark_machine(hardware);
-    let _ = run_t_states(&mut machine, WARMUP_T_STATES);
+    let _ = run_t_states(&mut machine, warmup_t_states);
 
     let before = machine.intel8080_state().total_t_states.unwrap_or(0);
     let wall_start = Instant::now();
-    let _ = run_t_states(&mut machine, MEASURE_T_STATES);
+    let _ = run_t_states(&mut machine, measure_t_states);
     let elapsed = wall_start.elapsed();
     let after = machine.intel8080_state().total_t_states.unwrap_or(before);
     let t_states = after.saturating_sub(before);
@@ -159,6 +167,10 @@ fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> Result
         mhz: hz / 1_000_000.0,
         realtime_multiple: hz / ALTAIR_CLOCK_HZ,
     }
+}
+
+fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> ResultRow {
+    benchmark_one_with_budget(scenario, hardware, WARMUP_T_STATES, MEASURE_T_STATES)
 }
 
 fn adaptive_path_mix(hardware: S100HardwareConfig) -> AdaptiveCycleStats {
@@ -213,15 +225,19 @@ fn print_rows(rows: &[ResultRow]) {
     );
 }
 
-fn print_relative_cost(label: &str, baseline_rows: &[ResultRow], candidate_rows: &[ResultRow]) {
+fn paired_ratios(baseline_rows: &[ResultRow], candidate_rows: &[ResultRow]) -> Vec<f64> {
     assert_eq!(baseline_rows.len(), candidate_rows.len());
-    let baseline_mhz = median_row(baseline_rows).mhz;
-    let candidate_mhz = median_row(candidate_rows).mhz;
-    let paired_ratios = baseline_rows
+    baseline_rows
         .iter()
         .zip(candidate_rows)
         .map(|(baseline, candidate)| candidate.mhz / baseline.mhz)
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+fn print_relative_cost(label: &str, baseline_rows: &[ResultRow], candidate_rows: &[ResultRow]) {
+    let baseline_mhz = median_row(baseline_rows).mhz;
+    let candidate_mhz = median_row(candidate_rows).mhz;
+    let paired_ratios = paired_ratios(baseline_rows, candidate_rows);
     let paired_ratio = median_f64(&paired_ratios);
     let min_ratio = paired_ratios.iter().copied().fold(f64::INFINITY, f64::min);
     let max_ratio = paired_ratios
@@ -309,35 +325,50 @@ fn measure_dcdd_installed_idle_overhead() {
         dcdd_mix.partial_percent()
     );
     println!(
-        "Timed measurement: median of {BENCH_ROUNDS} paired rounds × {MEASURE_T_STATES} T after {WARMUP_T_STATES} T warm-up"
+        "Timed measurement: median of {DCDD_BENCH_ROUNDS} paired rounds × {DCDD_MEASURE_T_STATES} T after {DCDD_WARMUP_T_STATES} T warm-up"
     );
 
-    let mut baseline = Vec::with_capacity(BENCH_ROUNDS);
-    let mut dcdd = Vec::with_capacity(BENCH_ROUNDS);
-    for round in 0..BENCH_ROUNDS {
+    let mut baseline = Vec::with_capacity(DCDD_BENCH_ROUNDS);
+    let mut dcdd = Vec::with_capacity(DCDD_BENCH_ROUNDS);
+    for round in 0..DCDD_BENCH_ROUNDS {
         if round & 1 == 0 {
-            baseline.push(benchmark_one(
+            baseline.push(benchmark_one_with_budget(
                 "8800b + 16K Static",
                 historical_starter_without_two_sio(),
+                DCDD_WARMUP_T_STATES,
+                DCDD_MEASURE_T_STATES,
             ));
-            dcdd.push(benchmark_one(
+            dcdd.push(benchmark_one_with_budget(
                 "8800b + 16K Static + DCDD",
                 historical_starter_with_dcdd(),
+                DCDD_WARMUP_T_STATES,
+                DCDD_MEASURE_T_STATES,
             ));
         } else {
-            dcdd.push(benchmark_one(
+            dcdd.push(benchmark_one_with_budget(
                 "8800b + 16K Static + DCDD",
                 historical_starter_with_dcdd(),
+                DCDD_WARMUP_T_STATES,
+                DCDD_MEASURE_T_STATES,
             ));
-            baseline.push(benchmark_one(
+            baseline.push(benchmark_one_with_budget(
                 "8800b + 16K Static",
                 historical_starter_without_two_sio(),
+                DCDD_WARMUP_T_STATES,
+                DCDD_MEASURE_T_STATES,
             ));
         }
     }
 
     print_rows(&baseline);
     print_rows(&dcdd);
+    for (index, ratio) in paired_ratios(&baseline, &dcdd).iter().copied().enumerate() {
+        println!(
+            "DCDD pair {:>2}: ratio {ratio:.5} ({:+.2}%)",
+            index + 1,
+            (ratio - 1.0) * 100.0
+        );
+    }
     print_relative_cost("DCDD installed-idle", &baseline, &dcdd);
     println!("Phase 11 target: installed-idle DCDD regression < 2%.");
 }
