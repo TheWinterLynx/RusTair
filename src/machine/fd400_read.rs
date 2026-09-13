@@ -5,8 +5,8 @@
 //! latch and NRDA remain owned by the MITS 88-DCDD Board #1 read circuitry.
 //! No guest I/O semantics or filesystem-sector API exists here.
 
-use super::media::PHYSICAL_BYTES_PER_SECTOR;
-use super::{
+use super::PHYSICAL_BYTES_PER_SECTOR;
+use super::super::{
     Fd400Time, HARD_SECTORS_PER_TRACK, PertecFd400, SECTOR_TIME_UNITS,
     TIME_UNITS_PER_MICROSECOND,
 };
@@ -90,12 +90,12 @@ impl PertecFd400 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::media::{HardSectored8InchMedia, PHYSICAL_MEDIA_BYTES};
+    use super::super::{HardSectored8InchMedia, PHYSICAL_MEDIA_BYTES};
     use super::*;
 
     fn readable_media() -> HardSectored8InchMedia {
         let mut bytes = vec![0u8; PHYSICAL_MEDIA_BYTES];
-        for track in 0..super::super::HARD_SECTORED_TRACKS {
+        for track in 0..super::super::super::HARD_SECTORED_TRACKS {
             for sector in 0..HARD_SECTORS_PER_TRACK {
                 let base = (track as usize * HARD_SECTORS_PER_TRACK as usize + sector as usize)
                     * PHYSICAL_BYTES_PER_SECTOR;
