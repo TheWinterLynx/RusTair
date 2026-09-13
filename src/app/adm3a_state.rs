@@ -1,8 +1,13 @@
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
 pub(super) const ADM3A_COLS: usize = 80;
 pub(super) const ADM3A_ROWS: usize = 24;
+pub(super) const ADM3A_KEYBOARD_BAUD: u32 = 9_600;
 
 const ASCII_MASK: u8 = 0x7f;
 const CURSOR_ADDRESS_BIAS: u8 = 0x20;
+const ADM3A_KEYBOARD_FRAME_BITS: f64 = 10.0;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ParserState {
@@ -15,12 +20,12 @@ enum ParserState {
     },
 }
 
-/// Headless Lear Siegler ADM-3A display state.
+/// Headless Lear Siegler ADM-3A display and keyboard state.
 ///
-/// This model owns terminal-local screen RAM, cursor and escape parsing only.
-/// It deliberately knows nothing about the Altair, S-100 or a MITS serial card:
-/// bytes will arrive here only after the selected emulated UART has completed a
-/// transmitted frame at the external cable boundary.
+/// This model owns terminal-local screen RAM, cursor, escape parsing and the
+/// keyboard transmitter queue only. It deliberately knows nothing about the
+/// Altair, S-100 or a MITS serial card: bytes cross that boundary only through
+/// the selected emulated UART and its physical receive/transmit paths.
 pub(super) struct Adm3aState {
     pub(super) window_open: bool,
     powered: bool,
@@ -29,6 +34,8 @@ pub(super) struct Adm3aState {
     cursor_row: usize,
     parser: ParserState,
     bell_pending: bool,
+    keyboard_queue: VecDeque<u8>,
+    keyboard_next_at: Option<Instant>,
 }
 
 impl Default for Adm3aState {
@@ -41,6 +48,8 @@ impl Default for Adm3aState {
             cursor_row: 0,
             parser: ParserState::Normal,
             bell_pending: false,
+            keyboard_queue: VecDeque::new(),
+            keyboard_next_at: None,
         }
     }
 }
@@ -57,6 +66,8 @@ impl Adm3aState {
         self.powered = powered;
         self.clear_screen();
         self.bell_pending = false;
+        self.keyboard_queue.clear();
+        self.keyboard_next_at = None;
     }
 
     pub(super) fn receive_byte(&mut self, byte: u8) {
@@ -146,6 +157,43 @@ impl Adm3aState {
     pub(super) fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell_pending)
     }
+
+    pub(super) fn queue_keyboard_byte(&mut self, byte: u8, now: Instant) -> bool {
+        if !self.powered {
+            return false;
+        }
+        self.keyboard_queue.push_back(byte & ASCII_MASK);
+        self.keyboard_next_at.get_or_insert(now);
+        true
+    }
+
+    pub(super) fn keyboard_pending_len(&self) -> usize {
+        self.keyboard_queue.len()
+    }
+
+    pub(super) fn keyboard_due_in(&self, now: Instant) -> Duration {
+        self.keyboard_next_at
+            .map(|due| due.saturating_duration_since(now))
+            .unwrap_or(Duration::ZERO)
+    }
+
+    pub(super) fn take_due_keyboard_byte(&mut self, now: Instant) -> Option<u8> {
+        if !self.keyboard_due_in(now).is_zero() {
+            return None;
+        }
+
+        let byte = self.keyboard_queue.pop_front()?;
+        self.keyboard_next_at = if self.keyboard_queue.is_empty() {
+            None
+        } else {
+            Some(now + Self::keyboard_char_time())
+        };
+        Some(byte)
+    }
+
+    fn keyboard_char_time() -> Duration {
+        Duration::from_secs_f64(ADM3A_KEYBOARD_FRAME_BITS / f64::from(ADM3A_KEYBOARD_BAUD))
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +214,7 @@ mod tests {
         assert!(!terminal.powered());
         assert_eq!(terminal.row(0)[0], b' ');
         assert_eq!(terminal.cursor(), (0, 0));
+        assert_eq!(terminal.keyboard_pending_len(), 0);
     }
 
     #[test]
@@ -275,5 +324,23 @@ mod tests {
         terminal.receive_byte(b'A');
         assert_eq!(terminal.row(0)[0], b'A');
         assert_eq!(terminal.cursor(), (1, 0));
+    }
+
+    #[test]
+    fn keyboard_transmitter_is_power_gated_and_paced_at_9600_baud() {
+        let mut terminal = Adm3aState::default();
+        let now = Instant::now();
+        assert!(!terminal.queue_keyboard_byte(b'A', now));
+
+        terminal.set_powered(true);
+        assert!(terminal.queue_keyboard_byte(b'A', now));
+        assert!(terminal.queue_keyboard_byte(b'B', now));
+        assert_eq!(terminal.keyboard_pending_len(), 2);
+        assert_eq!(terminal.take_due_keyboard_byte(now), Some(b'A'));
+        assert_eq!(terminal.take_due_keyboard_byte(now), None);
+
+        let later = now + Adm3aState::keyboard_char_time();
+        assert_eq!(terminal.take_due_keyboard_byte(later), Some(b'B'));
+        assert_eq!(terminal.keyboard_pending_len(), 0);
     }
 }
