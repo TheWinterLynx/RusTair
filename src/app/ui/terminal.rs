@@ -446,7 +446,7 @@ impl RusTairApp {
                     } else {
                         egui::Color32::from_rgb(4, 4, 4)
                     };
-                    let stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(28));
+                    let stroke = egui::Stroke::new(1.0_f32, egui::Color32::from_gray(28));
                     ui.painter().add(egui::Shape::convex_polygon(
                         Self::adm3a_crt_outline(screen_rect),
                         fill,
