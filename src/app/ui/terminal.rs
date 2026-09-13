@@ -378,14 +378,9 @@ impl RusTairApp {
 
         let size = source * scale;
         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-        let full_uv =
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
-        ui.painter().image(
-            texture.id(),
-            rect,
-            full_uv,
-            egui::Color32::WHITE,
-        );
+        let full_uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+        ui.painter()
+            .image(texture.id(), rect, full_uv, egui::Color32::WHITE);
 
         let Some(mask) = &self.tex.adm3a_screen_mask else {
             return;
@@ -426,8 +421,7 @@ impl RusTairApp {
 
                     let screen_uv = Self::adm3a_screen_uv();
                     let source_aspect = mask.size()[0] as f32 / mask.size()[1] as f32;
-                    let screen_aspect =
-                        source_aspect * screen_uv.width() / screen_uv.height();
+                    let screen_aspect = source_aspect * screen_uv.width() / screen_uv.height();
                     let available = ui.available_rect_before_wrap().shrink(12.0);
                     let screen_rect = Self::fit_aspect_rect(available, screen_aspect);
                     let screen_tint = if self.adm3a.powered() {
