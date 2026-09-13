@@ -23,6 +23,7 @@ enum ParserState {
 /// transmitted frame at the external cable boundary.
 pub(super) struct Adm3aState {
     pub(super) window_open: bool,
+    powered: bool,
     cells: [[u8; ADM3A_COLS]; ADM3A_ROWS],
     cursor_col: usize,
     cursor_row: usize,
@@ -34,6 +35,7 @@ impl Default for Adm3aState {
     fn default() -> Self {
         Self {
             window_open: false,
+            powered: false,
             cells: [[b' '; ADM3A_COLS]; ADM3A_ROWS],
             cursor_col: 0,
             cursor_row: 0,
@@ -44,6 +46,19 @@ impl Default for Adm3aState {
 }
 
 impl Adm3aState {
+    pub(super) const fn powered(&self) -> bool {
+        self.powered
+    }
+
+    pub(super) fn set_powered(&mut self, powered: bool) {
+        if self.powered == powered {
+            return;
+        }
+        self.powered = powered;
+        self.clear_screen();
+        self.bell_pending = false;
+    }
+
     pub(super) fn receive_byte(&mut self, byte: u8) {
         let byte = byte & ASCII_MASK;
         match self.parser {
@@ -136,6 +151,22 @@ impl Adm3aState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_starts_off_and_transition_resets_screen() {
+        let mut terminal = Adm3aState::default();
+        assert!(!terminal.powered());
+        terminal.receive_byte(b'X');
+        terminal.set_powered(true);
+        assert!(terminal.powered());
+        assert_eq!(terminal.row(0)[0], b' ');
+        assert_eq!(terminal.cursor(), (0, 0));
+        terminal.receive_byte(b'Y');
+        terminal.set_powered(false);
+        assert!(!terminal.powered());
+        assert_eq!(terminal.row(0)[0], b' ');
+        assert_eq!(terminal.cursor(), (0, 0));
+    }
 
     #[test]
     fn printable_input_and_cr_lf_are_independent() {
