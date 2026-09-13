@@ -8,8 +8,8 @@
 //! accumulating floating-point drift.
 //!
 //! Phase 4 adds a read-only removable physical medium below the drive electronics.
-//! The controller still has no sector/filesystem shortcut and no host pathname.
-//! Read-data cadence, write electronics and interrupt behavior remain later phases.
+//! Phase 5 adds source-backed physical read cadence while controller-side NRDA and
+//! read-data latching remain on the DCDD Board #1 electronics.
 //!
 //! Source-backed base timings come from the July 1977 MITS 88-DCDD Operator's
 //! Guide / MITS 3200 drive documentation: 360 RPM, 32 hard sectors plus index,
@@ -24,6 +24,25 @@
 mod media;
 
 use media::{HARD_SECTORED_TRACKS, HARD_SECTORS_PER_TRACK, HardSectored8InchMedia};
+
+#[cfg(test)]
+pub(super) fn test_readable_media() -> HardSectored8InchMedia {
+    let mut bytes = vec![0u8; media::PHYSICAL_MEDIA_BYTES];
+    for track in 0..HARD_SECTORED_TRACKS {
+        for sector in 0..HARD_SECTORS_PER_TRACK {
+            let base = (track as usize * HARD_SECTORS_PER_TRACK as usize + sector as usize)
+                * media::PHYSICAL_BYTES_PER_SECTOR;
+            bytes[base] = 0x80 | ((track.wrapping_add(sector)) & 0x7f);
+            for offset in 1..media::PHYSICAL_BYTES_PER_SECTOR {
+                bytes[base + offset] = track
+                    .wrapping_mul(17)
+                    .wrapping_add(sector.wrapping_mul(5))
+                    .wrapping_add(offset as u8);
+            }
+        }
+    }
+    HardSectored8InchMedia::from_physical_bytes(bytes, true).unwrap()
+}
 
 const TIME_UNITS_PER_MICROSECOND: u64 = 6;
 const TIME_UNITS_PER_8080_T_STATE: u64 = 3;
