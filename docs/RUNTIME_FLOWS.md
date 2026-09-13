@@ -38,25 +38,29 @@ sequenceDiagram
     participant C as ExecutionClock
     participant F as run_cpu_frame
     participant B as BackendHost
+    participant S as Serial physical-time scheduler
     participant M as Adaptive Cycle
-    participant P as Peripheral/serial service
+    participant P as Peripheral/serial endpoints
 
     E->>A: update(now)
     A->>A: sync persisted/config UI state
     A->>C: budget(now, RUN, board clock, speed)
-    C-->>A: allowed guest T-states
+    C-->>A: allowed CPU T-states
     A->>F: run CPU within T-state budget + host deadline
     F->>B: service execution in slices
+    B->>S: account elapsed physical serial time
+    S->>M: advance installed UART oscillators only
     B->>M: execute Adaptive Full/Partial
-    M-->>B: exact executed T-state count
+    M-->>B: exact executed CPU T-state count
+    B->>S: account physical serial time again at service boundary
     B-->>F: progress / possible yield
-    F-->>A: total executed T-states
+    F-->>A: total executed CPU T-states
     A->>C: record executed debt (throttled modes)
     A->>P: service ASR/terminal/TCP/COM and mechanics
     A->>E: render panels/tools, request next repaint
 ```
 
-Unlimited mode is constrained by a host-time deadline rather than a small fixed T-state chunk per repaint.
+Unlimited mode is constrained by a host-time deadline rather than a small fixed T-state chunk per repaint. The serial scheduler is independent of that CPU speed policy: a card strapped/configured for 110 baud remains 110 baud even while the CPU executor runs 5×, 10× or Unlimited.
 
 ---
 
@@ -90,6 +94,8 @@ sequenceDiagram
 ```
 
 The implementation uses caching/delta observation, so not every conceptual arrow is necessarily an expensive host call on every phase. The physical dependency remains the same.
+
+A CPU T-state no longer advances the 88-SIO/88-2SIO baud generator. It may advance hardware explicitly defined in CPU/chassis virtual time, such as the current DCDD mechanics epoch. Serial oscillator progress arrives through the independent physical-time scheduler and is then resolved through the same S-100 fabric.
 
 ---
 
@@ -193,19 +199,25 @@ Example: a character typed in the text terminal.
 sequenceDiagram
     participant UI as Text terminal UI/controller
     participant Router as SerialRouter
-    participant Endpoint as selected endpoint connection
+    participant Backend as Backend serial boundary
+    participant Clock as Physical serial clock
     participant Card as installed 88-SIO/88-2SIO
+    participant Bus as S-100
     participant CPU as guest 8080
 
     UI->>Router: user byte available
-    Router->>Endpoint: route over explicit selected cable
-    Endpoint->>Card: connector-level receive input over emulated elapsed time
-    Card->>Card: UART receive timing/status evolves
-    Card-->>CPU: status/interrupt visible through S-100
+    Router->>Backend: route over explicit selected cable
+    Backend->>Clock: settle elapsed serial time before mutation
+    Backend->>Card: connector-level receive input
+    Clock->>Card: advance configured bit/frame timing independently of CPU speed
+    Card->>Bus: status / PINT / VI / READY drive changes
+    Bus-->>CPU: resolved hardware state
     CPU->>Card: IN status/data when guest software polls/services it
 ```
 
-A host byte is not deposited instantly into accumulator A. It becomes input to serial hardware and guest software must interact with that hardware.
+A host byte is not deposited instantly into accumulator A. It becomes input to the installed serial hardware and guest software must interact with that hardware. Synchronizing elapsed serial time before endpoint mutation prevents a newly arrived byte from inheriting time that elapsed before it actually reached the cable.
+
+The same rule applies to ASR-33 keyboard input, Text Terminal input, TCP and COM endpoints. They do not receive separate timing implementations.
 
 ---
 
@@ -213,15 +225,15 @@ A host byte is not deposited instantly into accumulator A. It becomes input to s
 
 ```text
 8080 OUT / serial-card transmit register
-→ UART/card transmit timing
-→ emulated serial connector output
+→ installed UART shifts the configured serial frame in physical serial time
+→ completed byte reaches the emulated serial connector
 → explicit SerialRouter cable
 → ASR-33 peripheral/controller
-→ print/keyboard/paper mechanics state
+→ ASR-33 mechanical printer/distributor pacing
 → ASR-33 UI/audio presentation
 ```
 
-The ASR-33 visual/mechanical model is downstream of serial hardware; it is not part of the S-100 card.
+The ASR-33 visual/mechanical model is downstream of serial hardware; it is not part of the S-100 card. Its 10-cps mechanics may retain/pace completed output, but it does not complete COM2502/MC6850 transmission and it does not replace the selected card baud. At matching 110-baud settings the two physical stages pipeline rather than making CPU execution speed part of the line rate.
 
 ---
 
@@ -332,8 +344,8 @@ user selects convenience load
 
 ```text
 historical bootstrap runs on 8080
-→ paper-tape reader produces serial input over time
-→ installed serial card receives it
+→ paper-tape reader produces serial input over physical peripheral time
+→ installed serial card receives and shifts it at the configured baud
 → guest bootstrap polls/reads card
 → guest program writes bytes to RAM
 ```
