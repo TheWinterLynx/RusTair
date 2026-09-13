@@ -53,11 +53,7 @@ impl Tex {
             tty_head: Self::load_texture(ctx, "tty-head", "assets/asr33head.png"),
             tty_line_local: Self::load_texture(ctx, "tty-line-local", "assets/asrlinelocal.png"),
             tty_knob: Self::load_texture(ctx, "tty-knob", "assets/asrlinelocalknob.png"),
-            adm3a_shell: Self::load_texture(
-                ctx,
-                "adm3a-shell",
-                "assets/terminals/adm3a_shell.jpg",
-            ),
+            adm3a_shell: Self::load_texture(ctx, "adm3a-shell", "assets/terminals/adm3a_shell.jpg"),
         }
     }
 
