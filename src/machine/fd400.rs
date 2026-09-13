@@ -425,8 +425,16 @@ mod tests {
         drive.set_power(true, Fd400Time::ZERO);
         drive.set_head_loaded(true, Fd400Time::ZERO);
 
-        assert!(!drive.snapshot(Fd400Time::from_microseconds(39_999)).head_status);
-        assert!(drive.snapshot(Fd400Time::from_microseconds(40_000)).head_status);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(39_999))
+                .head_status
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(40_000))
+                .head_status
+        );
     }
 
     #[test]
@@ -440,9 +448,7 @@ mod tests {
         assert!(drive.step(Fd400StepDirection::In, step_at));
 
         assert_eq!(
-            drive
-                .snapshot(Fd400Time::from_microseconds(49_999))
-                .track,
+            drive.snapshot(Fd400Time::from_microseconds(49_999)).track,
             0
         );
         let completed = drive.snapshot(Fd400Time::from_microseconds(50_000));
@@ -470,10 +476,7 @@ mod tests {
         drive.track = LAST_TRACK;
         drive.pending_step = None;
         drive.next_step_allowed_at = Fd400Time::from_microseconds(10_000);
-        assert!(drive.step(
-            Fd400StepDirection::In,
-            Fd400Time::from_microseconds(10_000)
-        ));
+        assert!(drive.step(Fd400StepDirection::In, Fd400Time::from_microseconds(10_000)));
         assert_eq!(
             drive.snapshot(Fd400Time::from_microseconds(20_000)).track,
             LAST_TRACK
