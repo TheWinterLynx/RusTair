@@ -296,9 +296,15 @@ impl RusTairApp {
         )
     }
 
-    fn map_uv_rect_to_output(output: egui::Rect, crop_uv: egui::Rect, child_uv: egui::Rect) -> egui::Rect {
-        let map_x = |u: f32| output.left() + output.width() * (u - crop_uv.left()) / crop_uv.width();
-        let map_y = |v: f32| output.top() + output.height() * (v - crop_uv.top()) / crop_uv.height();
+    fn map_uv_rect_to_output(
+        output: egui::Rect,
+        crop_uv: egui::Rect,
+        child_uv: egui::Rect,
+    ) -> egui::Rect {
+        let map_x =
+            |u: f32| output.left() + output.width() * (u - crop_uv.left()) / crop_uv.width();
+        let map_y =
+            |v: f32| output.top() + output.height() * (v - crop_uv.top()) / crop_uv.height();
         egui::Rect::from_min_max(
             egui::Pos2::new(map_x(child_uv.left()), map_y(child_uv.top())),
             egui::Pos2::new(map_x(child_uv.right()), map_y(child_uv.bottom())),
@@ -429,19 +435,14 @@ impl RusTairApp {
                     let available = ui.available_rect_before_wrap().shrink(12.0);
                     let crop_rect = Self::fit_aspect_rect(available, crop_aspect);
 
-                    ui.painter().image(
-                        texture.id(),
-                        crop_rect,
-                        crop_uv,
-                        egui::Color32::WHITE,
-                    );
+                    ui.painter()
+                        .image(texture.id(), crop_rect, crop_uv, egui::Color32::WHITE);
 
                     let screen_uv = egui::Rect::from_min_max(
                         egui::Pos2::new(ADM3A_SCREEN_LEFT, ADM3A_SCREEN_TOP),
                         egui::Pos2::new(ADM3A_SCREEN_RIGHT, ADM3A_SCREEN_BOTTOM),
                     );
-                    let screen_rect =
-                        Self::map_uv_rect_to_output(crop_rect, crop_uv, screen_uv);
+                    let screen_rect = Self::map_uv_rect_to_output(crop_rect, crop_uv, screen_uv);
                     self.draw_adm3a_contents(ui.painter(), screen_rect);
                 });
                 if crt_ctx.input(|i| i.viewport().close_requested()) {
