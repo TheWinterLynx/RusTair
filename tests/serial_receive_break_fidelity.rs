@@ -57,7 +57,7 @@ fn both_engines_deliver_asr_break_to_88_sio_as_continuous_space_with_framing_err
 
         // Default 88-SIO is 110 baud, 8N2: one frame is 100 ms. A held BREAK
         // therefore reaches the COM2502 as zero data with a missing stop bit.
-        host.commit_panel_activity(Duration::from_millis(110));
+        std::thread::sleep(Duration::from_millis(115));
         assert_eq!(
             host.peek_io_port(0x00) & 0x09,
             0x08,
@@ -83,7 +83,7 @@ fn both_engines_deliver_asr_break_to_88_2sio_as_space_and_mc6850_framing_error()
         assert!(!host.serial_rx_line_idle(BackendSerialPort::Port0));
 
         // Default Port 0 strap is 110 baud. 8N1 needs about 90.91 ms.
-        host.commit_panel_activity(Duration::from_millis(110));
+        std::thread::sleep(Duration::from_millis(105));
         assert_eq!(
             host.peek_io_port(0x10) & 0x11,
             0x11,
@@ -108,7 +108,7 @@ fn short_break_release_never_fabricates_a_nul_character_in_either_serial_board()
             }
 
             assert!(host.serial_set_receive_break(BackendSerialPort::Port0, true));
-            host.commit_panel_activity(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20));
             assert!(host.serial_set_receive_break(BackendSerialPort::Port0, false));
             assert!(host.serial_rx_line_idle(BackendSerialPort::Port0));
             assert_eq!(
