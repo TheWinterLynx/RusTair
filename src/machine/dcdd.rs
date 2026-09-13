@@ -617,7 +617,7 @@ mod tests {
                 wds: true
             }
         );
-        board1.observe_s100(&io_sample(0x0b, false, true, false, true, 0x00));
+        board1.observe_s100(&io_sample(0x0b, false, true, false, false, 0x00));
         assert_eq!(
             board1_harness_drive(&harness),
             Board1HarnessDrive::default()
