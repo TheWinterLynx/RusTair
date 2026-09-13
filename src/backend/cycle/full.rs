@@ -663,7 +663,9 @@ impl Bus for FullInstructionBus<'_> {
     }
 
     fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {
-        unreachable!("interrupt acknowledge is classified as a Full/Partial synchronization barrier")
+        unreachable!(
+            "interrupt acknowledge is classified as a Full/Partial synchronization barrier"
+        )
     }
 
     #[inline]
