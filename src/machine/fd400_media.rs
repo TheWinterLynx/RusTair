@@ -6,6 +6,9 @@
 //! sector, stored track-major then sector-major. No host pathname or image
 //! format metadata is retained in the emulated medium.
 
+#[path = "fd400_read.rs"]
+mod read;
+
 pub(super) const HARD_SECTORED_TRACKS: u8 = 77;
 pub(super) const HARD_SECTORS_PER_TRACK: u8 = 32;
 pub(super) const PHYSICAL_BYTES_PER_SECTOR: usize = 137;
