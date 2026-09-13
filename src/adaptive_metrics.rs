@@ -3,6 +3,8 @@ use std::cell::RefCell;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AdaptiveCycleFallbackStats {
     pub chassis_unsupported: u64,
+    /// Retained telemetry field for compatibility with historical profiles.
+    /// Independently clocked serial activity is no longer a Full fallback cause.
     pub serial_active: u64,
     pub ready_low: u64,
     pub hold: u64,
@@ -78,7 +80,6 @@ enum ExecutionPath {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AdaptiveFallbackReason {
     ChassisUnsupported,
-    SerialActive,
     ReadyLow,
     Hold,
     InterruptPending,
@@ -172,10 +173,6 @@ pub(crate) fn record_partial_span(t_states: u64, reason: AdaptiveFallbackReason)
                     .fallbacks
                     .chassis_unsupported
                     .saturating_add(1)
-            }
-            AdaptiveFallbackReason::SerialActive => {
-                metrics.stats.fallbacks.serial_active =
-                    metrics.stats.fallbacks.serial_active.saturating_add(1)
             }
             AdaptiveFallbackReason::ReadyLow => {
                 metrics.stats.fallbacks.ready_low =
