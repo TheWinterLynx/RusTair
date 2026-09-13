@@ -1,3 +1,4 @@
+mod adm3a_serial;
 mod adm3a_state;
 mod asr33_controller;
 mod asr33_state;
@@ -294,6 +295,7 @@ impl RusTairApp {
                     for device in [
                         SerialDevice::InternalAsr33,
                         SerialDevice::TextTerminal,
+                        SerialDevice::Adm3a,
                         SerialDevice::ExternalTcp,
                         SerialDevice::ExternalCom,
                     ] {
@@ -307,6 +309,7 @@ impl RusTairApp {
         for device in [
             SerialDevice::InternalAsr33,
             SerialDevice::TextTerminal,
+            SerialDevice::Adm3a,
             SerialDevice::ExternalTcp,
             SerialDevice::ExternalCom,
         ] {
@@ -328,6 +331,7 @@ impl RusTairApp {
         match device {
             SerialDevice::InternalAsr33 => "ASR-33",
             SerialDevice::TextTerminal => "Text Terminal",
+            SerialDevice::Adm3a => "Lear Siegler ADM-3A",
             SerialDevice::ExternalTcp => "External TCP",
             SerialDevice::ExternalCom => "External COM",
         }
@@ -531,6 +535,10 @@ impl RusTairApp {
     fn terminal_serial_tx_busy(&mut self) -> bool {
         let c = self.terminal_connection();
         self.serial_tx_busy_at(c)
+    }
+
+    fn adm3a_connection(&self) -> SerialConnection {
+        self.serial_connection(SerialDevice::Adm3a)
     }
 
     fn service_disconnected_serial_ports(&mut self) {
