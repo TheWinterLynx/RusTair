@@ -243,9 +243,8 @@ impl RusTairApp {
     }
 
     fn show_adm3a_viewport(&mut self, parent_ctx: &egui::Context) {
-        let open = parent_ctx.data_mut(|data| {
-            *data.get_temp_mut_or(Self::adm3a_viewport_open_id(), false)
-        });
+        let open = parent_ctx
+            .data_mut(|data| *data.get_temp_mut_or(Self::adm3a_viewport_open_id(), false));
         if !open {
             return;
         }
@@ -262,9 +261,8 @@ impl RusTairApp {
                     ui.centered_and_justified(|ui| self.draw_adm3a_shell(ui));
                 });
                 if adm3a_ctx.input(|i| i.viewport().close_requested()) {
-                    adm3a_ctx.data_mut(|data| {
-                        data.insert_temp(Self::adm3a_viewport_open_id(), false)
-                    });
+                    adm3a_ctx
+                        .data_mut(|data| data.insert_temp(Self::adm3a_viewport_open_id(), false));
                 }
             },
         );
