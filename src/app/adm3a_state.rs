@@ -192,7 +192,9 @@ impl Adm3aState {
     }
 
     fn keyboard_char_time() -> Duration {
-        Duration::from_secs_f64(ADM3A_KEYBOARD_FRAME_BITS / f64::from(ADM3A_KEYBOARD_BAUD))
+        Duration::from_secs_f64(
+            ADM3A_KEYBOARD_FRAME_BITS / f64::from(ADM3A_KEYBOARD_BAUD),
+        )
     }
 }
 
