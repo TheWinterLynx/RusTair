@@ -6,8 +6,9 @@
 //! controller harness, never through a direct card-to-card software reference.
 //!
 //! Phase 2 exposed the fixed 08h-0Ah register surface. Phase 3 places the real
-//! disk-unit/buffer/FD-400 mechanics below the external controller cable while
-//! preserving a no-drive default assembly and zero per-T-state card polling.
+//! disk-unit/buffer/FD-400 mechanics below the external controller cable and now
+//! exposes source-backed mechanical status through that same physical controller
+//! path while preserving a no-drive default assembly and zero per-T-state polling.
 
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
@@ -104,13 +105,15 @@ struct Board1HarnessDrive {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Board2HarnessDrive {
     selected_drive: u8,
+    /// Board #2's latched Disk Control request. Effective drive/controller enable
+    /// additionally depends on the selected Disk Buffer's five-second inhibit and
+    /// live door/power/cable conditions.
     disk_enable: bool,
 }
 
 #[derive(Debug, Default)]
 struct Mits88DcddBoard2Circuit {
     selected_drive: u8,
-    disk_control_enabled: bool,
 }
 
 /// Physical inter-board/controller-cable signal authority. `mechanics_time` is
@@ -200,15 +203,41 @@ impl Mits88DcddHarness {
         state.board2.disk_enable = enabled;
     }
 
+    /// Effective Disk Control is the Board #2 latch AND the external Disk Buffer
+    /// gate. Door-open or power-off physically clears Disk Control; the five-second
+    /// timer merely inhibits selection, so a previously latched request can become
+    /// effective when the stabilization deadline expires without CPU polling.
     fn disk_enabled(&self) -> bool {
-        self.state.borrow().board2.disk_enable
+        let mut state = self.state.borrow_mut();
+        if !state.board2.disk_enable {
+            return false;
+        }
+        let address = state.board2.selected_drive;
+        let now = state.mechanics_time;
+        let Some(unit) = state.external_disk_bus.unit(address) else {
+            return false;
+        };
+        if !unit.drive().power_on() || unit.drive().door_open() {
+            state.board2.disk_enable = false;
+            return false;
+        }
+        state.external_disk_bus.drive_available(address, now)
     }
 
-    fn drive_available(&self, address: u8) -> bool {
-        self.state
-            .borrow()
-            .external_disk_bus
-            .drive_available(address)
+    fn active_drive_snapshot(&self) -> Option<super::fd400::Fd400MechanicalSnapshot> {
+        if !self.disk_enabled() {
+            return None;
+        }
+        let mut state = self.state.borrow_mut();
+        let address = state.board2.selected_drive;
+        let now = state.mechanics_time;
+        Some(
+            state
+                .external_disk_bus
+                .unit_mut(address)?
+                .drive_mut()
+                .snapshot(now),
+        )
     }
 
     fn apply_drive_control(&self, address: u8, value: u8) {
@@ -265,7 +294,6 @@ impl Mits88DcddHarness {
 
 impl Mits88DcddBoard2Circuit {
     fn clear_disk_control(&mut self, harness: &Mits88DcddHarness) {
-        self.disk_control_enabled = false;
         harness.set_disk_selection(self.selected_drive, false);
     }
 
@@ -276,8 +304,7 @@ impl Mits88DcddBoard2Circuit {
         }
 
         self.selected_drive = value & 0x0f;
-        self.disk_control_enabled = harness.drive_available(self.selected_drive);
-        harness.set_disk_selection(self.selected_drive, self.disk_control_enabled);
+        harness.set_disk_selection(self.selected_drive, true);
     }
 
     fn observe_harness_edge(
@@ -293,7 +320,7 @@ impl Mits88DcddBoard2Circuit {
             }
         }
 
-        if current.cd && !previous.cd && self.disk_control_enabled {
+        if current.cd && !previous.cd && harness.disk_enabled() {
             if let Some(value) = sample.data_out() {
                 harness.apply_drive_control(self.selected_drive, value);
             }
@@ -342,18 +369,34 @@ impl Mits88DcddBoard1 {
     }
 
     fn status_byte(&self, sample: &S100BusSample) -> u8 {
-        if !self.harness.disk_enabled() {
+        let Some(mechanics) = self.harness.active_drive_snapshot() else {
             return DISABLED_STATUS;
-        }
+        };
 
-        // Phase 3 still does not expose the complete enabled status byte because
-        // Move Head's exact pulse waveform is not yet encoded. D5 already has a
-        // proven source: S-100 pINTE. Normal production has no attached unit yet.
         let mut status = DISABLED_STATUS;
+        if mechanics.move_head {
+            status &= !(1 << 1);
+        }
+        if mechanics.head_status {
+            status &= !(1 << 2);
+        }
         if sample.signal_level(S100Signal::InterruptEnable) == Some(true) {
             status &= !(1 << 5);
         }
+        if mechanics.track_zero {
+            status &= !(1 << 6);
+        }
+        // D0 ENWD and D7 NRDA remain false until the authentic write/read phases.
         status
+    }
+
+    fn sector_byte(&self) -> Option<u8> {
+        let mechanics = self.harness.active_drive_snapshot()?;
+        if !mechanics.head_status {
+            return None;
+        }
+        let sector_true_bit = u8::from(!mechanics.rotation.sector_true);
+        Some(0xc0 | (mechanics.rotation.sector << 1) | sector_true_bit)
     }
 
     fn update_read_drive(&mut self, sample: &S100BusSample) {
@@ -366,9 +409,10 @@ impl Mits88DcddBoard1 {
 
         self.read_drive = match Self::decoded_port(sample) {
             Some(DCDD_STATUS_CONTROL_PORT) => Some(self.status_byte(sample)),
-            // Sector output drivers are gated by Head Status. Production has no
-            // attached unit in Phase 3, so the Phase-2 high-Z behavior remains.
-            Some(DCDD_SECTOR_CONTROL_PORT) => None,
+            // Sector line drivers are gated by Head Status. During a valid read,
+            // D0 is active-low Sector True, D1..D5 are sector 0..31 and the MITS
+            // table fixes the otherwise-unused D6/D7 outputs at logic 1.
+            Some(DCDD_SECTOR_CONTROL_PORT) => self.sector_byte(),
             // Read-data line drivers are selected even though the latch power-up
             // contents are undefined. Do not turn that into fictitious open bus.
             Some(DCDD_DATA_PORT) => Some(self.undefined_read_latch),
@@ -448,6 +492,9 @@ mod tests {
     use super::*;
     use crate::s100_backplane::{S100Backplane, S100PinDrive};
 
+    const FIVE_SECONDS_T_STATES: u64 = 10_000_000;
+    const FORTY_MS_T_STATES: u64 = 80_000;
+
     fn io_sample(
         port: u8,
         inp: bool,
@@ -486,12 +533,16 @@ mod tests {
         harness.state.borrow().board1
     }
 
-    fn install_ready_test_unit(harness: &Mits88DcddHarness, address: u8) {
+    fn install_powered_test_unit(harness: &Mits88DcddHarness, address: u8) {
         let mut unit = MitsDiskUnit::new(address).unwrap();
         unit.drive_mut().set_power(true, Fd400Time::ZERO);
-        unit.drive_mut().set_door_open(false);
+        unit.drive_mut().set_door_open(false, Fd400Time::ZERO);
         unit.drive_mut().set_motor_on(true, Fd400Time::ZERO);
         harness.install_test_unit(unit);
+    }
+
+    fn release_harness_strobe(board1: &mut Mits88DcddBoard1) {
+        board1.observe_s100(&io_sample(0x00, false, false, false, true, 0));
     }
 
     #[test]
@@ -617,7 +668,7 @@ mod tests {
                 wds: true
             }
         );
-        board1.observe_s100(&io_sample(0x0b, false, true, false, false, 0x00));
+        board1.observe_s100(&io_sample(0x0b, false, false, false, true, 0x00));
         assert_eq!(
             board1_harness_drive(&harness),
             Board1HarnessDrive::default()
@@ -633,7 +684,6 @@ mod tests {
         board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
 
         assert_eq!(circuit.borrow().selected_drive, 3);
-        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
     }
 
@@ -641,49 +691,58 @@ mod tests {
     fn board2_cannot_enable_a_missing_drive_and_d7_or_poc_clear_disk_control() {
         let harness = Mits88DcddHarness::new();
         let mut board1 = Mits88DcddBoard1::new(harness.clone());
-        let (mut board2, circuit) = board2_fixture(&harness);
+        let (mut board2, _) = board2_fixture(&harness);
 
         board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
-        assert_eq!(circuit.borrow().selected_drive, 3);
-        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
 
-        board1.observe_s100(&io_sample(0x08, false, true, false, true, 0x83));
-        circuit.borrow_mut().disk_control_enabled = true;
-        harness.set_disk_selection(3, true);
+        release_harness_strobe(&mut board1);
         board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x83));
-        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
+        assert!(!harness.state.borrow().board2.disk_enable);
 
-        circuit.borrow_mut().disk_control_enabled = true;
         harness.set_disk_selection(3, true);
         let backplane = S100Backplane::new(0);
         let mut poc = S100CardDrive::new();
         poc.drive_signal(S100Signal::PowerOnClear, true);
         board2.observe_s100(&backplane.resolve_drive_sets(&[poc]));
-        assert!(!circuit.borrow().disk_control_enabled);
         assert!(!harness.disk_enabled());
+        assert!(!harness.state.borrow().board2.disk_enable);
+    }
+
+    #[test]
+    fn disk_buffer_inhibits_selection_for_five_seconds_without_polling() {
+        let harness = Mits88DcddHarness::new();
+        let mut board1 = Mits88DcddBoard1::new(harness.clone());
+        let (_board2, _) = board2_fixture(&harness);
+        install_powered_test_unit(&harness, 3);
+
+        board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
+        assert!(!harness.disk_enabled());
+        harness.advance_mechanics_t_states(FIVE_SECONDS_T_STATES - 1);
+        assert!(!harness.disk_enabled());
+        harness.advance_mechanics_t_states(1);
+        assert!(harness.disk_enabled());
     }
 
     #[test]
     fn selected_drive_receives_head_and_step_commands_at_harness_virtual_time() {
         let harness = Mits88DcddHarness::new();
         let mut board1 = Mits88DcddBoard1::new(harness.clone());
-        let (_board2, circuit) = board2_fixture(&harness);
-        install_ready_test_unit(&harness, 3);
+        let (_board2, _) = board2_fixture(&harness);
+        install_powered_test_unit(&harness, 3);
 
         board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
-        assert!(circuit.borrow().disk_control_enabled);
+        harness.advance_mechanics_t_states(FIVE_SECONDS_T_STATES);
         assert!(harness.disk_enabled());
 
+        release_harness_strobe(&mut board1);
         board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x04));
         assert!(!harness.test_unit_snapshot(3).unwrap().head_status);
-        harness.advance_mechanics_t_states(80_000); // 40 ms at 2 MHz.
+        harness.advance_mechanics_t_states(FORTY_MS_T_STATES);
         assert!(harness.test_unit_snapshot(3).unwrap().head_status);
 
-        // Drop CD before asserting a new command so the next OUT creates a real
-        // rising edge, exactly as consecutive 8080 I/O cycles do on the harness.
-        board1.observe_s100(&io_sample(0x00, false, false, false, true, 0));
+        release_harness_strobe(&mut board1);
         board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x01));
         harness.advance_mechanics_t_states(19_999);
         assert_eq!(harness.test_unit_snapshot(3).unwrap().track, 0);
@@ -691,8 +750,57 @@ mod tests {
         let stepped = harness.test_unit_snapshot(3).unwrap();
         assert_eq!(stepped.track, 1);
         assert!(!stepped.head_status);
-        harness.advance_mechanics_t_states(60_000); // now 40 ms after step command.
+        assert!(stepped.move_head);
+        harness.advance_mechanics_t_states(2_000); // End of the 1 ms Move Head true window.
+        assert!(!harness.test_unit_snapshot(3).unwrap().move_head);
+        harness.advance_mechanics_t_states(58_000); // 40 ms after the step command.
         assert!(harness.test_unit_snapshot(3).unwrap().head_status);
+    }
+
+    #[test]
+    fn enabled_status_and_sector_input_are_driven_by_fd400_mechanics() {
+        let harness = Mits88DcddHarness::new();
+        let mut board1 = Mits88DcddBoard1::new(harness.clone());
+        let (_board2, _) = board2_fixture(&harness);
+        install_powered_test_unit(&harness, 3);
+
+        board1.observe_s100(&io_sample(0x08, false, true, false, false, 0x03));
+        harness.advance_mechanics_t_states(FIVE_SECONDS_T_STATES);
+        assert!(harness.disk_enabled());
+
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive, Some(0xa5));
+
+        board1.observe_s100(&io_sample(0x09, true, false, true, true, 0));
+        assert_eq!(board1.read_drive, None, "Head Status must gate sector drivers");
+
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x04));
+        harness.advance_mechanics_t_states(FORTY_MS_T_STATES);
+        let first = harness.test_unit_snapshot(3).unwrap();
+        assert!(first.head_status);
+
+        release_harness_strobe(&mut board1);
+        board1.observe_s100(&io_sample(0x08, true, false, true, true, 0));
+        assert_eq!(board1.read_drive, Some(0xa1));
+
+        board1.observe_s100(&io_sample(0x09, true, false, true, true, 0));
+        let first_sector = board1.read_drive.expect("sector drivers enabled");
+        assert_eq!(first_sector & 0xc0, 0xc0, "D6/D7 are documented logic 1");
+        assert_eq!((first_sector >> 1) & 0x1f, first.rotation.sector);
+        assert_eq!(first_sector & 1 == 0, first.rotation.sector_true);
+
+        // No CPU instruction executes here. Advancing the one chassis epoch is
+        // sufficient for the platter/sector position to move analytically.
+        release_harness_strobe(&mut board1);
+        harness.advance_mechanics_t_states(10_417);
+        let later = harness.test_unit_snapshot(3).unwrap();
+        assert_ne!(later.rotation.sector, first.rotation.sector);
+        board1.observe_s100(&io_sample(0x09, true, false, true, true, 0));
+        let later_sector = board1.read_drive.expect("sector drivers stay enabled");
+        assert_eq!((later_sector >> 1) & 0x1f, later.rotation.sector);
+        assert_eq!(later_sector & 1 == 0, later.rotation.sector_true);
     }
 
     #[test]
