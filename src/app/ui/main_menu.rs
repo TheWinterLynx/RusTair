@@ -130,6 +130,10 @@ fn draw_peripherals_menu(app: &mut RusTairApp, ui: &mut egui::Ui) {
             app.terminal.window_open = true;
             ui.close();
         }
+        if ui.button("Lear Siegler ADM-3A").clicked() {
+            app.open_adm3a_viewport(ui.ctx());
+            ui.close();
+        }
         ui.menu_button("External Serial", |ui| {
             if ui.button("TCP").clicked() {
                 app.external_serial.window_open = true;
