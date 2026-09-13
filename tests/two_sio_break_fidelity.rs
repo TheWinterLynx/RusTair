@@ -40,9 +40,9 @@ fn both_engines_keep_tdr_tsr_clocking_under_break_without_fabricating_wire_bytes
         );
 
         // At the default 110-baud tap this 8N1 frame needs about 90.91 ms.
-        // Chassis clocks continue while the CPU is STOPped, so 110 ms is enough
-        // for TDR->TSR and full internal shift completion in either backend.
-        host.commit_panel_activity(Duration::from_millis(110));
+        // The ACIA oscillator is independent of CPU RUN/T-state progression, so
+        // elapsed physical serial time completes it even while the CPU is STOPped.
+        std::thread::sleep(Duration::from_millis(105));
         assert_eq!(
             host.peek_io_port(0x10) & 0x02,
             0x02,
@@ -67,7 +67,7 @@ fn both_engines_keep_tdr_tsr_clocking_under_break_without_fabricating_wire_bytes
                 .break_active,
         );
         host.debugger_output_port(0x11, b'Z');
-        host.commit_panel_activity(Duration::from_millis(110));
+        std::thread::sleep(Duration::from_millis(105));
         assert_eq!(
             host.serial_tx_front(BackendSerialPort::Port0),
             Some(b'Z'),
