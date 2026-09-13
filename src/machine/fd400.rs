@@ -1,26 +1,34 @@
-//! Pertec FD-400 mechanics and MITS disk-unit timing foundation.
+//! Pertec FD-400 mechanics, removable media and MITS disk-unit timing foundation.
 //!
-//! Phase 3 deliberately models mechanics without media bytes. Time is supplied
-//! explicitly by the caller, so an idle drive is query-derived rather than
-//! advanced by a 2 MHz polling loop. The fixed-point unit is one sixth of a
-//! microsecond: one Altair 2 MHz T-state is exactly three units, a 360 RPM
+//! Time is supplied explicitly by the caller, so an idle drive is query-derived
+//! rather than advanced by a 2 MHz polling loop. The fixed-point unit is one sixth
+//! of a microsecond: one Altair 2 MHz T-state is exactly three units, a 360 RPM
 //! revolution is exactly 1,000,000 units, and one of 32 hard sectors is exactly
 //! 31,250 units. This keeps long-running rotational phase deterministic without
 //! accumulating floating-point drift.
+//!
+//! Phase 4 adds a read-only removable physical medium below the drive electronics.
+//! The controller still has no sector/filesystem shortcut and no host pathname.
+//! Read-data cadence, write electronics and interrupt behavior remain later phases.
 //!
 //! Source-backed base timings come from the July 1977 MITS 88-DCDD Operator's
 //! Guide / MITS 3200 drive documentation: 360 RPM, 32 hard sectors plus index,
 //! 77 tracks, 10 ms track-to-track access, 40 ms Head Status after head load or
 //! a step with the head already loaded, a 30 us Sector True window, the documented
 //! Move Head waveform, and the five-second Disk Buffer selection inhibit after
-//! power-on or door close. Media/read/write electronics remain later phases.
+//! power-on or door close.
 
-#![allow(dead_code)] // Phase 3 engine is intentionally consumed by later disk phases.
+#![allow(dead_code)] // Disk phases consume this foundation incrementally.
+
+#[path = "fd400_media.rs"]
+mod media;
+
+use media::{HardSectored8InchMedia, HARD_SECTORED_TRACKS, HARD_SECTORS_PER_TRACK};
 
 const TIME_UNITS_PER_MICROSECOND: u64 = 6;
 const TIME_UNITS_PER_8080_T_STATE: u64 = 3;
 const REVOLUTION_TIME_UNITS: u64 = 1_000_000;
-const SECTORS_PER_REVOLUTION: u64 = 32;
+const SECTORS_PER_REVOLUTION: u64 = HARD_SECTORS_PER_TRACK as u64;
 const SECTOR_TIME_UNITS: u64 = REVOLUTION_TIME_UNITS / SECTORS_PER_REVOLUTION;
 const SECTOR_TRUE_TIME_UNITS: u64 = 30 * TIME_UNITS_PER_MICROSECOND;
 const TRACK_TO_TRACK_TIME_UNITS: u64 = 10_000 * TIME_UNITS_PER_MICROSECOND;
@@ -29,7 +37,7 @@ const DRIVE_SELECTION_STABILIZE_UNITS: u64 = 5_000_000 * TIME_UNITS_PER_MICROSEC
 const MOVE_HEAD_STEP_TRUE_START_UNITS: u64 = 10_000 * TIME_UNITS_PER_MICROSECOND;
 const MOVE_HEAD_STEP_TRUE_END_UNITS: u64 = 11_000 * TIME_UNITS_PER_MICROSECOND;
 const MOVE_HEAD_STEP_RECOVER_UNITS: u64 = 31_000 * TIME_UNITS_PER_MICROSECOND;
-const TRACK_COUNT: u8 = 77;
+const TRACK_COUNT: u8 = HARD_SECTORED_TRACKS;
 const LAST_TRACK: u8 = TRACK_COUNT - 1;
 const MAX_DRIVES: usize = 16;
 
@@ -102,6 +110,8 @@ pub(super) struct Fd400MechanicalSnapshot {
     pub(super) head_status: bool,
     pub(super) move_head: bool,
     pub(super) step_command_allowed: bool,
+    pub(super) media_present: bool,
+    pub(super) media_write_protected: Option<bool>,
     pub(super) rotation: Fd400RotationSnapshot,
 }
 
@@ -120,6 +130,7 @@ pub(super) struct PertecFd400 {
     head_commanded_loaded: bool,
     head_ready_at: Option<Fd400Time>,
     move_head_load_ready_at: Option<Fd400Time>,
+    media: Option<HardSectored8InchMedia>,
 }
 
 impl Default for PertecFd400 {
@@ -138,6 +149,7 @@ impl Default for PertecFd400 {
             head_commanded_loaded: false,
             head_ready_at: None,
             move_head_load_ready_at: None,
+            media: None,
         }
     }
 }
@@ -153,6 +165,43 @@ impl PertecFd400 {
 
     pub(super) fn door_open(&self) -> bool {
         self.door_open
+    }
+
+    pub(super) fn media_present(&self) -> bool {
+        self.media.is_some()
+    }
+
+    pub(super) fn media_write_protected(&self) -> Option<bool> {
+        self.media.as_ref().map(HardSectored8InchMedia::write_protected)
+    }
+
+    /// A removable medium can only be inserted while the physical door is open.
+    /// Returning the medium on failure preserves unique ownership and prevents a
+    /// host-side mount attempt from silently cloning a physical diskette.
+    pub(super) fn insert_media(
+        &mut self,
+        media: HardSectored8InchMedia,
+    ) -> Result<(), HardSectored8InchMedia> {
+        if !self.door_open || self.media.is_some() {
+            return Err(media);
+        }
+        self.media = Some(media);
+        Ok(())
+    }
+
+    /// Opening the door is likewise required before the removable medium can be
+    /// physically ejected. A closed-door attempt leaves the medium installed.
+    pub(super) fn eject_media(&mut self) -> Option<HardSectored8InchMedia> {
+        if !self.door_open {
+            return None;
+        }
+        self.media.take()
+    }
+
+    /// Read-only physical-byte access for later FD-400 read electronics. This is
+    /// deliberately below the controller and carries no guest-sector semantics.
+    pub(super) fn physical_media_byte(&self, track: u8, sector: u8, offset: usize) -> Option<u8> {
+        self.media.as_ref()?.physical_byte(track, sector, offset)
     }
 
     fn spindle_rotating(&self) -> bool {
@@ -323,6 +372,8 @@ impl PertecFd400 {
             head_status,
             move_head,
             step_command_allowed: move_head && self.pending_step.is_none(),
+            media_present: self.media_present(),
+            media_write_protected: self.media_write_protected(),
             rotation: self.rotation_snapshot_without_settle(now),
         }
     }
@@ -375,6 +426,17 @@ impl MitsDiskUnit {
         &mut self.drive
     }
 
+    pub(super) fn insert_media(
+        &mut self,
+        media: HardSectored8InchMedia,
+    ) -> Result<(), HardSectored8InchMedia> {
+        self.drive.insert_media(media)
+    }
+
+    pub(super) fn eject_media(&mut self) -> Option<HardSectored8InchMedia> {
+        self.drive.eject_media()
+    }
+
     /// The Disk Buffer inhibits selection for five seconds after drive power-on
     /// or door close, in addition to rejecting an open door, powered-off drive,
     /// or absent controller cable.
@@ -425,6 +487,14 @@ impl Mits88DiskCableBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use media::PHYSICAL_MEDIA_BYTES;
+
+    fn patterned_media(write_protected: bool) -> HardSectored8InchMedia {
+        let bytes = (0..PHYSICAL_MEDIA_BYTES)
+            .map(|index| (index & 0xff) as u8)
+            .collect();
+        HardSectored8InchMedia::from_physical_bytes(bytes, write_protected).unwrap()
+    }
 
     #[test]
     fn fixed_point_time_exactly_represents_altair_t_states_rotation_and_sectors() {
@@ -625,6 +695,50 @@ mod tests {
     }
 
     #[test]
+    fn removable_media_requires_open_door_and_preserves_unique_ownership() {
+        let mut drive = PertecFd400::new();
+        let media = patterned_media(true);
+        drive.set_door_open(false, Fd400Time::ZERO);
+        let media = drive.insert_media(media).expect_err("closed door must reject insertion");
+        assert!(!drive.media_present());
+
+        drive.set_door_open(true, Fd400Time::ZERO);
+        drive.insert_media(media).unwrap();
+        assert!(drive.media_present());
+        assert_eq!(drive.media_write_protected(), Some(true));
+        assert_eq!(drive.physical_media_byte(0, 0, 0), Some(0));
+        assert_eq!(drive.physical_media_byte(76, 31, 136), Some(159));
+
+        drive.set_door_open(false, Fd400Time::ZERO);
+        assert!(drive.eject_media().is_none());
+        assert!(drive.media_present());
+        drive.set_door_open(true, Fd400Time::ZERO);
+        let ejected = drive.eject_media().expect("open door permits ejection");
+        assert!(!drive.media_present());
+        assert!(ejected.write_protected());
+    }
+
+    #[test]
+    fn mounted_media_does_not_change_rotation_or_drive_selection_timing() {
+        let mut empty = PertecFd400::new();
+        let mut mounted = PertecFd400::new();
+        mounted.insert_media(patterned_media(false)).unwrap();
+        for drive in [&mut empty, &mut mounted] {
+            drive.set_power(true, Fd400Time::ZERO);
+            drive.set_door_open(false, Fd400Time::ZERO);
+            drive.set_motor_on(true, Fd400Time::ZERO);
+        }
+
+        let now = Fd400Time::from_microseconds(5_123_456);
+        let empty_snapshot = empty.snapshot(now);
+        let mounted_snapshot = mounted.snapshot(now);
+        assert_eq!(empty_snapshot.selection_ready, mounted_snapshot.selection_ready);
+        assert_eq!(empty_snapshot.rotation, mounted_snapshot.rotation);
+        assert!(!empty_snapshot.media_present);
+        assert!(mounted_snapshot.media_present);
+    }
+
+    #[test]
     fn drive_selection_requires_cable_power_closed_door_and_stable_speed() {
         let mut bus = Mits88DiskCableBus::default();
         let mut unit = MitsDiskUnit::new(3).unwrap();
@@ -642,6 +756,17 @@ mod tests {
         let ready = Fd400Time::from_microseconds(5_000_000);
         assert!(bus.drive_available(3, ready));
         assert!(!bus.drive_available(2, ready));
+    }
+
+    #[test]
+    fn disk_unit_mount_eject_surface_stays_below_controller_protocol() {
+        let mut unit = MitsDiskUnit::new(5).unwrap();
+        assert!(unit.insert_media(patterned_media(false)).is_ok());
+        assert!(unit.drive().media_present());
+        assert_eq!(unit.drive().physical_media_byte(1, 2, 3), Some(204));
+        let media = unit.eject_media().expect("default-open drive permits eject");
+        assert!(!unit.drive().media_present());
+        assert!(!media.write_protected());
     }
 
     #[test]
