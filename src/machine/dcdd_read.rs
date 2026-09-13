@@ -196,7 +196,10 @@ mod tests {
             }
         }
 
-        assert!(halted, "8080 never reached HLT after polling Head Status/NRDA");
+        assert!(
+            halted,
+            "8080 never reached HLT after polling Head Status/NRDA"
+        );
         assert!(
             cpu.total_t_states() >= 80_000,
             "head-load delay must consume at least the documented 40 ms"
