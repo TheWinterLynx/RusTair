@@ -19,7 +19,7 @@ Each `tests/<name>.rs` file is compiled by Cargo as a separate integration-test 
 | `tests/cpu8080_cycle_classic_diagnostics.rs` | Runs classic diagnostics through the exact cycle-oriented CPU path to validate CPU semantics/timing independently of Adaptive Full acceleration. |
 | `tests/cpu8080_cycle_differential.rs` | Differential comparison between exact cycle execution and instruction-level semantic/reference behavior at valid comparison boundaries. Finds semantic/timing-state divergences. |
 | `tests/cpu8080_forced_partial_classic_diagnostics.rs` | Runs classic diagnostic workloads while forcing the exact Partial path, providing an end-to-end reference against the accelerated Adaptive behavior. |
-| `tests/emulation_speed_benchmark.rs` | Controlled speed-mode/throughput benchmark infrastructure. Performance evidence rather than a hardware timing specification. |
+| `tests/emulation_speed_benchmark.rs` | Controlled Adaptive throughput benchmark infrastructure. Includes the long-running installed-idle DCDD A/B gate: alternating baseline/DCDD pairs, explicit Full/Partial mix, per-pair ratios, extended warm-up and 1-billion-T-state samples used to enforce the <2% idle-regression budget without confusing host drift with hardware cost. Performance evidence rather than a hardware timing specification. |
 | `tests/emulation_speed_ui.rs` | Guards the UI/configuration semantics of Authentic/accelerated/Unlimited speed choices and keeps host speed separate from the installed CPU board clock. |
 | `tests/gui_execution_performance.rs` | Guards host GUI scheduling behavior, especially that Unlimited execution is not accidentally repaint-bound and throttled modes retain their intended scheduling semantics. |
 
@@ -148,7 +148,7 @@ Memory wait timing is listed in the CPU timing section because it specifically v
 | `tests/two_sio_break_fidelity.rs` | Validates transmit/receive BREAK behavior of the 88-2SIO/MC6850 board path and associated electrical overrides. |
 | `tests/two_sio_debugger_wait_isolation.rs` | Ensures debugger/inspection access does not incorrectly consume or perturb guest-visible 88-2SIO READY/wait behavior. |
 | `tests/two_sio_external_com_signals.rs` | Validates host COM modem/control signals are projected to/from the emulated 88-2SIO connector with correct semantics/polarity. |
-| `tests/two_sio_idle_chassis_clock.rs` | Proves independent serial-card time continues correctly while CPU instruction execution is STOPped, RESET-held or HOLD/HLDA parked, without double-counting panel/host time. |
+| `tests/two_sio_idle_chassis_clock.rs` | Proves independent serial-card time continues correctly while CPU instruction execution is STOPped, RESET-held or HOLD/HLDA parked, without double-counting panel/host time. The same generic chassis clock now also carries the O(1) DCDD mechanics epoch; DCDD-specific mechanical deadlines/status are covered by crate-level `machine::fd400`/`machine::dcdd` tests. |
 | `tests/two_sio_interrupt_ui.rs` | Guards configuration UI representation of 88-2SIO interrupt wiring/targets. |
 | `tests/two_sio_modem_pins.rs` | Focused 88-2SIO modem/handshake pin semantics (e.g. CTS/DCD/RTS as applicable to interface/config). |
 | `tests/two_sio_prdy_timing.rs` | Validates physical port-ready/PRDY timing and its interaction with READY/wait behavior at the S-100 boundary. |
