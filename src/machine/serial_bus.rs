@@ -129,27 +129,25 @@ impl AltairBus {
         pulsed
     }
 
-    /// Advance independently clocked chassis peripherals by elapsed guest
-    /// T-states. The memory/runtime facade fans this out to UART timing and the
-    /// single O(1) DCDD mechanics epoch without iterating installed disk units.
-    ///
-    /// A DCDD mechanics-epoch increment is not itself an S-100 connector event:
-    /// Phase-3 mechanics are observed lazily by controller I/O. Only an active
-    /// UART can change PINT/VI/PRDY merely because elapsed time advanced, so an
-    /// idle/no-serial chassis must not pay for a full electrical settle here.
+    /// Advance CPU/chassis-time peripherals. At present this is the DCDD
+    /// mechanics epoch. Serial UART oscillators deliberately do not advance here:
+    /// their selected baud is physical peripheral time and must not be multiplied
+    /// by host execution speed (Authentic/5x/10x/Unlimited).
     pub(crate) fn advance_chassis_hardware_time(&mut self, t_states: u64) {
+        self.memory.advance_dcdd_time(t_states);
+    }
+
+    /// Advance only the installed 88-SIO/88-2SIO oscillators by elapsed physical
+    /// serial time, expressed in canonical 2 MHz chassis quanta. The UART/card
+    /// remains the sole owner of bit/frame state; this scheduler never completes
+    /// a byte itself. Any resulting PINT/VI/PRDY transition is then resolved
+    /// through the normal S-100 connector graph.
+    pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
         let serial_was_active = !self.memory.serial_timing_is_quiet();
         self.memory.advance_serial_time(t_states);
         if serial_was_active {
             self.settle_host_serial_change();
         }
-    }
-
-    /// Compatibility name retained for serial-specific tests and callers. The
-    /// underlying clock is now chassis-wide so DCDD mechanics cannot freeze
-    /// while serial timing advances.
-    pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
-        self.advance_chassis_hardware_time(t_states);
     }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
