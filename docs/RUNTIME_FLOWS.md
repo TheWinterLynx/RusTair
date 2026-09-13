@@ -43,24 +43,31 @@ sequenceDiagram
     participant P as Peripheral/serial endpoints
 
     E->>A: update(now)
-    A->>A: sync persisted/config UI state
+    A->>A: sync persisted/config/diagnostic state
+    A->>B: select managed serial time for throttled CPU, Instant for Unlimited
     A->>C: budget(now, RUN, board clock, speed)
     C-->>A: allowed CPU T-states
-    A->>F: run CPU within T-state budget + host deadline
-    F->>B: service execution in slices
-    B->>S: account elapsed physical serial time
-    S->>M: advance installed UART oscillators only
-    B->>M: execute Adaptive Full/Partial
-    M-->>B: exact executed CPU T-state count
-    B->>S: account physical serial time again at service boundary
-    B-->>F: progress / possible yield
+    A->>F: replay CPU debt within host deadline
+    loop throttled physical slices (<= 4 us)
+        F->>B: execute speed-scaled CPU T-state slice
+        B->>M: execute Adaptive Full/Partial
+        M-->>B: exact executed CPU T-state count
+        F->>B: advance corresponding physical serial duration
+        B->>S: convert physical duration to canonical serial quanta
+        S->>M: advance installed UART oscillators only
+    end
     F-->>A: total executed CPU T-states
     A->>C: record executed debt (throttled modes)
-    A->>P: service ASR/terminal/TCP/COM and mechanics
+    A->>A: if CPU parked/stopped, advance UART by frame wall time only
+    A->>P: inject host input sampled at now; drain serial outputs/mechanics
     A->>E: render panels/tools, request next repaint
 ```
 
-Unlimited mode is constrained by a host-time deadline rather than a small fixed T-state chunk per repaint. The serial scheduler is independent of that CPU speed policy: a card strapped/configured for 110 baud remains 110 baud even while the CPU executor runs 5×, 10× or Unlimited.
+The repaint loop is not the UART clock. In Authentic/2×/5×/10×, `run_cpu_frame` maps one bounded physical-time slice to however many guest CPU T-states belong to that speed, then advances the installed serial oscillator by the same elapsed physical duration. With the current 2 MHz MITS CPU board the 4 µs scheduler bound corresponds to 8/16/40/80 T-states respectively. Four microseconds is below the fastest currently configurable 88-2SIO bit period, so the scheduler returns to the serial authority before a complete bit can be skipped. This value is a host scheduling bound only; COM2502/MC6850 state still determines every bit boundary, frame completion, status transition and interrupt.
+
+Unlimited has no meaningful CPU-T-state-to-wall-time ratio. It therefore remains constrained by a host-time deadline for responsiveness while the UART receives elapsed physical time directly from the backend's `Instant` source. Handoffs between the managed throttled source and Unlimited establish one boundary so elapsed serial time is neither dropped nor counted twice.
+
+A card strapped/configured for 110 baud remains 110 baud in Authentic, 5×, 10× and Unlimited. Likewise, 9600 baud remains 9600 baud; increasing CPU execution speed only changes how many CPU T-states occur during the same physical serial interval.
 
 ---
 
@@ -171,7 +178,7 @@ sequenceDiagram
     Note over Exact,Physical: next Partial edge continues the same physical machine
 ```
 
-No RAM or serial card is cloned at entry.
+No RAM or serial card is cloned at entry. An active independently clocked UART is not itself a reason to pin CPU execution in Partial; guest IN/OUT remain synchronization barriers, and the host scheduler returns to the physical serial timeline between bounded CPU slices.
 
 ---
 
@@ -205,19 +212,19 @@ sequenceDiagram
     participant Bus as S-100
     participant CPU as guest 8080
 
-    UI->>Router: user byte available
+    Backend->>Clock: replay physical serial time up to current host boundary
+    UI->>Router: user byte sampled at now
     Router->>Backend: route over explicit selected cable
-    Backend->>Clock: settle elapsed serial time before mutation
     Backend->>Card: connector-level receive input
-    Clock->>Card: advance configured bit/frame timing independently of CPU speed
+    Clock->>Card: later configured bit/frame timing, independent of CPU speed
     Card->>Bus: status / PINT / VI / READY drive changes
     Bus-->>CPU: resolved hardware state
     CPU->>Card: IN status/data when guest software polls/services it
 ```
 
-A host byte is not deposited instantly into accumulator A. It becomes input to the installed serial hardware and guest software must interact with that hardware. Synchronizing elapsed serial time before endpoint mutation prevents a newly arrived byte from inheriting time that elapsed before it actually reached the cable.
+A host byte is not deposited instantly into accumulator A. It becomes input to the installed serial hardware and guest software must interact with that hardware. The app first replays the physical interval that ended at the current host boundary and only then injects keyboard/tape input sampled during the current update. A newly arrived byte therefore cannot inherit UART time that elapsed before the byte existed.
 
-The same rule applies to ASR-33 keyboard input, Text Terminal input, TCP and COM endpoints. They do not receive separate timing implementations.
+The same rule applies to ASR-33 keyboard input, Text Terminal input, TCP and COM endpoints. They do not receive separate UART timing implementations.
 
 ---
 
@@ -288,7 +295,7 @@ external/card HOLD request
 → CPU resumes at retained exact phase/state
 ```
 
-Even where no current DMA master is installed, the CPU/front-panel/bus behavior is tested as a physical contract.
+Even where no current DMA master is installed, the CPU/front-panel/bus behavior is tested as a physical contract. A parked CPU does not freeze the independent serial oscillator; the GUI scheduler advances only physical serial time for the elapsed wall interval without fabricating CPU T-states.
 
 ---
 
