@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use rustair::adaptive_metrics::{self, AdaptiveCycleStats};
 use rustair::backend::BackendHost;
 use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
 use rustair::s100_chassis::S100ChassisConfig;
@@ -8,6 +9,7 @@ use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 const ALTAIR_CLOCK_HZ: f64 = 2_000_000.0;
 const WARMUP_T_STATES: u64 = 5_000_000;
 const MEASURE_T_STATES: u64 = 250_000_000;
+const METRICS_T_STATES: u64 = 5_000_000;
 const SERVICE_CHUNK_T_STATES: u32 = 1_000_000;
 const BENCH_ROUNDS: usize = 5;
 
@@ -90,6 +92,17 @@ fn historical_starter_with_16mcd() -> S100HardwareConfig {
     historical_starter_with_ram(S100RamBoardModel::Mits16KDynamic88_16Mcd)
 }
 
+fn historical_starter_with_dcdd() -> S100HardwareConfig {
+    let mut hardware = historical_starter_without_two_sio();
+    hardware
+        .set_slot(3, Some(S100InstalledCardConfig::Mits88DcddBoard1))
+        .unwrap();
+    hardware
+        .set_slot(4, Some(S100InstalledCardConfig::Mits88DcddBoard2))
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
 fn benchmark_cases() -> [(&'static str, HardwareFactory); 6] {
     [
         ("CPU + 88-4MCS 4K Static", four_k_static_hardware),
@@ -115,7 +128,7 @@ fn run_t_states(machine: &mut BackendHost, target: u64) -> u64 {
     }
 }
 
-fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> ResultRow {
+fn prepare_benchmark_machine(hardware: S100HardwareConfig) -> BackendHost {
     let mut machine = BackendHost::default();
     machine.configure_s100_hardware(hardware, RamInit::Zeroed);
     machine.power(true);
@@ -124,7 +137,11 @@ fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> Result
     machine.clear_memory_protection();
     machine.load_bytes(0x0000, &BENCH_PROGRAM);
     machine.set_running(true);
+    machine
+}
 
+fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> ResultRow {
+    let mut machine = prepare_benchmark_machine(hardware);
     let _ = run_t_states(&mut machine, WARMUP_T_STATES);
 
     let before = machine.intel8080_state().total_t_states.unwrap_or(0);
@@ -142,6 +159,17 @@ fn benchmark_one(scenario: &'static str, hardware: S100HardwareConfig) -> Result
         mhz: hz / 1_000_000.0,
         realtime_multiple: hz / ALTAIR_CLOCK_HZ,
     }
+}
+
+fn adaptive_path_mix(hardware: S100HardwareConfig) -> AdaptiveCycleStats {
+    let mut machine = prepare_benchmark_machine(hardware);
+    adaptive_metrics::begin_measurement();
+    let before = machine.intel8080_state().total_t_states.unwrap_or(0);
+    let _ = run_t_states(&mut machine, METRICS_T_STATES);
+    let stats = adaptive_metrics::end_measurement();
+    let after = machine.intel8080_state().total_t_states.unwrap_or(before);
+    assert_eq!(stats.total_t_states(), after.saturating_sub(before));
+    stats
 }
 
 fn median_f64(values: &[f64]) -> f64 {
@@ -212,6 +240,7 @@ fn adaptive_cycle_benchmark_hardware_matrix_builds() {
     for (_, factory) in benchmark_cases() {
         let _ = factory();
     }
+    let _ = historical_starter_with_dcdd();
 }
 
 #[test]
@@ -257,4 +286,58 @@ fn measure_adaptive_cycle_effective_mhz() {
     print_relative_cost("88-4MCD vs 88-4MCS", &samples[0], &samples[1]);
     print_relative_cost("88-S4K vs 88-4MCS", &samples[0], &samples[2]);
     print_relative_cost("88-16MCD vs 88-16MCS", &samples[3], &samples[4]);
+}
+
+#[test]
+#[ignore = "manual release benchmark for installed-idle DCDD overhead"]
+fn measure_dcdd_installed_idle_overhead() {
+    let baseline_mix = adaptive_path_mix(historical_starter_without_two_sio());
+    let dcdd_mix = adaptive_path_mix(historical_starter_with_dcdd());
+    assert_eq!(baseline_mix.fallbacks.chassis_unsupported, 0);
+    assert_eq!(dcdd_mix.fallbacks.chassis_unsupported, 0);
+
+    println!();
+    println!("RusTair installed-idle DCDD performance");
+    println!(
+        "Path mix baseline: Full {:>7.3}% / Partial {:>7.3}%",
+        baseline_mix.full_percent(),
+        baseline_mix.partial_percent()
+    );
+    println!(
+        "Path mix + DCDD : Full {:>7.3}% / Partial {:>7.3}%",
+        dcdd_mix.full_percent(),
+        dcdd_mix.partial_percent()
+    );
+    println!(
+        "Timed measurement: median of {BENCH_ROUNDS} paired rounds × {MEASURE_T_STATES} T after {WARMUP_T_STATES} T warm-up"
+    );
+
+    let mut baseline = Vec::with_capacity(BENCH_ROUNDS);
+    let mut dcdd = Vec::with_capacity(BENCH_ROUNDS);
+    for round in 0..BENCH_ROUNDS {
+        if round & 1 == 0 {
+            baseline.push(benchmark_one(
+                "8800b + 16K Static",
+                historical_starter_without_two_sio(),
+            ));
+            dcdd.push(benchmark_one(
+                "8800b + 16K Static + DCDD",
+                historical_starter_with_dcdd(),
+            ));
+        } else {
+            dcdd.push(benchmark_one(
+                "8800b + 16K Static + DCDD",
+                historical_starter_with_dcdd(),
+            ));
+            baseline.push(benchmark_one(
+                "8800b + 16K Static",
+                historical_starter_without_two_sio(),
+            ));
+        }
+    }
+
+    print_rows(&baseline);
+    print_rows(&dcdd);
+    print_relative_cost("DCDD installed-idle", &baseline, &dcdd);
+    println!("Phase 11 target: installed-idle DCDD regression < 2%.");
 }
