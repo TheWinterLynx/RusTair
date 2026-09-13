@@ -39,6 +39,7 @@ impl Board1ReadElectronics {
         self.nrda
     }
 
+    #[cfg(test)]
     pub(super) const fn data_latch(&self) -> u8 {
         self.data_latch
     }
