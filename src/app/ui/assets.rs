@@ -22,6 +22,7 @@ pub(in crate::app) struct Tex {
     pub(in crate::app) tty_head: Option<egui::TextureHandle>,
     pub(in crate::app) tty_line_local: Option<egui::TextureHandle>,
     pub(in crate::app) tty_knob: Option<egui::TextureHandle>,
+    pub(in crate::app) adm3a_shell: Option<egui::TextureHandle>,
 }
 
 impl Tex {
@@ -52,6 +53,11 @@ impl Tex {
             tty_head: Self::load_texture(ctx, "tty-head", "assets/asr33head.png"),
             tty_line_local: Self::load_texture(ctx, "tty-line-local", "assets/asrlinelocal.png"),
             tty_knob: Self::load_texture(ctx, "tty-knob", "assets/asrlinelocalknob.png"),
+            adm3a_shell: Self::load_texture(
+                ctx,
+                "adm3a-shell",
+                "assets/terminals/adm3a_shell.jpg",
+            ),
         }
     }
 
