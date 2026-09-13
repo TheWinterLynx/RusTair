@@ -773,7 +773,10 @@ mod tests {
         assert_eq!(board1.read_drive, Some(0xa5));
 
         board1.observe_s100(&io_sample(0x09, true, false, true, true, 0));
-        assert_eq!(board1.read_drive, None, "Head Status must gate sector drivers");
+        assert_eq!(
+            board1.read_drive, None,
+            "Head Status must gate sector drivers"
+        );
 
         release_harness_strobe(&mut board1);
         board1.observe_s100(&io_sample(0x09, false, true, false, false, 0x04));
