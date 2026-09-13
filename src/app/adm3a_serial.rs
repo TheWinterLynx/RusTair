@@ -43,8 +43,10 @@ impl RusTairApp {
             }
         }
 
-        if powered && self.adm3a.take_bell() {
-            self.audio.play_once("assets/bellpadded.mp3");
+        if powered {
+            // Keep BEL terminal-local and silent. RusTair's audible bell belongs
+            // to the electromechanical ASR-33 path, not to the ADM-3A endpoint.
+            let _ = self.adm3a.take_bell();
         }
         if changed {
             ctx.request_repaint();
