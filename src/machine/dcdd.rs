@@ -14,9 +14,9 @@ use std::rc::{Rc, Weak};
 
 use rand::RngCore;
 
-use super::fd400::{Fd400StepDirection, Fd400Time, Mits88DiskCableBus};
 #[cfg(test)]
 use super::fd400::{Fd400MechanicalSnapshot, MitsDiskUnit};
+use super::fd400::{Fd400StepDirection, Fd400Time, Mits88DiskCableBus};
 use crate::s100::{
     S100Card, S100CardClass, S100CardContact, S100CardDescriptor, S100ContactRole, S100Signal,
 };
@@ -248,7 +248,13 @@ impl Mits88DcddHarness {
     fn test_unit_snapshot(&self, address: u8) -> Option<Fd400MechanicalSnapshot> {
         let mut state = self.state.borrow_mut();
         let now = state.mechanics_time;
-        Some(state.external_disk_bus.unit_mut(address)?.drive_mut().snapshot(now))
+        Some(
+            state
+                .external_disk_bus
+                .unit_mut(address)?
+                .drive_mut()
+                .snapshot(now),
+        )
     }
 
     #[cfg(test)]
@@ -611,7 +617,7 @@ mod tests {
                 wds: true
             }
         );
-        board1.observe_s100(&io_sample(0x0b, false, true, false, false, 0x00));
+        board1.observe_s100(&io_sample(0x0b, false, true, false, true, 0x00));
         assert_eq!(
             board1_harness_drive(&harness),
             Board1HarnessDrive::default()
