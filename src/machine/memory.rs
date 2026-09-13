@@ -72,6 +72,10 @@ impl Memory {
         self.fabric.advance_serial_time(t_states);
     }
 
+    pub(super) fn advance_dcdd_time(&self, t_states: u64) {
+        self.fabric.advance_dcdd_time(t_states);
+    }
+
     pub(super) fn serial_timing_is_quiet(&self) -> bool {
         self.fabric.serial_timing_is_quiet()
     }
