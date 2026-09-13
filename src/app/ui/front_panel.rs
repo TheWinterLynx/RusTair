@@ -3,9 +3,9 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
-const LED_VISIBLE_THRESHOLD: f32 = 0.008;
+const LED_VISIBLE_THRESHOLD: f32 = 0.0045;
 const LED_HALO_MAX_ALPHA: u8 = 92;
-const LED_BLOOM_THRESHOLD: f32 = 0.72;
+const LED_BLOOM_THRESHOLD: f32 = 0.62;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LedDisplaySettings {
@@ -47,27 +47,29 @@ fn remap_above_threshold(value: f32, threshold: f32) -> f32 {
 /// Convert the panel integrator's electrical duty cycle into the optical
 /// response of the original red diffuse front-panel lamps. This remains a
 /// presentation-only transfer: CPU/S-100 activity and exact electrical duty are
-/// untouched. Compared with the previous low-duty visibility curve, this keeps
-/// substantially more contrast between transient bus activity and a lamp that
-/// is genuinely driven for most of the observation window.
+/// untouched. The low-duty shoulder is deliberately compressive because the
+/// real panel and the observer/camera integrate short LED pulses: KILL THE BIT
+/// must remain clearly readable without turning residual bus activity into a
+/// field of equally bright lamps.
 fn led_visual_response(intensity: f32, settings: LedDisplaySettings) -> Option<LedVisualResponse> {
     let electrical = intensity.clamp(0.0, 1.0);
     if electrical < LED_VISIBLE_THRESHOLD {
         return None;
     }
 
-    let body = electrical.powf(0.92);
-    let core = electrical.powf(1.16);
-    let halo = remap_above_threshold(electrical, 0.14).powf(1.55);
-    let bloom = remap_above_threshold(electrical, LED_BLOOM_THRESHOLD).powf(2.20);
+    let visible = remap_above_threshold(electrical, LED_VISIBLE_THRESHOLD);
+    let body = visible.powf(0.50);
+    let core = visible.powf(0.68);
+    let halo = remap_above_threshold(electrical, 0.05).powf(1.15);
+    let bloom = remap_above_threshold(electrical, LED_BLOOM_THRESHOLD).powf(1.80);
 
     Some(LedVisualResponse {
-        // A diffuse lens should not advertise weak activity with a broad aura;
-        // the halo becomes appreciable only once the electrical duty is real.
+        // The diffuse aura remains restrained for very weak activity, then
+        // grows progressively once the lamp is visibly participating.
         halo_alpha: optical_alpha(LED_HALO_MAX_ALPHA, halo * settings.aura),
-        // Brightness remains a presentation multiplier, but the default curve
-        // now preserves the panel's real dynamic range instead of lifting weak
-        // activity toward the appearance of a continuously driven lamp.
+        // Body/core use a perceptual shoulder instead of a near-linear mapping.
+        // This restores the bright moving KILL THE BIT target while the explicit
+        // visibility threshold still suppresses tiny residual duty.
         body_alpha: optical_alpha(255, body * settings.brightness),
         core_alpha: optical_alpha(255, core * settings.brightness),
         // White saturation is treated as an eye/camera bloom of a strongly lit
@@ -792,12 +794,13 @@ mod tests {
     }
 
     #[test]
-    fn led_optics_keep_weak_activity_dim_and_red() {
-        let weak = led_visual_response(0.10, LedDisplaySettings::default()).unwrap();
-        assert!(weak.body_alpha > weak.core_alpha);
-        assert_eq!(weak.halo_alpha, 0);
-        assert_eq!(weak.bloom_alpha, 0);
-        assert!(weak.body_alpha < 40);
+    fn led_optics_keep_kill_the_bit_like_activity_readable() {
+        let moving_bit = led_visual_response(0.10, LedDisplaySettings::default()).unwrap();
+        assert!(moving_bit.body_alpha > moving_bit.core_alpha);
+        assert!(moving_bit.body_alpha >= 70);
+        assert!(moving_bit.core_alpha >= 45);
+        assert!(moving_bit.halo_alpha <= 6);
+        assert_eq!(moving_bit.bloom_alpha, 0);
     }
 
     #[test]
@@ -810,17 +813,20 @@ mod tests {
     }
 
     #[test]
-    fn led_optics_preserve_strong_dynamic_range() {
+    fn led_optics_preserve_dynamic_range_while_lifting_short_pulses() {
         let settings = LedDisplaySettings::default();
+        let residual = led_visual_response(0.01, settings).unwrap();
+        let tenth = led_visual_response(0.10, settings).unwrap();
         let quarter = led_visual_response(0.25, settings).unwrap();
         let half = led_visual_response(0.50, settings).unwrap();
         let strong = led_visual_response(0.90, settings).unwrap();
 
-        assert!(half.body_alpha > quarter.body_alpha);
-        assert!(strong.body_alpha > half.body_alpha);
-        assert!(half.core_alpha > quarter.core_alpha);
-        assert!(strong.core_alpha > half.core_alpha);
-        assert!(quarter.body_alpha < 96, "25% duty must remain visibly dim");
+        assert!(residual.body_alpha < tenth.body_alpha);
+        assert!(tenth.body_alpha < quarter.body_alpha);
+        assert!(quarter.body_alpha < half.body_alpha);
+        assert!(half.body_alpha < strong.body_alpha);
+        assert!(residual.body_alpha < 24);
+        assert!((105..=145).contains(&quarter.body_alpha));
         assert_eq!(quarter.bloom_alpha, 0);
         assert_eq!(half.bloom_alpha, 0);
         assert!(strong.bloom_alpha > 0);
