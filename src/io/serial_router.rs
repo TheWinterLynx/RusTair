@@ -4,6 +4,7 @@ use crate::config::{SerialBoard, SioInterface, TwoSioSignalInterface};
 pub(crate) enum SerialDevice {
     InternalAsr33,
     TextTerminal,
+    Adm3a,
     ExternalTcp,
     ExternalCom,
 }
@@ -14,15 +15,15 @@ impl SerialDevice {
     /// physical level converter.
     ///
     /// The built-in ASR-33 is a direct TTY/current-loop endpoint and therefore
-    /// requires the C interface. External COM is currently modeled as an
-    /// RS-232 host link and therefore requires A. Text Terminal and raw TCP are
+    /// requires the C interface. The ADM-3A and External COM are direct RS-232
+    /// endpoints and therefore require A. Text Terminal and raw TCP are
     /// explicitly virtual peers: their connector side is instantiated in the
     /// selected A/B/C electrical family, but they remain data-only and never
     /// fabricate the independent Rev0 RIN/ROT ready pulses.
     pub(crate) const fn supports_sio_interface(self, interface: SioInterface) -> bool {
         match self {
             Self::InternalAsr33 => matches!(interface, SioInterface::TtyC),
-            Self::ExternalCom => matches!(interface, SioInterface::Rs232A),
+            Self::Adm3a | Self::ExternalCom => matches!(interface, SioInterface::Rs232A),
             Self::TextTerminal | Self::ExternalTcp => true,
         }
     }
@@ -30,6 +31,7 @@ impl SerialDevice {
     pub(crate) const fn sio_requirement_label(self) -> &'static str {
         match self {
             Self::InternalAsr33 => "direct ASR-33 cable requires 88-SIO C current loop",
+            Self::Adm3a => "ADM-3A direct cable requires 88-SIO A RS-232",
             Self::ExternalCom => "External COM direct cable requires 88-SIO A RS-232",
             Self::TextTerminal => "virtual terminal matches the selected 88-SIO A/B/C interface",
             Self::ExternalTcp => "virtual TCP peer matches the selected 88-SIO A/B/C interface",
@@ -38,13 +40,14 @@ impl SerialDevice {
 
     /// Whether this endpoint can occupy an 88-2SIO port hardwired for the
     /// selected MITS signal family without inserting an invisible converter.
-    /// The Model 33 is a direct 20 mA current-loop device; a host COM port is a
-    /// direct RS-232 endpoint. Text Terminal and raw TCP are explicitly virtual
-    /// peers and may instantiate their connector side in any selected family.
+    /// The Model 33 is a direct 20 mA current-loop device; the ADM-3A and a host
+    /// COM port are direct RS-232 endpoints. Text Terminal and raw TCP are
+    /// explicitly virtual peers and may instantiate their connector side in any
+    /// selected family.
     pub(crate) const fn supports_two_sio_interface(self, interface: TwoSioSignalInterface) -> bool {
         match self {
             Self::InternalAsr33 => matches!(interface, TwoSioSignalInterface::Tty20mA),
-            Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232),
+            Self::Adm3a | Self::ExternalCom => matches!(interface, TwoSioSignalInterface::Rs232),
             Self::TextTerminal | Self::ExternalTcp => true,
         }
     }
@@ -54,6 +57,7 @@ impl SerialDevice {
             Self::InternalAsr33 => {
                 "direct ASR-33 cable requires an 88-2SIO TTY 20 mA current-loop port"
             }
+            Self::Adm3a => "ADM-3A direct cable requires an 88-2SIO RS-232 port",
             Self::ExternalCom => "External COM direct cable requires an 88-2SIO RS-232 port",
             Self::TextTerminal => "virtual terminal matches the selected 88-2SIO signal interface",
             Self::ExternalTcp => "virtual TCP peer matches the selected 88-2SIO signal interface",
@@ -80,6 +84,7 @@ impl SerialConnection {
 pub(crate) struct SerialRouter {
     asr33: SerialConnection,
     text_terminal: SerialConnection,
+    adm3a: SerialConnection,
     external_tcp: SerialConnection,
     external_com: SerialConnection,
 }
@@ -89,6 +94,7 @@ impl Default for SerialRouter {
         Self {
             asr33: SerialConnection::Port0,
             text_terminal: SerialConnection::Disconnected,
+            adm3a: SerialConnection::Disconnected,
             external_tcp: SerialConnection::Disconnected,
             external_com: SerialConnection::Disconnected,
         }
@@ -100,6 +106,7 @@ impl SerialRouter {
         match device {
             SerialDevice::InternalAsr33 => self.asr33,
             SerialDevice::TextTerminal => self.text_terminal,
+            SerialDevice::Adm3a => self.adm3a,
             SerialDevice::ExternalTcp => self.external_tcp,
             SerialDevice::ExternalCom => self.external_com,
         }
@@ -113,6 +120,8 @@ impl SerialRouter {
             Some(SerialDevice::InternalAsr33)
         } else if self.text_terminal == connection {
             Some(SerialDevice::TextTerminal)
+        } else if self.adm3a == connection {
+            Some(SerialDevice::Adm3a)
         } else if self.external_tcp == connection {
             Some(SerialDevice::ExternalTcp)
         } else if self.external_com == connection {
@@ -141,6 +150,7 @@ impl SerialRouter {
             match current {
                 SerialDevice::InternalAsr33 => self.asr33 = SerialConnection::Disconnected,
                 SerialDevice::TextTerminal => self.text_terminal = SerialConnection::Disconnected,
+                SerialDevice::Adm3a => self.adm3a = SerialConnection::Disconnected,
                 SerialDevice::ExternalTcp => self.external_tcp = SerialConnection::Disconnected,
                 SerialDevice::ExternalCom => self.external_com = SerialConnection::Disconnected,
             }
@@ -149,6 +159,7 @@ impl SerialRouter {
         match device {
             SerialDevice::InternalAsr33 => self.asr33 = connection,
             SerialDevice::TextTerminal => self.text_terminal = connection,
+            SerialDevice::Adm3a => self.adm3a = connection,
             SerialDevice::ExternalTcp => self.external_tcp = connection,
             SerialDevice::ExternalCom => self.external_com = connection,
         }
@@ -157,9 +168,10 @@ impl SerialRouter {
     }
 
     /// Replacing the installed serial board also replaces its external cabling.
-    /// Host transports may remain enabled, but TCP and COM start electrically
-    /// disconnected until the user explicitly attaches them again.
+    /// Host transports and optional terminals may remain enabled, but they start
+    /// electrically disconnected until the user explicitly attaches them again.
     pub(crate) fn reset_for_board(&mut self, board: SerialBoard) {
+        self.adm3a = SerialConnection::Disconnected;
         self.external_tcp = SerialConnection::Disconnected;
         self.external_com = SerialConnection::Disconnected;
         match board {
@@ -191,6 +203,10 @@ mod tests {
             SerialConnection::Disconnected
         );
         assert_eq!(
+            router.connection(SerialDevice::Adm3a),
+            SerialConnection::Disconnected
+        );
+        assert_eq!(
             router.connection(SerialDevice::ExternalTcp),
             SerialConnection::Disconnected
         );
@@ -201,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn two_sio_default_wiring_uses_both_ports_and_leaves_host_endpoints_unplugged() {
+    fn two_sio_default_wiring_uses_both_ports_and_leaves_optional_endpoints_unplugged() {
         let mut router = SerialRouter::default();
         router.reset_for_board(SerialBoard::TwoSio88);
         assert_eq!(
@@ -211,6 +227,10 @@ mod tests {
         assert_eq!(
             router.connection(SerialDevice::TextTerminal),
             SerialConnection::Port1
+        );
+        assert_eq!(
+            router.connection(SerialDevice::Adm3a),
+            SerialConnection::Disconnected
         );
         assert_eq!(
             router.connection(SerialDevice::ExternalTcp),
@@ -233,6 +253,22 @@ mod tests {
         );
         assert_eq!(
             router.connection(SerialDevice::InternalAsr33),
+            SerialConnection::Disconnected
+        );
+    }
+
+    #[test]
+    fn adm3a_cable_displaces_the_previous_endpoint() {
+        let mut router = SerialRouter::default();
+        router.reset_for_board(SerialBoard::TwoSio88);
+        let displaced = router.connect(SerialDevice::Adm3a, SerialConnection::Port1);
+        assert_eq!(displaced, Some(SerialDevice::TextTerminal));
+        assert_eq!(
+            router.connection(SerialDevice::Adm3a),
+            SerialConnection::Port1
+        );
+        assert_eq!(
+            router.connection(SerialDevice::TextTerminal),
             SerialConnection::Disconnected
         );
     }
@@ -267,6 +303,10 @@ mod tests {
         assert!(!SerialDevice::InternalAsr33.supports_sio_interface(SioInterface::Rs232A));
         assert!(!SerialDevice::InternalAsr33.supports_sio_interface(SioInterface::TtlB));
 
+        assert!(SerialDevice::Adm3a.supports_sio_interface(SioInterface::Rs232A));
+        assert!(!SerialDevice::Adm3a.supports_sio_interface(SioInterface::TtlB));
+        assert!(!SerialDevice::Adm3a.supports_sio_interface(SioInterface::TtyC));
+
         assert!(SerialDevice::ExternalCom.supports_sio_interface(SioInterface::Rs232A));
         assert!(!SerialDevice::ExternalCom.supports_sio_interface(SioInterface::TtlB));
         assert!(!SerialDevice::ExternalCom.supports_sio_interface(SioInterface::TtyC));
@@ -288,6 +328,10 @@ mod tests {
         assert!(
             !SerialDevice::InternalAsr33.supports_two_sio_interface(TwoSioSignalInterface::Ttl)
         );
+
+        assert!(SerialDevice::Adm3a.supports_two_sio_interface(TwoSioSignalInterface::Rs232));
+        assert!(!SerialDevice::Adm3a.supports_two_sio_interface(TwoSioSignalInterface::Ttl));
+        assert!(!SerialDevice::Adm3a.supports_two_sio_interface(TwoSioSignalInterface::Tty20mA));
 
         assert!(SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Rs232));
         assert!(!SerialDevice::ExternalCom.supports_two_sio_interface(TwoSioSignalInterface::Ttl));
