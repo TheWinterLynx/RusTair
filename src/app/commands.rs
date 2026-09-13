@@ -123,6 +123,7 @@ impl RusTairApp {
             match self.serial_router.device_on(SerialConnection::Port0) {
                 Some(SerialDevice::InternalAsr33) => self.asr33.window_open = true,
                 Some(SerialDevice::TextTerminal) => self.terminal.window_open = true,
+                Some(SerialDevice::Adm3a) => self.adm3a.window_open = true,
                 Some(SerialDevice::ExternalTcp) => self.external_serial.window_open = true,
                 Some(SerialDevice::ExternalCom) => self.external_com.window_open = true,
                 None => {}
