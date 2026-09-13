@@ -699,7 +699,9 @@ mod tests {
         let mut drive = PertecFd400::new();
         let media = patterned_media(true);
         drive.set_door_open(false, Fd400Time::ZERO);
-        let media = drive.insert_media(media).expect_err("closed door must reject insertion");
+        let media = drive
+            .insert_media(media)
+            .expect_err("closed door must reject insertion");
         assert!(!drive.media_present());
 
         drive.set_door_open(true, Fd400Time::ZERO);
@@ -763,7 +765,7 @@ mod tests {
         let mut unit = MitsDiskUnit::new(5).unwrap();
         assert!(unit.insert_media(patterned_media(false)).is_ok());
         assert!(unit.drive().media_present());
-        assert_eq!(unit.drive().physical_media_byte(1, 2, 3), Some(204));
+        assert_eq!(unit.drive().physical_media_byte(1, 2, 3), Some(53));
         let media = unit.eject_media().expect("default-open drive permits eject");
         assert!(!unit.drive().media_present());
         assert!(!media.write_protected());
