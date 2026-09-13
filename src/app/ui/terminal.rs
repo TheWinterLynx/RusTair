@@ -386,12 +386,8 @@ impl RusTairApp {
             return;
         };
         if self.adm3a.powered() {
-            ui.painter().image(
-                mask.id(),
-                rect,
-                full_uv,
-                egui::Color32::from_rgb(8, 18, 11),
-            );
+            let screen_tint = egui::Color32::from_rgb(8, 18, 11);
+            ui.painter().image(mask.id(), rect, full_uv, screen_tint);
         }
         self.draw_adm3a_contents(ui.painter(), Self::adm3a_screen_rect(rect));
     }
