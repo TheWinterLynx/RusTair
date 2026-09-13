@@ -13,16 +13,19 @@ impl RusTairApp {
             return;
         }
 
+        let powered = self.adm3a.powered();
         let mut changed = false;
         for _ in 0..MAX_ADM3A_BYTES_PER_FRAME {
             let Some(byte) = self.serial_tx_complete_at(connection) else {
                 break;
             };
-            self.adm3a.receive_byte(byte);
-            changed = true;
+            if powered {
+                self.adm3a.receive_byte(byte);
+                changed = true;
+            }
         }
 
-        if self.adm3a.take_bell() {
+        if powered && self.adm3a.take_bell() {
             self.audio.play_once("assets/bellpadded.mp3");
         }
         if changed {
