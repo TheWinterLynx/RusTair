@@ -9,9 +9,8 @@
 pub(super) const HARD_SECTORED_TRACKS: u8 = 77;
 pub(super) const HARD_SECTORS_PER_TRACK: u8 = 32;
 pub(super) const PHYSICAL_BYTES_PER_SECTOR: usize = 137;
-pub(super) const PHYSICAL_MEDIA_BYTES: usize = HARD_SECTORED_TRACKS as usize
-    * HARD_SECTORS_PER_TRACK as usize
-    * PHYSICAL_BYTES_PER_SECTOR;
+pub(super) const PHYSICAL_MEDIA_BYTES: usize =
+    HARD_SECTORED_TRACKS as usize * HARD_SECTORS_PER_TRACK as usize * PHYSICAL_BYTES_PER_SECTOR;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct HardSectored8InchGeometry {
@@ -28,9 +27,7 @@ impl HardSectored8InchGeometry {
     };
 
     pub(super) const fn total_bytes(self) -> usize {
-        self.tracks as usize
-            * self.sectors_per_track as usize
-            * self.physical_bytes_per_sector
+        self.tracks as usize * self.sectors_per_track as usize * self.physical_bytes_per_sector
     }
 }
 
@@ -118,8 +115,8 @@ mod tests {
     #[test]
     fn raw_physical_media_requires_the_exact_geometry_size() {
         for actual in [PHYSICAL_MEDIA_BYTES - 1, PHYSICAL_MEDIA_BYTES + 1] {
-            let error = HardSectored8InchMedia::from_physical_bytes(vec![0; actual], false)
-                .unwrap_err();
+            let error =
+                HardSectored8InchMedia::from_physical_bytes(vec![0; actual], false).unwrap_err();
             assert_eq!(
                 error,
                 HardSectoredMediaSizeError {
