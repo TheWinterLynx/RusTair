@@ -361,9 +361,16 @@ impl S100RuntimeFabric {
         handles.next().is_none().then_some(handle)
     }
 
+    /// Advance independently clocked chassis peripherals in guest-machine time.
+    /// UARTs consume the elapsed T-states through their existing handles while
+    /// the DCDD advances only one shared mechanics epoch. No disk-unit iteration
+    /// occurs here, so one and sixteen idle drives have the same DCDD clock cost.
     pub(crate) fn advance_serial_time(&self, t_states: u64) {
         for installed in &self.serial {
             installed.handle.advance_t_states(t_states);
+        }
+        if let Some(harness) = self._dcdd_harness.as_ref() {
+            harness.advance_mechanics_t_states(t_states);
         }
     }
 
