@@ -1,6 +1,6 @@
 # MITS 88-DCDD / 88-DISK + Pertec FD-400 implementation plan
 
-Status: **planned; implementation not started**
+Status: **Phases 0-3 PASS; Phase 4 is the next implementation boundary**
 
 This document is the staged implementation contract for adding the original Altair 8-inch floppy subsystem without weakening RusTair's hardware-fidelity architecture.
 
@@ -115,7 +115,7 @@ Sixteen idle drives should be nearly the same host cost as one idle drive. Rotat
 
 Each phase is independently reviewable. Do not begin a phase by weakening the PASS criteria of an earlier one.
 
-### Phase 0 — Source-backed hardware contract
+### Phase 0 — Source-backed hardware contract — PASS
 
 Deliverables:
 
@@ -134,7 +134,7 @@ PASS gate:
 - Every guest-visible signal/bit/timing in the first implementation has a source reference or is explicitly marked deferred/non-claimed.
 - Architecture review agrees on ownership boundaries before code creates them.
 
-### Phase 1 — Physical topology and configuration skeleton
+### Phase 1 — Physical topology and configuration skeleton — PASS
 
 Deliverables:
 
@@ -152,7 +152,7 @@ PASS gate:
 - Architecture guards prevent a direct CPU/card/sector shortcut.
 - Idle fitted hardware adds no intentional per-T-state polling loop.
 
-### Phase 2 — Controller decode, reset and register/state surface
+### Phase 2 — Controller decode, reset and register/state surface — PASS
 
 Deliverables:
 
@@ -168,7 +168,7 @@ PASS gate:
 - No test reaches private controller state to simulate a guest access when the production path is being validated.
 - Power/reset/disabled/no-drive cases have explicit tests.
 
-### Phase 3 — FD-400 mechanics and virtual-time engine
+### Phase 3 — FD-400 mechanics and virtual-time engine — PASS
 
 Deliverables:
 
@@ -178,12 +178,27 @@ Deliverables:
 - Keep platter rotation independent of CPU RUN/HLT/STOP when machine power and drive state say it should continue.
 - Add deterministic test-time control of virtual time.
 
+Implemented Phase-3 evidence:
+
+- Disk Buffer selection is inhibited for the source-backed ~5 s after drive power-on or door close.
+- 360 RPM rotation and 32 hard-sector position are derived arithmetically from one fixed-point chassis epoch; large jumps do not iterate T-states or drives.
+- Track position is limited to 0..76, step completion occurs at 10 ms, and Head Status follows the documented 40 ms deadline after head load/step.
+- The source-backed Move Head waveform is represented explicitly rather than approximated.
+- `IN 08h` exposes mechanical Move Head, Head Status and TRACK0 through the normal DCDD status path; ENWD/NRDA remain deferred to write/read phases.
+- `IN 09h` is Head-Status gated and exposes active-low Sector True plus sector 0..31 with valid-read D6/D7 driven high as documented.
+- Chassis virtual time advances DCDD mechanics both through exact Partial T-states and deferred Adaptive Full synchronization, while the FD-400 remains query/deadline derived.
+- Test evidence shows sector position changing after virtual-time advancement without executing a CPU instruction.
+- One shared mechanics epoch is advanced O(1); installed units are not traversed as time advances.
+- The hardened installed-idle performance benchmark uses seven alternating paired rounds of 1,000,000,000 T-states after 20,000,000 T warm-up. Its median paired throughput result is +1.78% for the DCDD case (ratios 0.809..1.052), with identical 99.999% Full / 0.001% Partial mix. The result is recorded as no systematic installed-idle regression, not as a claimed speedup. A separate alternating pre-Phase3/current matrix likewise found no repeatable global regression.
+
 PASS gate:
 
 - Sector position advances from virtual time even when the CPU is not executing instructions.
 - Stepping/head readiness changes only at documented deadlines in Authentic mode.
 - Large time jumps produce the same observable drive state as incremental advancement.
 - One vs sixteen idle drives shows no O(number_of_drives × T-states) execution path.
+
+Media bytes, read-data cadence/NRDA, write-data cadence/ENWD/trim erase and interrupt assertion remain intentionally outside Phase 3.
 
 ### Phase 4 — Media abstraction and read-only physical surface
 
@@ -315,6 +330,8 @@ Performance targets are budgets, not permission to weaken fidelity:
 - continuous disk transfer: target less than 15% host-throughput regression;
 - sixteen idle drives: should be close to one idle drive and must not introduce per-T-state iteration over units.
 
+The installed-idle target already has Phase-3 evidence showing no systematic regression. Polling/read/write/missed-byte budgets remain intentionally open until those functional paths exist.
+
 If an idle installed DCDD causes a material CPU-hot-path regression, stop and fix the event/deadline architecture before adding more functionality.
 
 PASS gate:
@@ -346,6 +363,6 @@ fd400_fast_vs_authentic.rs
 
 Names may change to match repository conventions. Any new integration-test file must be registered in `docs/TEST_REFERENCE.md` in the same phase.
 
-## First implementation boundary
+## Next implementation boundary
 
-The first code phase after this plan is approved is **Phase 0, then Phase 1 only**. Do not implement image parsing, boot shortcuts or UI mounting first. The first mergeable code slice should prove that the physical two-board/controller topology can exist in the current S-100 runtime without changing behavior or hot-path cost when idle.
+The next code phase is **Phase 4 — media abstraction/read-only physical surface**. It must add media below the drive electronics only; it must not jump ahead to guest read cadence, writes, interrupts, boot shortcuts or UI mounting semantics that belong to later phases.
