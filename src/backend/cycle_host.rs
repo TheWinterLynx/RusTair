@@ -688,17 +688,21 @@ impl MachineBackend for CycleHostBackend {
         if self.serial_wall_clock_managed == managed {
             return Ok(());
         }
+        let now = Instant::now();
         if managed {
-            // Settle every real wall-clock nanosecond accrued under the automatic
-            // source before handing ownership to the GUI scheduler.
-            self.service_serial_wall_clock();
+            // The app establishes an explicit physical-time boundary when it
+            // takes ownership. Do not replay automatic wall time here: the next
+            // managed slice supplies that elapsed interval exactly once.
             self.serial_wall_clock_managed = true;
+            self.serial_wall_clock_last = now;
         } else {
-            // Managed time has already been supplied explicitly. Restart the
-            // automatic epoch at "now" so switching to Unlimited cannot replay
-            // the same interval a second time.
+            // While managed, explicit advances refresh `serial_wall_clock_last`.
+            // Pay only the real host interval since the final managed advance,
+            // then start Unlimited's automatic wall-clock epoch at this boundary.
+            let elapsed = now.saturating_duration_since(self.serial_wall_clock_last);
+            self.advance_serial_physical_elapsed(elapsed);
             self.serial_wall_clock_managed = false;
-            self.serial_wall_clock_last = Instant::now();
+            self.serial_wall_clock_last = now;
         }
         Ok(())
     }
