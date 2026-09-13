@@ -46,6 +46,11 @@ pub(super) struct CycleHostBackend {
     /// only at the machine boundary; UART bit/frame state remains card-owned.
     serial_wall_clock_units: u128,
     serial_wall_clock_last: Instant,
+    /// The normal headless/backend path derives serial elapsed time directly
+    /// from `Instant`. The GUI may instead own physical-time interleaving while
+    /// it drains a throttled CPU clock debt; in that mode automatic `Instant`
+    /// service is suppressed and the app supplies explicit elapsed durations.
+    serial_wall_clock_managed: bool,
 }
 
 impl Default for CycleHostBackend {
@@ -61,6 +66,7 @@ impl Default for CycleHostBackend {
             last_panel_commit_cpu_t_states: None,
             serial_wall_clock_units: 0,
             serial_wall_clock_last: now,
+            serial_wall_clock_managed: false,
         }
     }
 }
@@ -196,14 +202,11 @@ impl CycleHostBackend {
         self.serial_wall_clock_units = 0;
         self.serial_wall_clock_last = Instant::now();
     }
-    /// Advance the installed UART oscillators from elapsed physical time. Host
-    /// execution speed never enters this conversion: 110 baud therefore remains
-    /// 110 baud in Authentic, 5x, 10x and Unlimited. The scheduler supplies only
-    /// elapsed time; COM2502/MC6850 state and all S-100 effects stay card-owned.
-    fn service_serial_wall_clock(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.saturating_duration_since(self.serial_wall_clock_last);
-        self.serial_wall_clock_last = now;
+
+    /// Apply one elapsed physical-time interval to the installed serial-card
+    /// oscillators. The conversion is independent from CPU execution speed and
+    /// retains sub-quantum remainder so many small scheduler slices cannot drift.
+    fn advance_serial_physical_elapsed(&mut self, elapsed: Duration) {
         if !self.inner.machine().powered {
             self.serial_wall_clock_units = 0;
             return;
@@ -221,6 +224,20 @@ impl CycleHostBackend {
                 .bus
                 .advance_serial_hardware_time(due);
         }
+    }
+
+    /// Advance the installed UART oscillators from elapsed physical time. Host
+    /// execution speed never enters this conversion: 110 baud therefore remains
+    /// 110 baud in Authentic, 5x, 10x and Unlimited. The scheduler supplies only
+    /// elapsed time; COM2502/MC6850 state and all S-100 effects stay card-owned.
+    fn service_serial_wall_clock(&mut self) {
+        if self.serial_wall_clock_managed {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.serial_wall_clock_last);
+        self.serial_wall_clock_last = now;
+        self.advance_serial_physical_elapsed(elapsed);
     }
     /// Keep CPU/chassis-time mechanics alive while the processor is parked. This
     /// path is intentionally DCDD-only now; serial cards have their own physical
@@ -243,8 +260,8 @@ impl CycleHostBackend {
             dt.as_nanos()
                 .saturating_mul(u128::from(crate::machine::CLOCK_HZ)),
         );
-        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
         self.idle_chassis_clock_units = total % WALL_CLOCK_UNITS_PER_SECOND;
+        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
         let missing = due.saturating_sub(covered);
         if missing != 0 {
             self.inner
@@ -666,6 +683,35 @@ impl MachineBackend for CycleHostBackend {
     fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
         self.service_serial_wall_clock();
         Ok(self.inner.machine().bus.two_sio_vector_interrupt_requests())
+    }
+    fn set_serial_clock_managed(&mut self, managed: bool) -> BackendResult<()> {
+        if self.serial_wall_clock_managed == managed {
+            return Ok(());
+        }
+        if managed {
+            // Settle every real wall-clock nanosecond accrued under the automatic
+            // source before handing ownership to the GUI scheduler.
+            self.service_serial_wall_clock();
+            self.serial_wall_clock_managed = true;
+        } else {
+            // Managed time has already been supplied explicitly. Restart the
+            // automatic epoch at "now" so switching to Unlimited cannot replay
+            // the same interval a second time.
+            self.serial_wall_clock_managed = false;
+            self.serial_wall_clock_last = Instant::now();
+        }
+        Ok(())
+    }
+    fn advance_serial_physical_time(&mut self, elapsed: Duration) -> BackendResult<()> {
+        if !self.serial_wall_clock_managed {
+            return Err(BackendError::Operation {
+                operation: "advance managed serial clock",
+                detail: "managed serial-clock mode is not active".into(),
+            });
+        }
+        self.serial_wall_clock_last = Instant::now();
+        self.advance_serial_physical_elapsed(elapsed);
+        Ok(())
     }
     fn serial_receive(&mut self, p: BackendSerialPort, b: u8) -> BackendResult<()> {
         self.service_serial_wall_clock();
