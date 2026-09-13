@@ -313,8 +313,8 @@ impl RusTairApp {
 
         (0..ADM3A_CRT_OUTLINE_SEGMENTS)
             .map(|index| {
-                let theta = std::f32::consts::TAU * index as f32
-                    / ADM3A_CRT_OUTLINE_SEGMENTS as f32;
+                let theta =
+                    std::f32::consts::TAU * index as f32 / ADM3A_CRT_OUTLINE_SEGMENTS as f32;
                 let cosine = theta.cos();
                 let sine = theta.sin();
                 let base_x = cosine.signum() * cosine.abs().powf(superellipse_power);
