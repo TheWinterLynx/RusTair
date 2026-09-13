@@ -129,9 +129,19 @@ impl AltairBus {
         pulsed
     }
 
-    pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
+    /// Advance independently clocked chassis peripherals by elapsed guest
+    /// T-states. The memory/runtime facade fans this out to UART timing and the
+    /// single O(1) DCDD mechanics epoch without iterating installed disk units.
+    pub(crate) fn advance_chassis_hardware_time(&mut self, t_states: u64) {
         self.memory.advance_serial_time(t_states);
         self.settle_host_serial_change();
+    }
+
+    /// Compatibility name retained for serial-specific tests and callers. The
+    /// underlying clock is now chassis-wide so DCDD mechanics cannot freeze
+    /// while serial timing advances.
+    pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
+        self.advance_chassis_hardware_time(t_states);
     }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
