@@ -38,7 +38,7 @@ pub(super) struct HardSectoredMediaSizeError {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(super) struct HardSectored8InchMedia {
+pub(in crate::machine) struct HardSectored8InchMedia {
     bytes: Box<[u8]>,
     write_protected: bool,
 }
