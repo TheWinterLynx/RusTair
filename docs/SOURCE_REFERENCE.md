@@ -51,6 +51,8 @@ The app layer owns UI/application state and asks the backend to operate the mach
 | `src/app/embedded_cpu_diagnostics.rs` | UI/application state for bundled diagnostic programs embedded in the executable. Keeps built-in diagnostic selection/run workflow separate from general external files. |
 | `src/app/asr33_controller.rs` | Application/controller logic connecting the ASR-33 peripheral model to serial routing, timing, input/output and UI events. Does not replace the emulated serial card. |
 | `src/app/asr33_state.rs` | Host/UI state associated with ASR-33 presentation/workflow (timers, transient interaction state, etc.). Separate from the physical teletype model in `peripherals/asr33`. |
+| `src/app/adm3a_state.rs` | Headless Lear Siegler ADM-3A terminal state: 80×24 display RAM, cursor, control-character/escape parser and terminal-local bell latch. It knows nothing about CP/M, Altair memory or UART registers; its input is already-completed external serial bytes. |
+| `src/app/adm3a_serial.rs` | App-side serial bridge for the ADM-3A endpoint. Drains only completed transmit frames from the selected physical MITS serial port into the terminal model and requests repaint/audio; it must never bypass the installed UART or read guest state directly. |
 | `src/app/terminal_controller.rs` | Application logic for text-terminal behavior and interaction with connected serial ports. |
 | `src/app/terminal_serial.rs` | Serial transfer/pacing integration for the text terminal: moves data between terminal controller state and the selected emulated connection without owning UART state. |
 | `src/app/terminal_state.rs` | Text-terminal application/presentation state, buffers and timing/preferences used by the controller/UI. |
@@ -85,7 +87,7 @@ These files draw or operate UI tools. They should consume backend snapshots/cont
 | `src/app/ui/io_inspector.rs` | Displays guest I/O and host serial/network trace observations for troubleshooting serial/card traffic. Opening the inspector may enable capture but must not alter guest semantics. |
 | `src/app/ui/asr33.rs` | ASR-33 drawing and interaction helpers for the integrated teletype presentation. |
 | `src/app/ui/asr33_window.rs` | ASR-33 dedicated window/layout and operator controls. |
-| `src/app/ui/terminal.rs` | Text terminal window and interaction rendering. Terminal buffers/presentation are host-side; UART state remains in installed card hardware. |
+| `src/app/ui/terminal.rs` | Text terminal window plus ADM-3A photographic shell/active-CRT presentation. Terminal rendering remains presentation-only; UART and serial timing authority remain in the installed MITS card hardware. |
 
 ---
 
