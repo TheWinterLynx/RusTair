@@ -3,6 +3,8 @@ use super::front_panel_assets::SwitchSpriteId;
 use super::front_panel_switches::*;
 
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
+const KILL_BITS_MOMENTARY_PULSE: Duration = Duration::from_millis(90);
+const KILL_BITS_FIRST_SENSE_BIT: usize = 8;
 const LED_VISIBLE_THRESHOLD: f32 = 0.025;
 const LED_HALO_MAX_ALPHA: u8 = 92;
 const LED_HALO_ONSET: f32 = 0.08;
@@ -92,6 +94,16 @@ fn sense_switch_activates_on_press(
     primary_pressed && pointer_pos.is_some_and(|position| hit.contains(position))
 }
 
+fn sense_switch_press_value(current: u16, bit: usize, momentary_enabled: bool) -> (u16, bool) {
+    let mask = 1u16 << bit;
+    let momentary = momentary_enabled && bit >= KILL_BITS_FIRST_SENSE_BIT;
+    if momentary {
+        (current | mask, true)
+    } else {
+        (current ^ mask, false)
+    }
+}
+
 #[derive(Default)]
 struct MomentarySwitchInteraction {
     action: Option<bool>,
@@ -100,6 +112,96 @@ struct MomentarySwitchInteraction {
 }
 
 impl RusTairApp {
+    fn kill_bits_momentary_mode_id() -> egui::Id {
+        egui::Id::new("rustair-kill-bits-momentary-sense-mode")
+    }
+
+    fn kill_bits_momentary_deadlines_id() -> egui::Id {
+        egui::Id::new("rustair-kill-bits-momentary-sense-deadlines")
+    }
+
+    pub(in crate::app) fn kill_bits_momentary_enabled(&self, ctx: &egui::Context) -> bool {
+        ctx.data(|data| {
+            data.get_temp::<bool>(Self::kill_bits_momentary_mode_id())
+                .unwrap_or(false)
+        })
+    }
+
+    pub(in crate::app) fn set_kill_bits_momentary_enabled(
+        &mut self,
+        ctx: &egui::Context,
+        enabled: bool,
+    ) {
+        let pending_mask = ctx.data_mut(|data| {
+            data.insert_temp(Self::kill_bits_momentary_mode_id(), enabled);
+            if enabled {
+                return 0u16;
+            }
+
+            let deadlines = data.get_temp_mut_or(
+                Self::kill_bits_momentary_deadlines_id(),
+                [None::<Instant>; 16],
+            );
+            let mut pending = 0u16;
+            for (bit, deadline) in deadlines.iter_mut().enumerate() {
+                if deadline.take().is_some() {
+                    pending |= 1u16 << bit;
+                }
+            }
+            pending
+        });
+
+        if pending_mask != 0 {
+            let switches = self.machine.switch_register();
+            self.machine.set_switch_register(switches & !pending_mask);
+        }
+        self.status = if enabled {
+            "KILL THE BIT momentary sense mode ON — A15–A8 auto-return DOWN after one short pulse (session only)".into()
+        } else {
+            "KILL THE BIT momentary sense mode OFF — A15–A8 are normal latching switches".into()
+        };
+        ctx.request_repaint();
+    }
+
+    pub(in crate::app) fn service_kill_bits_momentary_sense(
+        &mut self,
+        ctx: &egui::Context,
+        now: Instant,
+    ) {
+        let release_mask = ctx.data_mut(|data| {
+            let deadlines = data.get_temp_mut_or(
+                Self::kill_bits_momentary_deadlines_id(),
+                [None::<Instant>; 16],
+            );
+            let mut release = 0u16;
+            for (bit, deadline) in deadlines.iter_mut().enumerate() {
+                if deadline.is_some_and(|due| now >= due) {
+                    *deadline = None;
+                    release |= 1u16 << bit;
+                }
+            }
+            release
+        });
+
+        if release_mask != 0 {
+            let switches = self.machine.switch_register();
+            self.machine.set_switch_register(switches & !release_mask);
+            ctx.request_repaint();
+        }
+    }
+
+    fn arm_kill_bits_momentary_release(&mut self, ctx: &egui::Context, bit: usize) {
+        let due = Instant::now() + KILL_BITS_MOMENTARY_PULSE;
+        ctx.data_mut(|data| {
+            let deadlines = data.get_temp_mut_or(
+                Self::kill_bits_momentary_deadlines_id(),
+                [None::<Instant>; 16],
+            );
+            deadlines[bit] = Some(due);
+        });
+        ctx.request_repaint_after(KILL_BITS_MOMENTARY_PULSE);
+    }
+
     fn draw_led_visual_controls(&mut self, ctx: &egui::Context) {
         let (mut open, brightness, aura) = super::persistence::led_visual_controls_state();
         if !open {
@@ -283,14 +385,30 @@ impl RusTairApp {
             )
         });
         if sense_switch_activates_on_press(primary_pressed, pointer_pos, hit) {
-            self.machine.toggle_sense_switch(bit);
+            let current = self.machine.switch_register();
+            let (next, momentary) = sense_switch_press_value(
+                current,
+                bit,
+                self.kill_bits_momentary_enabled(ui.ctx()),
+            );
+            self.machine.set_switch_register(next);
+            if momentary {
+                self.arm_kill_bits_momentary_release(ui.ctx(), bit);
+            }
             self.audio.play_once("assets/click.mp3");
             ui.ctx().request_repaint();
         }
         if response.hovered() {
-            response
-                .clone()
-                .on_hover_text(format!("Sense switch {}", switch.name));
+            let momentary = self.kill_bits_momentary_enabled(ui.ctx())
+                && bit >= KILL_BITS_FIRST_SENSE_BIT;
+            response.clone().on_hover_text(if momentary {
+                format!(
+                    "Sense switch {} — KILL THE BIT momentary mode: one click pulses UP then returns DOWN automatically",
+                    switch.name
+                )
+            } else {
+                format!("Sense switch {}", switch.name)
+            });
         }
         let position = if self.machine.switch_register() & (1u16 << bit) != 0 {
             SwitchPosition::Up
@@ -787,6 +905,25 @@ mod tests {
         assert!(!sense_switch_activates_on_press(false, inside, hit));
         assert!(!sense_switch_activates_on_press(true, outside, hit));
         assert!(!sense_switch_activates_on_press(true, None, hit));
+    }
+
+    #[test]
+    fn kill_bits_momentary_mode_only_pulses_upper_sense_switches() {
+        let (upper, upper_momentary) = sense_switch_press_value(0x0000, 15, true);
+        assert_eq!(upper, 0x8000);
+        assert!(upper_momentary);
+
+        let (upper_again, upper_again_momentary) = sense_switch_press_value(upper, 15, true);
+        assert_eq!(upper_again, 0x8000, "re-clicking extends the pulse instead of toggling it off");
+        assert!(upper_again_momentary);
+
+        let (lower, lower_momentary) = sense_switch_press_value(0x0000, 7, true);
+        assert_eq!(lower, 0x0080);
+        assert!(!lower_momentary, "A7–A0 remain ordinary latching address switches");
+
+        let (normal, normal_momentary) = sense_switch_press_value(0x8000, 15, false);
+        assert_eq!(normal, 0x0000);
+        assert!(!normal_momentary);
     }
 
     #[test]
