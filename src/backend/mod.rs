@@ -338,6 +338,18 @@ pub trait MachineBackend {
             engine: self.engine(),
         })
     }
+    fn set_serial_clock_managed(&mut self, _managed: bool) -> BackendResult<()> {
+        Err(BackendError::Unsupported {
+            operation: "select serial physical-time source",
+            engine: self.engine(),
+        })
+    }
+    fn advance_serial_physical_time(&mut self, _elapsed: Duration) -> BackendResult<()> {
+        Err(BackendError::Unsupported {
+            operation: "advance managed serial clock",
+            engine: self.engine(),
+        })
+    }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize>;
@@ -816,6 +828,12 @@ impl BackendHost {
     pub fn toggle_sense_switch(&mut self, bit: usize) {
         let next = self.switch_register() ^ (1u16 << bit);
         self.set_switch_register(next);
+    }
+    pub fn set_serial_clock_managed(&mut self, managed: bool) {
+        Self::call(self.backend.set_serial_clock_managed(managed));
+    }
+    pub fn advance_serial_physical_time(&mut self, elapsed: Duration) {
+        Self::call(self.backend.advance_serial_physical_time(elapsed));
     }
     pub fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) {
         Self::call(self.backend.serial_receive(port, byte));
