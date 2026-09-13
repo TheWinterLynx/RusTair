@@ -208,7 +208,71 @@ impl RusTairApp {
         });
     }
 
+    fn adm3a_viewport_open_id() -> egui::Id {
+        egui::Id::new("rustair-adm3a-viewport-open")
+    }
+
+    pub(in crate::app) fn open_adm3a_viewport(&mut self, ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_temp(Self::adm3a_viewport_open_id(), true));
+        ctx.request_repaint();
+    }
+
+    fn draw_adm3a_shell(&self, ui: &mut egui::Ui) {
+        let Some(texture) = &self.tex.adm3a_shell else {
+            ui.label("ADM-3A shell asset unavailable");
+            return;
+        };
+
+        let source = texture.size_vec2();
+        let available = ui.available_size();
+        let scale = (available.x / source.x)
+            .min(available.y / source.y)
+            .max(0.0);
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+
+        let size = source * scale;
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        ui.painter().image(
+            texture.id(),
+            rect,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+
+    fn show_adm3a_viewport(&mut self, parent_ctx: &egui::Context) {
+        let open = parent_ctx.data_mut(|data| {
+            *data.get_temp_mut_or(Self::adm3a_viewport_open_id(), false)
+        });
+        if !open {
+            return;
+        }
+
+        parent_ctx.show_viewport_immediate(
+            egui::ViewportId::from_hash_of("rustair-adm3a-terminal"),
+            egui::ViewportBuilder::default()
+                .with_title("RusTair — Lear Siegler ADM-3A")
+                .with_inner_size([1040.0, 780.0])
+                .with_min_inner_size([720.0, 540.0])
+                .with_resizable(true),
+            |adm3a_ctx, _class| {
+                egui::CentralPanel::default().show(adm3a_ctx, |ui| {
+                    ui.centered_and_justified(|ui| self.draw_adm3a_shell(ui));
+                });
+                if adm3a_ctx.input(|i| i.viewport().close_requested()) {
+                    adm3a_ctx.data_mut(|data| {
+                        data.insert_temp(Self::adm3a_viewport_open_id(), false)
+                    });
+                }
+            },
+        );
+    }
+
     pub(in crate::app) fn show_terminal_viewport(&mut self, parent_ctx: &egui::Context) {
+        self.show_adm3a_viewport(parent_ctx);
+
         if !self.terminal.window_open {
             return;
         }
