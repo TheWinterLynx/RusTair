@@ -10,7 +10,9 @@ enum ParserState {
     Normal,
     Escape,
     CursorRow,
-    CursorColumn { row: usize },
+    CursorColumn {
+        row: usize,
+    },
 }
 
 /// Headless Lear Siegler ADM-3A display state.
@@ -193,10 +195,12 @@ mod tests {
         }
         terminal.receive_byte(0x1a);
         assert_eq!(terminal.cursor(), (0, 0));
-        assert!(terminal
-            .cells
-            .iter()
-            .all(|row| row.iter().all(|byte| *byte == b' ')));
+        assert!(
+            terminal
+                .cells
+                .iter()
+                .all(|row| row.iter().all(|byte| *byte == b' '))
+        );
     }
 
     #[test]
@@ -214,7 +218,12 @@ mod tests {
         terminal.receive_byte(0x0a);
         assert_eq!(terminal.cursor(), (5, ADM3A_ROWS - 1));
         assert_eq!(terminal.row(0)[0], b'B');
-        assert!(terminal.row(ADM3A_ROWS - 1).iter().all(|byte| *byte == b' '));
+        assert!(
+            terminal
+                .row(ADM3A_ROWS - 1)
+                .iter()
+                .all(|byte| *byte == b' ')
+        );
     }
 
     #[test]
