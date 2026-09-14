@@ -118,39 +118,13 @@ pub struct S100RuntimeFabric {
     cpu: Mits8080CpuBoardHandle,
     ram: Vec<RuntimeRamSlot>,
     serial: Vec<RuntimeSerialSlot>,
-    /// Owns the one physical 88-DCDD controller harness when the validated
-    /// chassis contains the documented adjacent Board #1 / Board #2 pair. The
-    /// cards themselves hold clones of this same copper/electronics boundary;
-    /// neither board contains a software reference to the other.
     _dcdd_harness: Option<Mits88DcddHarness>,
-    /// Serial UART state may currently advance through its host endpoint handle
-    /// between bus edges. Refresh these physical slots once when a new edge or
-    /// Fast transaction phase begins; subsequent zero-time deltas use the cached
-    /// connector drive until an S-100 input wakes the card.
     externally_mutable_slots: S100SlotMask,
-    /// Display/Control state used by the last completed production settle. A
-    /// repeated identical request with no pending CPU/UART connector transition
-    /// is already the physically resolved bus and can return immediately.
     last_settled_display: Option<DisplayControlLines>,
-    /// Cached physical Display/Control connector drive. All panel-owned outputs
-    /// remain constant while `DisplayControlLines` is unchanged; only MWRT also
-    /// depends on the currently resolved pWR/sOUT pair. Reusing this exact drive
-    /// avoids rebuilding the same eight connector pins at every digital delta.
     display_drive_cache: Option<(DisplayControlLines, bool, S100CardDrive)>,
-    /// True when the CPU board's cached connector drive has changed since the
-    /// last real resolver pass. Phase-only Cycle edges may intentionally stack
-    /// here until the next electrically observable edge.
     cpu_connector_pending: bool,
-    /// Predecoded hardware response for every 16-bit address. A bit means that
-    /// the card in that physical connector can decode the address. Real cards
-    /// see the address bus in parallel; this table is the software equivalent of
-    /// their parallel TTL address decoders, not a CPU-visible dispatch table.
     memory_responders: Box<[S100SlotMask]>,
-    /// Slot -> RAM vector index, used only after the responder mask has already
-    /// established which physical card(s) can participate.
     ram_by_slot: [Option<usize>; MAX_S100_SLOTS],
-    /// Compiled A0..A7 and interrupt-pad decode for installed I/O cards.
-    /// Multiple responder bits are deliberately retained for electrical overlap.
     io_decode: S100IoDecodeIndex,
 }
 
@@ -282,11 +256,6 @@ impl S100RuntimeFabric {
         fabric
             .settle(DisplayControlLines::default(), &[])
             .map_err(S100RuntimeBuildError::Backplane)?;
-        // Seed package-side inputs exactly once from the first resolved S-100
-        // sample. Later settles can trust the compiled connector fan-out: CPU
-        // package-pin changes are pushed directly into its normal slot cache,
-        // while only a real change on one of the CPU card's S-100 inputs needs to
-        // wake its input sampler again.
         let cpu_slot_mask = fabric.cpu_slot_mask();
         fabric.backplane.observe_selected_cards(cpu_slot_mask);
         Ok(fabric)
@@ -316,10 +285,6 @@ impl S100RuntimeFabric {
             .map(|installed| installed.handle.clone())
     }
 
-    /// Resolve an aggregate host channel only when exactly one installed card
-    /// can own it. Physical S-100 I/O decode remains parallel and may legitimately
-    /// contain several responders; host endpoints must never silently pick the
-    /// first card from that inventory.
     fn serial_handle_for_port(&self, port_index: usize) -> Option<&RuntimeSerialCardHandle> {
         let mut handles = self
             .serial
@@ -361,18 +326,12 @@ impl S100RuntimeFabric {
         handles.next().is_none().then_some(handle)
     }
 
-    /// Advance only the independent 88-SIO/88-2SIO oscillators. `t_states` is
-    /// a deterministic fixed-point carrier for elapsed physical serial time at
-    /// the canonical 2 MHz chassis rate; it is not executed CPU time.
     pub(crate) fn advance_serial_time(&self, t_states: u64) {
         for installed in &self.serial {
             installed.handle.advance_t_states(t_states);
         }
     }
 
-    /// Earliest physical serial oscillator boundary across all installed cards,
-    /// expressed in canonical 2 MHz chassis quanta. Every card derives this from
-    /// its own retained phase; the fabric only takes the minimum deadline.
     pub(crate) fn serial_clock_deadline_t_states(&self) -> Option<u64> {
         self.serial
             .iter()
@@ -380,9 +339,6 @@ impl S100RuntimeFabric {
             .min()
     }
 
-    /// Advance the DCDD mechanics epoch in CPU/chassis virtual time. Keeping this
-    /// path separate from serial timing prevents the serial wall-clock scheduler
-    /// from changing disk rotational/seek chronology as a side effect.
     pub(crate) fn advance_dcdd_time(&self, t_states: u64) {
         if let Some(harness) = self._dcdd_harness.as_ref() {
             harness.advance_mechanics_t_states(t_states);
@@ -396,8 +352,19 @@ impl S100RuntimeFabric {
     }
 
     pub(crate) fn serial_receive(&self, port_index: usize, byte: u8) -> bool {
-        self.serial_handle_for_port(port_index)
-            .is_some_and(|handle| handle.receive(port_index, byte))
+        self.serial_receive_with_errors(port_index, byte, false, false)
+    }
+
+    pub(crate) fn serial_receive_with_errors(
+        &self,
+        port_index: usize,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) -> bool {
+        self.serial_handle_for_port(port_index).is_some_and(|handle| {
+            handle.receive_with_errors(port_index, byte, framing_error, parity_error)
+        })
     }
 
     pub(crate) fn serial_rx_empty(&self, port_index: usize) -> bool {
@@ -650,9 +617,6 @@ impl S100RuntimeFabric {
             != 0)
     }
 
-    /// Return the exact Display/Control connector drive for the current resolved
-    /// pWR/sOUT state. Panel-owned outputs are persistent electrical state, so a
-    /// stable panel only needs the MWRT bit reconsidered between causal deltas.
     #[inline]
     fn cached_display_drive(&mut self, display: DisplayControlLines) -> S100CardDrive {
         let sample = self.backplane.sample();
@@ -675,10 +639,6 @@ impl S100RuntimeFabric {
         drive
     }
 
-    /// Prove that a PHI1 synchronization edge carries no new non-clock
-    /// information from outside the CPU package. The caller separately proves
-    /// that installed cards do not consume PHI1/PHI2/CLOC and that the 8212
-    /// status latch will not change on this edge.
     pub(crate) fn can_elide_phase_only_rising(
         &mut self,
         display: DisplayControlLines,
@@ -687,17 +647,6 @@ impl S100RuntimeFabric {
         Ok(!external_changed && self.last_settled_display == Some(display))
     }
 
-    /// Event-driven zero-time propagation. The connector still settles through
-    /// the same causal deltas as the physical cards, but Rust does not execute a
-    /// card merely because some unrelated S-100 net changed. Each slot's input
-    /// sensitivity comes directly from its historical connector descriptor and
-    /// its output drive remains cached until one of those inputs wakes it.
-    ///
-    /// CPU package-side changes are already pushed into the CPU slot's cached
-    /// connector drive by `set_cpu_package_pins`. Serial slots alone need an
-    /// external refresh here because their UART state can advance through host
-    /// endpoint handles between bus edges. Neither path bypasses S-100: all
-    /// resulting drives still resolve through the same connector graph below.
     pub fn settle(
         &mut self,
         display: DisplayControlLines,
@@ -705,11 +654,6 @@ impl S100RuntimeFabric {
     ) -> Result<&S100BusSample, S100BackplaneError> {
         let selected = S100SlotMask::MAX;
         let external_changed = self.refresh_external_connector_drives()?;
-
-        // With no connector transition, no Display/Control transition and no
-        // temporary chassis source, the current sample *is already* the fully
-        // settled physical bus. Re-running the bit-sliced resolver would only
-        // spend host cycles; it cannot advance emulated time or card state.
         if extra_drives.is_empty()
             && !self.cpu_connector_pending
             && !external_changed
@@ -719,7 +663,6 @@ impl S100RuntimeFabric {
         }
 
         let mut display_drive = self.cached_display_drive(display);
-
         for _ in 0..DIGITAL_SETTLE_DELTAS {
             let change = if extra_drives.is_empty() {
                 self.backplane
@@ -731,13 +674,10 @@ impl S100RuntimeFabric {
                 self.backplane
                     .resolve_cached_selected_drives(selected, &chassis)
             };
-
             let changed_drives = self.backplane.observe_changed_cards(change, 0, selected)?;
-
             let next_display_drive = self.cached_display_drive(display);
             let display_changed = next_display_drive != display_drive;
             display_drive = next_display_drive;
-
             if changed_drives == 0 && !display_changed {
                 break;
             }
@@ -755,11 +695,6 @@ impl S100RuntimeFabric {
         }
     }
 
-    /// Resolve one causal propagation delta for a predecoded Fast transaction.
-    /// Fast still exercises the installed CPU/RAM/I/O cards and the same
-    /// electrical resolver. `package_changed` only means the CPU input sampler is
-    /// forced after the connector transition; its output drive has already been
-    /// pushed to the slot cache by `set_cpu_package_pins`.
     fn fast_delta(
         &mut self,
         selected: S100SlotMask,
@@ -772,7 +707,6 @@ impl S100RuntimeFabric {
         if externally_dirty != 0 {
             self.backplane.refresh_cached_drives(externally_dirty)?;
         }
-
         let display_drive = self.cached_display_drive(display);
         let change = self
             .backplane
@@ -785,9 +719,6 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    /// Update wire levels without replaying a card state transition. The CPU
-    /// connector cache was updated at the package boundary; only serial devices
-    /// that may have changed asynchronously need an external refresh here.
     fn fast_resolve_only(
         &mut self,
         selected: S100SlotMask,
@@ -806,13 +737,6 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    /// Fast reconstructs one memory-read machine cycle. The CPU does not poll
-    /// cards: the chassis has already compiled the parallel address decoders into
-    /// `memory_responders`, and only electrically possible responders participate.
-    /// Three deltas model the causal chain:
-    ///   1. SYNC+PHI1 reaches the CPU board and latches status;
-    ///   2. latched sMEMR reaches the selected RAM decoder while SYNC is held;
-    ///   3. DBIN/PHI2 and the RAM's DI/PRDY outputs resolve back to the CPU board.
     pub fn fast_memory_read(
         &mut self,
         address: u16,
@@ -820,7 +744,6 @@ impl S100RuntimeFabric {
     ) -> Result<u8, S100BackplaneError> {
         let selected = self.fast_memory_slot_mask(address);
         let display = Self::fast_display();
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -835,7 +758,6 @@ impl S100RuntimeFabric {
         });
         self.fast_delta(selected, display, true)?;
         self.fast_delta(selected, display, false)?;
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
             phi2: true,
@@ -852,10 +774,6 @@ impl S100RuntimeFabric {
         Ok(self.cpu_package_inputs().data_in)
     }
 
-    /// Fast write follows the same physical ownership as Cycle: CPU drives pWR
-    /// and DO, Display/Control derives MWRT, and the predecoded RAM responder(s)
-    /// see that bus line. The final resolve releases pWR without replaying a RAM
-    /// write edge/state update.
     pub fn fast_memory_write(
         &mut self,
         address: u16,
@@ -864,7 +782,6 @@ impl S100RuntimeFabric {
     ) -> Result<(), S100BackplaneError> {
         let selected = self.fast_memory_slot_mask(address);
         let display = Self::fast_display();
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -878,7 +795,6 @@ impl S100RuntimeFabric {
             hlda: false,
         });
         self.fast_delta(selected, display, true)?;
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -893,7 +809,6 @@ impl S100RuntimeFabric {
         });
         self.fast_delta(selected, display, true)?;
         self.fast_delta(selected, display, false)?;
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
             phi2: true,
@@ -910,15 +825,10 @@ impl S100RuntimeFabric {
         Ok(())
     }
 
-    /// Fast IN reconstructs the real CPU-board status latch and DBIN strobe. The
-    /// register adapter performs its side effect only when sINP and DBIN overlap;
-    /// one additional propagation delta then returns the selected card(s)' DI to
-    /// the 8080 package input. Overlapping cards remain simultaneous responders.
     pub fn fast_io_read(&mut self, port: u8) -> Result<u8, S100BackplaneError> {
         let selected = self.fast_io_slot_mask(port);
         let display = Self::fast_display();
         let address = Self::io_bus_address(port);
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -933,7 +843,6 @@ impl S100RuntimeFabric {
         });
         self.fast_delta(selected, display, true)?;
         self.fast_delta(selected, display, false)?;
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
             phi2: true,
@@ -951,15 +860,10 @@ impl S100RuntimeFabric {
         Ok(self.cpu_package_inputs().data_in)
     }
 
-    /// Fast OUT is the electrical counterpart of `fast_io_read`: status 10h is
-    /// latched by the CPU board, then DO + active-low pWR reach every decoder in
-    /// the compiled responder mask. The adapter guarantees one register write
-    /// even though a second digital delta is required for causal propagation.
     pub fn fast_io_write(&mut self, port: u8, value: u8) -> Result<(), S100BackplaneError> {
         let selected = self.fast_io_slot_mask(port);
         let display = Self::fast_display();
         let address = Self::io_bus_address(port);
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -973,7 +877,6 @@ impl S100RuntimeFabric {
             hlda: false,
         });
         self.fast_delta(selected, display, true)?;
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: true,
             phi2: false,
@@ -988,7 +891,6 @@ impl S100RuntimeFabric {
         });
         self.fast_delta(selected, display, true)?;
         self.fast_delta(selected, display, false)?;
-
         self.set_cpu_package_pins(Cpu8080Pins {
             phi1: false,
             phi2: true,
@@ -1037,9 +939,6 @@ impl S100RuntimeFabric {
         self.memory_responder_mask(address).count_ones() as usize
     }
 
-    /// Snapshot only the clocked digital state needed by Adaptive Full. The
-    /// returned window owns cloned handles solely for its one-time commit; guest
-    /// bytes and protection remain on the installed physical cards.
     pub(crate) fn full_ram_timing_window(&self) -> RuntimeRamTimingWindow {
         RuntimeRamTimingWindow::from_handles(self.ram.iter().map(|ram| ram.handle.clone()))
     }
@@ -1237,7 +1136,6 @@ mod tests {
         fabric.fast_io_write(config.address.status(), 0x03).unwrap();
         assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'R'));
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
-
         assert_eq!(
             fabric.sample().signal_level(S100Signal::VectorInterrupt(3)),
             Some(false)
@@ -1262,19 +1160,15 @@ mod tests {
         };
         let mut fabric = S100RuntimeFabric::new(sio_hardware(config), RamInit::Zeroed).unwrap();
         assert!(fabric.debugger_inject_serial_rx(config.address.data(), b'I'));
-
         fabric.fast_io_write(config.address.status(), 0x02).unwrap();
         assert_eq!(
             fabric.sample().signal_level(S100Signal::InterruptRequest),
-            Some(true),
-            "enabling only the disconnected output source must not assert PINT"
+            Some(true)
         );
-
         fabric.fast_io_write(config.address.status(), 0x01).unwrap();
         assert_eq!(
             fabric.sample().signal_level(S100Signal::InterruptRequest),
-            Some(false),
-            "the independently enabled input source must assert its PINT wiring"
+            Some(false)
         );
 
         config.interrupt_wiring = SioInterruptWiring {
@@ -1290,8 +1184,7 @@ mod tests {
             output_fabric
                 .sample()
                 .signal_level(S100Signal::InterruptRequest),
-            Some(false),
-            "the independently enabled COM2502 transmit-ready source must assert PINT"
+            Some(false)
         );
     }
 
@@ -1310,10 +1203,8 @@ mod tests {
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
         assert_eq!(
             fabric.sample().signal_level(S100Signal::InterruptRequest),
-            Some(true),
-            "COM2502 RDA must not fabricate the Rev0 external-ready request"
+            Some(true)
         );
-
         assert!(fabric.pulse_sio_input_device_ready());
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
         assert_eq!(
@@ -1335,7 +1226,6 @@ mod tests {
         assert!(fabric.debugger_inject_serial_rx(0x11, b'A'));
         assert!(fabric.debugger_inject_serial_rx(0x13, b'B'));
         fabric.settle(DisplayControlLines::default(), &[]).unwrap();
-
         assert_eq!(
             fabric.sample().signal_level(S100Signal::VectorInterrupt(2)),
             Some(false)
@@ -1362,15 +1252,11 @@ mod tests {
         let second = fabric.serial_handle_for_slot(4).unwrap();
         assert!(first.debugger_inject_rx(config.address.data(), 0x00));
         assert!(second.debugger_inject_rx(config.address.data(), 0xff));
-
         assert_eq!(
             fabric.fast_io_read(config.address.data()).unwrap(),
             S100_OPEN_BUS_VALUE
         );
-        assert!(
-            first.rx_empty(0) && second.rx_empty(0),
-            "both selected cards must perform the read"
-        );
+        assert!(first.rx_empty(0) && second.rx_empty(0));
         for bit in 0..8 {
             assert!(fabric.sample().signal_is_contended(S100Signal::DataIn(bit)));
         }
@@ -1390,9 +1276,7 @@ mod tests {
         assert!(second.receive(0, b'B'));
         assert_eq!(first.peek_input(config.address.status()) & 0x01, 0x01);
         assert_eq!(second.peek_input(config.address.status()) & 0x01, 0x01);
-
         fabric.advance_serial_time(200_000);
-
         assert_eq!(first.peek_input(config.address.data()), b'A');
         assert_eq!(second.peek_input(config.address.data()), b'B');
     }
@@ -1459,8 +1343,7 @@ mod tests {
         );
         assert_eq!(fabric.fast_io_read(0x10).unwrap(), S100_OPEN_BUS_VALUE);
         assert!(
-            (0..8).any(|bit| fabric.sample().signal_is_contended(S100Signal::DataIn(bit))),
-            "different status bytes must appear as real DI contention"
+            (0..8).any(|bit| fabric.sample().signal_is_contended(S100Signal::DataIn(bit)))
         );
     }
 
@@ -1485,7 +1368,6 @@ mod tests {
             protect: true,
             ..DisplayControlLines::default()
         };
-
         for (write_high, out_high) in [(true, false), (false, false), (false, true), (true, true)] {
             let mut source = S100CardDrive::new();
             source.drive_signal(S100Signal::Write, write_high);
@@ -1618,9 +1500,6 @@ mod aggregate_host_authority_tests {
             .filter(|&slot| hardware.slot(slot).is_none())
             .take(2)
             .collect::<Vec<_>>();
-        // The stock four-connector chassis is full apart from the serial slot.
-        // This fixture needs two serial cards, so free one non-CPU connector
-        // rather than assuming a larger chassis or silently changing its model.
         if free.len() < 2 {
             for slot in 1..=hardware.fitted_connectors() {
                 if free.contains(&slot)
@@ -1638,11 +1517,7 @@ mod aggregate_host_authority_tests {
                 }
             }
         }
-        assert_eq!(
-            free.len(),
-            2,
-            "fixture requires two physical serial connectors"
-        );
+        assert_eq!(free.len(), 2);
         hardware.set_slot(free[0], Some(first)).unwrap();
         hardware.set_slot(free[1], Some(second)).unwrap();
         hardware.validate().unwrap()
@@ -1658,18 +1533,10 @@ mod aggregate_host_authority_tests {
             },
         );
         let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
-
         assert_eq!(fabric.primary_serial_board(), None);
-        assert!(
-            !fabric.serial_receive(0, b'A'),
-            "Port0 is ambiguous across two physical cards"
-        );
+        assert!(!fabric.serial_receive(0, b'A'));
         assert_eq!(fabric.serial_rx_len(0), 0);
-
-        assert!(
-            fabric.serial_receive(1, b'B'),
-            "only the 88-2SIO owns host Port1"
-        );
+        assert!(fabric.serial_receive(1, b'B'));
         assert_eq!(fabric.serial_rx_len(1), 1);
     }
 
@@ -1682,7 +1549,6 @@ mod aggregate_host_authority_tests {
             S100InstalledCardConfig::Mits88Sio(sio),
         );
         let fabric = S100RuntimeFabric::new(hardware, RamInit::Zeroed).unwrap();
-
         assert_eq!(fabric.primary_sio_hardware(), None);
         assert!(!fabric.debugger_inject_serial_rx(data_port, b'X'));
         assert!(!fabric.debugger_clear_serial_rx(data_port));
