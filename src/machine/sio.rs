@@ -270,10 +270,22 @@ impl SioPort {
     /// not stop the COM2502 receiver shift register; the resulting overwrite is
     /// handled only when this new frame completes.
     pub(in crate::machine) fn queue_received_character(&mut self, value: u8) {
+        self.queue_received_character_with_errors(value, false, false);
+    }
+
+    /// Start one physical receive frame after an external endpoint has sampled
+    /// its data/parity/stop fields. The COM2502 exposes FE/PE only when the timed
+    /// receiver shift register completes, never at host enqueue time.
+    pub(in crate::machine) fn queue_received_character_with_errors(
+        &mut self,
+        value: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) {
         if !self.receive_line_idle() || self.rx_break_active {
             return;
         }
-        self.rx_shift = Some((value, false, false));
+        self.rx_shift = Some((value, framing_error, parity_error));
         self.rx_bits_remaining = self.config.format.frame_bits();
         self.rx_shift_from_break = false;
     }
@@ -714,6 +726,22 @@ mod tests {
         assert!(p.handshake_lines().rsi_high);
         assert!(!p.rx_full());
         assert_eq!(p.status() & 0x09, 0x01);
+    }
+
+    #[test]
+    fn sampled_receive_faults_reach_com2502_status_after_timed_frame() {
+        let mut c = config(SioRevision::Rev1);
+        c.format = SioWordFormat {
+            parity: SioParity::Odd,
+            ..SioWordFormat::default()
+        };
+        let mut p = SioPort::new(c);
+        p.queue_received_character_with_errors(b'P', true, true);
+        assert_eq!(p.status() & 0x0d, 0x01);
+
+        p.advance_t_states(218_182, TWO_MHZ); // 110 baud, 8O2 = 12 bits
+        assert_eq!(p.status() & 0x0d, 0x0c);
+        assert_eq!(p.peek_data(), b'P');
     }
 
     #[test]
