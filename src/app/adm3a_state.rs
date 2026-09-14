@@ -3,11 +3,79 @@ use std::time::{Duration, Instant};
 
 pub(super) const ADM3A_COLS: usize = 80;
 pub(super) const ADM3A_ROWS: usize = 24;
-pub(super) const ADM3A_KEYBOARD_BAUD: u32 = 9_600;
 
 const ASCII_MASK: u8 = 0x7f;
 const CURSOR_ADDRESS_BIAS: u8 = 0x20;
 const ADM3A_KEYBOARD_FRAME_BITS: f64 = 10.0;
+
+/// Physical communication-rate selector offered by the Lear Siegler ADM-3A.
+///
+/// This belongs to the terminal, not to the Altair or the MITS serial card. A
+/// cable therefore has two independently configured clocks, just like the real
+/// equipment; matching/mismatch behavior is handled at their physical boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Adm3aBaudRate {
+    Baud75,
+    Baud110,
+    Baud150,
+    Baud300,
+    Baud600,
+    Baud1200,
+    Baud1800,
+    Baud2400,
+    Baud4800,
+    #[default]
+    Baud9600,
+    Baud19200,
+}
+
+impl Adm3aBaudRate {
+    pub(super) const ALL: [Self; 11] = [
+        Self::Baud75,
+        Self::Baud110,
+        Self::Baud150,
+        Self::Baud300,
+        Self::Baud600,
+        Self::Baud1200,
+        Self::Baud1800,
+        Self::Baud2400,
+        Self::Baud4800,
+        Self::Baud9600,
+        Self::Baud19200,
+    ];
+
+    pub(super) const fn baud(self) -> u32 {
+        match self {
+            Self::Baud75 => 75,
+            Self::Baud110 => 110,
+            Self::Baud150 => 150,
+            Self::Baud300 => 300,
+            Self::Baud600 => 600,
+            Self::Baud1200 => 1_200,
+            Self::Baud1800 => 1_800,
+            Self::Baud2400 => 2_400,
+            Self::Baud4800 => 4_800,
+            Self::Baud9600 => 9_600,
+            Self::Baud19200 => 19_200,
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Baud75 => "75",
+            Self::Baud110 => "110",
+            Self::Baud150 => "150",
+            Self::Baud300 => "300",
+            Self::Baud600 => "600",
+            Self::Baud1200 => "1200",
+            Self::Baud1800 => "1800",
+            Self::Baud2400 => "2400",
+            Self::Baud4800 => "4800",
+            Self::Baud9600 => "9600",
+            Self::Baud19200 => "19200",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ParserState {
@@ -30,6 +98,7 @@ pub(super) struct Adm3aState {
     pub(super) window_open: bool,
     powered: bool,
     auto_new_line: bool,
+    baud_rate: Adm3aBaudRate,
     cells: [[u8; ADM3A_COLS]; ADM3A_ROWS],
     cursor_col: usize,
     cursor_row: usize,
@@ -45,6 +114,7 @@ impl Default for Adm3aState {
             window_open: false,
             powered: false,
             auto_new_line: false,
+            baud_rate: Adm3aBaudRate::default(),
             cells: [[b' '; ADM3A_COLS]; ADM3A_ROWS],
             cursor_col: 0,
             cursor_row: 0,
@@ -69,6 +139,21 @@ impl Adm3aState {
         self.clear_screen();
         self.bell_pending = false;
         self.keyboard_queue.clear();
+        self.keyboard_next_at = None;
+    }
+
+    pub(super) const fn baud_rate(&self) -> Adm3aBaudRate {
+        self.baud_rate
+    }
+
+    pub(super) fn set_baud_rate(&mut self, baud_rate: Adm3aBaudRate) {
+        if self.baud_rate == baud_rate {
+            return;
+        }
+        self.baud_rate = baud_rate;
+        // The selector changes the terminal's transmitter clock immediately.
+        // Keep already typed keys, but restart the pacing epoch at the next
+        // presentation instead of carrying timing from the old oscillator rate.
         self.keyboard_next_at = None;
     }
 
@@ -193,13 +278,15 @@ impl Adm3aState {
         self.keyboard_next_at = if self.keyboard_queue.is_empty() {
             None
         } else {
-            Some(now + Self::keyboard_char_time())
+            Some(now + self.keyboard_char_time())
         };
         Some(byte)
     }
 
-    fn keyboard_char_time() -> Duration {
-        Duration::from_secs_f64(ADM3A_KEYBOARD_FRAME_BITS / f64::from(ADM3A_KEYBOARD_BAUD))
+    fn keyboard_char_time(&self) -> Duration {
+        Duration::from_secs_f64(
+            ADM3A_KEYBOARD_FRAME_BITS / f64::from(self.baud_rate.baud()),
+        )
     }
 }
 
@@ -212,6 +299,7 @@ mod tests {
         let mut terminal = Adm3aState::default();
         assert!(!terminal.powered());
         assert!(!terminal.auto_new_line);
+        assert_eq!(terminal.baud_rate(), Adm3aBaudRate::Baud9600);
         terminal.receive_byte(b'X');
         terminal.set_powered(true);
         assert!(terminal.powered());
@@ -359,20 +447,31 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_transmitter_is_power_gated_and_paced_at_9600_baud() {
+    fn keyboard_transmitter_uses_selected_baud_rate() {
         let mut terminal = Adm3aState::default();
         let now = Instant::now();
         assert!(!terminal.queue_keyboard_byte(b'A', now));
 
         terminal.set_powered(true);
+        terminal.set_baud_rate(Adm3aBaudRate::Baud110);
         assert!(terminal.queue_keyboard_byte(b'A', now));
         assert!(terminal.queue_keyboard_byte(b'B', now));
         assert_eq!(terminal.keyboard_pending_len(), 2);
         assert_eq!(terminal.take_due_keyboard_byte(now), Some(b'A'));
         assert_eq!(terminal.take_due_keyboard_byte(now), None);
 
-        let later = now + Adm3aState::keyboard_char_time();
+        let later = now + terminal.keyboard_char_time();
         assert_eq!(terminal.take_due_keyboard_byte(later), Some(b'B'));
         assert_eq!(terminal.keyboard_pending_len(), 0);
+        assert_eq!(terminal.baud_rate().baud(), 110);
+    }
+
+    #[test]
+    fn adm3a_exposes_all_eleven_hardware_baud_choices() {
+        let rates = Adm3aBaudRate::ALL.map(Adm3aBaudRate::baud);
+        assert_eq!(
+            rates,
+            [75, 110, 150, 300, 600, 1_200, 1_800, 2_400, 4_800, 9_600, 19_200]
+        );
     }
 }
