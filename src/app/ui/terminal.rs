@@ -564,10 +564,12 @@ impl RusTairApp {
         // visible in long runs of identical characters. Quantize the whole 80x24
         // raster to physical device pixels so every column has the same phase.
         let pixels_per_point = painter.ctx().pixels_per_point().max(1.0);
-        let cell_width_px =
-            (active_rect.width() * pixels_per_point / ADM3A_COLS as f32).floor().max(1.0);
-        let cell_height_px =
-            (active_rect.height() * pixels_per_point / ADM3A_ROWS as f32).floor().max(1.0);
+        let cell_width_px = (active_rect.width() * pixels_per_point / ADM3A_COLS as f32)
+            .floor()
+            .max(1.0);
+        let cell_height_px = (active_rect.height() * pixels_per_point / ADM3A_ROWS as f32)
+            .floor()
+            .max(1.0);
         let grid_width_px = cell_width_px * ADM3A_COLS as f32;
         let grid_height_px = cell_height_px * ADM3A_ROWS as f32;
         let grid_left_px =
