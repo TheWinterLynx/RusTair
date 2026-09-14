@@ -76,7 +76,7 @@ impl eframe::App for RusTairApp {
         let mut executed = 0u64;
 
         if running && budget != 0 {
-            executed = super::execution_frame::run_cpu_frame(
+            executed = super::execution_frame::run_cpu_frame_timed(
                 &mut self.machine,
                 budget,
                 super::execution_frame::CPU_FRAME_TIME,
