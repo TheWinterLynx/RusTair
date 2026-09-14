@@ -197,8 +197,8 @@ fn sample_async_frame(
         next_slot += 1;
         received_parity != parity_bit(decoded, receiver_format.data_bits, receiver_format.parity)
     };
-    let framing_error = (0..receiver_format.stop_bits)
-        .any(|stop_bit| !sample_line(next_slot + stop_bit));
+    let framing_error =
+        (0..receiver_format.stop_bits).any(|stop_bit| !sample_line(next_slot + stop_bit));
 
     Some(SampledSerialFrame {
         byte: decoded,
@@ -288,13 +288,9 @@ impl RusTairApp {
             let Some((card_rate, card_format)) = card_link else {
                 continue;
             };
-            let Some(sampled) = sample_async_frame(
-                byte,
-                card_format,
-                card_rate,
-                terminal_format,
-                terminal_rate,
-            ) else {
+            let Some(sampled) =
+                sample_async_frame(byte, card_format, card_rate, terminal_format, terminal_rate)
+            else {
                 continue;
             };
             if powered && !sampled.framing_error && !sampled.parity_error {
