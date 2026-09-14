@@ -386,6 +386,20 @@ impl IoDevices {
         }
     }
 
+    /// Canonical 2 MHz chassis quanta until the earliest installed serial-card
+    /// oscillator boundary. The phase itself remains owned by the concrete UART
+    /// card; callers only use this value as a scheduling deadline.
+    pub(super) fn t_states_until_next_clock_boundary(&self) -> Option<u64> {
+        match self.serial_board {
+            SerialBoard::Sio88 => self.sio.t_states_until_next_clock_boundary(CLOCK_HZ),
+            SerialBoard::TwoSio88 => self
+                .two_sio
+                .iter()
+                .filter_map(|port| port.t_states_until_next_clock_boundary(CLOCK_HZ))
+                .min(),
+        }
+    }
+
     pub(super) fn advance_t_states(&mut self, t_states: u64) {
         if t_states == 0 {
             return;
@@ -729,5 +743,14 @@ mod tests {
         io.output(0x47, b'1');
         assert!(io.serial_tx_busy());
         assert!(io.port1_tx_busy());
+    }
+
+    #[test]
+    fn scheduler_deadline_uses_earliest_two_sio_tap() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(io.t_states_until_next_clock_boundary(), Some(14));
+        io.advance_t_states(13);
+        assert_eq!(io.t_states_until_next_clock_boundary(), Some(1));
     }
 }
