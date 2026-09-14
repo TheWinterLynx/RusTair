@@ -226,10 +226,22 @@ impl TwoSioPort {
     /// byte FIFO in front of the MC6850 receiver. An overlapping host presentation
     /// is rejected rather than accumulating a non-historical queue behind it.
     pub(super) fn queue_received_character(&mut self, value: u8) {
+        self.queue_received_character_with_errors(value, false, false);
+    }
+
+    /// Start one physical receive frame whose sampled data/parity/stop bits have
+    /// already been resolved by the external endpoint. FE/PE remain latent in the
+    /// receiver shift path and become MC6850 status only when this frame completes.
+    pub(super) fn queue_received_character_with_errors(
+        &mut self,
+        value: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) {
         if !self.receive_line_idle() || self.rx_break_active {
             return;
         }
-        self.rx_shift = Some((value, false, false));
+        self.rx_shift = Some((value, framing_error, parity_error));
         self.rx_bits_remaining = self.acia.frame_bits();
         self.rx_shift_from_break = false;
     }
@@ -664,6 +676,18 @@ mod tests {
         assert_eq!(port.receive_len(), 1);
         assert_eq!(port.read_data(), b'R');
         assert_eq!(port.receive_len(), 0);
+    }
+
+    #[test]
+    fn sampled_receive_faults_reach_mc6850_status_after_timed_frame() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud110);
+        port.write_control(0x1d); // /16, 8O1 => 110 baud
+        port.queue_received_character_with_errors(b'P', true, true);
+        assert_eq!(port.peek_status() & 0x51, 0);
+
+        port.advance_t_states(200_000, TWO_MHZ);
+        assert_eq!(port.peek_status() & 0x51, 0x51);
+        assert_eq!(port.peek_data(), b'P');
     }
 
     #[test]
