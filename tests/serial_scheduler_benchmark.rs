@@ -152,16 +152,16 @@ fn elapsed_range(samples: &[Sample]) -> (Duration, Duration) {
 #[ignore = "manual release benchmark for the managed card-driven serial scheduler"]
 fn measure_managed_serial_scheduler_cost() {
     println!();
-    println!("RusTair card-driven physical serial scheduler cost");
+    println!("RusTair event-driven physical serial scheduler cost");
     println!("Hardware: historical 8800b starter, 16K static RAM + installed idle 88-2SIO");
     println!(
         "Workload: NOP/JMP loop, exactly 1.000 s of guest CPU target time and serial physical time"
     );
     println!(
-        "Deadline path follows the next physical serial-card oscillator boundary; no fixed 4 us slice"
+        "Idle UARTs expose no deadline and retain the normal 4096T Adaptive service slice; active UARTs use card-owned deadlines"
     );
     println!(
-        "Coarse path executes the same T-states and the same serial elapsed time without intermediate clock deadlines"
+        "Coarse path executes the same T-states and the same serial elapsed time without intermediate service boundaries"
     );
     println!("Median of {ROUNDS} paired rounds after a 10 ms warm-up");
     println!();
@@ -169,11 +169,12 @@ fn measure_managed_serial_scheduler_cost() {
     for (label, multiplier) in MODES {
         let budget = budget_for(multiplier, PHYSICAL_MEASURE_TIME);
         let target_mhz = f64::from(TWO_MHZ) * f64::from(multiplier) / 1_000_000.0;
-        let initial_deadline = machine()
+        let initial_guest_slice = machine()
             .serial_clock_deadline_t_states()
-            .expect("historical fixture has a serial clock");
-        let initial_guest_slice = guest_t_states_for_deadline(initial_deadline, multiplier)
-            .min(SERVICE_SLICE_T_STATES);
+            .map(|deadline| {
+                guest_t_states_for_deadline(deadline, multiplier).min(SERVICE_SLICE_T_STATES)
+            })
+            .unwrap_or(SERVICE_SLICE_T_STATES);
         let mut deadline_samples = Vec::with_capacity(ROUNDS);
         let mut coarse_samples = Vec::with_capacity(ROUNDS);
 
