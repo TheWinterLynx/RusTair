@@ -286,8 +286,7 @@ fn measure_active_serial_scheduler_cost() {
             let initial_guest_slice = active_break_machine(port)
                 .serial_clock_deadline_t_states()
                 .map(|deadline| {
-                    guest_t_states_for_deadline(deadline, multiplier)
-                        .min(SERVICE_SLICE_T_STATES)
+                    guest_t_states_for_deadline(deadline, multiplier).min(SERVICE_SLICE_T_STATES)
                 })
                 .unwrap_or(SERVICE_SLICE_T_STATES);
             let mut deadline_samples = Vec::with_capacity(ROUNDS);
