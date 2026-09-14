@@ -357,6 +357,21 @@ pub trait MachineBackend {
         })
     }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
+    fn serial_receive_with_errors(
+        &mut self,
+        port: BackendSerialPort,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) -> BackendResult<()> {
+        if framing_error || parity_error {
+            return Err(BackendError::Unsupported {
+                operation: "serial RX framing/parity faults",
+                engine: self.engine(),
+            });
+        }
+        self.serial_receive(port, byte)
+    }
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize>;
     fn serial_rx_line_idle(&mut self, _port: BackendSerialPort) -> BackendResult<bool> {
@@ -848,6 +863,18 @@ impl BackendHost {
     }
     pub fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) {
         Self::call(self.backend.serial_receive(port, byte));
+    }
+    pub fn serial_receive_with_errors(
+        &mut self,
+        port: BackendSerialPort,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) {
+        Self::call(
+            self.backend
+                .serial_receive_with_errors(port, byte, framing_error, parity_error),
+        );
     }
     pub fn serial_rx_empty(&mut self, port: BackendSerialPort) -> bool {
         Self::call(self.backend.serial_rx_empty(port))
