@@ -156,7 +156,7 @@ mod tests {
         machine
     }
 
-    fn sio_9600_machine() -> BackendHost {
+    fn sio_machine(baud: u32) -> BackendHost {
         let mut hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         let serial_slot = hardware
             .serial_slots()
@@ -167,7 +167,7 @@ mod tests {
             .set_slot(
                 serial_slot,
                 Some(S100InstalledCardConfig::Mits88Sio(SioHardwareConfig {
-                    baud: SioBaudRate::try_new(9_600).unwrap(),
+                    baud: SioBaudRate::try_new(baud).unwrap(),
                     ..SioHardwareConfig::default()
                 })),
             )
@@ -236,7 +236,7 @@ mod tests {
             (EmulationSpeed::X5, 25_000),
             (EmulationSpeed::X10, 50_000),
         ] {
-            let mut machine = sio_9600_machine();
+            let mut machine = sio_machine(9_600);
             machine.set_serial_clock_managed(true);
             machine.debugger_output_port(0x01, b'A');
             machine.debugger_output_port(0x01, b'B');
@@ -261,6 +261,36 @@ mod tests {
             );
             assert_eq!(machine.serial_tx_complete(BackendSerialPort::Port0), None);
         }
+    }
+
+    #[test]
+    fn physical_110_remote_echo_requires_rx_then_tx_frame_time() {
+        let mut machine = sio_machine(110);
+        machine.set_serial_clock_managed(true);
+
+        machine.serial_receive(BackendSerialPort::Port0, b'P');
+        assert!(!machine.serial_rx_line_idle(BackendSerialPort::Port0));
+        machine.advance_serial_physical_time(Duration::from_millis(99));
+        assert!(
+            !machine.serial_rx_line_idle(BackendSerialPort::Port0),
+            "110-baud 8N2 RX must still be shifting before 100 ms"
+        );
+        machine.advance_serial_physical_time(Duration::from_millis(1));
+        assert!(machine.serial_rx_line_idle(BackendSerialPort::Port0));
+        assert_eq!(machine.debugger_input_port(0x01), b'P');
+
+        machine.debugger_output_port(0x01, b'P');
+        machine.advance_serial_physical_time(Duration::from_millis(99));
+        assert_eq!(
+            machine.serial_tx_complete(BackendSerialPort::Port0),
+            None,
+            "remote echo TX must not become visible before its own 100 ms frame"
+        );
+        machine.advance_serial_physical_time(Duration::from_millis(1));
+        assert_eq!(
+            machine.serial_tx_complete(BackendSerialPort::Port0),
+            Some(b'P')
+        );
     }
 
     #[test]
