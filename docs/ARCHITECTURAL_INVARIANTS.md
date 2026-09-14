@@ -158,23 +158,39 @@ The physical panel controls also act through the machine/bus model; UI widgets d
 
 ## 9. Host execution speed is not peripheral clock speed
 
-Authentic/5×/10×/Unlimited are host CPU scheduling policies. They do not change the installed MITS CPU board's historical clock definition or the physical rate selected on an independently clocked peripheral.
+Authentic/2×/5×/10×/Unlimited are host CPU scheduling policies. They do not change the installed MITS CPU board's historical clock definition or the physical rate selected on an independently clocked peripheral.
 
-The 88-SIO/88-2SIO baud generator is therefore a separate physical-time domain. A configured 110-baud channel remains 110 baud in Authentic, 5×, 10× and Unlimited. Host wall time is used only by the backend scheduler to meter elapsed physical serial time into the installed card; COM2502/MC6850 bit, frame, status and interrupt state remain owned by that card and any resulting outputs still propagate through the normal S-100 connector graph.
+The 88-SIO/88-2SIO baud generator is therefore a separate physical-time domain. A configured 110-baud channel remains 110 baud in every CPU speed mode. Host wall time is used only by the serial scheduler to meter elapsed physical time into the installed card; COM2502/MC6850 bit, frame, status, oscillator/divider phase and interrupt state remain owned by that card and resulting outputs still propagate through the normal S-100 connector graph.
 
-In throttled CPU modes the application replays CPU debt and serial physical time on one causal timeline. `execution_frame.rs` yields at physical-time slices no larger than 4 µs (8/16/40/80 8080 T-states at 2 MHz for Authentic/2×/5×/10×) and then advances only the UART oscillator by the corresponding elapsed duration. The 4 µs value is a **scheduler observation bound**, not a fabricated device clock: UART bit boundaries, frame completion, RDR/TDRE/RDA/TBMT and interrupts are still decided by COM2502/MC6850 state. Unlimited has no CPU-to-wall-time ratio and therefore keeps the direct `Instant` physical-time source instead.
+In throttled CPU modes the application replays CPU debt and serial physical time on one causal timeline using **card-owned event deadlines**, not a fixed host slice. `execution_frame.rs` asks for the earliest installed serial deadline before a normal CPU service interval:
 
-The GUI repaint cadence is never a serial clock. STOP, RESET/HOLD parking and HALT may stop CPU T-states while physical UART time continues; conversely, a fast Full CPU window must not multiply baud. Transitions between managed throttled timing and Unlimited must have one explicit handoff boundary so elapsed serial time is neither replayed twice nor dropped.
+- quiet UARTs publish no deadline and retain the normal 4096-T-state Adaptive service slice;
+- an active 88-SIO publishes its next effective UART boundary;
+- an active 88-2SIO retains its free-running external 16× tap phase but publishes the next effective MC6850 `/1`, `/16` or `/64` boundary rather than every intermediate tap pulse.
 
-CPU/chassis-time peripherals such as the current DCDD mechanics model retain their own explicit clock path. Do not reuse the serial wall-clock scheduler to advance unrelated devices merely because both need elapsed time.
+A guest `OUT` to installed serial hardware is a causal synchronization barrier. The Adaptive executor stops before the output, exact T-state progression across the barrier remains inside the Cycle backend, elapsed pre-write serial physical time is settled, and scheduling is then replanned from the changed card state. A newly activated transmitter must never inherit physical time from before the guest write.
 
-`execution_clock.rs` and `execution_frame.rs` may decide how much CPU virtual time to advance before yielding to the GUI, but they must not:
+An independently clocked active UART is not by itself a reason to pin CPU execution in Partial. Full may run between observable serial boundaries because the card is advanced only when serial physical time is explicitly settled. Guest serial I/O remains an exact barrier.
+
+Unlimited has no CPU-to-wall-time ratio and therefore uses the backend's direct `Instant` physical-time source instead. Transitions between managed throttled timing and Unlimited must have one explicit handoff boundary so elapsed serial time is neither replayed twice nor dropped.
+
+The GUI repaint cadence is never a serial clock. STOP, RESET/HOLD parking and HALT may stop CPU T-states while physical UART time continues; conversely, a fast Full CPU window must not multiply baud.
+
+CPU/chassis-time peripherals such as the current DCDD/FD-400 mechanics retain their own explicit virtual-time path. Do not reuse the serial physical-time scheduler to advance unrelated devices merely because both need elapsed time.
+
+Endpoint pacing and card baud are also separate configuration domains. ASR-33, terminal, TCP or COM configuration must not silently restrap the installed card. Deliberate mismatches are valid configurations even where analog/remote-bit corruption is outside the current endpoint fidelity claim.
+
+`execution_clock.rs`, `execution_frame.rs` and the backend scheduler may decide when host work is performed, but they must not:
 
 - skip modeled guest T-states;
 - multiply or divide a selected serial baud because CPU execution speed changed;
 - make READY/HOLD/interrupt events synthetic UI state;
 - cap Unlimited execution at repaint frequency;
-- turn a presentation timer into a second hardware clock authority.
+- make `CycleHostBackend` own an exact T-state loop;
+- turn a presentation timer into a second hardware clock authority;
+- merge serial physical time with DCDD/chassis virtual time.
+
+See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) for the full current timing contract and validation evidence.
 
 ---
 
@@ -280,5 +296,6 @@ Before approving a hardware/core change, answer all of these:
 - Do open-bus/overlap/contention cases still behave physically rather than conveniently?
 - Does the front panel still report bus truth rather than CPU/UI guesses?
 - Did host scheduling or debugger instrumentation accidentally become guest-visible?
+- Are independent time domains still independent, especially serial physical time versus CPU/chassis time?
 - Are configuration and persistence still describing one live topology?
 - Are the appropriate focused and broad tests present?
