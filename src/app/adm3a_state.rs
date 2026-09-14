@@ -422,7 +422,7 @@ mod tests {
             terminal
                 .row(ADM3A_ROWS - 1)
                 .iter()
-                .all(|byte| *byte == b' ')
+                .all(|byte| *byte == b' '))
         );
     }
 
@@ -469,7 +469,9 @@ mod tests {
         let rates = Adm3aBaudRate::ALL.map(Adm3aBaudRate::baud);
         assert_eq!(
             rates,
-            [75, 110, 150, 300, 600, 1_200, 1_800, 2_400, 4_800, 9_600, 19_200]
+            [
+                75, 110, 150, 300, 600, 1_200, 1_800, 2_400, 4_800, 9_600, 19_200
+            ]
         );
     }
 }
