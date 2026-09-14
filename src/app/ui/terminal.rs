@@ -1,7 +1,9 @@
 use std::time::Instant;
 
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
-use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate};
+use crate::app::adm3a_state::{
+    ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate, Adm3aDataBits, Adm3aParity, Adm3aStopBits,
+};
 use crate::config::TerminalDuplex;
 
 const ADM3A_SHELL_WIDTH: f32 = 1448.0;
@@ -467,6 +469,49 @@ impl RusTairApp {
         }
     }
 
+    fn draw_adm3a_word_format_selector(&mut self, ui: &mut egui::Ui) {
+        let current = self.adm3a.word_format();
+        let mut selected = current;
+
+        ui.label("DATA:");
+        egui::ComboBox::from_id_salt("adm3a-data-bits")
+            .selected_text(current.data_bits.label())
+            .show_ui(ui, |ui| {
+                for data_bits in Adm3aDataBits::ALL {
+                    ui.selectable_value(&mut selected.data_bits, data_bits, data_bits.label());
+                }
+            });
+
+        ui.label("PARITY:");
+        egui::ComboBox::from_id_salt("adm3a-parity")
+            .selected_text(current.parity.label())
+            .show_ui(ui, |ui| {
+                for parity in Adm3aParity::ALL {
+                    ui.selectable_value(&mut selected.parity, parity, parity.label());
+                }
+            });
+
+        ui.label("STOP:");
+        egui::ComboBox::from_id_salt("adm3a-stop-bits")
+            .selected_text(current.stop_bits.label())
+            .show_ui(ui, |ui| {
+                for stop_bits in Adm3aStopBits::ALL {
+                    ui.selectable_value(&mut selected.stop_bits, stop_bits, stop_bits.label());
+                }
+            });
+
+        if selected != current {
+            self.adm3a.set_word_format(selected);
+        }
+
+        if selected.data_bits == Adm3aDataBits::Eight {
+            let mut bit8_one = self.adm3a.bit8_one();
+            if ui.checkbox(&mut bit8_one, "BIT 8 = 1").changed() {
+                self.adm3a.set_bit8_one(bit8_one);
+            }
+        }
+    }
+
     fn adm3a_shell_text_uv() -> egui::Rect {
         egui::Rect::from_min_max(
             egui::Pos2::new(ADM3A_SHELL_TEXT_LEFT, ADM3A_SHELL_TEXT_TOP),
@@ -747,12 +792,15 @@ impl RusTairApp {
                                 ui.separator();
                                 self.draw_adm3a_baud_selector(ui);
                                 ui.separator();
+                                self.draw_adm3a_word_format_selector(ui);
+                                ui.separator();
                                 ui.label("80 × 24");
                                 ui.separator();
                                 ui.monospace(format!(
-                                    "KEY TX {} @ {} baud",
+                                    "KEY TX {} @ {} {}",
                                     self.adm3a.keyboard_pending_len(),
-                                    self.adm3a.baud_rate().baud()
+                                    self.adm3a.baud_rate().baud(),
+                                    self.adm3a.word_format().label()
                                 ));
                                 ui.separator();
                                 if ui.button("Open active CRT…").clicked() {
