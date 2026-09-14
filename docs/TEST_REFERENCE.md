@@ -22,7 +22,7 @@ Each `tests/<name>.rs` file is compiled by Cargo as a separate integration-test 
 | `tests/emulation_speed_benchmark.rs` | Controlled Adaptive throughput benchmark infrastructure. Includes the long-running installed-idle DCDD A/B gate: alternating baseline/DCDD pairs, explicit Full/Partial mix, per-pair ratios, extended warm-up and 1-billion-T-state samples used to enforce the <2% idle-regression budget without confusing host drift with hardware cost. Performance evidence rather than a hardware timing specification. |
 | `tests/emulation_speed_ui.rs` | Guards the UI/configuration semantics of Authentic/accelerated/Unlimited speed choices and keeps host speed separate from the installed CPU board clock. |
 | `tests/gui_execution_performance.rs` | Guards host GUI scheduling behavior, especially that Unlimited execution is not accidentally repaint-bound and throttled modes retain their intended scheduling semantics. |
-| `tests/serial_scheduler_benchmark.rs` | Manual/ignored release benchmark for the managed physical serial scheduler. Compares event-driven card-owned clock deadlines against coarse execution for Authentic/X2/X5/X10, reporting host-equivalent MHz, realtime headroom, Full/Partial mix and scheduler overhead without redefining UART baud timing. |
+| `tests/serial_scheduler_benchmark.rs` | Manual/ignored release benchmark for the independent physical serial scheduler. Measures both installed-idle/no-deadline scheduling and continuously active 110/9600-baud card-owned deadlines across Authentic/X2/X5/X10, reporting first deadline, host-equivalent MHz, realtime headroom, Full/Partial mix and coarse-comparator overhead without redefining UART baud timing. |
 
 ---
 
@@ -71,7 +71,7 @@ Each `tests/<name>.rs` file is compiled by Cargo as a separate integration-test 
 
 | Test file | Mission |
 | --- | --- |
-| `tests/debugger_architecture.rs` | Guards separation between debugger observers/controllers and authoritative machine state; debugger features must use backend contracts rather than own a shadow CPU/memory. |
+| `tests/debugger_architecture.rs` | Guards separation between debugger/host scheduling and authoritative machine state; exact T-state iteration must remain in the Cycle backend rather than being redispatched one T-state at a time by `CycleHostBackend`. |
 | `tests/debugger_execution.rs` | End-to-end debugger control tests for stepping/run-to/breakpoint/watchpoint semantics against live execution. |
 | `tests/debugger_live_breakpoint.rs` | Focused regression for breakpoints during actual backend execution/resume so a stopped PC does not immediately retrigger incorrectly. |
 | `tests/decoder8080_coverage.rs` | Ensures the teaching/debugger decoder covers the complete 8080 opcode space/metadata expectations needed by tools. |
