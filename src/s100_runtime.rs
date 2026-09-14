@@ -370,6 +370,16 @@ impl S100RuntimeFabric {
         }
     }
 
+    /// Earliest physical serial oscillator boundary across all installed cards,
+    /// expressed in canonical 2 MHz chassis quanta. Every card derives this from
+    /// its own retained phase; the fabric only takes the minimum deadline.
+    pub(crate) fn serial_clock_deadline_t_states(&self) -> Option<u64> {
+        self.serial
+            .iter()
+            .filter_map(|installed| installed.handle.t_states_until_next_clock_boundary())
+            .min()
+    }
+
     /// Advance the DCDD mechanics epoch in CPU/chassis virtual time. Keeping this
     /// path separate from serial timing prevents the serial wall-clock scheduler
     /// from changing disk rotational/seek chronology as a side effect.
