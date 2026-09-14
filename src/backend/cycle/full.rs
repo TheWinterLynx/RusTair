@@ -29,6 +29,7 @@ const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 const FULL_EXECUTION_REFRESH_MAX_T_STATES: u32 = 20;
 const EI_OPCODE: u8 = 0xfb;
 const LHLD_OPCODE: u8 = 0x2a;
+const OUT_OPCODE: u8 = 0xd3;
 const EI_LHLD_T_STATES: u32 = 20;
 const EI_LHLD_MAX_REFRESH_WAITS: u32 = 2;
 const FULL_READ_CACHE_ENTRIES: usize = 64;
@@ -770,6 +771,39 @@ impl CycleAccurateMachineBackend {
             })
     }
 
+    fn serial_output_port_is_installed(&self, port: u8) -> bool {
+        self.machine
+            .bus
+            .s100_hardware_memory()
+            .installed_cards()
+            .any(|(_, card)| match card {
+                S100InstalledCardConfig::Mits88Sio(config) => {
+                    port == config.address.status() || port == config.address.data()
+                }
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
+                    straps.address.offset(port).is_some()
+                }
+                _ => false,
+            })
+    }
+
+    pub(super) fn serial_output_instruction_pending(&self) -> bool {
+        if !self.at_instruction_boundary() {
+            return false;
+        }
+        let pc = self.cpu.registers().pc;
+        self.machine.bus.peek_memory(pc) == Some(OUT_OPCODE)
+            && self
+                .machine
+                .bus
+                .peek_memory(pc.wrapping_add(1))
+                .is_some_and(|port| self.serial_output_port_is_installed(port))
+    }
+
+    pub(super) fn execution_at_instruction_boundary(&self) -> bool {
+        self.at_instruction_boundary()
+    }
+
     #[cfg(test)]
     #[inline]
     fn compiled_full_opcode(&mut self, remaining: u32, full_window: bool) -> Option<u8> {
@@ -1030,7 +1064,11 @@ impl CycleAccurateMachineBackend {
         self.record_partial_metrics_span_until(partial_start_t, partial_reason, end_t);
     }
 
-    pub(super) fn service_execution_compiled(&mut self, t_state_budget: u32) -> BackendResult<()> {
+    fn service_execution_compiled_with_serial_barrier(
+        &mut self,
+        t_state_budget: u32,
+        stop_before_serial_output: bool,
+    ) -> BackendResult<()> {
         self.machine.bus.settle_serial_connector_state();
         let lines = self.machine.bus.cpu_control_lines();
         if t_state_budget == 0 || !self.machine.powered || !self.machine.running() || lines.reset {
@@ -1045,6 +1083,10 @@ impl CycleAccurateMachineBackend {
         let mut partial_start_t = None;
         let mut partial_reason = None;
         while remaining != 0 && self.machine.running() {
+            if stop_before_serial_output && self.serial_output_instruction_pending() {
+                break;
+            }
+
             let at_boundary = self.at_instruction_boundary();
             let full_window_blocker = if at_boundary {
                 self.compiled_full_window_blocker(chassis_available)
@@ -1111,6 +1153,17 @@ impl CycleAccurateMachineBackend {
         }
         self.machine.bus.settle_serial_connector_state();
         self.fail_if_cpu_fault("service execution")
+    }
+
+    pub(super) fn service_execution_compiled(&mut self, t_state_budget: u32) -> BackendResult<()> {
+        self.service_execution_compiled_with_serial_barrier(t_state_budget, false)
+    }
+
+    pub(super) fn service_execution_until_serial_output(
+        &mut self,
+        t_state_budget: u32,
+    ) -> BackendResult<()> {
+        self.service_execution_compiled_with_serial_barrier(t_state_budget, true)
     }
 
     pub(crate) fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
