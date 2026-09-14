@@ -69,6 +69,7 @@ fn physical_time_for_executed_t_states(
 /// intentionally exercise the old GUI slice contract without a throttled
 /// CPU-to-physical-time mapping. Production throttled execution must use
 /// `run_cpu_frame_timed` so serial time remains independent from CPU speed.
+#[cfg(test)]
 pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Duration) -> u64 {
     run_cpu_frame_timed(
         machine,
