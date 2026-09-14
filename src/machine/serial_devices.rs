@@ -386,6 +386,22 @@ impl IoDevices {
         }
     }
 
+    /// Canonical 2 MHz chassis quanta until the earliest installed serial-card
+    /// oscillator boundary that can change UART state. Free-running oscillator
+    /// phase still advances when elapsed time is supplied, but an entirely idle
+    /// card does not need to interrupt an Adaptive Full CPU window.
+    pub(super) fn t_states_until_next_clock_boundary(&self) -> Option<u64> {
+        match self.serial_board {
+            SerialBoard::Sio88 if self.sio.timing_is_quiet() => None,
+            SerialBoard::Sio88 => self.sio.t_states_until_next_clock_boundary(CLOCK_HZ),
+            SerialBoard::TwoSio88 => self
+                .two_sio
+                .iter()
+                .filter_map(|port| port.t_states_until_next_clock_boundary(CLOCK_HZ))
+                .min(),
+        }
+    }
+
     pub(super) fn advance_t_states(&mut self, t_states: u64) {
         if t_states == 0 {
             return;
@@ -729,5 +745,15 @@ mod tests {
         io.output(0x47, b'1');
         assert!(io.serial_tx_busy());
         assert!(io.port1_tx_busy());
+    }
+
+    #[test]
+    fn scheduler_deadline_ignores_idle_ports_and_tracks_active_acia() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        assert_eq!(io.t_states_until_next_clock_boundary(), None);
+        io.output(0x10, 0x15); // port 0 /16
+        io.output(0x11, b'A');
+        assert!(io.t_states_until_next_clock_boundary().is_some());
     }
 }

@@ -2,12 +2,15 @@
 
 > Historical validation record: hardware descriptions, source references and original results are preserved. Fast/Cycle engine comparisons, engine replacement and former API/file names below describe that earlier implementation. Current production uses one Adaptive Cycle engine with Full/Partial strategies and the installed S-100 card inventory; see [current ownership](STATE_SOURCES.md) and the [backend contract](../src/backend/README.md). The former `src/machine/io_devices.rs` implementation now lives in `src/machine/serial_devices.rs`.
 
+> **Current timing architecture note — 2026-09-14:** section 8's historical `advance_t_states()`/chassis-T-state description and section 13's Fast-versus-Cycle ownership discussion are preserved as evidence of the implementation validated at that time. They are **not** the current production scheduler contract. Current 88-SIO baud timing uses a separate serial physical-time domain: the installed COM2502/card owns phase and effective bit/frame deadlines, quiet serial state publishes no scheduler deadline, active state publishes the next effective card event, and guest serial `OUT` uses an exact causal synchronization barrier. CPU/chassis virtual time remains a distinct domain (including current DCDD/FD-400 mechanics). See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) for the authoritative current model.
+
 Status: **PASS — receive-BREAK correction plus focused and full local validation green on 2026-09-02.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
 Related documents:
 
+- `docs/SERIAL_CLOCK_DOMAINS.md` — current production serial clock/scheduler contract
 - `docs/88_SIO_INTERRUPT_ROUTING.md`
 - `docs/88_SIO_ABC_ELECTRICAL_INTERFACES.md`
 - `docs/BASE_HARDWARE_FIDELITY_CLOSEOUT.md`

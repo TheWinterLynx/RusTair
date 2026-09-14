@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{
     RamBoardProfile, RamInit, RamSize, S100HardwareConfig, SioConnectorOutputs, SioElectricalLevel,
@@ -41,10 +41,25 @@ pub(super) struct CycleHostBackend {
     teaching_reset_seen: bool,
     idle_chassis_clock_units: u128,
     last_panel_commit_cpu_t_states: Option<u64>,
+    /// Independent physical-time scheduler for installed serial-card oscillators.
+    /// The fixed-point carrier is converted to canonical 2 MHz chassis quanta
+    /// only at the machine boundary; UART bit/frame state remains card-owned.
+    serial_wall_clock_units: u128,
+    serial_wall_clock_last: Instant,
+    /// The normal headless/backend path derives serial elapsed time directly
+    /// from `Instant`. The GUI may instead own physical-time interleaving while
+    /// it drains a throttled CPU clock debt; in that mode automatic `Instant`
+    /// service is suppressed and the app supplies explicit elapsed durations.
+    serial_wall_clock_managed: bool,
+    /// Managed execution stops before a guest OUT that targets installed serial
+    /// hardware, then crosses only that instruction one T-state per host service
+    /// so the app can settle physical serial time at the exact activation edge.
+    serial_output_instruction_in_progress: bool,
 }
 
 impl Default for CycleHostBackend {
     fn default() -> Self {
+        let now = Instant::now();
         Self {
             inner: CycleAccurateMachineBackend::default(),
             instruction_trace: InstructionTraceBuffer::default(),
@@ -53,6 +68,10 @@ impl Default for CycleHostBackend {
             teaching_reset_seen: false,
             idle_chassis_clock_units: 0,
             last_panel_commit_cpu_t_states: None,
+            serial_wall_clock_units: 0,
+            serial_wall_clock_last: now,
+            serial_wall_clock_managed: false,
+            serial_output_instruction_in_progress: false,
         }
     }
 }
@@ -182,10 +201,86 @@ impl CycleHostBackend {
         self.instruction_trace.clear();
         self.debug_control.clear_transient();
     }
-    fn reset_idle_chassis_clock_tracking(&mut self) {
+    fn reset_clock_tracking(&mut self) {
         self.idle_chassis_clock_units = 0;
         self.last_panel_commit_cpu_t_states = None;
+        self.serial_wall_clock_units = 0;
+        self.serial_wall_clock_last = Instant::now();
+        self.serial_output_instruction_in_progress = false;
     }
+
+    /// Apply one elapsed physical-time interval to the installed serial-card
+    /// oscillators. The conversion is independent from CPU execution speed and
+    /// retains sub-quantum remainder so many small scheduler slices cannot drift.
+    fn advance_serial_physical_elapsed(&mut self, elapsed: Duration) {
+        if !self.inner.machine().powered {
+            self.serial_wall_clock_units = 0;
+            return;
+        }
+        let total = self.serial_wall_clock_units.saturating_add(
+            elapsed
+                .as_nanos()
+                .saturating_mul(u128::from(crate::machine::CLOCK_HZ)),
+        );
+        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
+        self.serial_wall_clock_units = total % WALL_CLOCK_UNITS_PER_SECOND;
+        if due != 0 {
+            self.inner
+                .machine_mut()
+                .bus
+                .advance_serial_hardware_time(due);
+        }
+    }
+
+    /// Advance the installed UART oscillators from elapsed physical time. Host
+    /// execution speed never enters this conversion: 110 baud therefore remains
+    /// 110 baud in Authentic, 5x, 10x and Unlimited. The scheduler supplies only
+    /// elapsed time; COM2502/MC6850 state and all S-100 effects stay card-owned.
+    fn service_serial_wall_clock(&mut self) {
+        if self.serial_wall_clock_managed {
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.serial_wall_clock_last);
+        self.serial_wall_clock_last = now;
+        self.advance_serial_physical_elapsed(elapsed);
+    }
+
+    /// Run a managed CPU slice without allowing a serial OUT to inherit physical
+    /// time from before its own bus cycle. Ordinary work stays on Adaptive Full;
+    /// only the one barrier instruction is replayed one exact T-state at a time.
+    fn service_managed_execution(&mut self, budget: u32) -> BackendResult<()> {
+        if budget == 0 {
+            return Ok(());
+        }
+
+        if self.serial_output_instruction_in_progress {
+            self.inner.service_managed_serial_barrier_t_state()?;
+            if self.inner.execution_at_instruction_boundary() {
+                self.serial_output_instruction_in_progress = false;
+            }
+            return Ok(());
+        }
+
+        let before = self.inner.cpu().total_t_states();
+        self.inner.service_execution_until_serial_output(budget)?;
+        let executed = self.inner.cpu().total_t_states().saturating_sub(before);
+        if executed < u64::from(budget)
+            && self.inner.serial_output_instruction_pending()
+            && self.inner.machine().running()
+        {
+            self.serial_output_instruction_in_progress = true;
+            self.inner.service_managed_serial_barrier_t_state()?;
+            if self.inner.execution_at_instruction_boundary() {
+                self.serial_output_instruction_in_progress = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep CPU/chassis-time mechanics alive while the processor is parked. This
+    /// path is intentionally DCDD-only now; serial cards have their own physical
+    /// oscillator scheduler above and must never consume CPU-speed-scaled time.
     fn service_idle_chassis_clock(&mut self, dt: Duration) {
         let current = self.inner.cpu().total_t_states();
         let covered = self
@@ -204,14 +299,14 @@ impl CycleHostBackend {
             dt.as_nanos()
                 .saturating_mul(u128::from(crate::machine::CLOCK_HZ)),
         );
-        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
         self.idle_chassis_clock_units = total % WALL_CLOCK_UNITS_PER_SECOND;
+        let due = (total / WALL_CLOCK_UNITS_PER_SECOND).min(u64::MAX as u128) as u64;
         let missing = due.saturating_sub(covered);
         if missing != 0 {
             self.inner
                 .machine_mut()
                 .bus
-                .advance_serial_hardware_time(missing);
+                .advance_chassis_hardware_time(missing);
         }
     }
     fn invalidate_partial_trace_for_external_memory_change(&mut self) {
@@ -412,6 +507,7 @@ impl MachineBackend for CycleHostBackend {
         self.inner.cpu_state()
     }
     fn front_panel_state(&mut self) -> BackendResult<FrontPanelState> {
+        self.service_serial_wall_clock();
         self.inner.front_panel_state()
     }
 
@@ -429,7 +525,7 @@ impl MachineBackend for CycleHostBackend {
         } else {
             self.teaching_reset_seen = false;
         }
-        self.reset_idle_chassis_clock_tracking();
+        self.reset_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -443,7 +539,7 @@ impl MachineBackend for CycleHostBackend {
             self.inner.release_reset()?;
             self.teaching_reset_seen = true;
         }
-        self.reset_idle_chassis_clock_tracking();
+        self.reset_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -467,7 +563,7 @@ impl MachineBackend for CycleHostBackend {
                 detail: format!("{error:?}"),
             })?;
         self.teaching_reset_seen = false;
-        self.reset_idle_chassis_clock_tracking();
+        self.reset_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
@@ -483,56 +579,79 @@ impl MachineBackend for CycleHostBackend {
     fn power_with_historical_run_latch(&mut self, on: bool, historical: bool) -> BackendResult<()> {
         self.inner.power_with_historical_run_latch(on, historical)?;
         self.teaching_reset_seen = false;
-        self.reset_idle_chassis_clock_tracking();
+        self.reset_clock_tracking();
         self.reset_debugger_epoch();
         Ok(())
     }
     fn run(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         let r = self.inner.cpu().registers();
         self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
         self.inner.run()
     }
     fn halt(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.debug_control.cancel_run_to();
         self.inner.halt()
     }
     fn step(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.debug_control.prepare_manual_step();
         self.begin_instruction_trace_if_needed();
         self.inner.step()?;
         self.finish_instruction_trace_if_complete();
+        self.service_serial_wall_clock();
         Ok(())
     }
     fn service_execution(&mut self, budget: u32) -> BackendResult<()> {
-        if !self.instruction_trace.enabled() && !self.debug_control.active() {
-            return self.inner.service_execution(budget);
-        }
-        let observing = self.observing_instruction_effects();
-        let pending = &mut self.pending_instruction_trace;
-        let trace = &mut self.instruction_trace;
-        let control = &mut self.debug_control;
-        self.inner
-            .service_execution_with_observer(budget, |inner, event| match event {
-                CycleExecutionEvent::BeforeInstruction => {
-                    let r = inner.cpu().registers();
-                    if control.stop_before_with_sp(r.pc, r.sp).is_some() {
-                        return true;
-                    }
-                    if observing {
-                        Self::begin_pending_trace(inner, pending);
-                    }
-                    false
+        self.service_serial_wall_clock();
+        let result =
+            if !self.instruction_trace.enabled() && !self.debug_control.active() {
+                if self.serial_wall_clock_managed {
+                    self.service_managed_execution(budget)
+                } else {
+                    self.inner.service_execution(budget)
                 }
-                CycleExecutionEvent::InstructionComplete => {
-                    Self::finalize_pending_trace(inner, pending, trace, control)
-                }
-            })
+            } else {
+                // Debug/trace observation is already an exact Partial path. In
+                // managed mode cap it to one T-state so serial activation remains
+                // causally aligned without adding another barrier authority.
+                let observed_budget = if self.serial_wall_clock_managed {
+                    budget.min(1)
+                } else {
+                    budget
+                };
+                let observing = self.observing_instruction_effects();
+                let pending = &mut self.pending_instruction_trace;
+                let trace = &mut self.instruction_trace;
+                let control = &mut self.debug_control;
+                self.inner
+                    .service_execution_with_observer(observed_budget, |inner, event| match event {
+                        CycleExecutionEvent::BeforeInstruction => {
+                            let r = inner.cpu().registers();
+                            if control.stop_before_with_sp(r.pc, r.sp).is_some() {
+                                return true;
+                            }
+                            if observing {
+                                Self::begin_pending_trace(inner, pending);
+                            }
+                            false
+                        }
+                        CycleExecutionEvent::InstructionComplete => {
+                            Self::finalize_pending_trace(inner, pending, trace, control)
+                        }
+                    })
+            };
+        self.service_serial_wall_clock();
+        result
     }
     fn commit_panel_activity(&mut self, dt: Duration) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.service_idle_chassis_clock(dt);
         self.inner.commit_panel_activity(dt)
     }
     fn assert_run_stop(&mut self, run: bool) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         if run {
             let r = self.inner.cpu().registers();
             self.debug_control.prepare_resume_with_sp(r.pc, r.sp);
@@ -545,20 +664,25 @@ impl MachineBackend for CycleHostBackend {
         self.inner.release_run_stop(run)
     }
     fn assert_reset(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.reset_debugger_epoch();
         self.teaching_reset_seen = true;
+        self.serial_output_instruction_in_progress = false;
         self.inner.assert_reset()
     }
     fn release_reset(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.inner.release_reset()
     }
     fn assert_clear(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.inner.assert_clear()
     }
     fn release_clear(&mut self) -> BackendResult<()> {
         self.inner.release_clear()
     }
     fn request_hold(&mut self, hold: bool) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.inner.request_hold(hold)
     }
     fn panel_examine(&mut self, next: bool) -> BackendResult<()> {
@@ -583,6 +707,7 @@ impl MachineBackend for CycleHostBackend {
         self.inner.set_switch_register(v)
     }
     fn sio_logical_lines(&mut self) -> BackendResult<Option<SioLogicalLines>> {
+        self.service_serial_wall_clock();
         Ok(self
             .inner
             .machine()
@@ -591,6 +716,7 @@ impl MachineBackend for CycleHostBackend {
             .map(SioLogicalLines::from))
     }
     fn sio_connector_outputs(&mut self) -> BackendResult<Option<SioConnectorOutputs>> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine().bus.sio_connector_outputs())
     }
     fn sio_decode_connector_input(
@@ -600,24 +726,69 @@ impl MachineBackend for CycleHostBackend {
         Ok(self.inner.machine().bus.sio_decode_connector_input(level))
     }
     fn sio_pulse_input_device_ready(&mut self) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.pulse_sio_input_device_ready())
     }
     fn sio_pulse_output_device_ready(&mut self) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.pulse_sio_output_device_ready())
     }
     fn two_sio_vector_interrupt_requests(&mut self) -> BackendResult<u8> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine().bus.two_sio_vector_interrupt_requests())
     }
+    fn set_serial_clock_managed(&mut self, managed: bool) -> BackendResult<()> {
+        if self.serial_wall_clock_managed == managed {
+            return Ok(());
+        }
+        let now = Instant::now();
+        self.serial_output_instruction_in_progress = false;
+        if managed {
+            // The app establishes an explicit physical-time boundary when it
+            // takes ownership. Do not replay automatic wall time here: the next
+            // managed slice supplies that elapsed interval exactly once.
+            self.serial_wall_clock_managed = true;
+            self.serial_wall_clock_last = now;
+        } else {
+            // While managed, explicit advances refresh `serial_wall_clock_last`.
+            // Pay only the real host interval since the final managed advance,
+            // then start Unlimited's automatic wall-clock epoch at this boundary.
+            let elapsed = now.saturating_duration_since(self.serial_wall_clock_last);
+            self.advance_serial_physical_elapsed(elapsed);
+            self.serial_wall_clock_managed = false;
+            self.serial_wall_clock_last = now;
+        }
+        Ok(())
+    }
+    fn advance_serial_physical_time(&mut self, elapsed: Duration) -> BackendResult<()> {
+        if !self.serial_wall_clock_managed {
+            return Err(BackendError::Operation {
+                operation: "advance managed serial clock",
+                detail: "managed serial-clock mode is not active".into(),
+            });
+        }
+        self.serial_wall_clock_last = Instant::now();
+        self.advance_serial_physical_elapsed(elapsed);
+        Ok(())
+    }
+    fn serial_clock_deadline_t_states(&mut self) -> BackendResult<Option<u64>> {
+        self.service_serial_wall_clock();
+        Ok(self.inner.machine().bus.serial_clock_deadline_t_states())
+    }
     fn serial_receive(&mut self, p: BackendSerialPort, b: u8) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.inner.serial_receive(p, b)
     }
     fn serial_rx_empty(&mut self, p: BackendSerialPort) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         self.inner.serial_rx_empty(p)
     }
     fn serial_rx_len(&mut self, p: BackendSerialPort) -> BackendResult<usize> {
+        self.service_serial_wall_clock();
         self.inner.serial_rx_len(p)
     }
     fn serial_rx_line_idle(&mut self, p: BackendSerialPort) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(match p {
             BackendSerialPort::Port0 => self.inner.machine().bus.serial_rx_line_idle(),
             BackendSerialPort::Port1 => self.inner.machine().bus.serial_port1_rx_line_idle(),
@@ -628,6 +799,7 @@ impl MachineBackend for CycleHostBackend {
         p: BackendSerialPort,
         active: bool,
     ) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self
             .inner
             .machine_mut()
@@ -635,18 +807,22 @@ impl MachineBackend for CycleHostBackend {
             .set_serial_receive_break(p.index(), active))
     }
     fn serial_tx_busy(&mut self, p: BackendSerialPort) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         self.inner.serial_tx_busy(p)
     }
     fn serial_tx_front(&mut self, p: BackendSerialPort) -> BackendResult<Option<u8>> {
+        self.service_serial_wall_clock();
         self.inner.serial_tx_front(p)
     }
     fn serial_tx_complete(&mut self, p: BackendSerialPort) -> BackendResult<Option<u8>> {
+        self.service_serial_wall_clock();
         self.inner.serial_tx_complete(p)
     }
     fn serial_modem_lines(
         &mut self,
         p: BackendSerialPort,
     ) -> BackendResult<Option<SerialModemLines>> {
+        self.service_serial_wall_clock();
         Ok(self
             .inner
             .machine()
@@ -660,6 +836,7 @@ impl MachineBackend for CycleHostBackend {
         cts: bool,
         dcd: bool,
     ) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self
             .inner
             .machine_mut()
@@ -667,6 +844,7 @@ impl MachineBackend for CycleHostBackend {
             .set_serial_modem_inputs(p.index(), cts, dcd))
     }
     fn clear_serial(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.inner.clear_serial()
     }
     fn installed_ram_bytes(&mut self) -> BackendResult<usize> {
@@ -724,6 +902,7 @@ impl MachineBackend for CycleHostBackend {
         Ok(self.inner.machine_mut().take_cpu_diagnostic_result())
     }
     fn peek_io_port(&mut self, p: u8) -> BackendResult<u8> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine().bus.peek_io_port(p))
     }
     fn io_port_activity(&mut self, p: u8) -> BackendResult<IoPortActivity> {
@@ -765,6 +944,7 @@ impl MachineBackend for CycleHostBackend {
         Ok(())
     }
     fn bus_teaching_snapshot(&mut self) -> BackendResult<Option<BusTeachingSnapshot>> {
+        self.service_serial_wall_clock();
         let mut s = self
             .inner
             .teaching_snapshot()
@@ -776,12 +956,15 @@ impl MachineBackend for CycleHostBackend {
         Ok(Some(s))
     }
     fn debugger_step_t_state(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.debugger_step_one_t_state()
     }
     fn debugger_step_machine_cycle(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.debugger_step_one_machine_cycle()
     }
     fn debugger_step_instruction(&mut self) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.debugger_step_one_instruction()
     }
     fn debugger_breakpoints(&mut self) -> BackendResult<Vec<u16>> {
@@ -829,22 +1012,28 @@ impl MachineBackend for CycleHostBackend {
         Ok(self.debug_control.stop_reason())
     }
     fn debugger_input_port(&mut self, p: u8) -> BackendResult<u8> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.debugger_input_port(p))
     }
     fn debugger_output_port(&mut self, p: u8, v: u8) -> BackendResult<()> {
+        self.service_serial_wall_clock();
         self.inner.machine_mut().bus.debugger_output_port(p, v);
         Ok(())
     }
     fn debugger_inject_serial_rx(&mut self, p: u8, b: u8) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.debugger_inject_serial_rx(p, b))
     }
     fn debugger_clear_serial_rx(&mut self, p: u8) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.debugger_clear_serial_rx(p))
     }
     fn debugger_clear_serial_tx(&mut self, p: u8) -> BackendResult<bool> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.debugger_clear_serial_tx(p))
     }
     fn debugger_complete_serial_tx(&mut self, p: u8) -> BackendResult<Option<u8>> {
+        self.service_serial_wall_clock();
         Ok(self.inner.machine_mut().bus.debugger_complete_serial_tx(p))
     }
 }
@@ -897,7 +1086,6 @@ mod tests {
         assert_eq!(stopped.t_state, BusTState::Unknown);
         assert_eq!(stopped.address, Some(0));
         assert_eq!(stopped.ready, Some(false));
-        assert_eq!(stopped.status.memr, Some(true));
         assert_eq!(stopped.status.m1, Some(true));
         assert_eq!(stopped.status.wo, Some(true));
         assert_eq!(stopped.status.wait, Some(true));

@@ -156,6 +156,8 @@ Create typed configuration for straps/jumpers/addressing/interrupt targets.
 
 If the card contains a reusable chip (as 88-2SIO contains MC6850), model chip behavior separately from board wiring where that separation is real and useful.
 
+If the device has an independent oscillator, baud generator or other clock, define its time domain explicitly before integrating it with execution. Do not assume CPU T-states are the clock merely because they are convenient to count. For serial hardware, read [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) before adding timing APIs.
+
 ### Card electrical layer
 
 Implement normal S-100 card observation/drive behavior through the common card interface. Keep fixed decode data in the hardware configuration and compile it into runtime responder masks if performance requires it.
@@ -163,6 +165,8 @@ Implement normal S-100 card observation/drive behavior through the common card i
 ### Runtime assembly
 
 Teach `S100RuntimeFabric` to instantiate the card from `S100HardwareConfig`.
+
+For independently clocked serial devices, the live card must remain the owner of oscillator/divider/UART phase and should expose the next **effective** observable event deadline rather than forcing a fixed host polling slice. A quiet device may return no deadline while still retaining/free-running its physical phase.
 
 ### Host inspection
 
@@ -179,7 +183,9 @@ Cover:
 - interrupt wiring;
 - timing/READY if relevant;
 - external connector signals;
-- configuration round-trip.
+- configuration round-trip;
+- clock-domain independence from CPU speed if the device is independently clocked;
+- causal activation if a guest I/O write can start timed hardware in the middle of a larger execution interval.
 
 ---
 
@@ -195,8 +201,10 @@ The endpoint should:
 - consume/produce host data;
 - represent host-side modem/control signals if applicable;
 - never own guest UART registers/status;
-- never silently change serial-card straps;
+- never silently change serial-card straps or baud/divider configuration;
 - be disconnectable.
+
+Endpoint pacing and card baud are separate configuration domains. Do not "help" by silently synchronizing them; a deliberate mismatch is valid unless the product explicitly exposes a named convenience action.
 
 If the endpoint needs a physical electrical level converter, model that explicitly rather than connecting incompatible interfaces behind the user's back.
 
@@ -323,13 +331,15 @@ Purely changes host work without changing modeled results, e.g. inlining, layout
 
 ### PROVABLE
 
-Changes execution granularity/representation but can be proven equivalent, e.g. cached decoder, event-driven card reevaluation, Full panel aggregation.
+Changes execution granularity/representation but can be proven equivalent, e.g. cached decoder, event-driven card reevaluation, Full panel aggregation or replacing fixed host polling with a card-owned next-event deadline.
 
 Requires an independent oracle.
 
+For event-driven timing, prove both sides of the optimization: idle hardware must not force needless service boundaries, and newly active hardware must not inherit elapsed time from before the causal guest event that activated it.
+
 ### REJECT for the high-fidelity path
 
-Would remove or relocate physically observable behavior, e.g. instruction-boundary READY, fake panel state, direct RAM bypass, instant UART queue.
+Would remove or relocate physically observable behavior, e.g. instruction-boundary READY, fake panel state, direct RAM bypass, instant UART queue, tying independent serial baud to CPU speed or GUI repaint cadence.
 
 For performance work, measure Amdahl impact and benchmark baseline/candidate under matched host conditions.
 
@@ -359,7 +369,8 @@ A strong completion checklist is:
 - focused unit/fidelity tests exist;
 - Full/Partial equivalence is proven if relevant;
 - docs/source reference are updated;
-- `cargo test --locked --all-targets` passes with `-Dwarnings`;
+- `cargo fmt --check` passes;
+- `cargo test --locked --all-targets` passes with `-Dwarnings` when that is the selected validation profile;
 - release build succeeds;
 - no generated/scratch artifacts remain;
 - performance regression is checked if a hot path changed;

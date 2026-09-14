@@ -89,7 +89,11 @@ fn authentic_reader_waits_for_rx_shift_path_not_for_guest_to_empty_rdr() {
         "the receiver shift path must be busy while the 110-baud frame is arriving"
     );
 
-    machine.commit_panel_activity(Duration::from_millis(100));
+    // Serial timing is a physical wall-clock domain. CPU execution and panel
+    // commit durations must not synthesize UART oscillator time. Allow one full
+    // 110-baud frame plus scheduling margin, then query the backend; that query
+    // services the elapsed serial clock before exposing the card state.
+    std::thread::sleep(Duration::from_millis(115));
 
     assert!(
         machine.serial_rx_line_idle(BackendSerialPort::Port0),

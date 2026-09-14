@@ -2,8 +2,9 @@
 ///
 /// In full duplex the keyboard transmits only; the operator sees the character
 /// when the host echoes it back. In half duplex the terminal makes a local
-/// copy while transmitting, so host echo must normally be disabled to avoid a
-/// duplicate character.
+/// copy while transmitting, so the remote/guest software must normally have
+/// echo disabled to avoid a duplicate character. RusTair never suppresses a
+/// guest-transmitted echo behind the UART's back.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalDuplex {
     FullDuplexRemoteEcho,
@@ -16,7 +17,9 @@ impl TerminalDuplex {
     pub const fn label(self) -> &'static str {
         match self {
             Self::FullDuplexRemoteEcho => "Full duplex / remote echo",
-            Self::HalfDuplexLocalEcho => "Half duplex / local echo (host echo off)",
+            Self::HalfDuplexLocalEcho => {
+                "Half duplex / local echo (remote software echo must be off)"
+            }
         }
     }
 

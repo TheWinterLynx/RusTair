@@ -4,10 +4,6 @@ use crate::s100_runtime::DisplayControlLines;
 use super::AltairBus;
 
 impl AltairBus {
-    pub(crate) fn serial_timing_is_quiet(&self) -> bool {
-        self.memory.serial_timing_is_quiet()
-    }
-
     /// Host endpoints and card-local elapsed time mutate the same UART silicon
     /// installed on an S-100 card outside the just-resolved CPU edge. Resolve
     /// that newly dirty connector immediately so PINT/VI/PRDY observability
@@ -129,9 +125,32 @@ impl AltairBus {
         pulsed
     }
 
+    /// Advance CPU/chassis-time peripherals. At present this is the DCDD
+    /// mechanics epoch. Serial UART oscillators deliberately do not advance here:
+    /// their selected baud is physical peripheral time and must not be multiplied
+    /// by host execution speed (Authentic/5x/10x/Unlimited).
+    pub(crate) fn advance_chassis_hardware_time(&mut self, t_states: u64) {
+        self.memory.advance_dcdd_time(t_states);
+    }
+
+    /// Earliest installed serial-card clock boundary in canonical 2 MHz chassis
+    /// quanta. This is a read-only deadline derived from card-owned oscillator
+    /// phase; advancing that phase remains exclusively the card's responsibility.
+    pub(crate) fn serial_clock_deadline_t_states(&self) -> Option<u64> {
+        self.memory.serial_clock_deadline_t_states()
+    }
+
+    /// Advance only the installed 88-SIO/88-2SIO oscillators by elapsed physical
+    /// serial time, expressed in canonical 2 MHz chassis quanta. The UART/card
+    /// remains the sole owner of bit/frame state; this scheduler never completes
+    /// a byte itself. Any resulting PINT/VI/PRDY transition is then resolved
+    /// through the normal S-100 connector graph.
     pub(crate) fn advance_serial_hardware_time(&mut self, t_states: u64) {
+        let serial_was_active = !self.memory.serial_timing_is_quiet();
         self.memory.advance_serial_time(t_states);
-        self.settle_host_serial_change();
+        if serial_was_active {
+            self.settle_host_serial_change();
+        }
     }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {

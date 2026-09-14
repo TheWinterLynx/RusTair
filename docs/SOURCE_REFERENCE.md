@@ -1,13 +1,10 @@
 # RusTair Source Reference
 
-This is the file-by-file map of the current Rust source tree. It is intended to answer two questions quickly:
+This is the file-by-file map of the current Rust source tree. It answers **what each source file owns** and which architectural invariant matters when changing it.
 
-1. **What does this file do?**
-2. **If I change it, what physical/software invariant should I think about?**
+The descriptions below document current production architecture. Test-only Rust files under `src/` are included because `tests/developer_documentation_inventory.rs` requires every `src/**/*.rs` source to remain represented here.
 
-The descriptions below document the current production architecture. Test-only files under `src/` are included because they encode important invariants.
-
-> Rule of thumb: start from the subsystem you want to change, then read its implementation **and** the tests/docs that define its contract.
+> Start from the subsystem you want to change, then read its implementation, focused tests and the current architecture document that defines its contract.
 
 ---
 
@@ -15,187 +12,176 @@ The descriptions below document the current production architecture. Test-only f
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/main.rs` | Desktop executable entry point. It does almost nothing except call `rustair::app::run()`. Keep startup policy in the app module rather than growing this file. |
-| `src/lib.rs` | Library/module root. Declares the public module graph and crate-private infrastructure such as embedded assets, Full boundary reconciliation and MC6850 support. Also preserves the historical `teletype` alias for `peripherals::asr33`. |
-| `src/adaptive_metrics.rs` | Opt-in Adaptive Cycle instrumentation. Counts Full/Partial T-states, windows, transitions and fallback reasons. Uses thread-local state so normal execution pays no observer cost when measurement is disabled. Metrics are observational only and must never drive execution decisions. |
-| `src/audio.rs` | Host audio engine using `rodio`. Plays embedded one-shot/looping sounds for the Altair/ASR-33. Audio-device failure is intentionally non-fatal so CI/headless use still works. Presentation only; never emulation authority. |
-| `src/cpu8080.rs` | Instruction-level Intel 8080 semantic executor. Implements registers, flags, instruction semantics, stack and a generic `Bus` trait. In current production it is used transiently inside admitted Full windows and as a semantic/reference core; it is not a second persistent Altair CPU. |
-| `src/decoder8080.rs` | Stateless 8080 decoder/disassembler metadata: mnemonic, operands, length, timing, conditions, control-flow classification, memory/I/O effects. Used by debugger/teaching tools, not as the hardware execution authority. |
-| `src/explain8080.rs` | Human-readable instruction explanations for teaching/debugger UI. Combines decoded metadata with CPU/memory context. Derived interpretation only. |
-| `src/debugger8080.rs` | Higher-level debugger analysis helpers, notably safe decoding around a PC and conservative simple backward-loop detection. Designed to avoid claiming code/control flow it cannot prove. |
-| `src/debugger_control.rs` | Debug execution policy: execute breakpoints, memory watchpoints, run-to targets, step-over/out support and stop reasons. The controls request stops through the backend; they are not a second CPU scheduler. |
-| `src/callstack8080.rs` | Infers a call stack from retained instruction history by observing CALL/RST/RET behavior and SP/PC transitions. Explicitly marks gaps/incomplete history. Never treated as architectural CPU state. |
-| `src/trace8080.rs` | Instruction/effect trace data model and bounded history infrastructure used by debugger/history/call-stack tools. Captures observations of execution, not a shadow CPU. |
-| `src/memory_activity8080.rs` | Derives/retains memory-access activity for debugging/visualization from execution observations. Presentation/analysis layer; authoritative bytes remain in physical RAM cards. |
-| `src/embedded_assets.rs` | Central compile-time asset lookup for bundled binaries, artwork/audio/fonts and other embedded resources. Keeps callers independent of filesystem layout for built-in assets. |
-| `src/full_boundary_reconcile.rs` | Zero-emulated-time host-side reconciliation when Full rejoins the live S-100 CPU-board fabric. Imports retained CPU-board latch/phase state without exposing fake intermediate connector transitions. Critical Full→Partial fidelity boundary. |
-| `src/mc6850.rs` | Motorola MC6850 ACIA model used by the 88-2SIO implementation. Owns chip-level UART register/status/transmit/receive behavior; board straps/wiring live in higher board/config layers. |
-| `src/s100_cycle_integration_tests.rs` | Crate-internal integration tests that exercise CPU-cycle/S-100 interactions using private internals. Test-only architectural evidence. |
+| `src/main.rs` | Desktop executable entry point; delegates startup to `rustair::app::run()`. |
+| `src/lib.rs` | Crate/module root and crate-private infrastructure/re-exports. |
+| `src/adaptive_metrics.rs` | Opt-in Full/Partial metrics. Observational only; metrics never drive execution. |
+| `src/audio.rs` | Host presentation audio. Audio failure is non-fatal and never hardware authority. |
+| `src/cpu8080.rs` | Instruction-level 8080 semantic executor used transiently inside admitted Full windows and as a semantic/reference core. Never a persistent second CPU. |
+| `src/decoder8080.rs` | Stateless debugger/disassembler metadata and control-flow/effect classification. |
+| `src/explain8080.rs` | Human-readable teaching explanations derived from decoded/current context. |
+| `src/debugger8080.rs` | Conservative debugger analysis, including safe decoding and simple loop inference. |
+| `src/debugger_control.rs` | Breakpoint/watchpoint/run-to/step policy. Requests execution stops; does not own a CPU loop. |
+| `src/callstack8080.rs` | Bounded-history call-stack inference; never architectural state. |
+| `src/trace8080.rs` | Instruction/effect trace model and bounded history. |
+| `src/memory_activity8080.rs` | Derived memory-access observations for tools/UI. |
+| `src/embedded_assets.rs` | Compile-time built-in asset lookup. |
+| `src/full_boundary_reconcile.rs` | Zero-emulated-time Full→Partial CPU-board/S-100 boundary reconciliation. |
+| `src/mc6850.rs` | MC6850 ACIA register/status/shift semantics used by 88-2SIO. Board clock/straps live above the chip. |
+| `src/s100_cycle_integration_tests.rs` | Crate-internal CPU-cycle/S-100 integration oracles. |
 
 ---
 
 ## 2. `src/app/` — desktop application and workflow orchestration
 
-The app layer owns UI/application state and asks the backend to operate the machine. It must not contain a second CPU, RAM or UART.
+The app owns host/UI workflow state. It must never become a second CPU, RAM, UART or serial oscillator.
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/app/mod.rs` | App module root and `RusTairApp` definition. Creates the eframe/WGPU window, owns host/application state (config, `BackendHost`, serial router, terminal/ASR controllers, audio, execution clock, UI assets) and defines shared constants/helpers. This is the composition root of the desktop application. |
-| `src/app/runtime.rs` | Implements `eframe::App::update`. Per GUI frame it loads/synchronizes configuration, computes execution budget, runs the backend, services serial/peripheral workflows, delegates top-level navigation to the UI module and renders status/tool viewports. Important boundary between wall-clock/UI time and emulated time. |
-| `src/app/execution_clock.rs` | Converts host elapsed time into guest T-state credit/debt for Authentic/5×/10× modes. Keeps guest board clock concept separate from host execution speed. |
-| `src/app/execution_frame.rs` | Executes a backend budget in responsive chunks/deadlines. Contains the Unlimited scheduling policy that avoids repaint-rate throughput caps while preserving UI responsiveness. |
-| `src/app/commands.rs` | Application-level user commands/actions that coordinate backend and UI state. Keeps command workflows out of drawing code. |
-| `src/app/persistence.rs` | Saves/loads application and machine configuration and handles compatibility/migration from historical formats. Migration inputs must converge on one current slot-native S-100 configuration, not create a parallel runtime topology. |
-| `src/app/authentic_loader.rs` | State/workflow for historically authentic loading, especially paper-tape/BASIC bootstrap paths. Distinct from direct RAM loading; coordinates real emulated serial/peripheral execution. |
-| `src/app/cpu_diagnostics.rs` | External/classic CPU diagnostic workflow and file-dialog/run handling. Coordinates diagnostic loading/execution/reporting through the production machine. |
-| `src/app/embedded_cpu_diagnostics.rs` | UI/application state for bundled diagnostic programs embedded in the executable. Keeps built-in diagnostic selection/run workflow separate from general external files. |
-| `src/app/asr33_controller.rs` | Application/controller logic connecting the ASR-33 peripheral model to serial routing, timing, input/output and UI events. Does not replace the emulated serial card. |
-| `src/app/asr33_state.rs` | Host/UI state associated with ASR-33 presentation/workflow (timers, transient interaction state, etc.). Separate from the physical teletype model in `peripherals/asr33`. |
-| `src/app/adm3a_state.rs` | Headless Lear Siegler ADM-3A terminal state: 80×24 display RAM, cursor, control-character/escape parser and terminal-local bell latch. It knows nothing about CP/M, Altair memory or UART registers; its input is already-completed external serial bytes. |
-| `src/app/adm3a_serial.rs` | App-side serial bridge for the ADM-3A endpoint. Drains only completed transmit frames from the selected physical MITS serial port into the terminal model and requests repaint/audio; it must never bypass the installed UART or read guest state directly. |
-| `src/app/terminal_controller.rs` | Application logic for text-terminal behavior and interaction with connected serial ports. |
-| `src/app/terminal_serial.rs` | Serial transfer/pacing integration for the text terminal: moves data between terminal controller state and the selected emulated connection without owning UART state. |
-| `src/app/terminal_state.rs` | Text-terminal application/presentation state, buffers and timing/preferences used by the controller/UI. |
-| `src/app/serial_hardware.rs` | App-level coordination between configured S-100 serial hardware, available backend ports and endpoint/cable choices. Useful starting point for serial wiring UI behavior. |
-| `src/app/external_serial.rs` | Host network/external serial endpoint state and servicing (TCP-oriented path) integrated with app lifecycle and serial routing. |
-| `src/app/external_com.rs` | Host physical COM-port endpoint state/configuration/servicing. Uses host serial transport while guest UART/card semantics remain in the machine. |
+| `src/app/mod.rs` | `RusTairApp` composition root: configuration, backend host, serial router/endpoints, peripheral controllers, audio, execution clock and UI assets. |
+| `src/app/runtime.rs` | `eframe::App::update`; coordinates frame scheduling, backend execution and endpoint/peripheral servicing. Separates host/UI time from modeled hardware domains. |
+| `src/app/execution_clock.rs` | Converts host elapsed time into guest CPU T-state debt for throttled CPU speeds. It does not define serial baud or peripheral clocks. |
+| `src/app/execution_frame.rs` | CPU frame scheduler. In Authentic/X2/X5/X10 it queries card-owned serial deadlines, leaves quiet UARTs on the normal 4096T service slice, advances the corresponding serial physical time after each CPU interval and replans around serial-`OUT` activation. Unlimited remains host-deadline responsive and uses backend `Instant` serial time. |
+| `src/app/commands.rs` | Application-level user command workflows. |
+| `src/app/persistence.rs` | Configuration save/load and schema migration. Historical aggregate fields must normalize to one live slot-native topology. |
+| `src/app/authentic_loader.rs` | Authentic paper-tape/BASIC bootstrap workflow through emulated peripheral/serial hardware. |
+| `src/app/cpu_diagnostics.rs` | External/classic CPU diagnostic workflow. |
+| `src/app/embedded_cpu_diagnostics.rs` | Bundled diagnostic selection/run workflow. |
+| `src/app/asr33_controller.rs` | Connects ASR-33 peripheral mechanics/input/output to serial routing without replacing card UART state. |
+| `src/app/asr33_state.rs` | ASR host/UI transient/presentation state. |
+| `src/app/terminal_controller.rs` | Text-terminal controller logic. |
+| `src/app/terminal_serial.rs` | Terminal transfer/pacing integration. Endpoint pacing remains distinct from card baud/clock authority. |
+| `src/app/terminal_state.rs` | Text-terminal host buffers/preferences/presentation timing. |
+| `src/app/serial_hardware.rs` | App coordination between installed serial hardware, backend ports and explicit endpoint/cable choices. Must not silently restrap a card to match an endpoint. |
+| `src/app/external_serial.rs` | Host TCP/external serial endpoint lifecycle and servicing. |
+| `src/app/external_com.rs` | Host physical COM endpoint lifecycle/config/servicing. |
 
-### `src/app/ui/` — egui presentation and developer tools
-
-These files draw or operate UI tools. They should consume backend snapshots/contracts rather than reaching into live hardware internals directly.
+### `src/app/ui/`
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/app/ui/mod.rs` | UI module root. Declares/re-exports the individual windows/panels and shared UI helpers. |
-| `src/app/ui/main_menu.rs` | Canonical top-level navigation. Organizes File/Machine/Peripherals/View/Tools/Settings, launches the existing windows and routes configuration actions without owning emulation state. Keeps navigation policy out of the frame scheduler/runtime loop. |
-| `src/app/ui/assets.rs` | Loads egui textures/fonts and other visual assets used by the application. Presentation only. |
-| `src/app/ui/front_panel.rs` | Main photographic Altair front-panel rendering: lamps, panel layout and user interaction hooks. Raw lamp/control truth comes from backend/machine snapshots. |
-| `src/app/ui/front_panel_assets.rs` | Front-panel artwork/texture/layout asset helpers. Keeps image selection/asset details out of panel logic. |
-| `src/app/ui/front_panel_switches.rs` | Geometry/input/rendering helpers for front-panel switches. Converts user gestures into explicit panel control requests. |
-| `src/app/ui/front_panel_operator.rs` | Standalone operator-oriented panel/control window and workflows. Should use the same backend controls as the main panel. |
-| `src/app/ui/cpu_pin_diagram.rs` | Didactic visualization of Intel 8080 package pins/current CPU state. Reads captured backend state; does not drive pins. |
-| `src/app/ui/bus_teacher.rs` | T-state/S-100 teaching UI presenting machine-cycle, bus and control-line snapshots with explanatory context. Historical snapshots are observations, not current machine state. |
-| `src/app/ui/debugger_controls.rs` | Breakpoint/watchpoint/run-to/step controls and debugger command UI backed by `debugger_control`/backend APIs. |
-| `src/app/ui/execution_position.rs` | Small helpers for determining/presenting current execution location in debugger views, including the distinction between exact cycle position and instruction-level display. |
-| `src/app/ui/instruction_history.rs` | Instruction history/disassembly view built from retained trace entries. May show bounded/incomplete history; never a source of execution state. |
-| `src/app/ui/loop_inspector.rs` | UI for conservative loop analysis produced by `debugger8080` helpers. |
-| `src/app/ui/memory_activity.rs` | Visualizes recent memory activity/reads/writes derived from trace/activity observers. |
-| `src/app/ui/memory_viewer.rs` | RAM/memory inspection and debugger-oriented mutation UI. Must inspect/mutate the same mounted physical RAM storage through backend APIs, not a copied memory image. |
-| `src/app/ui/s100_memory_inspection.rs` | S-100-specific memory inspection presentation: responders, overlaps, protection/card ownership details. Useful for diagnosing decode/physical RAM topology. |
-| `src/app/ui/s100_hardware.rs` | Physical chassis/card configuration UI. Slot changes are validated and require POWER OFF because this represents real card installation/straps. |
-| `src/app/ui/s100_hardware_editor.rs` | Dedicated S-100 hardware viewport. Presents a slot inventory alongside the existing physical chassis/card editor and delegates all mutations to the same validated `s100_hardware` path; it must never become a second hardware authority. |
-| `src/app/ui/io_inspector.rs` | Displays guest I/O and host serial/network trace observations for troubleshooting serial/card traffic. Opening the inspector may enable capture but must not alter guest semantics. |
-| `src/app/ui/asr33.rs` | ASR-33 drawing and interaction helpers for the integrated teletype presentation. |
-| `src/app/ui/asr33_window.rs` | ASR-33 dedicated window/layout and operator controls. |
-| `src/app/ui/terminal.rs` | Text terminal window plus ADM-3A photographic shell/active-CRT presentation. Terminal rendering remains presentation-only; UART and serial timing authority remain in the installed MITS card hardware. |
+| `src/app/ui/mod.rs` | UI module root/shared helpers. |
+| `src/app/ui/main_menu.rs` | Canonical top-level navigation. |
+| `src/app/ui/assets.rs` | egui textures/fonts/visual assets. Presentation only. |
+| `src/app/ui/front_panel.rs` | Main photographic Altair panel renderer; consumes backend/machine truth. |
+| `src/app/ui/front_panel_assets.rs` | Front-panel visual asset/layout helpers. |
+| `src/app/ui/front_panel_switches.rs` | Switch geometry/input/rendering helpers. |
+| `src/app/ui/front_panel_operator.rs` | Operator-oriented panel/control window using backend controls. |
+| `src/app/ui/cpu_pin_diagram.rs` | Didactic 8080 pin visualization from captured backend state. |
+| `src/app/ui/bus_teacher.rs` | Bus/T-state teaching UI; historical snapshots remain observations. |
+| `src/app/ui/debugger_controls.rs` | Breakpoint/watchpoint/run-to/step controls. |
+| `src/app/ui/execution_position.rs` | Current execution-position presentation helpers. |
+| `src/app/ui/instruction_history.rs` | Bounded instruction-history/disassembly UI. |
+| `src/app/ui/loop_inspector.rs` | Conservative loop-analysis UI. |
+| `src/app/ui/memory_activity.rs` | Recent memory activity visualization. |
+| `src/app/ui/memory_viewer.rs` | Physical RAM inspection/debug mutation through backend APIs; no copied RAM authority. |
+| `src/app/ui/s100_memory_inspection.rs` | S-100 responder/overlap/protection/mapping inspection. |
+| `src/app/ui/s100_hardware.rs` | Physical chassis/card configuration UI; topology changes require POWER OFF. |
+| `src/app/ui/s100_hardware_editor.rs` | Dedicated S-100 inventory editor delegating to the same validated hardware authority. |
+| `src/app/ui/io_inspector.rs` | Guest I/O plus host endpoint trace observations. |
+| `src/app/ui/asr33.rs` | ASR-33 presentation/interaction helpers. |
+| `src/app/ui/asr33_window.rs` | ASR-33 dedicated window/operator controls. |
+| `src/app/ui/terminal.rs` | Text-terminal renderer/input; host buffers are not UART state. |
 
 ---
 
-## 3. `src/backend/` — app-facing machine contract and Adaptive execution
+## 3. `src/backend/` — app-facing contract and Adaptive execution
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/backend/mod.rs` | Public machine abstraction/facade. Defines the single engine identity, capabilities, neutral CPU/front-panel snapshots, serial-line data, errors, `MachineBackend` contract and `BackendHost`-facing API surface. UI code should prefer this contract over concrete hardware internals. |
-| `src/backend/cycle_host.rs` | Host/scheduling/debugger facade around the concrete Adaptive Cycle backend. Owns host-facing policy such as service execution, idle/serial time bridging and debugger integration; must not duplicate machine state. |
-| `src/backend/bus_teaching.rs` | Converts exact machine/backend observations into stable didactic bus-teaching snapshots/types (machine cycle, T-state, CPU pins, status/control lines, accuracy labels). Observer only. |
-| `src/backend/cycle.rs` | Small dispatcher/composition module for the concrete backend. Includes the exact Partial implementation, adds Full, and exposes physical S-100 reconfiguration with POWER-OFF guard. |
-| `src/backend/cycle/partial_impl.rs` | The large authoritative exact backend implementation: edge/T-state execution through CPU board and S-100, machine lifecycle/control operations, backend trait implementation, debugger hooks and physical synchronization. Treat as the physical oracle when reviewing Full changes. |
-| `src/backend/cycle/full.rs` | Adaptive Full engine and `FullInstructionBus`. Contains opcode admission, safety blockers, guest read/write caches, physical T1 handling, panel-duty accounting, protection, DI/EI/control-flow exactness, multi-instruction windows, boundary reconstruction and Full→Partial state handoff. Performance-sensitive and fidelity-sensitive. |
-| `src/backend/cycle/full/control_flow_tests.rs` | Full-versus-exact oracles for CALL/RET/RST/conditional control-flow timing, internal T5 placement and boundary state. Do not weaken when extending Full control flow. |
-| `src/backend/cycle/full/ei_tests.rs` | Exact tests for conservative Full EI handling, delayed INTE transition, EI→LHLD guarded admission, pending interrupt behavior and EI/DI cancellation. |
-| `src/backend/cycle/full/panel_histogram_reference.rs` | Independent/reference front-panel duty implementation used to verify the optimized marginal accumulator. It is intentionally not the production fast representation; it is an oracle against optimization mistakes. |
+| `src/backend/mod.rs` | Public single-engine backend contract, neutral snapshots, serial physical-time/deadline API and `BackendHost` facade. |
+| `src/backend/cycle_host.rs` | Host/debugger/scheduling policy facade. Owns managed-vs-`Instant` serial physical-time handoff and elapsed-time conversion, but never oscillator/UART state or an exact T-state loop. |
+| `src/backend/bus_teaching.rs` | Stable didactic bus/pin/machine-cycle snapshots. Observer only. |
+| `src/backend/cycle.rs` | Concrete Adaptive Cycle composition plus exact managed serial-barrier primitive. Exact T-state progression for the causal serial `OUT` barrier stays here rather than in the host facade. |
+| `src/backend/cycle/partial_impl.rs` | Authoritative exact edge/T-state machine backend, lifecycle/control and debugger integration. Partial remains the physical oracle. |
+| `src/backend/cycle/full.rs` | Adaptive Full executor/`FullInstructionBus`, safety/admission, caches, panel duty, control-flow exactness and boundary reconstruction. Detects pending `OUT` to installed serial hardware and can stop before it for managed causal replanning. |
+| `src/backend/cycle/full/control_flow_tests.rs` | Full-versus-exact control-flow timing/boundary oracles. |
+| `src/backend/cycle/full/ei_tests.rs` | Conservative Full delayed-EI/DI and interrupt-boundary oracles. |
+| `src/backend/cycle/full/panel_histogram_reference.rs` | Independent/reference panel-duty oracle for the optimized Full representation. |
 
-`src/backend/README.md` is not Rust source, but it is the current backend ownership contract and should be read before editing this directory.
+Read `src/backend/README.md` before editing this directory; it is the current ownership contract.
 
 ---
 
 ## 4. `src/cpu8080_cycle/` — exact Intel 8080 timing core
 
-This directory contains the stateful exact CPU. `Cpu8080Cycle` is the architectural authority at synchronization boundaries.
-
 | File | Mission and characteristics |
 | --- | --- |
-| `src/cpu8080_cycle/mod.rs` | Core `Cpu8080Cycle` type and main state-machine/tick behavior. Stores registers, pins, current machine cycle/T-state, instruction temporaries, INTE/EI, HALT/HOLD/reset/fault and exact counters. Also declares child modules and exposes trace/timing types. |
-| `src/cpu8080_cycle/alu.rs` | ALU/flag operations used by the exact core. Encodes Intel 8080 flag semantics (including Auxiliary Carry details) separately from timing/control sequencing. |
-| `src/cpu8080_cycle/decode.rs` | Internal decode from opcode to the exact core's `Instruction`/register/control representation. This is execution-oriented decode, distinct from the richer UI/disassembler metadata in top-level `decoder8080.rs`. |
-| `src/cpu8080_cycle/control_flow.rs` | Exact-core control-flow helpers/schedules for jumps, calls, returns, restarts and related PC/SP behavior. |
-| `src/cpu8080_cycle/pins.rs` | Intel 8080 input/output package pin structures used to exchange digital state with the CPU-board layer. |
-| `src/cpu8080_cycle/state.rs` | Register/state helpers plus Full boundary import/export. `begin_full_execution_window` exports a clean boundary to transient `Cpu8080`; `commit_full_execution_window` restores completed semantic state to the exact core and restarts the exact fetch boundary. |
-| `src/cpu8080_cycle/timing.rs` | Defines machine-cycle classes, Intel status words, T-states (`T1/T2/Tw/T3/T4/T5/Thalt/Thold`) and digital clock-edge vocabulary (`PHI1/PHI2`). |
-| `src/cpu8080_cycle/timing/phase.rs` | Edge-level PHI1/PHI2 transition logic and per-phase sequencing beneath whole-T-state stepping. Critical when a signal changes/samples within a T-state. |
-
-### Exact-core test modules under `src/cpu8080_cycle/`
-
-| File | What it proves |
-| --- | --- |
-| `src/cpu8080_cycle/alu_tests.rs` | Intel 8080 ALU results and flags. |
-| `src/cpu8080_cycle/call_return_tests.rs` | CALL/RET/RST stack/PC behavior and timing details. |
-| `src/cpu8080_cycle/control_flow_tests.rs` | Jump/conditional/control-flow exact behavior. |
-| `src/cpu8080_cycle/core_tests.rs` | Core instruction/tick/reset/general invariants. |
-| `src/cpu8080_cycle/hold_tests.rs` | HOLD/HLDA entry, bus release, dwell and resume behavior. |
-| `src/cpu8080_cycle/interrupt_control_tests.rs` | Interrupt request/enable/acknowledge and DI/EI timing behavior. |
-| `src/cpu8080_cycle/io_tests.rs` | Exact IN/OUT machine cycles and I/O-facing pin/timing behavior. |
-| `src/cpu8080_cycle/special_transfer_tests.rs` | Special multi-cycle transfer instructions whose bus/timing patterns need dedicated verification. |
+| `src/cpu8080_cycle/mod.rs` | `Cpu8080Cycle` state/tick engine and synchronization-boundary CPU authority. |
+| `src/cpu8080_cycle/alu.rs` | Exact-core ALU/flag semantics. |
+| `src/cpu8080_cycle/decode.rs` | Execution-oriented exact-core opcode decode. |
+| `src/cpu8080_cycle/control_flow.rs` | Exact call/jump/return/restart schedules. |
+| `src/cpu8080_cycle/pins.rs` | Intel 8080 package input/output pin structures. |
+| `src/cpu8080_cycle/state.rs` | CPU state helpers and Full window export/import. |
+| `src/cpu8080_cycle/timing.rs` | Machine-cycle, status-word, T-state and PHI vocabulary. |
+| `src/cpu8080_cycle/timing/phase.rs` | Edge-level PHI1/PHI2 transition/sequencing logic. |
+| `src/cpu8080_cycle/alu_tests.rs` | Exact ALU/flag tests. |
+| `src/cpu8080_cycle/call_return_tests.rs` | CALL/RET/RST exact behavior/timing tests. |
+| `src/cpu8080_cycle/control_flow_tests.rs` | Exact jump/conditional/control-flow tests. |
+| `src/cpu8080_cycle/core_tests.rs` | Core instruction/tick/reset invariants. |
+| `src/cpu8080_cycle/hold_tests.rs` | HOLD/HLDA entry/dwell/resume tests. |
+| `src/cpu8080_cycle/interrupt_control_tests.rs` | Interrupt/DI/EI timing tests. |
+| `src/cpu8080_cycle/io_tests.rs` | Exact IN/OUT machine-cycle tests. |
+| `src/cpu8080_cycle/special_transfer_tests.rs` | Dedicated multi-cycle transfer timing tests. |
 
 ---
 
-## 5. `src/machine/` — Altair chassis, front-panel and serial integration
-
-This layer connects the exact CPU and generic S-100 runtime into an Altair machine. It is intentionally CPU-independent at the chassis state level: no second processor lives here.
+## 5. `src/machine/` — chassis, panel, disk and serial integration
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/machine/mod.rs` | Machine module root and `AltairBus` composition. Owns machine memory facade, front-panel controller, canonical S-100 bus state and diagnostic metering. Exposes selected machine types/constants to backend. No hidden UART or alternate RAM. |
-| `src/machine/chassis.rs` | `AltairChassis`: physical chassis lifecycle/control wrapper (power, panel/control interaction and CPU-free machine container). RUN state derives from physical bus latch rather than a duplicate boolean authority. |
-| `src/machine/cpu_board.rs` | Adapter between `Cpu8080Cycle` package pins/control inputs and the MITS 8080 S-100 CPU-board electrical behavior. Defines CPU samples/control-line views used by exact backend. |
-| `src/machine/dcdd.rs` | MITS 88-DCDD physical two-board controller topology. Owns the one documented shared controller harness/external disk-cable boundary and constructs distinct Board #1 / Board #2 S-100 electrical cards without giving either board a software reference to the other. Phase 1 is deliberately electrically quiescent until source-backed decode/signals are activated in later phases. |
-| `src/machine/front_panel.rs` | `FrontPanelController` and switch/control-side panel state such as address/data switch handling. Physical operations are later projected onto the bus/chassis; this is not the GUI renderer. |
-| `src/machine/panel_bus.rs` | Canonical `S100BusState`, raw panel-visible signal/status state, panel lamp snapshots/integration and optimized Full panel-duty accumulation. Central front-panel fidelity file. Raw state is authoritative; brightness is derived. |
-| `src/machine/memory.rs` | Machine-facing memory facade over the live `S100RuntimeFabric`: configuration/migration helpers, physical RAM inspection/load/protection, guest reads/writes and serial-time forwarding. Must not become a second memory store. |
-| `src/machine/serial.rs` | Historical 88-SIO-facing types/logic exposed through the machine module, including revision-specific serial behavior and shared serial abstractions. |
-| `src/machine/serial_bus.rs` | Internal serial connector/bus representation for transferring electrical/logical serial signals between card model and attached endpoint layer. |
-| `src/machine/serial_card.rs` | Runtime serial-card handle/device boundary used by `S100RuntimeFabric` and host inspection/endpoints. Keeps one guest-visible UART/card instance while allowing controlled host access. |
-| `src/machine/serial_devices.rs` | Installed serial device/card implementations and compatibility routing facade. Hosts the card-family behavior used by runtime serial card adapters, including common trace/activity handling. |
-| `src/machine/sio.rs` | MITS 88-SIO implementation: UART/card state, revisions, data/status port semantics, timing/handshake/interrupt behavior and physical interface rules. |
-| `src/machine/sio_interface.rs` | 88-SIO electrical interface conversion/connector rules (RS-232/TTL/TTY-style variants and handshake signal mapping). Keeps external electrical interface semantics separate from core UART registers. |
-| `src/machine/two_sio.rs` | MITS 88-2SIO/MC6850 board implementation: two ports, baud-generator taps, strap effects, status/control/data paths and interrupt wiring. Uses `mc6850.rs` for ACIA chip behavior. |
+| `src/machine/mod.rs` | `AltairBus` composition, panel/control state, diagnostic metering and separation of CPU/chassis-time from serial physical-time advancement. |
+| `src/machine/chassis.rs` | CPU-free `AltairChassis` lifecycle/control wrapper; RUN derives from the physical bus latch. |
+| `src/machine/cpu_board.rs` | `Cpu8080Cycle` package ↔ MITS 8080 S-100 CPU-board adapter. |
+| `src/machine/dcdd.rs` | MITS 88-DCDD two-board controller/harness and source-backed guest I/O/read-stream routing. Uses CPU/chassis virtual time, not serial physical time. |
+| `src/machine/dcdd_read.rs` | DCDD Board #1 read-data latch/NRDA electronics. |
+| `src/machine/fd400.rs` | FD-400 mechanics/media owner with O(1) CPU/chassis virtual-time epoch/deadline model. |
+| `src/machine/fd400_media.rs` | Physical 77×32×137-byte removable-medium geometry/payload/write-protect state. |
+| `src/machine/fd400_read.rs` | Source-backed first-byte/byte-cadence physical read-stream timing and O(1) catch-up. |
+| `src/machine/front_panel.rs` | Front-panel operator/control state and physical operations. |
+| `src/machine/panel_bus.rs` | Canonical raw `S100BusState` plus panel duty/persistence integration. Raw state is authority; brightness is derived. |
+| `src/machine/memory.rs` | Machine facade over live `S100RuntimeFabric`. Separately forwards serial physical time/deadlines and DCDD/chassis virtual time; owns no second memory or generic merged peripheral clock. |
+| `src/machine/serial.rs` | Historical/shared 88-SIO-facing types/logic exposed by the machine module. |
+| `src/machine/serial_bus.rs` | Serial-only machine/card/endpoint bridge and serial physical-time/deadline forwarding. It no longer clocks DCDD mechanics; disk/chassis time has a separate path. |
+| `src/machine/serial_card.rs` | Runtime serial-card handle/device boundary. Exposes controlled host access plus the deadline derived from that same card-owned state. |
+| `src/machine/serial_devices.rs` | Installed serial device/card-family facade. Propagates/aggregates card deadlines, ignores quiet ports and keeps compatibility routing from becoming another UART authority. |
+| `src/machine/sio.rs` | MITS 88-SIO/COM2502 card state, revisions, data/status, handshake/interrupt and timing. Owns effective next-clock deadline and returns no scheduler deadline while timing is quiet. |
+| `src/machine/sio_interface.rs` | 88-SIO external electrical-interface conversion/connector rules. |
+| `src/machine/two_sio.rs` | 88-2SIO/MC6850 board. Owns two ports, free-running external 16× baud-tap phase, `/1`/`/16`/`/64` divider phase/effective deadlines, straps, data/status/control and interrupt wiring. |
 
 ---
 
-## 6. S-100 files — physical bus, chassis and runtime cards
+## 6. S-100 files — physical bus and live card runtime
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/s100.rs` | Fundamental historical S-100 vocabulary: modeled signals, pin mapping, connector contact roles, card descriptors/classes and common card contract types. This is the physical language shared by all cards. |
-| `src/s100_interface.rs` | Canonical public/software view of a card connector. Re-exports the common card/backplane electrical interfaces and explicitly separates host inspection handles from guest bus transactions. |
-| `src/s100_backplane.rs` | Card-agnostic electrical resolver. Stores installed card drives, resolves High-Z/strong/open-collector drivers and contention, tracks changed pins/cards, caches selected drives and uses compact bitsets/driver counts on the hot path. Must never contain CPU/RAM/serial family logic. |
-| `src/s100_chassis.rs` | Historical chassis/motherboard topology: Altair 8800/8800a/8800b physical connector populations and validation. Creates empty usable backplanes; does not decide card identity. |
-| `src/s100_runtime.rs` | Live physical fabric assembler and runtime authority for installed cards. Materializes `S100HardwareConfig` into CPU/RAM/serial/storage-controller card instances, owns the `S100Backplane`, shared 88-DCDD harness when fitted, static memory responder table, RAM slot index and I/O decode index, and performs electrical settling/optimized guest transactions. |
-| `src/s100_cpu.rs` | Live MITS 8080 CPU-board S-100 card implementation/handle. Converts CPU package state into board-level S-100 drives/status-latch behavior while exposing controlled host reconciliation/inspection hooks. |
-| `src/s100_memory.rs` | Historical RAM-board descriptions/configuration semantics used to represent real board address/population/timing/protection properties. Provides board-level validation separate from runtime byte storage. |
-| `src/s100_runtime_ram.rs` | Live RAM card implementation and handle. Owns actual RAM bytes and runtime drive/decode/protection/wait behavior for installed RAM cards. This storage is the authoritative guest memory. |
-| `src/s100_runtime_ram/full_timing.rs` | Adaptive Full transactional timing accelerator for 88-4MCD and 88-S4K RAM. Snapshots only digital refresh/WAIT phase into specialized window-local state, commits those latches back to the authoritative runtime RAM state at Full boundaries, and never owns guest bytes or protection state. |
-| `src/s100_io.rs` | Precompiled I/O-port and interrupt-driver responder masks derived from fixed card straps. Acceleration metadata only: multiple responders remain represented and selected cards still execute normal electrical behavior. |
-| `src/s100_io_card.rs` | S-100 electrical adapter for runtime serial/I/O cards. Connects machine serial-card behavior to generic S-100 I/O cycles/status/data/interrupt lines without teaching the backplane card-specific semantics. |
+| `src/s100.rs` | Historical S-100 signals/pins/contact roles/card contract vocabulary. |
+| `src/s100_interface.rs` | Common card/backplane electrical interfaces and host-inspection boundary. |
+| `src/s100_backplane.rs` | Card-agnostic High-Z/strong/open-collector/contention resolver with cached/delta hot path. |
+| `src/s100_chassis.rs` | 8800/8800a/8800b physical connector populations/topology. |
+| `src/s100_runtime.rs` | Live physical fabric/topology authority. Materializes cards, owns backplane/decode tables/harnesses, keeps `advance_serial_time` and `advance_dcdd_time` as separate domains and aggregates the earliest installed serial-card deadline. |
+| `src/s100_cpu.rs` | Live MITS 8080 CPU-board S-100 card and reconciliation/inspection hooks. |
+| `src/s100_memory.rs` | Historical RAM-board configuration/decode/timing/protection properties. |
+| `src/s100_runtime_ram.rs` | Live RAM card and authoritative guest byte storage. |
+| `src/s100_runtime_ram/full_timing.rs` | Full transactional timing acceleration for supported dynamic RAM refresh/WAIT state while preserving authoritative RAM bytes. |
+| `src/s100_io.rs` | Precompiled I/O/interrupt responder masks from physical straps; acceleration metadata only. |
+| `src/s100_io_card.rs` | S-100 electrical adapter connecting runtime serial/I/O cards to generic bus cycles. |
 
 ---
 
-## 7. `src/config/` — validated desired hardware and application configuration
-
-Configuration describes what should be mounted/connected. It is not a second copy of live emulated hardware.
+## 7. `src/config/` — desired hardware and host preferences
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/config/mod.rs` | Configuration module root/re-exports. Keeps app code importing stable config types rather than individual files. |
-| `src/config/machine.rs` | Machine-level configuration and compatibility fields: RAM initialization, CPU/emulation preferences and migration-facing aggregate settings. Current physical inventory ultimately lives in `s100_hardware`. |
-| `src/config/s100_hardware.rs` | Slot-native physical S-100 inventory, installed-card enum, validation, RAM/card queries and CPU-board selection. Central desired-topology model. |
-| `src/config/s100_codec.rs` | Serialization/parsing codec for slot-native S-100 hardware configuration used by persistence/migration. Keeps textual persistence details separate from hardware types. |
-| `src/config/sio.rs` | MITS 88-SIO configurable properties: address pair, revision/format/baud/interface/interrupt wiring and validation/defaults. |
-| `src/config/sio_electrical.rs` | Small shared electrical-interface configuration types for serial hardware, separating physical signaling choices from runtime device state. |
-| `src/config/two_sio.rs` | MITS 88-2SIO strap/address/baud/interrupt configuration and validation. Represents physical jumpers/straps rather than live MC6850 registers. |
-| `src/config/external_serial.rs` | Persisted/settings model for external network/TCP serial endpoint behavior. Host transport configuration, not guest UART state. |
-| `src/config/external_com.rs` | Persisted/settings model for host COM serial endpoint behavior. |
-| `src/config/terminal.rs` | Text-terminal configuration/pacing-related user settings. |
+| `src/config/mod.rs` | Configuration root/re-exports. |
+| `src/config/machine.rs` | Machine/CPU speed/migration configuration plus ASR/terminal endpoint pacing choices. Host CPU speed and endpoint pacing are not serial-card clock authority. |
+| `src/config/s100_hardware.rs` | Slot-native desired S-100 inventory and topology validation. |
+| `src/config/s100_codec.rs` | Slot-native hardware persistence codec. |
+| `src/config/sio.rs` | 88-SIO address/revision/format/baud/interface/interrupt physical configuration. |
+| `src/config/sio_electrical.rs` | Shared serial physical-interface configuration. |
+| `src/config/two_sio.rs` | 88-2SIO address/baud-tap/interface/interrupt straps. Card configuration remains independent of endpoint pacing. |
+| `src/config/external_serial.rs` | Host TCP serial endpoint settings. |
+| `src/config/external_com.rs` | Host COM endpoint settings. |
+| `src/config/terminal.rs` | Text-terminal host configuration/pacing settings. |
 
 ---
 
@@ -203,113 +189,77 @@ Configuration describes what should be mounted/connected. It is not a second cop
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/io/mod.rs` | I/O transport module root/re-exports. |
-| `src/io/serial_router.rs` | Explicit cable/router model connecting host/peripheral endpoint identities to available emulated serial ports. Enforces connection/disconnection semantics instead of invisible auto-wiring. |
-| `src/io/tcp_serial.rs` | Host TCP serial transport/server implementation, buffering and network trace behavior. It carries endpoint data; it does not emulate UART registers. |
-| `src/io/com_serial.rs` | Host physical COM-port transport using `serialport`, including host-port open/config/read/write/control-line behavior and trace support. Separate from the 88-SIO/88-2SIO hardware model. |
+| `src/io/mod.rs` | Host I/O transport module root. |
+| `src/io/serial_router.rs` | Explicit endpoint↔emulated-port cable routing. It does not auto-synchronize card baud to endpoint settings. |
+| `src/io/tcp_serial.rs` | Host TCP transport/buffering/trace; not a UART. |
+| `src/io/com_serial.rs` | Host physical COM transport/config/control lines; separate from emulated UART/card state. |
 
 ---
 
-## 9. `src/peripherals/asr33/` — ASR-33 teletype model
-
-The ASR-33 is an external peripheral connected to serial hardware, not an S-100 card.
+## 9. `src/peripherals/asr33/` — ASR-33 teletype
 
 | File | Mission and characteristics |
 | --- | --- |
-| `src/peripherals/mod.rs` | Peripheral module root. Currently exposes the ASR-33 model. |
-| `src/peripherals/asr33/mod.rs` | ASR-33 module root/re-exports for model, keyboard, tape, mechanics and answerback functionality. |
-| `src/peripherals/asr33/model.rs` | Core teletype model/state: printing/input behavior and central peripheral coordination independent of egui. |
-| `src/peripherals/asr33/keyboard.rs` | ASR-33 keyboard key definitions/mapping and encoding behavior. |
-| `src/peripherals/asr33/paper_tape.rs` | Paper-tape reader/punch data model and transport behavior used by authentic loading and teletype workflows. |
-| `src/peripherals/asr33/answerback.rs` | ASR-33 answerback mechanism/state and generated character sequence behavior. |
-| `src/peripherals/asr33/mechanics.rs` | Mechanical timing/state helpers for carriage/paper/print actions represented by the peripheral model. |
-
-The UI/controller side of the same peripheral lives in `src/app/asr33_*` and `src/app/ui/asr33*`.
+| `src/peripherals/mod.rs` | Peripheral module root. |
+| `src/peripherals/asr33/mod.rs` | ASR-33 module root/re-exports. |
+| `src/peripherals/asr33/model.rs` | Core teletype state/printing/input coordination. |
+| `src/peripherals/asr33/keyboard.rs` | ASR-33 key definitions/mapping/encoding. |
+| `src/peripherals/asr33/paper_tape.rs` | Paper-tape reader/punch data/transport model. |
+| `src/peripherals/asr33/answerback.rs` | Answerback mechanism/state. |
+| `src/peripherals/asr33/mechanics.rs` | Mechanical carriage/paper/print timing. Endpoint mechanics are downstream from card baud. |
 
 ---
 
-## 10. How the major files relate
+## 10. Current cross-cutting serial-clock ownership
 
-```mermaid
-flowchart TB
-    MAIN[src/main.rs] --> APP[src/app/mod.rs + runtime.rs]
-    APP --> BACKEND[src/backend/mod.rs]
-    BACKEND --> HOST[src/backend/cycle_host.rs]
-    HOST --> CYCLE[src/backend/cycle.rs]
-    CYCLE --> PARTIAL[cycle/partial_impl.rs]
-    CYCLE --> FULL[cycle/full.rs]
-    PARTIAL --> CPU[src/cpu8080_cycle/*]
-    FULL --> SEM[src/cpu8080.rs transient]
-    FULL --> CPU
-    PARTIAL --> MACH[src/machine/*]
-    FULL --> MACH
-    MACH --> RUNTIME[src/s100_runtime.rs]
-    RUNTIME --> BP[src/s100_backplane.rs]
-    RUNTIME --> CPUB[src/s100_cpu.rs]
-    RUNTIME --> RAM[src/s100_runtime_ram.rs]
-    RUNTIME --> IO[src/s100_io_card.rs]
-    RUNTIME --> DCDD[src/machine/dcdd.rs]
-    IO --> SERIAL[src/machine/sio.rs + two_sio.rs]
-    APP --> ROUTER[src/io/serial_router.rs]
-    ROUTER --> SERIAL
-    ROUTER --> ASR[src/peripherals/asr33/*]
+For any change involving baud, serial progress or host scheduling, inspect this chain together:
+
+```text
+src/app/execution_clock.rs             CPU host-time debt only
+src/app/execution_frame.rs             card-deadline-aware managed scheduling
+src/backend/mod.rs                     serial physical-time/deadline contract
+src/backend/cycle_host.rs              managed/Instant handoff and elapsed-time bridge
+src/backend/cycle.rs                   exact managed serial barrier T-state primitive
+src/backend/cycle/full.rs              stop-before-installed-serial-OUT barrier
+src/machine/memory.rs                  separates serial and DCDD/chassis forwarding
+src/machine/serial_bus.rs              serial-only machine/card boundary
+src/machine/serial_card.rs             card state + card-owned deadline handle
+src/machine/serial_devices.rs          family propagation/earliest active deadline
+src/machine/sio.rs                     COM2502 effective deadline
+src/machine/two_sio.rs                 16× tap phase + effective MC6850 divider deadline
+src/s100_runtime.rs                    independent serial/DCDD time advancement + aggregation
 ```
+
+The current contract is documented in `docs/SERIAL_CLOCK_DOMAINS.md`.
 
 ---
 
 ## 11. Files that are especially dangerous to change casually
 
-These are not "do not touch" files, but they sit on critical fidelity/performance boundaries:
-
 - `src/backend/cycle/partial_impl.rs` — exact physical oracle.
-- `src/backend/cycle/full.rs` — optimized path must remain equivalent to Partial.
-- `src/cpu8080_cycle/mod.rs`, `timing.rs`, `timing/phase.rs` — exact processor timing.
-- `src/machine/panel_bus.rs` — raw bus/panel authority and Full duty accounting.
-- `src/s100_backplane.rs` — electrical resolution for every card.
-- `src/s100_runtime.rs` — live topology plus critical hot-path specialization.
-- `src/s100_runtime_ram.rs` — authoritative guest RAM storage.
-- `src/machine/dcdd.rs` — physical two-board disk-controller ownership/harness boundary; later timing/decode changes must remain source-backed and avoid per-T-state idle work.
-- `src/machine/sio.rs`, `two_sio.rs`, `mc6850.rs` — guest-visible serial timing/status/interrupt state.
+- `src/backend/cycle/full.rs` — optimized path and serial `OUT` barrier.
+- `src/backend/cycle.rs` — exact managed barrier ownership.
+- `src/backend/cycle_host.rs` — host scheduling must not acquire a T-state loop or duplicate device state.
+- `src/cpu8080_cycle/mod.rs`, `src/cpu8080_cycle/timing.rs`, `src/cpu8080_cycle/timing/phase.rs` — exact processor timing.
+- `src/machine/panel_bus.rs` — raw bus/panel authority.
+- `src/s100_backplane.rs` — electrical resolution.
+- `src/s100_runtime.rs` — live topology plus time-domain/decode hot paths.
+- `src/s100_runtime_ram.rs` — authoritative guest RAM.
+- `src/machine/dcdd.rs`, `src/machine/dcdd_read.rs`, `src/machine/fd400.rs`, `src/machine/fd400_read.rs`, `src/machine/fd400_media.rs` — source-backed disk controller/drive/media and CPU/chassis-time behavior.
+- `src/machine/sio.rs`, `src/machine/two_sio.rs`, `src/mc6850.rs` — guest-visible serial state/clocking.
 - `src/full_boundary_reconcile.rs` — Full→Partial physical re-entry.
-- `src/app/execution_clock.rs`, `execution_frame.rs` — host scheduling must not change modeled hardware time.
+- `src/app/execution_clock.rs`, `src/app/execution_frame.rs` — host scheduling versus hardware time domains.
 
-A change in one of these should normally come with focused fidelity tests, not only UI/manual validation.
-
----
-
-## 12. Files whose state is intentionally derived
-
-These are safer places to add diagnostics, provided they remain read-only observers of emulation truth:
-
-- `decoder8080.rs`
-- `explain8080.rs`
-- `debugger8080.rs`
-- `callstack8080.rs`
-- `trace8080.rs`
-- `memory_activity8080.rs`
-- most `src/app/ui/*` viewers
-- `backend/bus_teaching.rs`
-- `adaptive_metrics.rs`
-
-Derived does not mean unimportant: these tools can still confuse users or damage performance if poorly designed, but they must not become alternate hardware authorities.
+A change in these normally needs focused fidelity tests, not only manual UI validation.
 
 ---
 
-## 13. Test source outside `src/`
+## 12. Intentionally derived state
 
-The integration tests under `tests/` are numerous and intentionally organized by invariant rather than by production file. Important groups include:
+Decoder/explanation/debug analysis, trace/history, memory activity, most UI viewers, Bus Teacher presentation and Adaptive metrics are derived observations. They may be stale or bounded by design and must never feed back as hardware authority.
 
-- Adaptive/Full/Partial authority and metrics;
-- classic 8080 diagnostics and differential execution;
-- CPU-board clock/pin/timing behavior;
-- READY/HOLD/interrupt/RESET fidelity;
-- front-panel raw state and lamp duty;
-- open-bus/memory wait/protection behavior;
-- S-100 topology, decode, card authority and electrical drive behavior;
-- 88-SIO/88-2SIO configuration, timing, interrupts and interfaces;
-- serial endpoint/cabling/idle-time behavior;
-- debugger/history/teaching UI architecture;
-- authentic BASIC/paper-tape loading;
-- performance/profiling tests (often intentionally ignored).
+---
 
-See [TESTING_GUIDE.md](TESTING_GUIDE.md) for how to select and run them.
+## 13. Integration-test reference
+
+Integration tests under `tests/` are catalogued separately in [`TEST_REFERENCE.md`](TEST_REFERENCE.md). Important groups cover Adaptive authority, classic diagnostics, exact timing, front panel, S-100 topology/electrical behavior, 88-SIO/88-2SIO hardware, serial clock-domain independence, debugger architecture, authentic loading and manual performance evidence.

@@ -1446,6 +1446,8 @@ mod tests {
                 assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
                 assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
             }
+            std::thread::sleep(std::time::Duration::from_millis(115));
+            assert!(machine.serial_rx_line_idle(BackendSerialPort::Port0));
             for _ in 0..4_096 {
                 machine.run_cycles(64);
                 let (_, _, data_reads, _) = machine.io_port_activity(definition.data_port);
@@ -1467,6 +1469,8 @@ mod tests {
                 assert!(!machine.serial_rx_empty(BackendSerialPort::Port0));
                 assert_eq!(machine.peek_io_port(definition.status_port) & 0x01, 0);
             }
+            std::thread::sleep(std::time::Duration::from_millis(115));
+            assert!(machine.serial_rx_line_idle(BackendSerialPort::Port0));
             for _ in 0..4_096 {
                 machine.run_cycles(64);
                 if machine.peek_memory(CHECKSUM_LOADER_END) == Some(0x42) {
@@ -1520,6 +1524,8 @@ mod tests {
 
         let (_, _, data_reads_before, _) = machine.io_port_activity(0x45);
         machine.serial_receive(BackendSerialPort::Port0, 0xAE);
+        std::thread::sleep(std::time::Duration::from_millis(115));
+        assert!(machine.serial_rx_line_idle(BackendSerialPort::Port0));
         for _ in 0..4_096 {
             machine.run_cycles(64);
             let (_, _, data_reads, _) = machine.io_port_activity(0x45);

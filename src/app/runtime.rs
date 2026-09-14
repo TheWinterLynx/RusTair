@@ -14,6 +14,16 @@ impl eframe::App for RusTairApp {
         let now = Instant::now();
         super::ui::ensure_readable_ui_style(ctx);
         super::ui::ensure_persistent_configuration_loaded(self);
+
+        // Diagnostics may change the effective CPU speed at completion. Resolve
+        // that state before selecting which host owns physical serial elapsed
+        // time for this update.
+        self.poll_embedded_cpu_diagnostics(ctx);
+        self.poll_cpu_diagnostic_dialog(ctx);
+
+        let speed = self.effective_emulation_speed();
+        self.machine
+            .set_serial_clock_managed(speed != EmulationSpeed::Unlimited);
         self.service_kill_bits_momentary_sense(ctx, now);
 
         // `machine.s100_hardware` is the sole physical authority. Persistence
@@ -28,9 +38,6 @@ impl eframe::App for RusTairApp {
             );
             self.status = "S-100 hardware configuration mounted".into();
         }
-
-        self.poll_embedded_cpu_diagnostics(ctx);
-        self.poll_cpu_diagnostic_dialog(ctx);
 
         let io_inspector_open = ctx.data_mut(|data| {
             *data.get_temp_mut_or(egui::Id::new("rustair-io-inspector-open"), false)
@@ -56,11 +63,6 @@ impl eframe::App for RusTairApp {
         let frame_dt = now.saturating_duration_since(self.last_tick);
         self.last_tick = now;
 
-        self.update_paper_tape();
-        if self.terminal_connection().is_connected() {
-            self.process_terminal_input(ctx);
-        }
-
         let running = self.machine.running();
         let board = self
             .config
@@ -68,16 +70,18 @@ impl eframe::App for RusTairApp {
             .s100_hardware
             .active_cpu_board()
             .expect("validated S-100 configuration has one CPU board");
-        let speed = self.effective_emulation_speed();
         let budget = self
             .execution_clock
             .budget(now, running, board.clock_hz(), speed);
+        let mut executed = 0u64;
 
         if running && budget != 0 {
-            let executed = super::execution_frame::run_cpu_frame(
+            executed = super::execution_frame::run_cpu_frame_timed(
                 &mut self.machine,
                 budget,
                 super::execution_frame::CPU_FRAME_TIME,
+                board.clock_hz(),
+                speed,
             );
 
             if executed != 0 && executed < u64::from(budget) && self.machine.running() {
@@ -95,6 +99,22 @@ impl eframe::App for RusTairApp {
             }
         }
 
+        if speed != EmulationSpeed::Unlimited && (!running || budget == 0 || executed == 0) {
+            // Physical UART oscillators continue while the 8080 is STOPped,
+            // RESET/HOLD parked, HALTed, or at a zero-budget speed boundary.
+            // No CPU T-state is fabricated for this elapsed wall time.
+            self.machine.advance_serial_physical_time(frame_dt);
+        }
+
+        // Host input sampled during this UI update belongs to "now". Apply it
+        // only after the previous physical interval has been replayed, otherwise
+        // a freshly typed/tape byte could incorrectly traverse UART time that
+        // elapsed before the byte existed.
+        self.update_paper_tape();
+        if self.terminal_connection().is_connected() {
+            self.process_terminal_input(ctx);
+        }
+
         if running {
             if speed == EmulationSpeed::Unlimited {
                 ctx.request_repaint();
@@ -109,9 +129,6 @@ impl eframe::App for RusTairApp {
         }
         if self.terminal_connection().is_connected() {
             self.process_terminal_serial(ctx);
-        }
-        if self.adm3a_connection().is_connected() {
-            self.process_adm3a_serial(ctx);
         }
         self.process_external_serial(ctx);
         self.process_external_com(ctx);

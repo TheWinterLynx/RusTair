@@ -30,8 +30,8 @@ fn cycle_with_sio(config: SioHardwareConfig) -> CycleAccurateMachineBackend {
 fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
     // Wall-clock-to-card-clock bridging is a host scheduling responsibility.
     // Exercise the same public machine boundary as the application rather than
-    // asking the lower-level Cycle core's panel-presentation hook to synthesize
-    // independent oscillator time.
+    // asking the lower-level Cycle core or CPU T-states to synthesize independent
+    // oscillator time.
     let mut backend = BackendHost::default();
     backend.power(true);
     backend.set_running(false);
@@ -49,7 +49,7 @@ fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
     );
     assert_eq!(backend.peek_io_port(0x01), 0x00);
 
-    backend.commit_panel_activity(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(115));
     assert_eq!(
         backend.peek_io_port(0x00) & 0xc1,
         0x00,
@@ -65,7 +65,7 @@ fn rev1_status_and_timing_are_owned_by_the_88_sio_card() {
         None,
         "TX byte must cross the COM2502 shift register before reaching the endpoint"
     );
-    backend.commit_panel_activity(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(115));
     assert_eq!(
         backend.serial_tx_front(BackendSerialPort::Port0),
         Some(b'T')

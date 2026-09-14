@@ -1,0 +1,821 @@
+//! Pertec FD-400 mechanics, removable media and MITS disk-unit timing foundation.
+//!
+//! Time is supplied explicitly by the caller, so an idle drive is query-derived
+//! rather than advanced by a 2 MHz polling loop. The fixed-point unit is one sixth
+//! of a microsecond: one Altair 2 MHz T-state is exactly three units, a 360 RPM
+//! revolution is exactly 1,000,000 units, and one of 32 hard sectors is exactly
+//! 31,250 units. This keeps long-running rotational phase deterministic without
+//! accumulating floating-point drift.
+//!
+//! Phase 4 adds a read-only removable physical medium below the drive electronics.
+//! Phase 5 adds source-backed physical read cadence while controller-side NRDA and
+//! read-data latching remain on the DCDD Board #1 electronics.
+//!
+//! Source-backed base timings come from the July 1977 MITS 88-DCDD Operator's
+//! Guide / MITS 3200 drive documentation: 360 RPM, 32 hard sectors plus index,
+//! 77 tracks, 10 ms track-to-track access, 40 ms Head Status after head load or
+//! a step with the head already loaded, a 30 us Sector True window, the documented
+//! Move Head waveform, and the five-second Disk Buffer selection inhibit after
+//! power-on or door close.
+
+#![allow(dead_code)] // Disk phases consume this foundation incrementally.
+
+#[path = "fd400_media.rs"]
+mod media;
+
+use media::{HARD_SECTORED_TRACKS, HARD_SECTORS_PER_TRACK, HardSectored8InchMedia};
+
+#[cfg(test)]
+pub(super) fn test_readable_media() -> HardSectored8InchMedia {
+    let mut bytes = vec![0u8; media::PHYSICAL_MEDIA_BYTES];
+    for track in 0..HARD_SECTORED_TRACKS {
+        for sector in 0..HARD_SECTORS_PER_TRACK {
+            let base = (track as usize * HARD_SECTORS_PER_TRACK as usize + sector as usize)
+                * media::PHYSICAL_BYTES_PER_SECTOR;
+            bytes[base] = 0x80 | ((track.wrapping_add(sector)) & 0x7f);
+            for offset in 1..media::PHYSICAL_BYTES_PER_SECTOR {
+                bytes[base + offset] = track
+                    .wrapping_mul(17)
+                    .wrapping_add(sector.wrapping_mul(5))
+                    .wrapping_add(offset as u8);
+            }
+        }
+    }
+    HardSectored8InchMedia::from_physical_bytes(bytes, true).unwrap()
+}
+
+const TIME_UNITS_PER_MICROSECOND: u64 = 6;
+const TIME_UNITS_PER_8080_T_STATE: u64 = 3;
+const REVOLUTION_TIME_UNITS: u64 = 1_000_000;
+const SECTORS_PER_REVOLUTION: u64 = HARD_SECTORS_PER_TRACK as u64;
+const SECTOR_TIME_UNITS: u64 = REVOLUTION_TIME_UNITS / SECTORS_PER_REVOLUTION;
+const SECTOR_TRUE_TIME_UNITS: u64 = 30 * TIME_UNITS_PER_MICROSECOND;
+const TRACK_TO_TRACK_TIME_UNITS: u64 = 10_000 * TIME_UNITS_PER_MICROSECOND;
+const HEAD_STATUS_DELAY_UNITS: u64 = 40_000 * TIME_UNITS_PER_MICROSECOND;
+const DRIVE_SELECTION_STABILIZE_UNITS: u64 = 5_000_000 * TIME_UNITS_PER_MICROSECOND;
+const MOVE_HEAD_STEP_TRUE_START_UNITS: u64 = 10_000 * TIME_UNITS_PER_MICROSECOND;
+const MOVE_HEAD_STEP_TRUE_END_UNITS: u64 = 11_000 * TIME_UNITS_PER_MICROSECOND;
+const MOVE_HEAD_STEP_RECOVER_UNITS: u64 = 31_000 * TIME_UNITS_PER_MICROSECOND;
+const TRACK_COUNT: u8 = HARD_SECTORED_TRACKS;
+const LAST_TRACK: u8 = TRACK_COUNT - 1;
+const MAX_DRIVES: usize = 16;
+
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct Fd400Time(u64);
+
+impl Fd400Time {
+    pub(super) const ZERO: Self = Self(0);
+
+    pub(super) const fn from_units(units: u64) -> Self {
+        Self(units)
+    }
+
+    pub(super) const fn from_microseconds(microseconds: u64) -> Self {
+        Self(microseconds.saturating_mul(TIME_UNITS_PER_MICROSECOND))
+    }
+
+    pub(super) const fn from_8080_t_states(t_states: u64) -> Self {
+        Self(t_states.saturating_mul(TIME_UNITS_PER_8080_T_STATE))
+    }
+
+    pub(super) const fn units(self) -> u64 {
+        self.0
+    }
+
+    pub(super) const fn saturating_add(self, delta: u64) -> Self {
+        Self(self.0.saturating_add(delta))
+    }
+
+    pub(super) const fn saturating_duration_since(self, earlier: Self) -> u64 {
+        self.0.saturating_sub(earlier.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Fd400RotationSnapshot {
+    /// Number of complete revolutions since the deterministic rotation epoch.
+    pub(super) revolution: u64,
+    /// Angular offset from the index reference in fixed-point time units.
+    pub(super) revolution_offset_units: u64,
+    /// Current hard-sector position, 0 through 31.
+    pub(super) sector: u8,
+    /// Angular/time offset from the beginning of the current sector.
+    pub(super) sector_offset_units: u64,
+    /// Controller Sector True window derived from the hard-sector boundary.
+    pub(super) sector_true: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Fd400StepDirection {
+    In,
+    Out,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingStep {
+    complete_at: Fd400Time,
+    target_track: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct Fd400MechanicalSnapshot {
+    pub(super) powered: bool,
+    pub(super) door_open: bool,
+    pub(super) motor_on: bool,
+    pub(super) selection_ready: bool,
+    pub(super) track: u8,
+    pub(super) track_zero: bool,
+    pub(super) head_loaded: bool,
+    pub(super) head_status: bool,
+    pub(super) move_head: bool,
+    pub(super) step_command_allowed: bool,
+    pub(super) media_present: bool,
+    pub(super) media_write_protected: Option<bool>,
+    pub(super) rotation: Fd400RotationSnapshot,
+}
+
+#[derive(Debug)]
+pub(super) struct PertecFd400 {
+    powered: bool,
+    door_open: bool,
+    motor_commanded_on: bool,
+    selection_ready_at: Option<Fd400Time>,
+    rotation_epoch: Fd400Time,
+    rotation_revolution_base: u64,
+    rotation_offset_base: u64,
+    track: u8,
+    pending_step: Option<PendingStep>,
+    last_step_command_at: Option<Fd400Time>,
+    head_commanded_loaded: bool,
+    head_ready_at: Option<Fd400Time>,
+    move_head_load_ready_at: Option<Fd400Time>,
+    media: Option<HardSectored8InchMedia>,
+}
+
+impl Default for PertecFd400 {
+    fn default() -> Self {
+        Self {
+            powered: false,
+            door_open: true,
+            motor_commanded_on: false,
+            selection_ready_at: None,
+            rotation_epoch: Fd400Time::ZERO,
+            rotation_revolution_base: 0,
+            rotation_offset_base: 0,
+            track: 0,
+            pending_step: None,
+            last_step_command_at: None,
+            head_commanded_loaded: false,
+            head_ready_at: None,
+            move_head_load_ready_at: None,
+            media: None,
+        }
+    }
+}
+
+impl PertecFd400 {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn power_on(&self) -> bool {
+        self.powered
+    }
+
+    pub(super) fn door_open(&self) -> bool {
+        self.door_open
+    }
+
+    pub(super) fn media_present(&self) -> bool {
+        self.media.is_some()
+    }
+
+    pub(super) fn media_write_protected(&self) -> Option<bool> {
+        self.media
+            .as_ref()
+            .map(HardSectored8InchMedia::write_protected)
+    }
+
+    /// A removable medium can only be inserted while the physical door is open.
+    /// Returning the medium on failure preserves unique ownership and prevents a
+    /// host-side mount attempt from silently cloning a physical diskette.
+    pub(super) fn insert_media(
+        &mut self,
+        media: HardSectored8InchMedia,
+    ) -> Result<(), HardSectored8InchMedia> {
+        if !self.door_open || self.media.is_some() {
+            return Err(media);
+        }
+        self.media = Some(media);
+        Ok(())
+    }
+
+    /// Opening the door is likewise required before the removable medium can be
+    /// physically ejected. A closed-door attempt leaves the medium installed.
+    pub(super) fn eject_media(&mut self) -> Option<HardSectored8InchMedia> {
+        if !self.door_open {
+            return None;
+        }
+        self.media.take()
+    }
+
+    /// Read-only physical-byte access for later FD-400 read electronics. This is
+    /// deliberately below the controller and carries no guest-sector semantics.
+    pub(super) fn physical_media_byte(&self, track: u8, sector: u8, offset: usize) -> Option<u8> {
+        self.media.as_ref()?.physical_byte(track, sector, offset)
+    }
+
+    fn spindle_rotating(&self) -> bool {
+        self.powered && self.motor_commanded_on
+    }
+
+    fn selection_ready(&self, now: Fd400Time) -> bool {
+        self.powered
+            && !self.door_open
+            && self
+                .selection_ready_at
+                .is_some_and(|ready_at| now >= ready_at)
+    }
+
+    fn restart_selection_stabilization(&mut self, now: Fd400Time) {
+        self.selection_ready_at = (self.powered && !self.door_open)
+            .then(|| now.saturating_add(DRIVE_SELECTION_STABILIZE_UNITS));
+    }
+
+    fn rotation_snapshot_without_settle(&self, now: Fd400Time) -> Fd400RotationSnapshot {
+        let elapsed = if self.spindle_rotating() {
+            now.saturating_duration_since(self.rotation_epoch)
+        } else {
+            0
+        };
+        let accumulated = self.rotation_offset_base.saturating_add(elapsed);
+        let revolution = self
+            .rotation_revolution_base
+            .saturating_add(accumulated / REVOLUTION_TIME_UNITS);
+        let revolution_offset_units = accumulated % REVOLUTION_TIME_UNITS;
+        let sector = (revolution_offset_units / SECTOR_TIME_UNITS) as u8;
+        let sector_offset_units = revolution_offset_units % SECTOR_TIME_UNITS;
+        Fd400RotationSnapshot {
+            revolution,
+            revolution_offset_units,
+            sector,
+            sector_offset_units,
+            sector_true: sector_offset_units < SECTOR_TRUE_TIME_UNITS,
+        }
+    }
+
+    fn capture_rotation_at(&mut self, now: Fd400Time) {
+        let snapshot = self.rotation_snapshot_without_settle(now);
+        self.rotation_revolution_base = snapshot.revolution;
+        self.rotation_offset_base = snapshot.revolution_offset_units;
+        self.rotation_epoch = now;
+    }
+
+    pub(super) fn set_power(&mut self, powered: bool, now: Fd400Time) {
+        if self.powered == powered {
+            return;
+        }
+        self.capture_rotation_at(now);
+        self.powered = powered;
+        self.restart_selection_stabilization(now);
+        if !powered {
+            self.pending_step = None;
+            self.last_step_command_at = None;
+            self.head_commanded_loaded = false;
+            self.head_ready_at = None;
+            self.move_head_load_ready_at = None;
+        }
+    }
+
+    pub(super) fn set_door_open(&mut self, open: bool, now: Fd400Time) {
+        if self.door_open == open {
+            return;
+        }
+        self.door_open = open;
+        self.restart_selection_stabilization(now);
+    }
+
+    pub(super) fn set_motor_on(&mut self, on: bool, now: Fd400Time) {
+        if self.motor_commanded_on == on {
+            return;
+        }
+        self.capture_rotation_at(now);
+        self.motor_commanded_on = on;
+    }
+
+    pub(super) fn set_head_loaded(&mut self, loaded: bool, now: Fd400Time) {
+        if !loaded {
+            self.head_commanded_loaded = false;
+            self.head_ready_at = None;
+            self.move_head_load_ready_at = None;
+            return;
+        }
+        if !self.powered {
+            return;
+        }
+        self.head_commanded_loaded = true;
+        self.head_ready_at = Some(now.saturating_add(HEAD_STATUS_DELAY_UNITS));
+        self.move_head_load_ready_at = Some(now.saturating_add(HEAD_STATUS_DELAY_UNITS));
+        self.last_step_command_at = None;
+    }
+
+    fn settle_step(&mut self, now: Fd400Time) {
+        if self
+            .pending_step
+            .is_some_and(|pending| pending.complete_at <= now)
+        {
+            let pending = self.pending_step.take().expect("pending step exists");
+            self.track = pending.target_track;
+        }
+    }
+
+    fn move_head_status(&self, now: Fd400Time) -> bool {
+        if !self.powered {
+            return false;
+        }
+        if self
+            .move_head_load_ready_at
+            .is_some_and(|ready_at| now < ready_at)
+        {
+            return false;
+        }
+        let Some(step_at) = self.last_step_command_at else {
+            return true;
+        };
+        let elapsed = now.saturating_duration_since(step_at);
+        if elapsed < MOVE_HEAD_STEP_TRUE_START_UNITS {
+            false
+        } else if elapsed < MOVE_HEAD_STEP_TRUE_END_UNITS {
+            true
+        } else if elapsed < MOVE_HEAD_STEP_RECOVER_UNITS {
+            false
+        } else {
+            true
+        }
+    }
+
+    pub(super) fn step(&mut self, direction: Fd400StepDirection, now: Fd400Time) -> bool {
+        self.settle_step(now);
+        if self.pending_step.is_some() || !self.move_head_status(now) {
+            return false;
+        }
+
+        let target_track = match direction {
+            Fd400StepDirection::In => self.track.saturating_add(1).min(LAST_TRACK),
+            Fd400StepDirection::Out => self.track.saturating_sub(1),
+        };
+        let complete_at = now.saturating_add(TRACK_TO_TRACK_TIME_UNITS);
+        self.pending_step = Some(PendingStep {
+            complete_at,
+            target_track,
+        });
+        self.last_step_command_at = Some(now);
+        if self.head_commanded_loaded {
+            self.head_ready_at = Some(now.saturating_add(HEAD_STATUS_DELAY_UNITS));
+        }
+        true
+    }
+
+    pub(super) fn snapshot(&mut self, now: Fd400Time) -> Fd400MechanicalSnapshot {
+        self.settle_step(now);
+        let head_status = self.powered
+            && self.head_commanded_loaded
+            && self.head_ready_at.is_some_and(|ready_at| now >= ready_at);
+        let move_head = self.move_head_status(now);
+        Fd400MechanicalSnapshot {
+            powered: self.powered,
+            door_open: self.door_open,
+            motor_on: self.spindle_rotating(),
+            selection_ready: self.selection_ready(now),
+            track: self.track,
+            track_zero: self.track == 0,
+            head_loaded: self.head_commanded_loaded,
+            head_status,
+            move_head,
+            step_command_allowed: move_head && self.pending_step.is_none(),
+            media_present: self.media_present(),
+            media_write_protected: self.media_write_protected(),
+            rotation: self.rotation_snapshot_without_settle(now),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct MitsDiskBuffer {
+    address: u8,
+}
+
+impl MitsDiskBuffer {
+    pub(super) fn new(address: u8) -> Option<Self> {
+        (address < MAX_DRIVES as u8).then_some(Self { address })
+    }
+
+    pub(super) const fn address(&self) -> u8 {
+        self.address
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct MitsDiskUnit {
+    buffer: MitsDiskBuffer,
+    cable_connected: bool,
+    drive: PertecFd400,
+}
+
+impl MitsDiskUnit {
+    pub(super) fn new(address: u8) -> Option<Self> {
+        Some(Self {
+            buffer: MitsDiskBuffer::new(address)?,
+            cable_connected: true,
+            drive: PertecFd400::new(),
+        })
+    }
+
+    pub(super) const fn address(&self) -> u8 {
+        self.buffer.address()
+    }
+
+    pub(super) fn set_cable_connected(&mut self, connected: bool) {
+        self.cable_connected = connected;
+    }
+
+    pub(super) fn drive(&self) -> &PertecFd400 {
+        &self.drive
+    }
+
+    pub(super) fn drive_mut(&mut self) -> &mut PertecFd400 {
+        &mut self.drive
+    }
+
+    pub(super) fn insert_media(
+        &mut self,
+        media: HardSectored8InchMedia,
+    ) -> Result<(), HardSectored8InchMedia> {
+        self.drive.insert_media(media)
+    }
+
+    pub(super) fn eject_media(&mut self) -> Option<HardSectored8InchMedia> {
+        self.drive.eject_media()
+    }
+
+    /// The Disk Buffer inhibits selection for five seconds after drive power-on
+    /// or door close, in addition to rejecting an open door, powered-off drive,
+    /// or absent controller cable.
+    pub(super) fn selectable(&self, now: Fd400Time) -> bool {
+        self.cable_connected && self.drive.selection_ready(now)
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct Mits88DiskCableBus {
+    units: [Option<MitsDiskUnit>; MAX_DRIVES],
+}
+
+impl Default for Mits88DiskCableBus {
+    fn default() -> Self {
+        Self {
+            units: std::array::from_fn(|_| None),
+        }
+    }
+}
+
+impl Mits88DiskCableBus {
+    pub(super) fn install(&mut self, unit: MitsDiskUnit) -> Option<MitsDiskUnit> {
+        let index = unit.address() as usize;
+        self.units[index].replace(unit)
+    }
+
+    pub(super) fn remove(&mut self, address: u8) -> Option<MitsDiskUnit> {
+        self.units.get_mut(address as usize)?.take()
+    }
+
+    pub(super) fn drive_available(&self, address: u8, now: Fd400Time) -> bool {
+        self.units
+            .get(address as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(|unit| unit.selectable(now))
+    }
+
+    pub(super) fn unit_mut(&mut self, address: u8) -> Option<&mut MitsDiskUnit> {
+        self.units.get_mut(address as usize)?.as_mut()
+    }
+
+    pub(super) fn unit(&self, address: u8) -> Option<&MitsDiskUnit> {
+        self.units.get(address as usize)?.as_ref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use media::PHYSICAL_MEDIA_BYTES;
+
+    fn patterned_media(write_protected: bool) -> HardSectored8InchMedia {
+        let bytes = (0..PHYSICAL_MEDIA_BYTES)
+            .map(|index| (index & 0xff) as u8)
+            .collect();
+        HardSectored8InchMedia::from_physical_bytes(bytes, write_protected).unwrap()
+    }
+
+    #[test]
+    fn fixed_point_time_exactly_represents_altair_t_states_rotation_and_sectors() {
+        assert_eq!(Fd400Time::from_8080_t_states(1).units(), 3);
+        assert_eq!(Fd400Time::from_microseconds(1).units(), 6);
+        assert_eq!(REVOLUTION_TIME_UNITS, 1_000_000);
+        assert_eq!(SECTOR_TIME_UNITS, 31_250);
+        assert_eq!(REVOLUTION_TIME_UNITS / SECTOR_TIME_UNITS, 32);
+    }
+
+    #[test]
+    fn rotation_is_epoch_derived_and_advances_without_cpu_execution() {
+        let mut drive = PertecFd400::new();
+        let t0 = Fd400Time::ZERO;
+        drive.set_power(true, t0);
+        drive.set_motor_on(true, t0);
+
+        let at_start = drive.snapshot(t0);
+        assert_eq!(at_start.rotation.sector, 0);
+        assert!(at_start.rotation.sector_true);
+
+        let sector_1 = drive.snapshot(Fd400Time::from_units(SECTOR_TIME_UNITS));
+        assert_eq!(sector_1.rotation.sector, 1);
+        assert_eq!(sector_1.rotation.sector_offset_units, 0);
+
+        let one_rev = drive.snapshot(Fd400Time::from_units(REVOLUTION_TIME_UNITS));
+        assert_eq!(one_rev.rotation.revolution, 1);
+        assert_eq!(one_rev.rotation.sector, 0);
+        assert_eq!(one_rev.rotation.revolution_offset_units, 0);
+    }
+
+    #[test]
+    fn large_rotation_jump_matches_incremental_observation() {
+        let mut incremental = PertecFd400::new();
+        let mut jumped = PertecFd400::new();
+        incremental.set_power(true, Fd400Time::ZERO);
+        incremental.set_motor_on(true, Fd400Time::ZERO);
+        jumped.set_power(true, Fd400Time::ZERO);
+        jumped.set_motor_on(true, Fd400Time::ZERO);
+
+        let target_units = REVOLUTION_TIME_UNITS * 1_000 + SECTOR_TIME_UNITS * 17 + 123;
+        let mut t = 0;
+        while t < target_units {
+            t = (t + SECTOR_TIME_UNITS).min(target_units);
+            let _ = incremental.snapshot(Fd400Time::from_units(t));
+        }
+        assert_eq!(
+            incremental.snapshot(Fd400Time::from_units(target_units)),
+            jumped.snapshot(Fd400Time::from_units(target_units))
+        );
+    }
+
+    #[test]
+    fn selection_is_inhibited_for_five_seconds_after_power_or_door_close() {
+        let mut drive = PertecFd400::new();
+        drive.set_door_open(false, Fd400Time::ZERO);
+        drive.set_power(true, Fd400Time::ZERO);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(4_999_999))
+                .selection_ready
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(5_000_000))
+                .selection_ready
+        );
+
+        let reopened_at = Fd400Time::from_microseconds(6_000_000);
+        drive.set_door_open(true, reopened_at);
+        assert!(!drive.snapshot(reopened_at).selection_ready);
+        let reclosed_at = Fd400Time::from_microseconds(7_000_000);
+        drive.set_door_open(false, reclosed_at);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(11_999_999))
+                .selection_ready
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(12_000_000))
+                .selection_ready
+        );
+    }
+
+    #[test]
+    fn head_status_obeys_forty_millisecond_load_deadline() {
+        let mut drive = PertecFd400::new();
+        drive.set_power(true, Fd400Time::ZERO);
+        drive.set_head_loaded(true, Fd400Time::ZERO);
+
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(39_999))
+                .head_status
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(40_000))
+                .head_status
+        );
+    }
+
+    #[test]
+    fn move_head_matches_documented_step_and_head_load_waveform() {
+        let mut drive = PertecFd400::new();
+        drive.set_power(true, Fd400Time::ZERO);
+        drive.set_head_loaded(true, Fd400Time::ZERO);
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(39_999))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(40_000))
+                .move_head
+        );
+
+        let step_at = Fd400Time::from_microseconds(40_000);
+        assert!(drive.step(Fd400StepDirection::In, step_at));
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(49_999))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(50_000))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(50_999))
+                .move_head
+        );
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(51_000))
+                .move_head
+        );
+        assert!(
+            !drive
+                .snapshot(Fd400Time::from_microseconds(70_999))
+                .move_head
+        );
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(71_000))
+                .move_head
+        );
+    }
+
+    #[test]
+    fn step_completes_at_ten_ms_and_head_status_waits_forty_ms() {
+        let mut drive = PertecFd400::new();
+        let loaded_at = Fd400Time::ZERO;
+        drive.set_power(true, loaded_at);
+        drive.set_head_loaded(true, loaded_at);
+        let step_at = Fd400Time::from_microseconds(40_000);
+        assert!(drive.snapshot(step_at).head_status);
+        assert!(drive.step(Fd400StepDirection::In, step_at));
+
+        assert_eq!(
+            drive.snapshot(Fd400Time::from_microseconds(49_999)).track,
+            0
+        );
+        let completed = drive.snapshot(Fd400Time::from_microseconds(50_000));
+        assert_eq!(completed.track, 1);
+        assert!(completed.step_command_allowed);
+        assert!(!completed.head_status);
+
+        assert!(
+            drive
+                .snapshot(Fd400Time::from_microseconds(80_000))
+                .head_status
+        );
+    }
+
+    #[test]
+    fn track_limits_never_underflow_or_exceed_seventy_six() {
+        let mut drive = PertecFd400::new();
+        drive.set_power(true, Fd400Time::ZERO);
+        assert!(drive.step(Fd400StepDirection::Out, Fd400Time::ZERO));
+        assert_eq!(
+            drive.snapshot(Fd400Time::from_microseconds(10_000)).track,
+            0
+        );
+
+        drive.track = LAST_TRACK;
+        drive.pending_step = None;
+        drive.last_step_command_at = None;
+        assert!(drive.step(Fd400StepDirection::In, Fd400Time::from_microseconds(10_000)));
+        assert_eq!(
+            drive.snapshot(Fd400Time::from_microseconds(20_000)).track,
+            LAST_TRACK
+        );
+    }
+
+    #[test]
+    fn removable_media_requires_open_door_and_preserves_unique_ownership() {
+        let mut drive = PertecFd400::new();
+        let media = patterned_media(true);
+        drive.set_door_open(false, Fd400Time::ZERO);
+        let media = drive
+            .insert_media(media)
+            .expect_err("closed door must reject insertion");
+        assert!(!drive.media_present());
+
+        drive.set_door_open(true, Fd400Time::ZERO);
+        drive.insert_media(media).unwrap();
+        assert!(drive.media_present());
+        assert_eq!(drive.media_write_protected(), Some(true));
+        assert_eq!(drive.physical_media_byte(0, 0, 0), Some(0));
+        assert_eq!(drive.physical_media_byte(76, 31, 136), Some(159));
+
+        drive.set_door_open(false, Fd400Time::ZERO);
+        assert!(drive.eject_media().is_none());
+        assert!(drive.media_present());
+        drive.set_door_open(true, Fd400Time::ZERO);
+        let ejected = drive.eject_media().expect("open door permits ejection");
+        assert!(!drive.media_present());
+        assert!(ejected.write_protected());
+    }
+
+    #[test]
+    fn mounted_media_does_not_change_rotation_or_drive_selection_timing() {
+        let mut empty = PertecFd400::new();
+        let mut mounted = PertecFd400::new();
+        mounted.insert_media(patterned_media(false)).unwrap();
+        for drive in [&mut empty, &mut mounted] {
+            drive.set_power(true, Fd400Time::ZERO);
+            drive.set_door_open(false, Fd400Time::ZERO);
+            drive.set_motor_on(true, Fd400Time::ZERO);
+        }
+
+        let now = Fd400Time::from_microseconds(5_123_456);
+        let empty_snapshot = empty.snapshot(now);
+        let mounted_snapshot = mounted.snapshot(now);
+        assert_eq!(
+            empty_snapshot.selection_ready,
+            mounted_snapshot.selection_ready
+        );
+        assert_eq!(empty_snapshot.rotation, mounted_snapshot.rotation);
+        assert!(!empty_snapshot.media_present);
+        assert!(mounted_snapshot.media_present);
+    }
+
+    #[test]
+    fn drive_selection_requires_cable_power_closed_door_and_stable_speed() {
+        let mut bus = Mits88DiskCableBus::default();
+        let mut unit = MitsDiskUnit::new(3).unwrap();
+        let t0 = Fd400Time::ZERO;
+        assert!(!unit.selectable(t0));
+        unit.drive_mut().set_power(true, t0);
+        assert!(!unit.selectable(t0));
+        unit.drive_mut().set_door_open(false, t0);
+        assert!(!unit.selectable(Fd400Time::from_microseconds(4_999_999)));
+        assert!(unit.selectable(Fd400Time::from_microseconds(5_000_000)));
+        unit.set_cable_connected(false);
+        assert!(!unit.selectable(Fd400Time::from_microseconds(5_000_000)));
+        unit.set_cable_connected(true);
+        bus.install(unit);
+        let ready = Fd400Time::from_microseconds(5_000_000);
+        assert!(bus.drive_available(3, ready));
+        assert!(!bus.drive_available(2, ready));
+    }
+
+    #[test]
+    fn disk_unit_mount_eject_surface_stays_below_controller_protocol() {
+        let mut unit = MitsDiskUnit::new(5).unwrap();
+        assert!(unit.insert_media(patterned_media(false)).is_ok());
+        assert!(unit.drive().media_present());
+        assert_eq!(unit.drive().physical_media_byte(1, 2, 3), Some(53));
+        let media = unit
+            .eject_media()
+            .expect("default-open drive permits eject");
+        assert!(!unit.drive().media_present());
+        assert!(!media.write_protected());
+    }
+
+    #[test]
+    fn sixteen_idle_units_require_no_time_advance_loop() {
+        let mut bus = Mits88DiskCableBus::default();
+        for address in 0..16 {
+            let mut unit = MitsDiskUnit::new(address).unwrap();
+            unit.drive_mut().set_power(true, Fd400Time::ZERO);
+            unit.drive_mut().set_door_open(false, Fd400Time::ZERO);
+            unit.drive_mut().set_motor_on(true, Fd400Time::ZERO);
+            bus.install(unit);
+        }
+
+        // Time is not pushed through every drive. A single selected drive derives
+        // its state directly from the supplied absolute virtual timestamp.
+        let now = Fd400Time::from_units(
+            DRIVE_SELECTION_STABILIZE_UNITS + REVOLUTION_TIME_UNITS * 50_000 + 777,
+        );
+        let snapshot = bus.unit_mut(15).unwrap().drive_mut().snapshot(now);
+        assert!(snapshot.rotation.revolution >= 50_000);
+        assert!(bus.drive_available(0, now));
+        assert!(bus.drive_available(15, now));
+    }
+}

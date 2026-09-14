@@ -11,6 +11,7 @@ This file contains **only unfinished work that is still relevant to the current 
 - `AltairChassis` owns physical chassis state but no processor implementation.
 - `S100HardwareConfig` slot inventory is the physical hardware configuration authority.
 - Adaptive **Full** and **Partial** are internal execution strategies over the same machine, never separate user-visible emulators.
+- Serial baud generators use an independent physical-time domain: host CPU speed must not scale baud, quiet UARTs must not fragment execution unnecessarily, and CPU/chassis-time devices such as DCDD remain on their separate virtual-time path.
 - Historical bugs/limitations remain reproducible; compatibility workarounds must be explicit and opt-in.
 - Do not run GitHub Actions without explicit user instruction.
 
@@ -67,21 +68,21 @@ Implementation contract: [`docs/88_DCDD_FD400_IMPLEMENTATION_PLAN.md`](docs/88_D
 - [x] **Phase 0 — source-backed hardware contract:** ports, polarities, controller-board wiring, drive selection/topology, base timing, interrupt option and the first physical-media contract are locked down from MITS documentation; unresolved schematic/mechanical details are explicitly deferred rather than guessed.
 - [x] **Phase 1 — physical topology/config skeleton:** add the source-backed DCDD S-100 card set, documented inter-board/controller harness and external drive-bus ownership with no direct CPU/card shortcuts and no intentional idle per-T-state work.
 - [x] **Phase 2 — decode/reset/register surface:** implement real S-100 I/O decode and controller state/reset behavior without media, proving accesses through public 8080/S-100 cycles and preserving front-panel visibility.
-- [ ] **Phase 3 — FD-400 mechanics/time engine:** implement rotational phase, hard-sector/index position, track/head/step state and source-backed deadlines using virtual-time epochs/events rather than per-T-state ticking.
-- [ ] **Phase 4 — media abstraction/read-only surface:** mount/eject a validated physical hard-sector image below the drive electronics, with disk-present/write-protect state separate from host file/path handling.
-- [ ] **Phase 5 — authentic read path:** reproduce synchronization/data-ready cadence and late-service behavior end to end through FD-400 -> DCDD -> S-100 -> 8080, using arithmetic catch-up where observationally equivalent.
+- [x] **Phase 3 — FD-400 mechanics/time engine:** source-backed 5 s drive-selection inhibit, 360 RPM / 32-sector epoch-derived rotation, 77-track mechanics, 10 ms stepping, 40 ms Head Status timing, exact documented Move Head waveform, TRACK0/HS/sector-position guest visibility and chassis-time progression are implemented without per-drive/per-T-state ticking. Adaptive Full advances the same chassis epoch at synchronization boundaries. The hardened installed-idle benchmark (7 paired rounds × 1,000,000,000 T) found no systematic regression: paired median +1.78%, with Full/Partial mix unchanged at 99.999%/0.001%; the earlier apparent -2.61% result was not reproduced under the longer paired measurement.
+- [x] **Phase 4 — media abstraction/read-only surface:** validated 77×32×137 physical hard-sector media lives below the FD-400, with inserted/ejected and write-protect state separate from host path/format metadata; incompatible byte lengths are rejected explicitly.
+- [x] **Phase 5 — authentic read path:** source-backed 140 µs first-byte delay, 32 µs cadence, Board #1 NRDA/read latch, late-service overwrite and arithmetic catch-up are wired through FD-400 -> DCDD -> S-100 -> 8080. A real 8080 polling program selected a drive, waited Head Status/NRDA and read `8E` through `IN 0Ah` after 80,119 T-states; the full `fmt` + `-Dwarnings --all-targets` + release-build gate passed locally.
 - [ ] **Phase 6 — authentic write path:** reproduce write-enable/data-ready/sync/erase timing, write protection and physical media mutation without filesystem/sector shortcuts.
 - [ ] **Phase 7 — interrupts/edge cases/revisions:** implement only source-backed raw interrupt signaling, door/no-media/address/track-zero cases and separately selectable historical revisions where documentation proves a behavioral difference.
 - [ ] **Phase 8 — Fast Disk timing policy:** collapse mechanical/rotational/byte waits to the earliest safe observable transitions while preserving the exact guest protocol, state ordering and logical error conditions of the authentic hardware.
 - [ ] **Phase 9 — persistence/chassis/media UI:** persist physical cards, drive addressing and timing policy through authoritative config; add truthful mount/eject/write-protect controls without UI shadow state.
 - [ ] **Phase 10 — authentic software/bootstrap validation:** boot representative MITS disk software through CPU -> S-100 -> DCDD -> FD-400 -> media with no PC trap, memory injection or direct sector hook; run the same software unchanged in Fast mode.
-- [ ] **Phase 11 — performance/closeout:** add installed-idle, polling, continuous read/write, late-byte and many-idle-drive benchmarks; target <2% idle regression, <8% polling regression and <15% continuous-transfer regression before final fidelity/docs closeout.
+- [ ] **Phase 11 — performance/closeout:** add installed-idle, polling, continuous read/write, late-byte and many-idle-drive benchmarks; installed-idle evidence meets the <2% regression budget, while active polling/transfer budgets remain for the phases that implement those paths.
 
 Phase rules:
 
 - [ ] Each phase lands only when its focused PASS gate in the implementation contract is green; do not weaken an earlier gate to unlock a later phase.
 - [ ] One vs sixteen idle drives must not create O(drives × T-states) work; rotational/mechanical state should be epoch/deadline-derived where possible.
-- [ ] Authentic peripheral timing is guest virtual time. 1x/5x/10x/Unlimited changes host throughput only and must not change the historical FD-400 clock/timing model.
+- [ ] Authentic disk peripheral timing is guest CPU/chassis virtual time. 1x/5x/10x/Unlimited changes host throughput only and must not change the historical FD-400 timing model or reuse the independent serial physical-time scheduler.
 - [ ] Any new Rust source or integration-test file is added to `docs/SOURCE_REFERENCE.md` or `docs/TEST_REFERENCE.md` in the same phase.
 - [ ] Do not run GitHub Actions unless explicitly requested.
 
@@ -103,7 +104,9 @@ Phase rules:
 
 A cleanup/performance/fidelity phase is not complete until:
 
-1. `cargo test` passes locally.
-2. Relevant ignored classic diagnostic tests pass when production CPU/S-100 behavior changed.
-3. `cargo run --release` passes the manual UI smoke test for the affected workflows.
-4. No GitHub Actions were launched unless explicitly requested.
+1. `cargo fmt --check` passes locally.
+2. `cargo test --all-targets` passes locally (with warnings denied for the final contributor gate where applicable).
+3. Relevant ignored classic diagnostic/performance tests pass when the affected production behavior requires them.
+4. `cargo build --release` succeeds.
+5. `cargo run --release` passes the manual UI smoke test for affected interactive workflows when needed.
+6. No GitHub Actions were launched unless explicitly requested.

@@ -66,10 +66,10 @@ cargo test --locked
 For a pre-merge validation of production changes:
 
 ```powershell
-$env:RUSTFLAGS='-Dwarnings'; cargo test --locked --all-targets; if ($LASTEXITCODE -ne 0) { throw "TESTS FAILED" }; cargo build --locked --release; if ($LASTEXITCODE -ne 0) { throw "RELEASE BUILD FAILED" }
+cargo fmt --check; if ($LASTEXITCODE -eq 0) { $env:RUSTFLAGS='-Dwarnings'; cargo test --locked --all-targets }; if ($LASTEXITCODE -eq 0) { cargo build --locked --release }
 ```
 
-`-Dwarnings` turns every compiler warning into an error. New warnings should be fixed, not hidden with lint suppressions unless there is a documented reason.
+`cargo fmt --check` must pass before later failures are interpreted. `-Dwarnings` turns every compiler warning into an error. New warnings should be fixed, not hidden with lint suppressions unless there is a documented reason.
 
 ## 4. Rust concepts you need to recognize
 
@@ -101,7 +101,9 @@ The most important contributor habit is to identify **which object owns the real
 | RUN/STOP latch | `S100BusState::signals.run` |
 | Raw S-100 electrical state | `S100BusState` / live S-100 resolver |
 | Installed RAM and S-100 cards | `S100RuntimeFabric` and the installed card instances |
-| UART/serial-card state | the installed live serial-card instance |
+| UART registers/shift state and oscillator/divider phase | the installed live serial-card instance |
+| Serial physical-time source | managed scheduler in throttled modes; backend `Instant` source in Unlimited; neither owns UART state |
+| CPU/chassis-time peripherals such as DCDD mechanics | chassis virtual-time path, separate from serial physical time |
 | LED persistence/brightness | presentation-only integrator; never an emulation authority |
 | Full semantic CPU state | transient only while a Full window is active; committed back at the synchronization boundary |
 
@@ -117,10 +119,12 @@ Do not introduce any of the following:
 4. **Fake front-panel state.** Do not synthesize ADDRESS/DATA/STATUS lamps from PC/registers when the physical bus says something else.
 5. **Instruction-boundary approximations for hardware that samples mid-instruction.** READY, HOLD, interrupt timing and bus ownership must be sampled where the real hardware samples them.
 6. **Silent hardware repair.** Compatibility workarounds must be explicit and opt-in; historical behavior is not silently changed to make software convenient.
-7. **Host-speed changes to guest hardware.** 5×, 10× and Unlimited change how quickly virtual time is executed, not the installed CPU board's historical clock or peripheral timing model.
-8. **Unsafe Full expansion.** A new Full-supported instruction or block requires an equivalence argument and exact oracle tests against Partial.
+7. **Host-speed changes to guest hardware.** Authentic/2×/5×/10×/Unlimited change how quickly CPU time is executed, not the installed CPU board's historical clock or serial-card baud. Independent serial physical time must remain separate from CPU/chassis virtual time.
+8. **Fixed host polling as a fake device clock.** Independently clocked serial hardware should expose its next effective card-owned event; quiet UARTs should not fragment CPU execution merely because a card is installed.
+9. **Retroactive serial activation.** A guest `OUT` that activates/reconfigures a UART must not let that UART inherit physical time from before the write. Exact barrier progression remains inside the Cycle backend.
+10. **Unsafe Full expansion.** A new Full-supported instruction or block requires an equivalence argument and exact oracle tests against Partial.
 
-The complete reviewer-oriented form of these rules is in `docs/ARCHITECTURAL_INVARIANTS.md`.
+The complete reviewer-oriented form of these rules is in `docs/ARCHITECTURAL_INVARIANTS.md`. Serial timing is detailed in `docs/SERIAL_CLOCK_DOMAINS.md`.
 
 ## 7. Where should I make a change?
 
@@ -131,6 +135,7 @@ The complete reviewer-oriented form of these rules is in `docs/ARCHITECTURAL_INV
 | Change Full acceleration | `src/backend/cycle/full.rs` |
 | Change Adaptive dispatch / exact backend | `src/backend/cycle.rs`, `src/backend/cycle/partial_impl.rs` |
 | Change app-facing machine API | `src/backend/mod.rs`, `src/backend/cycle_host.rs` |
+| Change serial physical-time scheduling/deadlines | `src/app/execution_frame.rs`, `src/backend/cycle_host.rs`, `src/backend/cycle.rs`, `src/machine/sio.rs`, `src/machine/two_sio.rs` |
 | Change physical S-100 signals or card contract | `src/s100.rs`, `src/s100_interface.rs` |
 | Change electrical bus resolution | `src/s100_backplane.rs` |
 | Change mounted-card runtime / physical topology | `src/s100_runtime.rs`, `src/config/s100_hardware.rs` |
@@ -161,7 +166,7 @@ Recommended sequence:
 3. Add or update a focused failing test when practical.
 4. Make the smallest implementation change that satisfies the physical model.
 5. Run focused tests while iterating.
-6. Run formatting only on touched Rust code: `cargo fmt`.
+6. Format touched Rust code with `cargo fmt`, inspect the diff, then require `cargo fmt --check` to pass.
 7. Run `cargo test --locked --all-targets` with warnings denied before requesting merge.
 8. Run a release build.
 9. For hot-path changes, benchmark before and after with the same executable profile and host conditions.
@@ -180,8 +185,8 @@ A change may need several layers of evidence:
 - S-100 electrical tests;
 - Full-versus-Partial differential tests;
 - front-panel duty/state tests;
-- serial timing and interrupt-routing tests;
-- architecture guards that prevent duplicate state authorities;
+- serial timing, independent-clock and interrupt-routing tests;
+- architecture guards that prevent duplicate state/T-state-loop authorities;
 - classic 8080 diagnostics such as CPUTEST and 8080EXM.
 
 Long-running diagnostic/profiling tests may be intentionally `#[ignore]`. Do not unignore, delete or weaken them casually. See `docs/TESTING_GUIDE.md` and `docs/TEST_REFERENCE.md`.
@@ -190,11 +195,11 @@ Long-running diagnostic/profiling tests may be intentionally `#[ignore]`. Do not
 
 Performance is important, but hardware fidelity has priority.
 
-Safe optimization usually means **eliminating redundant host computation while preserving the same physical result**. Examples include cached static address decoding, event-driven recomputation and compiler specialization of a proven Full path.
+Safe optimization usually means **eliminating redundant host computation while preserving the same physical result**. Examples include cached static address decoding, event-driven recomputation, card-owned serial deadlines and compiler specialization of a proven Full path.
 
-Unsafe optimization includes moving hardware events to convenient instruction boundaries, bypassing the S-100 fabric, inventing panel values, or suppressing overlap/high-impedance behavior.
+Unsafe optimization includes moving hardware events to convenient instruction boundaries, bypassing the S-100 fabric, inventing panel values, suppressing overlap/high-impedance behavior, scaling baud with CPU host speed, or replacing effective serial events with arbitrary fixed polling.
 
-Always compare optimized code against the exact Partial oracle when the optimization changes execution granularity. See `docs/DEBUGGING_AND_PERFORMANCE.md`.
+Always compare optimized code against the exact Partial oracle when the optimization changes execution granularity. For independent serial clocks also validate event deadlines, exact `OUT` causality, idle behavior and realtime headroom. See `docs/DEBUGGING_AND_PERFORMANCE.md` and `docs/SERIAL_CLOCK_DOMAINS.md`.
 
 ## 11. Documentation expectations
 
@@ -204,7 +209,7 @@ At minimum document:
 
 - what physical component or host feature changed;
 - the source of truth for the affected state;
-- timing/ordering assumptions;
+- timing/ordering assumptions and time domain;
 - known non-claims or simplifications;
 - tests that prove the intended behavior;
 - compatibility or migration consequences.
@@ -219,16 +224,17 @@ If you are new to the project, the recommended reading order is:
 2. `docs/GLOSSARY.md` — terminology used by the code and hardware documents.
 3. `docs/EMULATION_ARCHITECTURE.md` — current machine architecture and execution model.
 4. `docs/ARCHITECTURAL_INVARIANTS.md` — rules that must remain true during refactors/optimization.
-5. `docs/RUNTIME_FLOWS.md` — how real operations travel through the code end to end.
-6. `docs/SUPPORT_AND_LIMITATIONS.md` — what the emulator currently supports and what it does not claim.
-7. `docs/SUBSYSTEM_REVIEW_MAP.md` — source files, tests and documents to inspect for the subsystem you want to change.
-8. `docs/SOURCE_REFERENCE.md` — mission/characteristics of every Rust source file.
-9. `docs/TEST_REFERENCE.md` — purpose of every integration-test source file.
-10. `docs/REPOSITORY_REFERENCE.md` — root files, assets, tools, workflows and generated paths.
-11. `docs/BUILD_AND_TOOLCHAIN.md` — Cargo, profiles, dependencies and build details.
-12. `docs/CODING_CONVENTIONS.md` — project-specific Rust and review conventions.
-13. `docs/TESTING_GUIDE.md` — test strategy and validation matrix.
-14. `docs/EXTENDING_RUSTAIR.md` — how to add CPU behavior, S-100 cards, peripherals and UI features safely.
-15. `docs/DEBUGGING_AND_PERFORMANCE.md` — debugger architecture, tracing, metrics and profiling.
+5. `docs/SERIAL_CLOCK_DOMAINS.md` — current serial physical-time/deadline architecture.
+6. `docs/RUNTIME_FLOWS.md` — how real operations travel through the code end to end.
+7. `docs/SUPPORT_AND_LIMITATIONS.md` — what the emulator currently supports and what it does not claim.
+8. `docs/SUBSYSTEM_REVIEW_MAP.md` — source files, tests and documents to inspect for the subsystem you want to change.
+9. `docs/SOURCE_REFERENCE.md` — mission/characteristics of every Rust source file.
+10. `docs/TEST_REFERENCE.md` — purpose of every integration-test source file.
+11. `docs/REPOSITORY_REFERENCE.md` — root files, assets, tools, workflows and generated paths.
+12. `docs/BUILD_AND_TOOLCHAIN.md` — Cargo, profiles, dependencies and build details.
+13. `docs/CODING_CONVENTIONS.md` — project-specific Rust and review conventions.
+14. `docs/TESTING_GUIDE.md` — test strategy and validation matrix.
+15. `docs/EXTENDING_RUSTAIR.md` — how to add CPU behavior, S-100 cards, peripherals and UI features safely.
+16. `docs/DEBUGGING_AND_PERFORMANCE.md` — debugger architecture, tracing, metrics and profiling.
 
 The complete index is `docs/README.md`. Existing hardware-fidelity records under `docs/` contain detailed historical research and validation for specific boards/signals. Read the relevant record before changing those components.

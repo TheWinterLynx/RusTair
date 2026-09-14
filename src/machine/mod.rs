@@ -1,6 +1,7 @@
 mod chassis;
 mod cpu_board;
 mod dcdd;
+mod fd400;
 mod front_panel;
 mod memory;
 mod panel_bus;
@@ -301,13 +302,11 @@ impl AltairBus {
             sample.wait,
             sample.hlda,
         );
-        // Every caller of this boundary is one exact Cpu8080Cycle T-state.
-        // Independent card oscillators therefore advance exactly once here;
-        // Full advances equivalent elapsed card time at its sync boundary. If
-        // that elapsed T-state changes PINT/VI/PRDY, settle the real connector
-        // before the next CPU T-state samples its initial package inputs.
-        self.memory.advance_serial_time(1);
-        self.settle_host_serial_change();
+        // Every caller of this boundary is one exact Cpu8080Cycle T-state. Only
+        // peripherals whose physical chronology is defined in CPU/chassis time
+        // advance here. Serial UART oscillators are deliberately excluded: their
+        // baud clocks are serviced from the independent physical-time domain.
+        self.memory.advance_dcdd_time(1);
     }
 
     fn refresh_protect_line(&mut self) {

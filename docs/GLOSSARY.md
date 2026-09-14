@@ -20,6 +20,8 @@ This glossary defines terms used in source, tests and documentation. It intentio
 
 **Backplane** — Passive/interconnection structure that connects S-100 card slots. In RusTair, `S100Backplane` is the generic electrical resolver and deliberately knows no card families.
 
+**Baud tap** — Board-level serial clock selection. On the 88-2SIO the selected MITS tap is a physical external clock source for each ACIA; the MC6850 then applies `/1`, `/16` or `/64`. Host CPU speed and endpoint pacing do not restrap this value.
+
 **BDOS** — CP/M Basic Disk Operating System service entry used by classic 8080 diagnostics. RusTair's diagnostic meter normalizes well-known diagnostic harness calls for reference comparison.
 
 **Bus contention** — Two or more outputs drive incompatible levels on the same line. Must not be silently converted into a unique value.
@@ -32,6 +34,8 @@ This glossary defines terms used in source, tests and documentation. It intentio
 
 **Cargo** — Rust build/test/package tool. `Cargo.toml` defines package metadata, dependencies and profiles.
 
+**Causal serial OUT barrier** — Managed-scheduler synchronization boundary used when guest code executes `OUT` to installed serial hardware. It prevents a UART activated mid-service-interval from inheriting physical serial time that elapsed before the write. The actual I/O still crosses the exact S-100 path.
+
 **Chassis** — Physical enclosure/backplane/card inventory. The chassis is not synonymous with CPU.
 
 **Clock edge** — One transition of PHI1 or PHI2. RusTair exact timing distinguishes rising/falling edges when hardware ordering depends on them.
@@ -41,6 +45,8 @@ This glossary defines terms used in source, tests and documentation. It intentio
 **Contention** — See bus contention.
 
 **CPU board** — S-100 card containing the processor and board-level interface logic. The Intel 8080 chip and MITS 8080 CPU board are different modeling layers.
+
+**CPU/chassis virtual time** — Emulated time advanced by executed Altair CPU/chassis T-state progress. Current DCDD/FD-400 mechanics use this domain. It is deliberately distinct from serial physical time.
 
 **Cpu8080** — Instruction-level semantic 8080 executor used transiently in Full windows and as a reference/semantic core.
 
@@ -65,6 +71,8 @@ This glossary defines terms used in source, tests and documentation. It intentio
 **EmulationEngine** — Public backend engine identity. Current production has one: `RustCycleAccurate8080` / Adaptive Cycle.
 
 **Endpoint** — Host or peripheral device attached through serial routing, e.g. ASR-33, text terminal, TCP or COM. Not the same as the emulated SIO card.
+
+**Event-driven serial deadline** — Number of canonical physical-time quanta until the earliest installed active serial card reaches its next effective UART-visible/event boundary. The deadline is derived from card-owned oscillator/divider phase; it is scheduling metadata, not a second UART state authority.
 
 **Full** — Accelerated Adaptive Cycle strategy. Executes safe instruction windows semantically while preserving exact totals, physical storage, panel duty and synchronization boundary state.
 
@@ -126,7 +134,9 @@ This glossary defines terms used in source, tests and documentation. It intentio
 
 **pub / pub(crate)** — Rust visibility. `pub` exposes an item publicly; `pub(crate)` exposes only within RusTair.
 
-## R–S
+## Q–S
+
+**Quiet UART** — Installed serial channel whose current state cannot change at the next oscillator edge. It publishes no scheduler deadline while quiet, but its free-running oscillator phase remains authoritative and continues to advance when physical serial time is settled.
 
 **RAM card** — Physical S-100 memory board with decode, population, timing and protection properties. Actual bytes live in runtime card instances.
 
@@ -150,6 +160,8 @@ This glossary defines terms used in source, tests and documentation. It intentio
 
 **Serial card** — Emulated 88-SIO/88-2SIO board on S-100. Different from host TCP/COM/terminal endpoint.
 
+**Serial physical time** — Physical elapsed-time domain used by independently clocked 88-SIO/88-2SIO baud generators. It is metered into installed card state independently of guest CPU execution speed and must not be reused to advance CPU/chassis-time devices such as DCDD.
+
 **SerialRouter** — Host/application cable-routing model connecting endpoint devices to emulated serial ports.
 
 **Snapshot** — Read-only captured/derived state for UI/debugging. A snapshot may become stale and should not feed back into emulation.
@@ -164,7 +176,7 @@ This glossary defines terms used in source, tests and documentation. It intentio
 
 ## T–W
 
-**T-state** — Fundamental 8080 timing state. RusTair models T1, T2, Tw, T3, T4, T5 plus halt/hold dwell states.
+**T-state** — Fundamental 8080 timing state. RusTair models T1, T2, Tw, T3, T4, T5 plus halt/hold dwell states. A CPU T-state does not by itself clock independently timed serial hardware.
 
 **TCP endpoint** — Host network transport carrying serial data to/from an emulated connection. Not a UART model.
 
@@ -176,7 +188,7 @@ This glossary defines terms used in source, tests and documentation. It intentio
 
 **UART** — Universal Asynchronous Receiver/Transmitter. Generic term for serial hardware; RusTair's actual modeled chips/boards include MITS 88-SIO hardware and MC6850-based 88-2SIO.
 
-**Unlimited** — Host execution mode that runs virtual machine time as fast as practical while yielding on host deadlines. It does not change historical CPU/peripheral timing ratios.
+**Unlimited** — Host execution mode that runs guest CPU work as fast as practical while yielding on host deadlines. It does not establish a fixed CPU-T-state-to-wall-time ratio; serial physical time therefore comes from the backend's `Instant` source rather than being multiplied from CPU progress.
 
 **WGPU** — Graphics backend used by eframe in RusTair.
 

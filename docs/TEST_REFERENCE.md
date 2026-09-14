@@ -19,9 +19,10 @@ Each `tests/<name>.rs` file is compiled by Cargo as a separate integration-test 
 | `tests/cpu8080_cycle_classic_diagnostics.rs` | Runs classic diagnostics through the exact cycle-oriented CPU path to validate CPU semantics/timing independently of Adaptive Full acceleration. |
 | `tests/cpu8080_cycle_differential.rs` | Differential comparison between exact cycle execution and instruction-level semantic/reference behavior at valid comparison boundaries. Finds semantic/timing-state divergences. |
 | `tests/cpu8080_forced_partial_classic_diagnostics.rs` | Runs classic diagnostic workloads while forcing the exact Partial path, providing an end-to-end reference against the accelerated Adaptive behavior. |
-| `tests/emulation_speed_benchmark.rs` | Controlled speed-mode/throughput benchmark infrastructure. Performance evidence rather than a hardware timing specification. |
+| `tests/emulation_speed_benchmark.rs` | Controlled Adaptive throughput benchmark infrastructure. Includes the long-running installed-idle DCDD A/B gate: alternating baseline/DCDD pairs, explicit Full/Partial mix, per-pair ratios, extended warm-up and 1-billion-T-state samples used to enforce the <2% idle-regression budget without confusing host drift with hardware cost. Performance evidence rather than a hardware timing specification. |
 | `tests/emulation_speed_ui.rs` | Guards the UI/configuration semantics of Authentic/accelerated/Unlimited speed choices and keeps host speed separate from the installed CPU board clock. |
 | `tests/gui_execution_performance.rs` | Guards host GUI scheduling behavior, especially that Unlimited execution is not accidentally repaint-bound and throttled modes retain their intended scheduling semantics. |
+| `tests/serial_scheduler_benchmark.rs` | Manual/ignored release benchmark for the independent physical serial scheduler. Measures both installed-idle/no-deadline scheduling and continuously active 110/9600-baud card-owned deadlines across Authentic/X2/X5/X10, reporting first deadline, host-equivalent MHz, realtime headroom, Full/Partial mix and coarse-comparator overhead without redefining UART baud timing. |
 
 ---
 
@@ -70,7 +71,7 @@ Each `tests/<name>.rs` file is compiled by Cargo as a separate integration-test 
 
 | Test file | Mission |
 | --- | --- |
-| `tests/debugger_architecture.rs` | Guards separation between debugger observers/controllers and authoritative machine state; debugger features must use backend contracts rather than own a shadow CPU/memory. |
+| `tests/debugger_architecture.rs` | Guards separation between debugger/host scheduling and authoritative machine state; exact T-state iteration must remain in the Cycle backend rather than being redispatched one T-state at a time by `CycleHostBackend`. |
 | `tests/debugger_execution.rs` | End-to-end debugger control tests for stepping/run-to/breakpoint/watchpoint semantics against live execution. |
 | `tests/debugger_live_breakpoint.rs` | Focused regression for breakpoints during actual backend execution/resume so a stopped PC does not immediately retrigger incorrectly. |
 | `tests/decoder8080_coverage.rs` | Ensures the teaching/debugger decoder covers the complete 8080 opcode space/metadata expectations needed by tools. |
@@ -134,10 +135,10 @@ Memory wait timing is listed in the CPU timing section because it specifically v
 | --- | --- |
 | `tests/sio88_configuration_ui.rs` | Guards 88-SIO configuration UI fields/options and their mapping to typed physical card configuration. |
 | `tests/sio88_endpoint_wiring.rs` | Validates endpoint/cable compatibility and wiring for 88-SIO physical interfaces; host devices must not be connected through impossible hidden conversions. |
-| `tests/sio88_hardware_fidelity.rs` | Main 88-SIO hardware-fidelity regressions across revisions/status/data/ready/handshake behavior. |
+| `tests/sio88_hardware_fidelity.rs` | Main 88-SIO hardware-fidelity regressions across revisions/status/data/ready/handshake behavior, including physical-time COM2502 frame completion independent of CPU execution. |
 | `tests/sio88_interrupt_configuration.rs` | Verifies configured 88-SIO interrupt source/target/wiring affects the physical interrupt path as intended. |
 | `tests/sio88_physical_boundary.rs` | Guards the boundary between S-100 electrical card behavior, serial connector state and host inspection so no alternate UART state is introduced. |
-| `tests/serial_receive_break_fidelity.rs` | Focused receive-BREAK regression for serial hardware/electrical behavior (including no fabricated ordinary byte where BREAK semantics apply). |
+| `tests/serial_receive_break_fidelity.rs` | Focused receive-BREAK regression for both serial-card families using the independent physical serial clock, including no fabricated ordinary byte where BREAK semantics apply. |
 
 ---
 
@@ -145,10 +146,10 @@ Memory wait timing is listed in the CPU timing section because it specifically v
 
 | Test file | Mission |
 | --- | --- |
-| `tests/two_sio_break_fidelity.rs` | Validates transmit/receive BREAK behavior of the 88-2SIO/MC6850 board path and associated electrical overrides. |
+| `tests/two_sio_break_fidelity.rs` | Validates transmit/receive BREAK behavior of the 88-2SIO/MC6850 board path while its configured baud oscillator progresses independently from CPU execution. |
 | `tests/two_sio_debugger_wait_isolation.rs` | Ensures debugger/inspection access does not incorrectly consume or perturb guest-visible 88-2SIO READY/wait behavior. |
 | `tests/two_sio_external_com_signals.rs` | Validates host COM modem/control signals are projected to/from the emulated 88-2SIO connector with correct semantics/polarity. |
-| `tests/two_sio_idle_chassis_clock.rs` | Proves independent serial-card time continues correctly while CPU instruction execution is STOPped, RESET-held or HOLD/HLDA parked, without double-counting panel/host time. |
+| `tests/two_sio_idle_chassis_clock.rs` | Guards the split clock domains: 88-SIO/88-2SIO serial oscillators advance from independent physical serial time while CPU/chassis-time DCDD mechanics remain on their separate path. It also proves 110-baud progress while the CPU is STOPped, RESET-held, HOLD/HLDA parked, or RUN is asserted without executing CPU cycles. |
 | `tests/two_sio_interrupt_ui.rs` | Guards configuration UI representation of 88-2SIO interrupt wiring/targets. |
 | `tests/two_sio_modem_pins.rs` | Focused 88-2SIO modem/handshake pin semantics (e.g. CTS/DCD/RTS as applicable to interface/config). |
 | `tests/two_sio_prdy_timing.rs` | Validates physical port-ready/PRDY timing and its interaction with READY/wait behavior at the S-100 boundary. |
