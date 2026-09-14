@@ -32,7 +32,22 @@ impl AltairBus {
     }
 
     pub fn serial_receive(&mut self, byte: u8) {
-        let _ = self.memory.serial_receive(0, byte);
+        self.serial_receive_with_errors(0, byte, false, false);
+    }
+
+    pub fn serial_receive_with_errors(
+        &mut self,
+        port_index: usize,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) {
+        let _ = self.memory.serial_receive_with_errors(
+            port_index,
+            byte,
+            framing_error,
+            parity_error,
+        );
         self.settle_host_serial_change();
     }
 
@@ -154,8 +169,7 @@ impl AltairBus {
     }
 
     pub fn serial_port1_receive(&mut self, byte: u8) {
-        let _ = self.memory.serial_receive(1, byte);
-        self.settle_host_serial_change();
+        self.serial_receive_with_errors(1, byte, false, false);
     }
 
     pub fn serial_port1_rx_empty(&self) -> bool {
