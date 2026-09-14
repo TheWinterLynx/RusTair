@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{
-    RamInit, RamSize, S100HardwareConfig, S100InstalledCardConfig, SioBaudRate,
-    SioHardwareConfig,
+    RamInit, RamSize, S100HardwareConfig, S100InstalledCardConfig, SioBaudRate, SioHardwareConfig,
 };
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -90,10 +89,7 @@ fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
                     .unwrap();
             }
             hardware
-                .set_slot(
-                    4,
-                    Some(S100InstalledCardConfig::Mits88Sio(quick_sio())),
-                )
+                .set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(quick_sio())))
                 .unwrap();
         }
         RamSize::K64 => {
@@ -111,10 +107,7 @@ fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
                     .unwrap();
             }
             hardware
-                .set_slot(
-                    6,
-                    Some(S100InstalledCardConfig::Mits88Sio(quick_sio())),
-                )
+                .set_slot(6, Some(S100InstalledCardConfig::Mits88Sio(quick_sio())))
                 .unwrap();
         }
         _ => panic!("Quick BASIC regression only defines physical 8 KiB and 64 KiB fixtures"),
