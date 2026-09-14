@@ -2,12 +2,15 @@
 
 > Historical validation record: hardware descriptions, source references and original results are preserved. Fast/Cycle engine comparisons, engine replacement and former API/file names below describe that earlier implementation. Current production uses one Adaptive Cycle engine with Full/Partial strategies and the installed S-100 card inventory; see [current ownership](STATE_SOURCES.md) and the [backend contract](../src/backend/README.md). The former `src/machine/io_devices.rs` implementation now lives in `src/machine/serial_devices.rs`.
 
+> **Current timing architecture note — 2026-09-14:** the historical statements below that say RUN CPU T-states are the serial clock authority, and the Fast-versus-Cycle scheduling discussion, are intentionally preserved as evidence of the implementation validated at that time. They are **not** the current production scheduler contract. Current 88-2SIO timing uses a separate serial physical-time domain: the external MITS 16× baud tap retains free-running phase, the MC6850 `/1`/`/16`/`/64` divider determines the next effective ACIA event, quiet channels publish no scheduler deadline, and guest serial `OUT` uses an exact causal synchronization barrier. CPU/chassis virtual time remains separate (including current DCDD/FD-400 mechanics). See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) for the authoritative current model.
+
 Status: **PASS — digital card, timing, wiring, endpoint and Fast/Cycle claims locally validated.**
 
 Documentation standard: `docs/HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`.
 
 Related focused evidence:
 
+- `docs/SERIAL_CLOCK_DOMAINS.md` — current production serial clock/scheduler contract
 - `docs/88_2SIO_PHYSICAL_STRAPS.md`
 - `docs/88_2SIO_INTERRUPT_ROUTING.md`
 - `docs/88_2SIO_EXTERNAL_COM_SIGNALS.md`
