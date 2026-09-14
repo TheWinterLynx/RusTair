@@ -7,12 +7,6 @@ use super::execution_clock::UNLIMITED_CHUNK_T_STATES;
 
 const SERVICE_SLICE_T_STATES: u32 = 4_096;
 const UNLIMITED_SERVICE_SLICE_T_STATES: u32 = 65_536;
-/// Throttled CPU modes replay wall time as a CPU/serial timeline instead of
-/// letting egui repaint cadence become the UART clock. Four microseconds is
-/// below the fastest possible 88-2SIO bit time (9600 tap with MC6850 /1 is
-/// about 6.51 us), so even that extreme configuration cannot cross a complete
-/// serial bit boundary without returning to the physical-time scheduler.
-const SERIAL_PHYSICAL_SLICE: Duration = Duration::from_micros(4);
 pub(super) const CPU_FRAME_TIME: Duration = Duration::from_millis(8);
 /// Unlimited remains host-throughput driven, but it must yield often enough for
 /// the egui event/render loop to stay interactive. The CPU executes on this same
@@ -41,14 +35,25 @@ const fn throttled_speed_multiplier(speed: EmulationSpeed) -> Option<u32> {
     }
 }
 
+/// Convert a card-owned serial deadline, expressed in canonical 2 MHz chassis
+/// quanta, into the number of guest CPU T-states that fit before that same
+/// physical instant at the selected throttled speed. The card remains the sole
+/// owner of oscillator phase; this is only a unit conversion for host scheduling.
 #[inline]
-fn throttled_serial_slice_t_states(cpu_clock_hz: u32, speed: EmulationSpeed) -> u32 {
+fn throttled_serial_deadline_t_states(
+    serial_deadline_t_states: u64,
+    cpu_clock_hz: u32,
+    speed: EmulationSpeed,
+) -> u32 {
     let multiplier = throttled_speed_multiplier(speed)
         .expect("Unlimited never uses the managed physical serial scheduler");
-    let numerator = u128::from(cpu_clock_hz)
-        .saturating_mul(u128::from(multiplier))
-        .saturating_mul(SERIAL_PHYSICAL_SLICE.as_nanos());
-    ((numerator / 1_000_000_000).max(1).min(u128::from(u32::MAX))) as u32
+    let numerator = u128::from(serial_deadline_t_states)
+        .saturating_mul(u128::from(cpu_clock_hz))
+        .saturating_mul(u128::from(multiplier));
+    let denominator = u128::from(crate::machine::CLOCK_HZ).max(1);
+    ((numerator / denominator)
+        .max(1)
+        .min(u128::from(u32::MAX))) as u32
 }
 
 #[inline]
@@ -80,11 +85,16 @@ pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Durat
     )
 }
 
-/// Yield between exact engine budgets. In throttled modes this function also
-/// owns CPU/serial physical-time interleaving: CPU speed changes only how many
-/// guest T-states fit inside one 4 us physical slice, while the installed UART
-/// receives the same elapsed duration at every speed. The UART/card remains the
-/// sole bit/frame authority; the scheduler only advances elapsed time.
+/// Yield between exact engine budgets. In throttled modes this function owns the
+/// CPU/serial physical-time interleave, but the installed UART/card determines
+/// every scheduling boundary from its retained oscillator phase. CPU speed only
+/// changes how many guest T-states fit before the same physical deadline.
+///
+/// The 88-SIO exposes its next COM2502 bit boundary. The 88-2SIO currently uses
+/// the next physical MITS baud-generator tap pulse, which is deliberately
+/// conservative: even an OUT that changes the MC6850 /1,/16,/64 selection cannot
+/// cross an unobserved external clock edge. There is no arbitrary fixed-time
+/// serial slice in this path.
 ///
 /// Unlimited has no guest-CPU-to-wall-time ratio, so it retains the independent
 /// `Instant` serial source and large host-throughput slices.
@@ -99,12 +109,6 @@ pub(super) fn run_cpu_frame_timed(
     machine.set_serial_clock_managed(managed_serial);
 
     let (default_service_slice, effective_limit) = host_profile(budget, limit);
-    let service_slice_t_states = if managed_serial {
-        throttled_serial_slice_t_states(cpu_clock_hz, speed).min(default_service_slice)
-    } else {
-        default_service_slice
-    };
-
     let started = Instant::now();
     let before = machine
         .intel8080_state()
@@ -112,6 +116,17 @@ pub(super) fn run_cpu_frame_timed(
         .expect("8080 T-state clock");
     let mut executed = 0;
     while executed < u64::from(budget) && machine.running() {
+        let service_slice_t_states = if managed_serial {
+            machine
+                .serial_clock_deadline_t_states()
+                .map(|deadline| {
+                    throttled_serial_deadline_t_states(deadline, cpu_clock_hz, speed)
+                        .min(default_service_slice)
+                })
+                .unwrap_or(default_service_slice)
+        } else {
+            default_service_slice
+        };
         let slice = (u64::from(budget) - executed).min(u64::from(service_slice_t_states)) as u32;
         let before_slice = executed;
         machine.run_cycles(slice);
@@ -204,7 +219,14 @@ mod tests {
     fn expired_frame_yields_then_resumes_the_same_exact_timeline() {
         let mut sliced = machine();
         let mut uninterrupted = machine();
-        let expected_first = throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::Authentic);
+        let expected_first = throttled_serial_deadline_t_states(
+            sliced
+                .serial_clock_deadline_t_states()
+                .expect("historical fixture has a physical serial clock"),
+            TWO_MHZ,
+            EmulationSpeed::Authentic,
+        )
+        .min(SERVICE_SLICE_T_STATES);
         let first = run_cpu_frame_timed(
             &mut sliced,
             40_000,
@@ -226,22 +248,44 @@ mod tests {
     }
 
     #[test]
-    fn throttled_modes_map_the_same_four_microseconds_to_cpu_speed_only() {
+    fn card_owned_deadline_maps_to_cpu_speed_only() {
         assert_eq!(
-            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::Authentic),
-            8
+            throttled_serial_deadline_t_states(209, TWO_MHZ, EmulationSpeed::Authentic),
+            209
         );
         assert_eq!(
-            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::X2),
-            16
+            throttled_serial_deadline_t_states(209, TWO_MHZ, EmulationSpeed::X2),
+            418
         );
         assert_eq!(
-            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::X5),
-            40
+            throttled_serial_deadline_t_states(209, TWO_MHZ, EmulationSpeed::X5),
+            1_045
         );
         assert_eq!(
-            throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::X10),
-            80
+            throttled_serial_deadline_t_states(209, TWO_MHZ, EmulationSpeed::X10),
+            2_090
+        );
+    }
+
+    #[test]
+    fn historical_two_sio_uses_physical_tap_deadline_not_fixed_four_microseconds() {
+        let mut machine = machine();
+        let deadline = machine
+            .serial_clock_deadline_t_states()
+            .expect("historical 88-2SIO exposes a baud-generator deadline");
+        assert!(
+            deadline > 8,
+            "the scheduler must follow card phase rather than the removed 4 us / 8T slice"
+        );
+        assert_eq!(
+            run_cpu_frame_timed(
+                &mut machine,
+                40_000,
+                Duration::ZERO,
+                TWO_MHZ,
+                EmulationSpeed::Authentic,
+            ),
+            deadline.min(u64::from(SERVICE_SLICE_T_STATES))
         );
     }
 
