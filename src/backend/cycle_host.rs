@@ -255,7 +255,7 @@ impl CycleHostBackend {
         }
 
         if self.serial_output_instruction_in_progress {
-            self.inner.service_execution(1)?;
+            self.inner.service_managed_serial_barrier_t_state()?;
             if self.inner.execution_at_instruction_boundary() {
                 self.serial_output_instruction_in_progress = false;
             }
@@ -270,7 +270,7 @@ impl CycleHostBackend {
             && self.inner.machine().running()
         {
             self.serial_output_instruction_in_progress = true;
-            self.inner.service_execution(1)?;
+            self.inner.service_managed_serial_barrier_t_state()?;
             if self.inner.execution_at_instruction_boundary() {
                 self.serial_output_instruction_in_progress = false;
             }
