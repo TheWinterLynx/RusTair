@@ -48,6 +48,8 @@ The app owns host/UI workflow state. It must never become a second CPU, RAM, UAR
 | `src/app/embedded_cpu_diagnostics.rs` | Bundled diagnostic selection/run workflow. |
 | `src/app/asr33_controller.rs` | Connects ASR-33 peripheral mechanics/input/output to serial routing without replacing card UART state. |
 | `src/app/asr33_state.rs` | ASR host/UI transient/presentation state. |
+| `src/app/adm3a_state.rs` | Headless Lear Siegler ADM-3A terminal state: 80×24 screen RAM, cursor/parser, POWER state and terminal-side keyboard pacing. It owns no Altair memory or UART state. |
+| `src/app/adm3a_serial.rs` | ADM-3A endpoint bridge. Completed guest UART TX reaches the terminal and keyboard bytes enter only through the selected physical UART receive path; card clock authority remains in the installed serial hardware. |
 | `src/app/terminal_controller.rs` | Text-terminal controller logic. |
 | `src/app/terminal_serial.rs` | Terminal transfer/pacing integration. Endpoint pacing remains distinct from card baud/clock authority. |
 | `src/app/terminal_state.rs` | Text-terminal host buffers/preferences/presentation timing. |
@@ -80,7 +82,7 @@ The app owns host/UI workflow state. It must never become a second CPU, RAM, UAR
 | `src/app/ui/io_inspector.rs` | Guest I/O plus host endpoint trace observations. |
 | `src/app/ui/asr33.rs` | ASR-33 presentation/interaction helpers. |
 | `src/app/ui/asr33_window.rs` | ASR-33 dedicated window/operator controls. |
-| `src/app/ui/terminal.rs` | Text-terminal renderer/input; host buffers are not UART state. |
+| `src/app/ui/terminal.rs` | Text-terminal renderer/input plus Lear Siegler ADM-3A photographic shell and active CRT viewport. Presentation never replaces UART/serial timing authority. |
 
 ---
 
