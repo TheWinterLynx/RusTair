@@ -45,7 +45,13 @@ pub(super) struct TwoSioPort {
     /// semantics; this board layer only needs CR1:CR0 to select /1,/16,/64/reset.
     control: u8,
     baud_tap: TwoSioBaudTap,
-    bit_phase_numerator: u64,
+    /// Fractional phase of the external free-running MITS baud-generator tap.
+    /// This phase is independent from the MC6850 divide selection and therefore
+    /// survives ACIA master reset and CR1:CR0 changes.
+    tap_phase_numerator: u64,
+    /// Number of external tap pulses accumulated by the MC6850's currently
+    /// selected /1, /16 or /64 divider since its previous effective clock edge.
+    divider_phase: u8,
     tx_bits_remaining: u8,
     /// True once the currently shifting character has overlapped the physical
     /// BREAK/spacing level. Motorola makes BREAK an override of Tx Data, not a
@@ -70,7 +76,8 @@ impl TwoSioPort {
             acia: Mc6850::default(),
             control: 0,
             baud_tap,
-            bit_phase_numerator: 0,
+            tap_phase_numerator: 0,
+            divider_phase: 0,
             tx_bits_remaining: 0,
             tx_frame_corrupted_by_break: false,
             wire_tx: VecDeque::new(),
@@ -183,10 +190,11 @@ impl TwoSioPort {
         }
 
         if value & 0x03 == 0x03 {
-            // Reset aborts the character currently inside the ACIA. Bytes that
-            // already left the transmit shift register remain on the external
-            // wire queue. The external RX BREAK level itself is not a chip state.
-            self.bit_phase_numerator = 0;
+            // Master reset initializes the ACIA and its internal divider, but it
+            // cannot reset the separate MITS baud generator feeding the RxC/TxC
+            // pins. Preserve `tap_phase_numerator` so the next external pulse
+            // remains on the same physical oscillator timeline.
+            self.divider_phase = 0;
             self.tx_bits_remaining = 0;
             self.tx_frame_corrupted_by_break = false;
             self.rx_shift = None;
@@ -357,28 +365,53 @@ impl TwoSioPort {
         }
     }
 
-    /// Advance this card channel by elapsed Altair CPU-clock T-states. The baud
-    /// generator is independent hardware, but expressing elapsed chassis time in
-    /// CPU-clock quanta gives both emulator engines one deterministic time unit.
-    ///
-    /// MITS' tap produces 16x the labelled baud. The ACIA then divides that clock
-    /// by CR1:CR0 (/1, /16 or /64). Accumulating `tap*16` against
-    /// `cpu_clock*divider` preserves fractional rates such as 27.5 baud exactly.
+    /// Return the canonical chassis T-state count until the next physical pulse
+    /// from this port's selected MITS baud-generator tap. The external generator
+    /// is free-running even while the MC6850 is in master reset; CR1:CR0 only
+    /// decide which tap pulses become effective ACIA clock boundaries.
+    pub(super) fn t_states_until_next_clock_boundary(&self, cpu_clock_hz: u32) -> Option<u64> {
+        if cpu_clock_hz == 0 {
+            return None;
+        }
+        let numerator_per_t_state = u64::from(self.baud_tap.baud()) * 16;
+        if numerator_per_t_state == 0 {
+            return None;
+        }
+        let threshold = u64::from(cpu_clock_hz);
+        let remaining = threshold.saturating_sub(self.tap_phase_numerator);
+        Some(
+            (remaining.saturating_add(numerator_per_t_state - 1) / numerator_per_t_state).max(1),
+        )
+    }
+
+    /// Advance this card channel by elapsed Altair CPU-clock T-states. The MITS
+    /// baud-generator tap is a free-running external oscillator at 16x the
+    /// labelled rate. Its fractional phase is retained independently, then the
+    /// MC6850's /1, /16 or /64 counter decides which tap pulses reach the UART.
     pub(super) fn advance_t_states(&mut self, t_states: u64, cpu_clock_hz: u32) {
         if t_states == 0 || cpu_clock_hz == 0 {
             return;
         }
-        let Some(divider) = self.clock_divider() else {
-            self.bit_phase_numerator = 0;
-            return;
-        };
 
         let numerator_per_t_state = u64::from(self.baud_tap.baud()) * 16;
-        let threshold = u64::from(cpu_clock_hz) * u64::from(divider);
-        let added = t_states.saturating_mul(numerator_per_t_state);
-        let total = self.bit_phase_numerator.saturating_add(added);
-        let boundaries = total / threshold;
-        self.bit_phase_numerator = total % threshold;
+        if numerator_per_t_state == 0 {
+            return;
+        }
+        let threshold = u64::from(cpu_clock_hz);
+        let total = self
+            .tap_phase_numerator
+            .saturating_add(t_states.saturating_mul(numerator_per_t_state));
+        let tap_pulses = total / threshold;
+        self.tap_phase_numerator = total % threshold;
+
+        let Some(divider) = self.clock_divider() else {
+            self.divider_phase = 0;
+            return;
+        };
+        let divider = u64::from(divider);
+        let divided_total = u64::from(self.divider_phase).saturating_add(tap_pulses);
+        let boundaries = divided_total / divider;
+        self.divider_phase = (divided_total % divider) as u8;
 
         for _ in 0..boundaries {
             self.transmitter_bit_boundary();
@@ -455,6 +488,26 @@ mod tests {
 
         port.advance_t_states(2_083, TWO_MHZ);
         assert_eq!(port.endpoint_tx_front(), Some(b'A'));
+    }
+
+    #[test]
+    fn scheduler_deadline_tracks_the_free_running_board_tap() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        assert_eq!(port.t_states_until_next_clock_boundary(TWO_MHZ), Some(14));
+        port.advance_t_states(13, TWO_MHZ);
+        assert_eq!(port.t_states_until_next_clock_boundary(TWO_MHZ), Some(1));
+        port.advance_t_states(1, TWO_MHZ);
+        assert_eq!(port.t_states_until_next_clock_boundary(TWO_MHZ), Some(13));
+    }
+
+    #[test]
+    fn acia_master_reset_does_not_reset_the_external_baud_generator_phase() {
+        let mut port = TwoSioPort::new(TwoSioBaudTap::Baud9600);
+        port.advance_t_states(7, TWO_MHZ);
+        let before = port.t_states_until_next_clock_boundary(TWO_MHZ);
+        port.write_control(0x03);
+        assert_eq!(port.t_states_until_next_clock_boundary(TWO_MHZ), before);
+        assert_eq!(port.divider_phase, 0);
     }
 
     #[test]
