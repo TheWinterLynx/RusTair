@@ -186,7 +186,9 @@ enum ParserState {
     Normal,
     Escape,
     CursorRow,
-    CursorColumn { row: usize },
+    CursorColumn {
+        row: usize,
+    },
 }
 
 /// Headless Lear Siegler ADM-3A display and keyboard state.
