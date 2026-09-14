@@ -498,9 +498,21 @@ impl IoDevices {
     }
 
     pub(super) fn serial_receive(&mut self, byte: u8) {
+        self.serial_receive_with_errors(byte, false, false);
+    }
+
+    pub(super) fn serial_receive_with_errors(
+        &mut self,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) {
         match self.serial_board {
-            SerialBoard::Sio88 => self.sio.queue_received_character(byte),
-            SerialBoard::TwoSio88 => self.two_sio[0].queue_received_character(byte),
+            SerialBoard::Sio88 => self
+                .sio
+                .queue_received_character_with_errors(byte, framing_error, parity_error),
+            SerialBoard::TwoSio88 => self.two_sio[0]
+                .queue_received_character_with_errors(byte, framing_error, parity_error),
         }
         self.trace
             .record(IO_TRACE_RX_ENQUEUE, self.data_port_for_index(0), byte);
@@ -563,10 +575,23 @@ impl IoDevices {
     }
 
     pub(super) fn port1_receive(&mut self, byte: u8) {
+        self.port1_receive_with_errors(byte, false, false);
+    }
+
+    pub(super) fn port1_receive_with_errors(
+        &mut self,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) {
         if self.serial_board != SerialBoard::TwoSio88 {
             return;
         }
-        self.two_sio[1].queue_received_character(byte);
+        self.two_sio[1].queue_received_character_with_errors(
+            byte,
+            framing_error,
+            parity_error,
+        );
         self.trace
             .record(IO_TRACE_RX_ENQUEUE, self.data_port_for_index(1), byte);
     }
