@@ -417,8 +417,13 @@ mod tests {
             TwoSioStraps::default(),
             TwoSioInterruptWiring::default(),
         );
-        assert_eq!(handle.t_states_until_next_clock_boundary(), Some(14));
-        handle.advance_t_states(13);
+        assert_eq!(handle.t_states_until_next_clock_boundary(), None);
+        assert!(handle.receive(0, b'R'));
+        let deadline = handle
+            .t_states_until_next_clock_boundary()
+            .expect("active RX must expose the card-owned clock deadline");
+        assert!(deadline > 1);
+        handle.advance_t_states(deadline - 1);
         assert_eq!(handle.t_states_until_next_clock_boundary(), Some(1));
     }
 }
