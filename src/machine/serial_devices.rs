@@ -57,9 +57,6 @@ impl Default for IoTrace {
 
 impl IoTrace {
     fn record(&mut self, kind: u8, port: u8, value: u8) {
-        if !self.enabled {
-            return;
-        }
         let activity = &mut self.ports[port as usize];
         match kind {
             IO_TRACE_IN => {
@@ -71,6 +68,9 @@ impl IoTrace {
                 activity.out_count = activity.out_count.saturating_add(1);
             }
             _ => {}
+        }
+        if !self.enabled {
+            return;
         }
         if let Some(last) = self.events.back_mut() {
             if last.kind == kind && last.port == port && last.value == value {
@@ -98,6 +98,10 @@ impl IoTrace {
     fn clear_events(&mut self) {
         self.events.clear();
         self.ports.fill(IoPortActivity::default());
+    }
+
+    fn set_output_state(&mut self, port: u8, value: u8) {
+        self.ports[port as usize].last_out = Some(value);
     }
 
     fn snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
@@ -614,6 +618,12 @@ impl IoDevices {
         self.two_sio[0].reset();
         self.two_sio[1].reset();
         self.sio_control = 0;
+        if self.serial_board == SerialBoard::TwoSio88 {
+            self.trace
+                .set_output_state(self.two_sio_straps.address.port0_status(), 0);
+            self.trace
+                .set_output_state(self.two_sio_straps.address.port1_status(), 0);
+        }
     }
 
     pub(super) fn trace_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
@@ -755,5 +765,21 @@ mod tests {
         io.output(0x10, 0x15); // port 0 /16
         io.output(0x11, b'A');
         assert!(io.t_states_until_next_clock_boundary().is_some());
+    }
+
+    #[test]
+    fn port_activity_retains_live_control_when_detailed_trace_is_disabled() {
+        let mut io = IoDevices::default();
+        io.configure_serial_board(SerialBoard::TwoSio88);
+        assert!(!io.trace_enabled());
+
+        io.output(0x10, 0x15);
+        let (_, last_out, _, out_count) = io.trace_port_activity(0x10);
+        assert_eq!(last_out, Some(0x15));
+        assert_eq!(out_count, 1);
+
+        io.clear_serial();
+        let (_, last_out, _, _) = io.trace_port_activity(0x10);
+        assert_eq!(last_out, Some(0));
     }
 }
