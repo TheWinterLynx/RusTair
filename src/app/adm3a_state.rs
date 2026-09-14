@@ -61,14 +61,6 @@ impl Adm3aState {
         self.powered
     }
 
-    pub(super) const fn auto_new_line(&self) -> bool {
-        self.auto_new_line
-    }
-
-    pub(super) fn set_auto_new_line(&mut self, enabled: bool) {
-        self.auto_new_line = enabled;
-    }
-
     pub(super) fn set_powered(&mut self, powered: bool) {
         if self.powered == powered {
             return;
@@ -219,7 +211,7 @@ mod tests {
     fn power_starts_off_and_transition_resets_screen() {
         let mut terminal = Adm3aState::default();
         assert!(!terminal.powered());
-        assert!(!terminal.auto_new_line());
+        assert!(!terminal.auto_new_line);
         terminal.receive_byte(b'X');
         terminal.set_powered(true);
         assert!(terminal.powered());
@@ -265,7 +257,7 @@ mod tests {
         terminal.receive_byte(b'\n');
         assert_eq!(terminal.cursor(), (0, 1));
 
-        terminal.set_auto_new_line(true);
+        terminal.auto_new_line = true;
         for _ in 0..ADM3A_COLS {
             terminal.receive_byte(b'Z');
         }
