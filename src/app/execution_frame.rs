@@ -87,14 +87,16 @@ pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Durat
 
 /// Yield between exact engine budgets. In throttled modes this function owns the
 /// CPU/serial physical-time interleave, but the installed UART/card determines
-/// every scheduling boundary from its retained oscillator phase. CPU speed only
-/// changes how many guest T-states fit before the same physical deadline.
+/// every scheduling boundary from its retained oscillator/divider phase. CPU
+/// speed only changes how many guest T-states fit before that physical deadline.
 ///
-/// The 88-SIO exposes its next COM2502 bit boundary. The 88-2SIO currently uses
-/// the next physical MITS baud-generator tap pulse, which is deliberately
-/// conservative: even an OUT that changes the MC6850 /1,/16,/64 selection cannot
-/// cross an unobserved external clock edge. There is no arbitrary fixed-time
-/// serial slice in this path.
+/// The 88-SIO exposes its next effective COM2502 bit boundary and the 88-2SIO
+/// exposes its next effective MC6850 boundary after /1, /16 or /64 division.
+/// An idle UART exposes no deadline, so ordinary CPU-only work retains the normal
+/// Adaptive Full service slice. A guest OUT targeting installed serial hardware
+/// is an exact managed-execution barrier: that one instruction is then replayed
+/// T-state by T-state before any newly active UART deadline takes over. No
+/// arbitrary fixed-time serial slice exists in this path.
 ///
 /// Unlimited has no guest-CPU-to-wall-time ratio, so it retains the independent
 /// `Instant` serial source and large host-throughput slices.
@@ -219,14 +221,8 @@ mod tests {
     fn expired_frame_yields_then_resumes_the_same_exact_timeline() {
         let mut sliced = machine();
         let mut uninterrupted = machine();
-        let expected_first = throttled_serial_deadline_t_states(
-            sliced
-                .serial_clock_deadline_t_states()
-                .expect("historical fixture has a physical serial clock"),
-            TWO_MHZ,
-            EmulationSpeed::Authentic,
-        )
-        .min(SERVICE_SLICE_T_STATES);
+        assert_eq!(sliced.serial_clock_deadline_t_states(), None);
+        let expected_first = SERVICE_SLICE_T_STATES;
         let first = run_cpu_frame_timed(
             &mut sliced,
             40_000,
@@ -268,15 +264,9 @@ mod tests {
     }
 
     #[test]
-    fn historical_two_sio_uses_physical_tap_deadline_not_fixed_four_microseconds() {
+    fn idle_historical_two_sio_uses_normal_full_service_slice() {
         let mut machine = machine();
-        let deadline = machine
-            .serial_clock_deadline_t_states()
-            .expect("historical 88-2SIO exposes a baud-generator deadline");
-        assert!(
-            deadline > 8,
-            "the scheduler must follow card phase rather than the removed 4 us / 8T slice"
-        );
+        assert_eq!(machine.serial_clock_deadline_t_states(), None);
         assert_eq!(
             run_cpu_frame_timed(
                 &mut machine,
@@ -285,7 +275,56 @@ mod tests {
                 TWO_MHZ,
                 EmulationSpeed::Authentic,
             ),
-            deadline.min(u64::from(SERVICE_SLICE_T_STATES))
+            u64::from(SERVICE_SLICE_T_STATES)
+        );
+    }
+
+    #[test]
+    fn guest_serial_out_replans_before_new_uart_deadline() {
+        let mut machine = machine();
+        machine.set_running(false);
+        machine.reset();
+        machine.load_bytes(0, &[0x3e, b'X', 0xd3, 0x11, 0x00, 0xc3, 0x04, 0x00]);
+        machine.set_running(true);
+        assert_eq!(machine.serial_clock_deadline_t_states(), None);
+
+        let first = run_cpu_frame_timed(
+            &mut machine,
+            1_000,
+            Duration::ZERO,
+            TWO_MHZ,
+            EmulationSpeed::Authentic,
+        );
+        assert!(
+            first < u64::from(SERVICE_SLICE_T_STATES),
+            "serial OUT must cut the otherwise-idle Adaptive service slice"
+        );
+        assert_eq!(
+            machine.serial_tx_complete(BackendSerialPort::Port0),
+            None,
+            "a newly reached OUT must not inherit enough prior time to complete a frame"
+        );
+
+        for _ in 0..16 {
+            if machine.serial_clock_deadline_t_states().is_some() {
+                break;
+            }
+            let crossed = run_cpu_frame_timed(
+                &mut machine,
+                1_000,
+                Duration::ZERO,
+                TWO_MHZ,
+                EmulationSpeed::Authentic,
+            );
+            assert!(crossed > 0);
+            assert_eq!(
+                machine.serial_tx_complete(BackendSerialPort::Port0),
+                None
+            );
+        }
+        assert!(
+            machine.serial_clock_deadline_t_states().is_some(),
+            "once the OUT reaches the UART, scheduling must switch to its card-owned deadline"
         );
     }
 
