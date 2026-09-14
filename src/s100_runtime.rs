@@ -396,8 +396,19 @@ impl S100RuntimeFabric {
     }
 
     pub(crate) fn serial_receive(&self, port_index: usize, byte: u8) -> bool {
-        self.serial_handle_for_port(port_index)
-            .is_some_and(|handle| handle.receive(port_index, byte))
+        self.serial_receive_with_errors(port_index, byte, false, false)
+    }
+
+    pub(crate) fn serial_receive_with_errors(
+        &self,
+        port_index: usize,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) -> bool {
+        self.serial_handle_for_port(port_index).is_some_and(|handle| {
+            handle.receive_with_errors(port_index, byte, framing_error, parity_error)
+        })
     }
 
     pub(crate) fn serial_rx_empty(&self, port_index: usize) -> bool {
