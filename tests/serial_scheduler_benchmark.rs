@@ -124,16 +124,8 @@ fn median(samples: &[Sample]) -> Sample {
 }
 
 fn elapsed_range(samples: &[Sample]) -> (Duration, Duration) {
-    let min = samples
-        .iter()
-        .map(|sample| sample.elapsed)
-        .min()
-        .unwrap();
-    let max = samples
-        .iter()
-        .map(|sample| sample.elapsed)
-        .max()
-        .unwrap();
+    let min = samples.iter().map(|sample| sample.elapsed).min().unwrap();
+    let max = samples.iter().map(|sample| sample.elapsed).max().unwrap();
     (min, max)
 }
 
@@ -142,9 +134,7 @@ fn elapsed_range(samples: &[Sample]) -> (Duration, Duration) {
 fn measure_managed_serial_scheduler_cost() {
     println!();
     println!("RusTair managed physical serial scheduler cost");
-    println!(
-        "Hardware: historical 8800b starter, 16K static RAM + installed idle 88-2SIO"
-    );
+    println!("Hardware: historical 8800b starter, 16K static RAM + installed idle 88-2SIO");
     println!(
         "Workload: NOP/JMP loop, exactly 1.000 s of guest CPU target time and serial physical time"
     );
