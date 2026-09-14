@@ -331,15 +331,26 @@ This separation is important: the UI asks the machine to do things; it does not 
 
 ---
 
-## 8. Timing: guest clock versus host speed
+## 8. Timing: guest CPU scheduling versus physical clock domains
 
-The installed MITS 8080 CPU board has its historical clock. The user can select Authentic, 5×, 10× or Unlimited host execution speed.
+The installed MITS 8080 CPU board has its historical clock. The user can select Authentic, 2×, 5×, 10× or Unlimited host execution speed.
 
-These settings affect **how quickly the host consumes virtual machine time**, not the historical board's internal timing relationships.
+These settings affect **how aggressively the host executes guest CPU time**. They do not restrap an installed serial card or redefine the rate of an independently clocked peripheral.
 
-`src/app/execution_clock.rs` converts host elapsed time into guest T-state budget for throttled modes. `src/app/execution_frame.rs` runs the backend in responsive chunks/deadlines. Unlimited mode is host-deadline limited rather than repaint-budget limited.
+`src/app/execution_clock.rs` converts host elapsed time into guest T-state credit/debt for throttled modes. `src/app/execution_frame.rs` runs the backend while respecting both host responsiveness and physical serial-event boundaries. Unlimited mode is host-deadline limited rather than repaint-budget limited.
 
-Independent hardware such as UART baud generators still advances according to emulated elapsed time, including cases where useful CPU instruction execution is stopped.
+RusTair deliberately has more than one modeled time domain:
+
+- **CPU/chassis virtual time** follows executed guest CPU/chassis T-state progress; current DCDD/FD-400 mechanics use this domain.
+- **Serial physical time** advances 88-SIO/88-2SIO baud generators independently from guest CPU speed.
+
+A CPU T-state therefore does **not** itself clock the UART. In throttled modes, the installed serial card publishes its next effective event deadline when active. A quiet UART publishes no deadline, allowing the normal Adaptive service slice, while retaining its oscillator phase. If guest code executes `OUT` to serial hardware and activates it mid-slice, the managed path uses an exact causal barrier so the new UART activity cannot inherit time from before the write.
+
+Unlimited has no stable CPU-T-state-to-wall-time ratio. Serial physical time therefore comes from the backend's `Instant` source in Unlimited, with an explicit handoff boundary when entering/leaving managed timing.
+
+STOP, sustained RESET, HOLD/HLDA or HALT may stop useful CPU instruction progress while physical serial time continues. GUI repaint cadence is never a UART clock.
+
+See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) for the complete current timing contract.
 
 ---
 
@@ -419,7 +430,9 @@ S-100 bus
 
 A host TCP socket is not an emulated UART. It feeds or receives bytes/signals through the endpoint/routing layer while UART status, baud timing, interrupt state and register behavior remain in the emulated card.
 
-When adding a serial feature, decide first which layer it belongs to.
+Clock ownership is equally layered. The installed card owns its COM2502/MC6850 shift/register state, oscillator/divider phase and next effective serial event. The scheduler only decides when elapsed serial physical time must be settled against that state. Endpoint pacing does not become card baud, and host CPU speed does not become the UART clock.
+
+When adding a serial feature, decide first which layer it belongs to and read [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) before changing timing or scheduler behavior.
 
 ---
 
@@ -485,11 +498,12 @@ Before editing code, classify the symptom:
 3. **CPU-board/S-100 bug** — pins or bus translation/resolution wrong.
 4. **memory-card bug** — decode/population/protection/wait behavior wrong.
 5. **serial-card bug** — UART/card registers, electrical signals, baud or interrupt behavior wrong.
-6. **host transport bug** — TCP/COM endpoint problem while emulated card is correct.
-7. **front-panel physical bug** — wrong bus-derived panel behavior.
-8. **presentation bug** — physical state is right but UI rendering/history is wrong.
-9. **Adaptive Full bug** — Partial is correct, Full diverges or rejoins incorrectly.
-10. **persistence/configuration bug** — loaded desired hardware differs from saved/validated configuration.
+6. **serial clock-domain/scheduler bug** — baud changes with CPU speed, an active UART misses/duplicates elapsed physical time, idle hardware fragments execution, or a guest serial `OUT` receives pre-write time.
+7. **host transport bug** — TCP/COM endpoint problem while emulated card is correct.
+8. **front-panel physical bug** — wrong bus-derived panel behavior.
+9. **presentation bug** — physical state is right but UI rendering/history is wrong.
+10. **Adaptive Full bug** — Partial is correct, Full diverges or rejoins incorrectly.
+11. **persistence/configuration bug** — loaded desired hardware differs from saved/validated configuration.
 
 Then start at the file family listed in [SOURCE_REFERENCE.md](SOURCE_REFERENCE.md).
 
@@ -518,6 +532,8 @@ Add exact Full-versus-Partial oracles before benchmarking.
 
 Define physical configuration/straps, implement the card's electrical connector behavior, mount it through `S100RuntimeFabric`, expose host inspection only as a non-authoritative handle, add persistence/UI configuration, then validate against documentation.
 
+If it has an independent physical clock, define that clock domain and next-event ownership explicitly rather than assuming CPU T-states are its clock.
+
 ### New peripheral
 
 Keep the peripheral separate from the S-100 card unless the real hardware is the card. For example, the ASR-33 is an external device connected to serial hardware; it is not part of the 88-SIO object.
@@ -539,6 +555,8 @@ Examples of important invariants:
 - delayed EI enables interrupts on the correct edge;
 - Full and Partial produce identical boundary state;
 - a card's fixed address straps produce the expected physical decode;
+- serial baud is invariant under CPU host-speed changes;
+- a quiet UART can avoid a scheduler deadline without losing oscillator phase;
 - persisted hardware reconstructs the same slot inventory.
 
 See [TESTING_GUIDE.md](TESTING_GUIDE.md).
@@ -555,6 +573,7 @@ Good optimizations:
 - predecode static card straps/topology;
 - resolve only changed electrical drives;
 - aggregate equivalent panel duty over a proven interval;
+- schedule independently timed hardware by its next effective event instead of arbitrary fixed polling;
 - inline/specialize hot code without changing behavior;
 - use Full only while an explicit safety predicate holds.
 
@@ -565,6 +584,7 @@ Bad optimizations:
 - move interrupts/READY/HOLD to instruction boundaries;
 - use PC as the ADDRESS lamp;
 - treat serial hardware as an always-ready byte queue;
+- tie UART baud to guest CPU speed or GUI repaint cadence;
 - hide contention or open-bus behavior.
 
 Always measure the optimized release build. Debug/symbolized/profiler builds can have very different absolute throughput.
@@ -578,9 +598,11 @@ Always measure the optimized release build. Debug/symbolized/profiler builds can
 3. this guide
 4. [GLOSSARY.md](GLOSSARY.md)
 5. [EMULATION_ARCHITECTURE.md](EMULATION_ARCHITECTURE.md)
-6. [SOURCE_REFERENCE.md](SOURCE_REFERENCE.md)
-7. [TESTING_GUIDE.md](TESTING_GUIDE.md)
-8. the hardware-specific documents under `docs/` for the subsystem you will modify
-9. only then the implementation files for that subsystem
+6. [ARCHITECTURAL_INVARIANTS.md](ARCHITECTURAL_INVARIANTS.md)
+7. [SOURCE_REFERENCE.md](SOURCE_REFERENCE.md)
+8. [TESTING_GUIDE.md](TESTING_GUIDE.md)
+9. the current subsystem contract when one exists (for serial timing, [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md))
+10. the hardware-specific documents under `docs/` for the subsystem you will modify
+11. only then the implementation files for that subsystem
 
 This order prevents a common mistake: understanding a local Rust function while missing the physical invariant it exists to preserve.

@@ -31,18 +31,21 @@ fn cycle_debugger_keeps_the_t_state_loop_inside_the_cycle_backend() {
         "cycle host must not redispatch through MachineBackend once per T-state",
     );
 
-    // This is an architectural guard, not a spelling guard. The host must pass
-    // the complete budget it receives to one cycle-backend observer call. Keep
-    // the parameter and forwarded argument paired so renaming the local from
-    // `t_state_budget` to `budget` cannot create a false regression.
-    let delegates_whole_budget = (CYCLE_HOST_SOURCE
-        .contains("fn service_execution(&mut self, t_state_budget: u32)")
-        && CYCLE_HOST_SOURCE.contains("service_execution_with_observer(t_state_budget"))
-        || (CYCLE_HOST_SOURCE.contains("fn service_execution(&mut self, budget: u32)")
-            && CYCLE_HOST_SOURCE.contains("service_execution_with_observer(budget"));
+    // The host may shorten one delegation at an externally visible physical
+    // serial-clock boundary, but it must never own the T-state loop itself. The
+    // exact iteration still lives entirely in Cycle's observer service.
+    let delegates_once = CYCLE_HOST_SOURCE
+        .contains("service_execution_with_observer(observed_budget")
+        || CYCLE_HOST_SOURCE.contains("service_execution_with_observer(budget")
+        || CYCLE_HOST_SOURCE.contains("service_execution_with_observer(t_state_budget");
     assert!(
-        delegates_whole_budget,
-        "cycle host should delegate one whole host budget to the cycle backend",
+        delegates_once,
+        "cycle host must delegate debugger execution to one cycle-backend observer call",
+    );
+    assert!(
+        CYCLE_HOST_SOURCE.contains("let observed_budget = if self.serial_wall_clock_managed")
+            && CYCLE_HOST_SOURCE.contains("budget.min(1)"),
+        "only managed serial synchronization may shorten the delegated observer budget",
     );
 }
 

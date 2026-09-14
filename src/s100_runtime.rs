@@ -361,14 +361,29 @@ impl S100RuntimeFabric {
         handles.next().is_none().then_some(handle)
     }
 
-    /// Advance independently clocked chassis peripherals in guest-machine time.
-    /// UARTs consume the elapsed T-states through their existing handles while
-    /// the DCDD advances only one shared mechanics epoch. No disk-unit iteration
-    /// occurs here, so one and sixteen idle drives have the same DCDD clock cost.
+    /// Advance only the independent 88-SIO/88-2SIO oscillators. `t_states` is
+    /// a deterministic fixed-point carrier for elapsed physical serial time at
+    /// the canonical 2 MHz chassis rate; it is not executed CPU time.
     pub(crate) fn advance_serial_time(&self, t_states: u64) {
         for installed in &self.serial {
             installed.handle.advance_t_states(t_states);
         }
+    }
+
+    /// Earliest physical serial oscillator boundary across all installed cards,
+    /// expressed in canonical 2 MHz chassis quanta. Every card derives this from
+    /// its own retained phase; the fabric only takes the minimum deadline.
+    pub(crate) fn serial_clock_deadline_t_states(&self) -> Option<u64> {
+        self.serial
+            .iter()
+            .filter_map(|installed| installed.handle.t_states_until_next_clock_boundary())
+            .min()
+    }
+
+    /// Advance the DCDD mechanics epoch in CPU/chassis virtual time. Keeping this
+    /// path separate from serial timing prevents the serial wall-clock scheduler
+    /// from changing disk rotational/seek chronology as a side effect.
+    pub(crate) fn advance_dcdd_time(&self, t_states: u64) {
         if let Some(harness) = self._dcdd_harness.as_ref() {
             harness.advance_mechanics_t_states(t_states);
         }
@@ -1362,7 +1377,7 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_emulated_time_reaches_every_installed_serial_card() {
+    fn elapsed_physical_serial_time_reaches_every_installed_serial_card() {
         let config = SioHardwareConfig::default();
         let mut hardware = sio_hardware(config);
         hardware

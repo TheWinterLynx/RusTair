@@ -17,8 +17,10 @@ cargo test --locked
 Full local pre-merge validation:
 
 ```powershell
-$env:RUSTFLAGS='-Dwarnings'; cargo test --locked --all-targets; if ($LASTEXITCODE -ne 0) { throw "TESTS FAILED" }; cargo build --locked --release; if ($LASTEXITCODE -ne 0) { throw "RELEASE BUILD FAILED" }
+cargo fmt --check; if ($LASTEXITCODE -eq 0) { $env:RUSTFLAGS='-Dwarnings'; cargo test --locked --all-targets }; if ($LASTEXITCODE -eq 0) { cargo build --locked --release }
 ```
+
+`cargo fmt --check` is a gate, not a cleanup suggestion: formatting failures are fixed before interpreting later test/build output.
 
 `RUSTFLAGS=-Dwarnings` is intentional. Do not merge new warnings or hide them behind broad lint suppressions.
 
@@ -98,24 +100,32 @@ Typical invariants:
 
 Do not replace these tests with assertions on PC/registers.
 
-### 2.5 Serial-card tests
+### 2.5 Serial-card and serial-clock tests
 
-Purpose: prove the 88-SIO / 88-2SIO and MC6850 as hardware.
+Purpose: prove the 88-SIO / 88-2SIO / MC6850 hardware **and** the independent serial physical-time contract.
 
 Typical invariants:
 
 - status/data register bits;
 - revision-specific behavior;
-- baud timing;
+- selected baud and word-format timing;
 - CTS/DCD/RTS/BREAK and other electrical signals;
 - input/output ready latches;
 - overrun behavior;
 - interrupt target/wiring;
 - address straps;
 - port independence;
-- idle-time progression.
+- serial progress while CPU execution is STOPped/RESET-held/HOLD-parked;
+- host CPU speed does not multiply/divide card baud;
+- quiet UARTs publish no scheduler deadline while retaining oscillator phase;
+- active UARTs publish the next effective hardware boundary;
+- 88-2SIO keeps its external 16× tap phase while scheduling `/1`, `/16` or `/64` effective MC6850 boundaries;
+- a serial `OUT` is causally aligned so newly active hardware cannot inherit pre-write elapsed time;
+- DCDD/chassis virtual time remains separate from serial physical time.
 
 Host TCP/COM tests are separate: they prove the endpoint, not the guest UART.
+
+See `SERIAL_CLOCK_DOMAINS.md` for the current scheduler contract.
 
 ### 2.6 Architecture authority tests
 
@@ -126,13 +136,14 @@ Examples include tests named around:
 - backend authority;
 - lifecycle authority;
 - chassis architecture;
+- debugger architecture;
 - CPU-board authority;
 - S-100 app/runtime authority;
 - state-source architecture;
 - unified cycle architecture;
 - retired SIMH surface.
 
-These tests protect rules such as "one CPU authority", "no old backend", and "physical configuration reaches one live topology".
+These tests protect rules such as "one CPU authority", "no old backend", "host does not own a T-state loop", and "physical configuration reaches one live topology".
 
 ### 2.7 Full-versus-Partial differential tests
 
@@ -190,11 +201,19 @@ Purpose: measure, not define correctness.
 Examples:
 
 - `tests/emulation_speed_benchmark.rs`
+- `tests/serial_scheduler_benchmark.rs`
 - `tests/8080exm_full_barrier_profile.rs`
 - `tests/8080exm_ei_successor_profile.rs`
 - `tools/profile_full_cpu.ps1`
 
 Many are intentionally ignored or require release/symbolized builds. Never weaken correctness tests to improve a profiler result.
+
+`tests/serial_scheduler_benchmark.rs` deliberately has two release measurements:
+
+- idle installed 88-2SIO, where all UARTs publish no deadline and CPU service remains at 4096T;
+- continuously active RX BREAK at 110 and 9600 baud, where card-owned deadlines are exercised continuously.
+
+The `coarse` comparator is an artificial no-intermediate-boundary reference. Its ratio is useful for host scheduling cost analysis but is not itself a fidelity target.
 
 ---
 
@@ -212,13 +231,14 @@ Many are intentionally ignored or require release/symbolized builds. Never weake
 | S-100 backplane | electrical/card tests + open-bus/overlap tests + broad suite |
 | RAM card/runtime | memory decode/wait/protection/open-bus tests + RAM viewer/inspection where relevant |
 | front panel physical code | front-panel fidelity + panel duty + run/reset/examine/deposit/protect tests |
-| 88-SIO | SIO hardware/config/interrupt/electrical tests + serial integration |
-| 88-2SIO / MC6850 | 2SIO timing/config/interrupt/electrical tests + serial integration |
+| 88-SIO | SIO hardware/config/interrupt/electrical tests + serial integration + clock-domain tests when timing changes |
+| 88-2SIO / MC6850 | 2SIO timing/config/interrupt/electrical tests + `two_sio_idle_chassis_clock` + scheduler benchmark when timing/deadlines change |
+| serial physical-time scheduler | execution-frame unit tests + `debugger_architecture` + `two_sio_idle_chassis_clock` + idle/active `serial_scheduler_benchmark` |
 | serial router/TCP/COM | endpoint/router tests + ensure serial-card tests remain unchanged |
 | persistence/config | round-trip/migration/config UI tests + S-100 hardware validation |
 | ASR-33 | ASR model/reader/paper-tape tests + authentic loading tests |
 | debugger/trace | debugger/history/teacher tests; verify observer capture does not change execution |
-| execution clock/frame | GUI execution-performance tests + authentic/throttled scheduling tests |
+| execution clock/frame | GUI execution-performance tests + authentic/throttled scheduling tests + serial clock-domain evidence if time mapping changes |
 
 ---
 
@@ -258,26 +278,45 @@ Use these after substantial CPU/Full/S-100 changes, not after every UI edit.
 
 ---
 
-## 6. What a performance run must record
+## 6. Running the serial scheduler benchmarks
+
+Idle installed serial hardware:
+
+```powershell
+cargo test --locked --release --test serial_scheduler_benchmark measure_managed_serial_scheduler_cost -- --ignored --nocapture --test-threads=1
+```
+
+Continuously active 110/9600-baud deadline cases:
+
+```powershell
+cargo test --locked --release --test serial_scheduler_benchmark measure_active_serial_scheduler_cost -- --ignored --nocapture --test-threads=1
+```
+
+These are host-performance measurements. Their correctness preconditions come from the focused card/deadline/causality tests and the broad suite. Interpret absolute MHz only on comparable hardware/builds.
+
+---
+
+## 7. What a performance run must record
 
 For Adaptive benchmarks, record both speed and strategy invariants:
 
 - wall-clock seconds;
 - equivalent MHz/T-states per second;
-- reference instruction count;
-- reference T-state count;
+- reference instruction count where applicable;
+- reference T-state count where applicable;
 - actual machine T-state count;
 - Full T-states/percent;
 - Partial T-states/percent;
 - Full instruction count;
 - Full windows;
-- fallback reasons such as budget/opcode barrier/interrupt/READY/HOLD.
+- fallback reasons such as budget/opcode barrier/interrupt/READY/HOLD;
+- for serial scheduling, configured card rate/divider, first deadline, realtime headroom and whether the UART is idle or active.
 
-A faster run with changed instruction/T-state totals is a correctness failure, not an optimization.
+A faster run with changed instruction/T-state totals or changed serial hardware semantics is a correctness failure, not an optimization.
 
 ---
 
-## 7. Benchmark hygiene
+## 8. Benchmark hygiene
 
 Absolute emulator speed is very sensitive to the host.
 
@@ -290,12 +329,13 @@ For performance A/B work:
 5. Use medians over multiple short runs for noisy workloads.
 6. Use one long EXM-style run only after the short A/B indicates a real effect.
 7. Compare strategy/correctness totals before interpreting MHz.
+8. For event-driven scheduling, distinguish real device-event frequency from an artificial host service-slice frequency.
 
 Sampling profilers change absolute throughput. Use them to find hotspots, not to claim production MHz.
 
 ---
 
-## 8. Full acceptance checklist
+## 9. Full acceptance checklist
 
 A Full optimization or new Full instruction should not be accepted until all applicable answers are yes:
 
@@ -316,7 +356,7 @@ A benchmark improvement is evaluated only after these pass.
 
 ---
 
-## 9. Architecture guard philosophy
+## 10. Architecture guard philosophy
 
 Some tests inspect source/API structure. This is intentional.
 
@@ -326,13 +366,14 @@ Behavioral tests alone may not detect a dangerous architecture change such as:
 - adding a second RAM copy that currently receives all writes;
 - resurrecting a retired backend/feature;
 - moving panel truth into the UI;
-- bypassing the installed S-100 inventory for one code path.
+- bypassing the installed S-100 inventory for one code path;
+- moving exact serial barrier T-state iteration into the host scheduler.
 
 Architecture tests make these design constraints executable.
 
 ---
 
-## 10. Ignored tests
+## 11. Ignored tests
 
 An ignored test is not dead code. Common reasons for `#[ignore]` include:
 
@@ -345,7 +386,7 @@ Before deleting or unignoring one, read its purpose and related documentation/co
 
 ---
 
-## 11. Test failures: how to triage
+## 12. Test failures: how to triage
 
 When a broad test fails after a low-level change, do not immediately patch the test.
 
@@ -357,20 +398,23 @@ Ask:
 4. Did configuration/persistence mount a different card topology?
 5. Did a host observer/debugger become active and alter execution cost or path?
 6. Is a failure timing-sensitive because tests ran concurrently?
+7. For serial changes, did the card deadline/phase change, did the host cross a deadline, or did CPU/chassis time accidentally advance serial state?
 
 For Full regressions, reproduce first with a forced-Partial/reference execution if available. The exact path should decide whether the optimization or the test expectation is wrong.
 
 ---
 
-## 12. Recommended pre-merge evidence in a PR
+## 13. Recommended pre-merge evidence in a PR
 
 Include:
 
 - exact commands run;
+- `cargo fmt --check` result;
 - test counts/results;
 - focused tests relevant to the hardware invariant;
 - release build result;
 - for performance changes: A/B methodology and exact strategy/canonical totals;
+- for serial scheduler changes: idle and active deadline evidence plus baud-independence/causality tests;
 - for hardware changes: primary-source or project hardware-document reference;
 - any intentionally ignored/unsupported edge case.
 

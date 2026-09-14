@@ -18,6 +18,9 @@ they do not own separate CPU, RAM, serial or chassis state.
 | Raw S-100 electrical/status state | `machine::panel_bus::S100BusState::signals` | front panel, CPU control inputs, Bus Teacher RAW state |
 | Front-panel switch register/address-control state | `FrontPanelController` plus the live S-100 bus where appropriate | physical panel controls and CPU-board injection paths |
 | UART / serial-board runtime state | installed serial card instance in the live S-100 runtime fabric | guest I/O, ASR/terminal/TCP/COM endpoints, I/O Inspector |
+| Serial oscillator/divider phase and next effective deadline | installed serial card instance | managed scheduler queries; never an app-owned UART clock |
+| Serial physical-time source | managed elapsed physical time in throttled modes; backend `Instant` source in Unlimited | installed serial-card oscillator advancement |
+| CPU/chassis virtual-time mechanics | CPU/chassis execution epoch and the device that consumes it (currently including DCDD/FD-400 mechanics) | chassis-time peripherals only; never UART baud authority |
 
 ## CPU ownership and chassis composition
 
@@ -64,6 +67,38 @@ Therefore processor ownership is unambiguous:
 physical machine state   -> AltairChassis -> AltairBus -> live S-100 runtime fabric
 ```
 
+## Time-domain ownership
+
+Time is not one global mutable counter that every peripheral consumes.
+
+### CPU/chassis virtual time
+
+Executed 8080/chassis T-state time belongs to the CPU/chassis execution path. Devices
+whose documented behavior is tied to that virtual machine time, currently including
+DCDD/FD-400 mechanics, may advance from this domain.
+
+### Serial physical time
+
+88-SIO/88-2SIO baud generators are independently clocked. CPU T-states do not directly
+advance them.
+
+In throttled modes `execution_frame` queries the installed cards for the next effective
+serial deadline, executes a CPU interval that does not cross it, and then supplies the
+corresponding elapsed serial physical duration. Quiet UARTs publish `None` and retain
+the normal 4096-T-state CPU service slice. Active cards derive deadlines from their own
+phase; the 88-2SIO retains its free-running 16× tap phase and publishes effective
+MC6850 `/1`, `/16` or `/64` boundaries.
+
+A guest serial `OUT` is a causal synchronization barrier so a UART that becomes active
+mid-slice cannot inherit elapsed time from before the write. The exact T-state loop
+for that barrier remains inside `CycleAccurateMachineBackend`, not `CycleHostBackend`.
+
+Unlimited uses the backend's `Instant` physical-time source. Managed/Unlimited handoff
+must settle elapsed time exactly once.
+
+The scheduler may ask card state when the next event is due, but it never owns the
+oscillator phase, UART register state or event result. See `SERIAL_CLOCK_DOMAINS.md`.
+
 ## Deliberately derived state
 
 These objects are observations. They must never be read back to determine guest or
@@ -80,6 +115,8 @@ raw electrical behaviour:
   live hardware register file.
 - Adaptive Full/Partial metrics: execution observations only. They may report which
   strategy handled T-states but cannot drive CPU or hardware state.
+- scheduler deadlines: derived from installed-card phase and current activity; they
+  are event hints, not a second clock/state authority.
 
 ## Rules enforced by the didactic debugger
 
@@ -96,6 +133,9 @@ raw electrical behaviour:
    no second architectural processor state may be introduced.
 8. Full and Partial may differ in execution granularity, but every transition between
    them must preserve the same CPU T-state count and the same physical hardware state.
+9. `CycleHostBackend` may choose a scheduling boundary, but exact T-state iteration
+   remains owned by the Cycle backend.
+10. Serial physical time and CPU/chassis virtual time remain distinct domains.
 
 ## Resolved structural debt
 
@@ -106,6 +146,8 @@ raw electrical behaviour:
 - **Execution-engine duplication is resolved.** Full semantic execution is internal to
   Adaptive Cycle and cannot be selected as a separate engine. Exact Partial remains
   the synchronization path for electrically sensitive instructions and boundaries.
+- **Serial speed coupling is resolved.** UART baud/phase is installed-card state in an
+  independent physical-time domain; host CPU speed no longer scales serial progress.
 - The previous `AltairBus::cpu_inte` duplicate has already been removed: canonical
   INTE is stored in `S100BusState::signals.inte`.
 - **RUN latch duplication is resolved.** `S100BusState::signals.run` is the one

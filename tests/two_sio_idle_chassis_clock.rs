@@ -4,7 +4,9 @@ use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{RamInit, S100HardwareConfig};
 
 const CYCLE_HOST_SOURCE: &str = include_str!("../src/backend/cycle_host.rs");
-const CHASSIS_SOURCE: &str = include_str!("../src/machine/chassis.rs");
+const MACHINE_SOURCE: &str = include_str!("../src/machine/mod.rs");
+const SERIAL_BUS_SOURCE: &str = include_str!("../src/machine/serial_bus.rs");
+const RUNTIME_SOURCE: &str = include_str!("../src/s100_runtime.rs");
 const PORT0_STATUS: u8 = 0x10;
 const PORT0_DATA: u8 = 0x11;
 const CONTROL_110_BAUD_8N2: u8 = 0x11;
@@ -47,51 +49,64 @@ fn function_body<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
 }
 
 #[test]
-fn idle_serial_wall_clock_has_one_scheduler_owner() {
-    let host_service = function_body(
+fn serial_and_dcdd_clock_domains_have_distinct_scheduler_owners() {
+    let serial_elapsed = function_body(
+        CYCLE_HOST_SOURCE,
+        "fn advance_serial_physical_elapsed",
+        "fn service_serial_wall_clock",
+    );
+    assert!(serial_elapsed.contains("advance_serial_hardware_time"));
+    assert!(!serial_elapsed.contains("advance_chassis_hardware_time"));
+
+    let serial_service = function_body(
+        CYCLE_HOST_SOURCE,
+        "fn service_serial_wall_clock",
+        "fn service_idle_chassis_clock",
+    );
+    assert!(serial_service.contains("Instant::now"));
+    assert!(serial_service.contains("advance_serial_physical_elapsed"));
+    assert!(!serial_service.contains("advance_chassis_hardware_time"));
+
+    let idle_chassis_service = function_body(
         CYCLE_HOST_SOURCE,
         "fn service_idle_chassis_clock",
         "fn invalidate_partial_trace_for_external_memory_change",
     );
-    // Guard the semantic ownership graph rather than rustfmt's exact line wrapping.
-    assert!(host_service.contains("let covered"));
-    assert!(host_service.contains("last_panel_commit_cpu_t_states"));
-    assert!(host_service.contains("current.saturating_sub"));
-    assert!(host_service.contains("let parked"));
-    assert!(host_service.contains("powered"));
-    assert!(host_service.contains("!running"));
-    assert!(host_service.contains("reset"));
-    assert!(host_service.contains("is_holding()"));
-    assert!(host_service.contains("due.saturating_sub(covered)"));
-    assert_eq!(
-        host_service.matches("advance_serial_hardware_time").count(),
-        1,
-        "idle wall-clock catch-up must advance serial hardware exactly once",
-    );
-    assert_eq!(
-        CYCLE_HOST_SOURCE
-            .matches("advance_serial_hardware_time")
-            .count(),
-        1,
-        "CycleHostBackend must have one wall-clock serial scheduler owner",
-    );
+    assert!(idle_chassis_service.contains("advance_chassis_hardware_time"));
+    assert!(!idle_chassis_service.contains("advance_serial_hardware_time"));
 
-    let host_commit = function_body(
-        CYCLE_HOST_SOURCE,
-        "fn commit_panel_activity",
-        "fn assert_run_stop",
+    let cpu_t_state = function_body(
+        MACHINE_SOURCE,
+        "pub(crate) fn drive_cpu_board_sample",
+        "fn refresh_protect_line",
     );
-    assert!(host_commit.contains("service_idle_chassis_clock"));
-    assert!(host_commit.contains("commit_panel_activity(dt)"));
+    assert!(cpu_t_state.contains("advance_dcdd_time(1)"));
+    assert!(!cpu_t_state.contains("advance_serial_time"));
+    assert!(!cpu_t_state.contains("advance_serial_hardware_time"));
 
-    let chassis_commit = function_body(
-        CHASSIS_SOURCE,
-        "fn cycle_commit_panel_activity",
-        "fn cycle_front_panel_set_memory_protection",
+    let chassis_time = function_body(
+        SERIAL_BUS_SOURCE,
+        "pub(crate) fn advance_chassis_hardware_time",
+        "pub(crate) fn advance_serial_hardware_time",
     );
-    assert!(chassis_commit.contains("commit_panel_activity(dt, dynamic)"));
-    assert!(!chassis_commit.contains("advance_serial_hardware_time"));
-    assert!(!chassis_commit.contains("CLOCK_HZ"));
+    assert!(chassis_time.contains("advance_dcdd_time"));
+    assert!(!chassis_time.contains("advance_serial_time"));
+
+    let serial_time = function_body(
+        SERIAL_BUS_SOURCE,
+        "pub(crate) fn advance_serial_hardware_time",
+        "pub fn serial_port1_receive",
+    );
+    assert!(serial_time.contains("advance_serial_time"));
+    assert!(!serial_time.contains("advance_dcdd_time"));
+
+    let fabric_serial = function_body(
+        RUNTIME_SOURCE,
+        "pub(crate) fn advance_serial_time",
+        "pub(crate) fn advance_dcdd_time",
+    );
+    assert!(fabric_serial.contains("installed.handle.advance_t_states"));
+    assert!(!fabric_serial.contains("advance_mechanics_t_states"));
 }
 
 #[test]
@@ -102,15 +117,9 @@ fn stopped_cpu_does_not_freeze_independent_88_2sio_baud_clock() {
     machine.serial_receive(BackendSerialPort::Port0, b'S');
     assert_frame_still_shifting(&mut machine);
 
-    // Historical bootstrap control 11h is /16, 8N2. At the Port-0 110-baud
-    // strap that is exactly 11 bits / 110 bit/s = 100 ms per character.
-    machine.commit_panel_activity(Duration::from_millis(99));
-    assert_eq!(
-        machine.peek_io_port(PORT0_STATUS) & RDRF,
-        0,
-        "Adaptive Cycle completed a 110-baud frame too early while STOPped"
-    );
-    machine.commit_panel_activity(Duration::from_millis(1));
+    // 110 baud, 8N2 is exactly 100 ms per character. The physical serial
+    // oscillator continues while the CPU is STOPped; no guest T-state is needed.
+    std::thread::sleep(Duration::from_millis(115));
     assert_frame_reached_rdr(&mut machine, b'S');
 }
 
@@ -122,7 +131,7 @@ fn reset_held_does_not_freeze_independent_88_2sio_baud_clock() {
     machine.serial_receive(BackendSerialPort::Port0, b'R');
     assert_frame_still_shifting(&mut machine);
 
-    machine.commit_panel_activity(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(115));
     assert_frame_reached_rdr(&mut machine, b'R');
     machine.release_front_panel_reset();
 }
@@ -136,28 +145,21 @@ fn hold_hlda_does_not_freeze_independent_88_2sio_baud_clock() {
 
     machine.serial_receive(BackendSerialPort::Port0, b'H');
     assert_frame_still_shifting(&mut machine);
-    machine.commit_panel_activity(Duration::from_millis(100));
+    std::thread::sleep(Duration::from_millis(115));
     assert_frame_reached_rdr(&mut machine, b'H');
 
     machine.request_hold(false);
 }
 
 #[test]
-fn running_cpu_t_states_remain_the_only_88_2sio_clock_source_during_run() {
+fn running_cpu_is_not_required_to_clock_88_2sio_serial_frames() {
     let mut machine = machine();
     machine.set_running(true);
     machine.serial_receive(BackendSerialPort::Port0, b'C');
     assert_frame_still_shifting(&mut machine);
 
-    // A visual/wall-clock commit must not double-count the card clock while
-    // RUN is active. CPU execution below is the authority in this state.
-    machine.commit_panel_activity(Duration::from_millis(100));
-    assert_eq!(
-        machine.peek_io_port(PORT0_STATUS) & RDRF,
-        0,
-        "Adaptive Cycle advanced the 88-2SIO from both RUN T-states and wall time"
-    );
-
-    machine.run_cycles(200_000);
+    // Deliberately execute no CPU cycles. RUN may be asserted, but the selected
+    // 110-baud oscillator still completes one physical 100 ms frame on its own.
+    std::thread::sleep(Duration::from_millis(115));
     assert_frame_reached_rdr(&mut machine, b'C');
 }

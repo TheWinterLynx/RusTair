@@ -338,6 +338,24 @@ pub trait MachineBackend {
             engine: self.engine(),
         })
     }
+    fn set_serial_clock_managed(&mut self, _managed: bool) -> BackendResult<()> {
+        Err(BackendError::Unsupported {
+            operation: "select serial physical-time source",
+            engine: self.engine(),
+        })
+    }
+    fn advance_serial_physical_time(&mut self, _elapsed: Duration) -> BackendResult<()> {
+        Err(BackendError::Unsupported {
+            operation: "advance managed serial clock",
+            engine: self.engine(),
+        })
+    }
+    fn serial_clock_deadline_t_states(&mut self) -> BackendResult<Option<u64>> {
+        Err(BackendError::Unsupported {
+            operation: "query serial physical clock deadline",
+            engine: self.engine(),
+        })
+    }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize>;
@@ -816,6 +834,17 @@ impl BackendHost {
     pub fn toggle_sense_switch(&mut self, bit: usize) {
         let next = self.switch_register() ^ (1u16 << bit);
         self.set_switch_register(next);
+    }
+    pub fn set_serial_clock_managed(&mut self, managed: bool) {
+        Self::call(self.backend.set_serial_clock_managed(managed));
+    }
+    pub fn advance_serial_physical_time(&mut self, elapsed: Duration) {
+        Self::call(self.backend.advance_serial_physical_time(elapsed));
+    }
+    /// Canonical 2 MHz physical-time quanta until the earliest installed serial
+    /// oscillator boundary. The value is derived from card-owned phase only.
+    pub fn serial_clock_deadline_t_states(&mut self) -> Option<u64> {
+        Self::call(self.backend.serial_clock_deadline_t_states())
     }
     pub fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) {
         Self::call(self.backend.serial_receive(port, byte));

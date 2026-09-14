@@ -269,13 +269,16 @@ Separate raw electrical state from optical LED persistence. Panel operations mus
 
 ### Production code
 
-- `src/machine/sio.rs`;
+- `src/machine/sio.rs` — COM2502/card state plus effective serial deadline;
 - `src/machine/sio_interface.rs`;
 - `src/machine/serial_card.rs`;
-- `src/machine/serial_devices.rs`;
-- `src/machine/serial_bus.rs`;
+- `src/machine/serial_devices.rs` — installed-card deadline routing/aggregation behavior;
+- `src/machine/serial_bus.rs` — serial connector plus physical-time bridge;
 - `src/s100_io_card.rs`;
 - `src/s100_io.rs`;
+- `src/s100_runtime.rs` — serial physical-time/deadline propagation;
+- `src/backend/cycle_host.rs` — managed/automatic serial physical-time source and serial-`OUT` replay coordination;
+- `src/app/execution_frame.rs` — throttled deadline scheduling;
 - `src/config/sio.rs`;
 - `src/config/sio_electrical.rs`.
 
@@ -287,18 +290,22 @@ Separate raw electrical state from optical LED persistence. Panel operations mus
 - `tests/sio88_endpoint_wiring.rs`;
 - `tests/sio88_physical_boundary.rs`;
 - `tests/serial_receive_break_fidelity.rs`;
-- `tests/s100_physical_serial_authority.rs`.
+- `tests/s100_physical_serial_authority.rs`;
+- `tests/two_sio_idle_chassis_clock.rs` for shared independent-clock lifecycle semantics;
+- `tests/serial_scheduler_benchmark.rs` for manual idle/active scheduling evidence;
+- card/scheduler unit tests covering effective deadlines and idle no-deadline behavior.
 
 ### Read first
 
-- `88_SIO_HARDWARE_FIDELITY.md`;
+- `SERIAL_CLOCK_DOMAINS.md` — **current scheduling/clock-domain authority**;
+- `88_SIO_HARDWARE_FIDELITY.md` — card-specific evidence/history;
 - `88_SIO_ABC_ELECTRICAL_INTERFACES.md`;
 - `88_SIO_INTERRUPT_ROUTING.md`;
 - any revision-specific closeout records.
 
 ### Review focus
 
-Check revision-specific status bits, COM2502/UART behavior, external device-ready latches, DATA IN/OUT handshake, interface polarity, address decode and interrupt wiring. Do not make the card call the CPU directly.
+Check revision-specific status bits, COM2502/UART behavior, external device-ready latches, DATA IN/OUT handshake, interface polarity, address decode and interrupt wiring. Keep serial physical time independent from CPU/chassis T-state time. A quiet UART should not force a scheduler deadline, an active UART should expose its next effective card event, and guest serial `OUT` must preserve causal activation without bypassing the S-100 path.
 
 ---
 
@@ -307,10 +314,13 @@ Check revision-specific status bits, COM2502/UART behavior, external device-read
 ### Production code
 
 - `src/mc6850.rs` — ACIA chip;
-- `src/machine/two_sio.rs` — board-level dual-port implementation;
+- `src/machine/two_sio.rs` — board-level dual-port implementation, free-running tap/divider phase and effective deadline;
 - `src/machine/serial_card.rs` / `serial_devices.rs` / `serial_bus.rs`;
 - `src/s100_io_card.rs`;
 - `src/s100_io.rs`;
+- `src/s100_runtime.rs` — earliest installed serial-card deadline aggregation;
+- `src/backend/cycle_host.rs` — managed serial `OUT` barrier/replay and Unlimited `Instant` source;
+- `src/app/execution_frame.rs` — deadline-to-guest-budget conversion;
 - `src/config/two_sio.rs`;
 - `src/config/sio_electrical.rs`.
 
@@ -318,11 +328,15 @@ Check revision-specific status bits, COM2502/UART behavior, external device-read
 
 - all `tests/two_sio_*.rs` targets;
 - `tests/s100_physical_serial_authority.rs`;
-- `tests/serial_receive_break_fidelity.rs` where shared serial semantics are affected.
+- `tests/serial_receive_break_fidelity.rs` where shared serial semantics are affected;
+- `tests/serial_scheduler_benchmark.rs` for manual idle/110/9600 deadline-performance evidence;
+- `two_sio.rs` unit tests for `/1`, `/16`, `/64`, master-reset/divider phase and quiet-port deadline behavior;
+- execution-frame unit tests for idle 4096T scheduling and replanning after guest serial `OUT`.
 
 ### Read first
 
-- `88_2SIO_MC6850_HARDWARE_FIDELITY.md`;
+- `SERIAL_CLOCK_DOMAINS.md` — **current scheduling/clock-domain authority**;
+- `88_2SIO_MC6850_HARDWARE_FIDELITY.md` — board/chip evidence and historical validation context;
 - `88_2SIO_PHYSICAL_STRAPS.md`;
 - `88_2SIO_SIGNAL_INTERFACES.md`;
 - `88_2SIO_INTERRUPT_ROUTING.md`;
@@ -331,7 +345,7 @@ Check revision-specific status bits, COM2502/UART behavior, external device-read
 
 ### Review focus
 
-Separate MC6850 chip semantics from board straps/clocking/electrical interfaces. Each physical port can have independent configuration; interrupt and ready behavior must route through the board/S-100 path.
+Separate MC6850 chip semantics from board straps/clocking/electrical interfaces. The MITS external baud tap retains its free-running phase; MC6850 `/1`, `/16` or `/64` determines the next **effective** ACIA boundary used for scheduling. Intermediate 16× tap pulses must not become needless host deadlines when the ACIA divider makes them unobservable. Each physical port can have independent configuration, and interrupt/ready behavior must route through the board/S-100 path.
 
 ---
 
@@ -387,11 +401,12 @@ Do not turn an S-100 interrupt line directly into a fabricated RST opcode in a p
 
 - `AUTHENTIC_BASIC_BOOTSTRAP.md`;
 - `AUTHENTIC_BASIC_VALIDATION.md`;
-- `RUNTIME_FLOWS.md` loading sections.
+- `RUNTIME_FLOWS.md` loading sections;
+- `SERIAL_CLOCK_DOMAINS.md` if changing card/endpoint pacing or timing ownership.
 
 ### Review focus
 
-Authentic loading must transport bytes through the emulated reader/serial hardware. Mechanical/presentation timing and CPU/serial timing are distinct layers and should remain explicit.
+Authentic loading must transport bytes through the emulated reader/serial hardware. Mechanical/presentation timing, endpoint pacing, serial-card physical time and CPU/chassis time are distinct layers and should remain explicit.
 
 ---
 
@@ -419,12 +434,13 @@ Authentic loading must transport bytes through the emulated reader/serial hardwa
 
 ### Read first
 
+- `SERIAL_CLOCK_DOMAINS.md` when changing pacing/baud interaction;
 - electrical-interface documents for the selected card;
 - `SUPPORT_AND_LIMITATIONS.md` for current cable-routing constraints.
 
 ### Review focus
 
-Host transports move endpoint data/signals. They must not emulate or override UART register state. Wiring must identify a physical installed card/port unambiguously.
+Host transports move endpoint data/signals. They must not emulate or override UART register state. Wiring must identify a physical installed card/port unambiguously. Endpoint pacing must not silently restrap the card or become its baud authority.
 
 ---
 
@@ -521,31 +537,39 @@ Clearly distinguish exact current electrical samples, control-state observations
 
 ---
 
-## 17. GUI execution scheduling and emulation speed
+## 17. GUI execution scheduling, serial clock domains and emulation speed
 
 ### Production code
 
-- `src/app/execution_clock.rs`;
-- `src/app/execution_frame.rs`;
-- `src/app/runtime.rs`;
+- `src/app/execution_clock.rs` — throttled CPU credit/debt;
+- `src/app/execution_frame.rs` — normal service slices, card-owned serial deadlines and speed conversion;
+- `src/app/runtime.rs` — frame lifecycle/handoff orchestration;
+- `src/backend/cycle_host.rs` — managed versus automatic serial physical-time source and causal serial-`OUT` stepping;
+- `src/backend/cycle/full.rs` — stop-before-serial-`OUT` Adaptive barrier;
+- `src/machine/sio.rs`, `two_sio.rs`, `serial_devices.rs` and `src/s100_runtime.rs` — card deadline ownership/aggregation;
 - speed configuration in `src/config/machine.rs`.
 
-### Primary tests
+### Primary tests/evidence
 
 - `tests/emulation_speed_ui.rs`;
 - `tests/emulation_speed_benchmark.rs`;
 - `tests/gui_execution_performance.rs`;
+- `tests/two_sio_idle_chassis_clock.rs`;
+- `tests/serial_scheduler_benchmark.rs` (manual/ignored release evidence);
+- execution-frame unit tests for idle 4096T service and serial-`OUT` replanning;
+- serial card unit tests for effective deadline/phase behavior;
 - classic diagnostics for final machine-time invariants when scheduling code changes.
 
 ### Read first
 
+- `SERIAL_CLOCK_DOMAINS.md` — current detailed contract;
 - `RUNTIME_FLOWS.md` GUI-frame flow;
 - `ARCHITECTURAL_INVARIANTS.md` host-time rule;
 - `DEBUGGING_AND_PERFORMANCE.md`.
 
 ### Review focus
 
-Host responsiveness/yielding can change, guest hardware timing cannot. Unlimited should execute as fast as practical without becoming repaint-bound.
+Host responsiveness/yielding can change; guest hardware timing cannot. Authentic/2×/5×/10× may change CPU execution rate without changing serial baud. Quiet UARTs should not fragment normal Full execution; active UARTs must be serviced before their next effective event; guest serial `OUT` must not inherit pre-write physical time. Unlimited uses the separate `Instant` serial source and should remain repaint-independent. Serial physical time must never advance CPU/chassis-time devices such as DCDD.
 
 ---
 
@@ -580,12 +604,15 @@ Keep presentation assets outside hardware authority. Check licensing/provenance 
 - `SOURCE_REFERENCE.md` — source ownership;
 - `TEST_REFERENCE.md` — integration-test ownership;
 - `RUNTIME_FLOWS.md` — end-to-end behavior;
+- `SERIAL_CLOCK_DOMAINS.md` — serial timing/scheduler ownership when affected;
 - subsystem-specific hardware fidelity records;
 - `GLOSSARY.md` — new terminology.
 
 ### Guard
 
 `tests/developer_documentation_inventory.rs` verifies that Rust source/test inventories and the core contributor-document set remain represented.
+
+Historical validation/performance records should retain their measured results. If current production supersedes an old architecture description, add a dated current-contract note/cross-link rather than rewriting the historical evidence.
 
 ---
 
@@ -598,7 +625,8 @@ Keep presentation assets outside hardware authority. Check licensing/provenance 
 | Exact timing change | exact CPU + CPU-board/S-100 path + exact timing tests + broad diagnostic regression |
 | Full optimization | Full code + Partial oracle + Full/Partial differential + panel/boundary tests + before/after benchmark |
 | RAM/card decode change | card config/runtime + backplane/runtime + overlap/open-bus/wait tests + mapping authority tests |
-| Serial hardware change | card/chip/interface/config + S-100 adapter + board-specific hardware tests + endpoint tests |
+| Serial hardware change | card/chip/interface/config + S-100 adapter + board-specific hardware tests + endpoint tests + `SERIAL_CLOCK_DOMAINS.md` review |
+| Serial clock/scheduler change | card phase/deadline owner + runtime/backend/app scheduler + exact serial-`OUT` causality + idle/active tests + speed-invariance tests + release scheduler benchmark |
 | Persistence/config change | config types + persistence + UI + migration/authority tests + round-trip check |
 | Debugger/tooling change | observer/control code + authority tests + no-hot-path-cost check when closed |
 | Documentation change | affected docs + documentation inventory test + link/name review |

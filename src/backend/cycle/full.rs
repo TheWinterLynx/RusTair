@@ -29,6 +29,7 @@ const FULL_EXECUTION_MAX_T_STATES: u32 = 18;
 const FULL_EXECUTION_REFRESH_MAX_T_STATES: u32 = 20;
 const EI_OPCODE: u8 = 0xfb;
 const LHLD_OPCODE: u8 = 0x2a;
+const OUT_OPCODE: u8 = 0xd3;
 const EI_LHLD_T_STATES: u32 = 20;
 const EI_LHLD_MAX_REFRESH_WAITS: u32 = 2;
 const FULL_READ_CACHE_ENTRIES: usize = 64;
@@ -83,9 +84,11 @@ struct FullWaitSample {
 }
 
 /// Window-local exact front-panel accumulator. Full execution has already proven
-/// HOLD/interrupt/UART quiescence. Ordinary machine-cycle duty is folded into
-/// weighted counts; the rare 88-4MCD TW states are retained separately and
-/// replayed as WAIT-high samples before the final physical boundary is restored.
+/// HOLD/interrupt safety. UART oscillator time is serviced outside this CPU-time
+/// window, so an installed serial card may keep shifting while Full folds CPU-only
+/// activity. Ordinary machine-cycle duty is folded into weighted counts; the rare
+/// 88-4MCD TW states are retained separately and replayed as WAIT-high samples
+/// before the final physical boundary is restored.
 ///
 /// We retain the newest machine cycle separately and replay it in chronological
 /// order at the final boundary. That preserves both its one-T-state 8212 latch
@@ -344,7 +347,6 @@ fn full_ei_lhld_pair_is_safe(
     let guard_opcode = bus.peek_memory(address.wrapping_add(4)).unwrap_or(0xff);
     opcode_table[guard_opcode as usize]
 }
-
 /// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
 /// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
 /// expensive connector graph remains lazy until an actual synchronization
@@ -661,7 +663,9 @@ impl Bus for FullInstructionBus<'_> {
     }
 
     fn interrupt_ack(&mut self, _address: u16, _opcode: u8, _while_halted: bool) {
-        unreachable!("interrupt acknowledge is a Full/Partial synchronization barrier")
+        unreachable!(
+            "interrupt acknowledge is classified as a Full/Partial synchronization barrier"
+        )
     }
 
     #[inline]
@@ -749,7 +753,10 @@ impl CycleAccurateMachineBackend {
         }
     }
 
-    fn compiled_full_chassis_has_clocked_peripherals(&self) -> bool {
+    /// Only peripherals whose mechanics are defined in CPU/chassis time need
+    /// deferred Full catch-up. Serial cards are deliberately absent: their baud
+    /// oscillators advance from elapsed physical time in CycleHostBackend.
+    fn compiled_full_chassis_has_cpu_clocked_peripherals(&self) -> bool {
         self.machine
             .bus
             .s100_hardware_memory()
@@ -757,16 +764,43 @@ impl CycleAccurateMachineBackend {
             .any(|(_, card)| {
                 matches!(
                     card,
-                    S100InstalledCardConfig::Mits88Sio(_)
-                        | S100InstalledCardConfig::Mits88TwoSio { .. }
-                        | S100InstalledCardConfig::Mits88DcddBoard1
+                    S100InstalledCardConfig::Mits88DcddBoard1
                         | S100InstalledCardConfig::Mits88DcddBoard2
                 )
             })
     }
 
-    fn compiled_serial_timing_is_quiet(&self) -> bool {
-        self.machine.bus.serial_timing_is_quiet()
+    fn serial_output_port_is_installed(&self, port: u8) -> bool {
+        self.machine
+            .bus
+            .s100_hardware_memory()
+            .installed_cards()
+            .any(|(_, card)| match card {
+                S100InstalledCardConfig::Mits88Sio(config) => {
+                    port == config.address.status() || port == config.address.data()
+                }
+                S100InstalledCardConfig::Mits88TwoSio { straps, .. } => {
+                    straps.address.offset(port).is_some()
+                }
+                _ => false,
+            })
+    }
+
+    pub(crate) fn serial_output_instruction_pending(&self) -> bool {
+        if !self.at_instruction_boundary() {
+            return false;
+        }
+        let pc = self.cpu.registers().pc;
+        self.machine.bus.peek_memory(pc) == Some(OUT_OPCODE)
+            && self
+                .machine
+                .bus
+                .peek_memory(pc.wrapping_add(1))
+                .is_some_and(|port| self.serial_output_port_is_installed(port))
+    }
+
+    pub(crate) fn execution_at_instruction_boundary(&self) -> bool {
+        self.at_instruction_boundary()
     }
 
     #[cfg(test)]
@@ -943,15 +977,15 @@ impl CycleAccurateMachineBackend {
 
     fn compiled_full_window_blocker(
         &self,
-        clocked_peripherals: bool,
         chassis_available: bool,
     ) -> Option<AdaptiveFallbackReason> {
         if !chassis_available {
             return Some(AdaptiveFallbackReason::ChassisUnsupported);
         }
-        if clocked_peripherals && !self.compiled_serial_timing_is_quiet() {
-            return Some(AdaptiveFallbackReason::SerialActive);
-        }
+        // Serial oscillators are an independent physical-time domain. A UART
+        // shifting a frame does not itself make a CPU-only Full window unsafe:
+        // IN/OUT remain exact Partial barriers, and CycleHostBackend settles any
+        // elapsed serial transitions between execution service slices.
         let lines = self.machine.bus.cpu_control_lines();
         if !lines.ready {
             return Some(AdaptiveFallbackReason::ReadyLow);
@@ -1029,14 +1063,18 @@ impl CycleAccurateMachineBackend {
         self.record_partial_metrics_span_until(partial_start_t, partial_reason, end_t);
     }
 
-    pub(super) fn service_execution_compiled(&mut self, t_state_budget: u32) -> BackendResult<()> {
+    fn service_execution_compiled_with_serial_barrier(
+        &mut self,
+        t_state_budget: u32,
+        stop_before_serial_output: bool,
+    ) -> BackendResult<()> {
         self.machine.bus.settle_serial_connector_state();
         let lines = self.machine.bus.cpu_control_lines();
         if t_state_budget == 0 || !self.machine.powered || !self.machine.running() || lines.reset {
             return self.fail_if_cpu_fault("service execution");
         }
 
-        let clocked_peripherals = self.compiled_full_chassis_has_clocked_peripherals();
+        let cpu_clocked_peripherals = self.compiled_full_chassis_has_cpu_clocked_peripherals();
         let chassis_available = self.compiled_full_chassis_available();
         let instruction_limit = self.compiled_full_instruction_limit();
         let mut remaining = t_state_budget;
@@ -1044,9 +1082,13 @@ impl CycleAccurateMachineBackend {
         let mut partial_start_t = None;
         let mut partial_reason = None;
         while remaining != 0 && self.machine.running() {
+            if stop_before_serial_output && self.serial_output_instruction_pending() {
+                break;
+            }
+
             let at_boundary = self.at_instruction_boundary();
             let full_window_blocker = if at_boundary {
-                self.compiled_full_window_blocker(clocked_peripherals, chassis_available)
+                self.compiled_full_window_blocker(chassis_available)
             } else {
                 None
             };
@@ -1067,7 +1109,7 @@ impl CycleAccurateMachineBackend {
                     .completed_instructions()
                     .saturating_sub(before_completed);
                 adaptive_metrics::record_full_window(completed, elapsed);
-                if clocked_peripherals {
+                if cpu_clocked_peripherals {
                     deferred_chassis_t_states = deferred_chassis_t_states.saturating_add(elapsed);
                 }
                 continue;
@@ -1110,6 +1152,17 @@ impl CycleAccurateMachineBackend {
         }
         self.machine.bus.settle_serial_connector_state();
         self.fail_if_cpu_fault("service execution")
+    }
+
+    pub(super) fn service_execution_compiled(&mut self, t_state_budget: u32) -> BackendResult<()> {
+        self.service_execution_compiled_with_serial_barrier(t_state_budget, false)
+    }
+
+    pub(crate) fn service_execution_until_serial_output(
+        &mut self,
+        t_state_budget: u32,
+    ) -> BackendResult<()> {
+        self.service_execution_compiled_with_serial_barrier(t_state_budget, true)
     }
 
     pub(crate) fn service_execution(&mut self, t_state_budget: u32) -> BackendResult<()> {
@@ -1444,7 +1497,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_full_clocks_idle_two_sio_exactly_once() {
+    fn compiled_full_does_not_clock_idle_two_sio_from_cpu_t_states() {
         let hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         let mut compiled = CycleAccurateMachineBackend::default();
         let mut reference = CycleAccurateMachineBackend::default();
@@ -1462,9 +1515,11 @@ mod tests {
             backend.run().unwrap();
         }
 
+        // Full may advance CPU/chassis-time hardware such as DCDD mechanics, but
+        // CPU execution must not advance the independently clocked serial baud
+        // generator. Both UARTs therefore retain the same idle oscillator phase.
         compiled.service_execution_compiled(14_000).unwrap();
         assert_eq!(compiled.cpu.total_t_states(), 14_000);
-        reference.machine.bus.advance_serial_hardware_time(14_000);
 
         for backend in [&mut compiled, &mut reference] {
             backend.machine.bus.debugger_output_port(0x12, 0x15);
@@ -1492,7 +1547,7 @@ mod tests {
     }
 
     #[test]
-    fn compiled_rechecks_serial_activity_after_partial_out_inside_same_service_call() {
+    fn compiled_resumes_full_after_partial_out_while_uart_shifts_independently() {
         const BUDGET: u32 = 1_000;
         let hardware = S100HardwareConfig::historical_8800b_18_slot_starter();
         let mut backend = CycleAccurateMachineBackend::default();
@@ -1514,13 +1569,19 @@ mod tests {
         let stats = adaptive_metrics::end_measurement();
 
         assert_eq!(stats.total_t_states(), u64::from(BUDGET));
-        assert_eq!(stats.full_t_states, 7);
-        assert_eq!(stats.partial_t_states, u64::from(BUDGET - 7));
+        assert!(
+            stats.full_t_states > 900,
+            "an active UART must not pin CPU execution in Partial"
+        );
+        assert!(
+            stats.partial_t_states >= 10 && stats.partial_t_states < 100,
+            "OUT remains an exact Partial barrier, but serial shifting is not a CPU-time barrier"
+        );
         assert!(backend.machine.bus.tx_busy());
     }
 
     #[test]
-    fn compiled_full_allows_idle_serial_and_dcdd_but_rejects_fixed_wait_ram_and_overlap() {
+    fn compiled_full_treats_serial_as_external_clock_but_defers_dcdd_cpu_time() {
         let mut wait_hardware =
             S100HardwareConfig::empty(S100ChassisConfig::original_8800(1)).unwrap();
         wait_hardware
@@ -1553,8 +1614,7 @@ mod tests {
             )
             .unwrap();
         assert!(serial.compiled_full_chassis_available());
-        assert!(serial.compiled_full_chassis_has_clocked_peripherals());
-        assert!(serial.compiled_serial_timing_is_quiet());
+        assert!(!serial.compiled_full_chassis_has_cpu_clocked_peripherals());
 
         let mut dcdd_hardware = static_4k_hardware();
         dcdd_hardware
@@ -1569,8 +1629,7 @@ mod tests {
             .configure_s100_hardware_memory(dcdd_hardware, RamInit::Zeroed)
             .unwrap();
         assert!(dcdd.compiled_full_chassis_available());
-        assert!(dcdd.compiled_full_chassis_has_clocked_peripherals());
-        assert!(dcdd.compiled_serial_timing_is_quiet());
+        assert!(dcdd.compiled_full_chassis_has_cpu_clocked_peripherals());
         dcdd.power(true).unwrap();
         dcdd.assert_reset().unwrap();
         dcdd.release_reset().unwrap();

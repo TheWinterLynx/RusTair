@@ -1,6 +1,8 @@
+use std::time::Duration;
+
 use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{
-    RamInit, RamSize, S100HardwareConfig, S100InstalledCardConfig, SioHardwareConfig,
+    RamInit, RamSize, S100HardwareConfig, S100InstalledCardConfig, SioBaudRate, SioHardwareConfig,
 };
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
@@ -51,7 +53,18 @@ fn run_until_output(
                 String::from_utf8_lossy(output),
             );
         }
+
+        // The UART oscillator is an independent physical clock. Yield host time
+        // between CPU batches so serial RX/TX can advance without deriving baud
+        // progress from the number of executed 8080 T-states.
+        std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+fn quick_sio() -> SioHardwareConfig {
+    let mut config = SioHardwareConfig::default();
+    config.baud = SioBaudRate::try_new(9_600).unwrap();
+    config
 }
 
 fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
@@ -76,12 +89,7 @@ fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
                     .unwrap();
             }
             hardware
-                .set_slot(
-                    4,
-                    Some(S100InstalledCardConfig::Mits88Sio(
-                        SioHardwareConfig::default(),
-                    )),
-                )
+                .set_slot(4, Some(S100InstalledCardConfig::Mits88Sio(quick_sio())))
                 .unwrap();
         }
         RamSize::K64 => {
@@ -99,12 +107,7 @@ fn quick_basic_hardware(ram: RamSize) -> S100HardwareConfig {
                     .unwrap();
             }
             hardware
-                .set_slot(
-                    6,
-                    Some(S100InstalledCardConfig::Mits88Sio(
-                        SioHardwareConfig::default(),
-                    )),
-                )
+                .set_slot(6, Some(S100InstalledCardConfig::Mits88Sio(quick_sio())))
                 .unwrap();
         }
         _ => panic!("Quick BASIC regression only defines physical 8 KiB and 64 KiB fixtures"),

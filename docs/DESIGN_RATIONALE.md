@@ -100,7 +100,7 @@ They do not represent different historical machines. They are internal ways of a
 
 ### Consequence
 
-The user chooses host execution speed (Authentic/5×/10×/Unlimited), while the engine decides internally when Full is safe.
+The user chooses host execution speed (Authentic/2×/5×/10×/Unlimited), while the engine decides internally when Full is safe.
 
 ---
 
@@ -314,19 +314,25 @@ Breakpoints/watchpoints may control when execution stops, but the emulated instr
 
 ---
 
-## 17. Separate host scheduling speed from guest clock identity
+## 17. Separate host scheduling speed from independent hardware clock domains
 
 ### Decision
 
-Authentic/5×/10×/Unlimited determine how aggressively the host advances virtual time; they do not alter the historical board clock model.
+Authentic/2×/5×/10×/Unlimited determine how aggressively the host advances guest CPU execution. They do not re-clock the historical MITS CPU board and they do not redefine independently clocked peripheral rates such as an 88-SIO/88-2SIO baud generator.
 
 ### Why
 
-A 2 MHz Altair running "10×" should behave like the same hardware simulated ten times faster in wall-clock time, not like a fictional 20 MHz 8080 board with changed device timing relationships.
+A card strapped for 110 baud must remain 110 baud regardless of how quickly the host executes 8080 work. Coupling UART progress directly to guest CPU T-states makes accelerated modes physically wrong; coupling it to GUI repaint cadence makes STOP/HOLD/RESET behavior wrong and introduces presentation timing into hardware.
+
+Different devices can also legitimately use different modeled time domains. Current DCDD/FD-400 mechanics follow CPU/chassis virtual time, while serial baud generators follow serial physical time.
 
 ### Consequence
 
-Peripheral timing remains expressed in emulated time. Unlimited scheduling must not become tied to GUI repaint frequency.
+Throttled CPU modes settle serial physical time on a causal event-driven timeline. Quiet UARTs publish no scheduling deadline, active UARTs publish their next effective card-owned event boundary, and a guest serial `OUT` is an exact synchronization barrier so a newly active transmitter never receives time from before the write. Unlimited uses an `Instant`-based serial physical-time source with an explicit handoff to/from managed timing.
+
+The scheduler may optimize **when** elapsed serial time is settled, but the installed COM2502/MC6850 remains the authority for bit/frame/status/IRQ state. GUI repaint is never a UART clock, and serial physical-time advancement must not advance CPU/chassis-time devices such as DCDD.
+
+See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) for the complete current contract.
 
 ---
 

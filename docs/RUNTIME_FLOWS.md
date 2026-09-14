@@ -38,25 +38,47 @@ sequenceDiagram
     participant C as ExecutionClock
     participant F as run_cpu_frame
     participant B as BackendHost
+    participant S as Installed serial card(s)
     participant M as Adaptive Cycle
-    participant P as Peripheral/serial service
+    participant P as Peripheral/serial endpoints
 
     E->>A: update(now)
-    A->>A: sync persisted/config UI state
+    A->>A: sync persisted/config/diagnostic state
+    A->>B: select managed serial time for throttled CPU, Instant for Unlimited
     A->>C: budget(now, RUN, board clock, speed)
-    C-->>A: allowed guest T-states
-    A->>F: run CPU within T-state budget + host deadline
-    F->>B: service execution in slices
-    B->>M: execute Adaptive Full/Partial
-    M-->>B: exact executed T-state count
-    B-->>F: progress / possible yield
-    F-->>A: total executed T-states
+    C-->>A: allowed CPU T-states
+    A->>F: replay CPU debt within host deadline
+    loop throttled event-driven service
+        F->>B: query serial_clock_deadline_t_states()
+        B->>S: ask installed cards for earliest effective event
+        S-->>B: None if quiet, or card-owned physical deadline
+        B-->>F: deadline / no deadline
+        F->>B: execute normal slice capped only by active deadline
+        B->>M: execute Adaptive Full/Partial
+        M-->>B: exact executed CPU T-state count
+        F->>B: advance corresponding serial physical duration
+        B->>S: advance installed UART oscillators only
+    end
+    F-->>A: total executed CPU T-states
     A->>C: record executed debt (throttled modes)
-    A->>P: service ASR/terminal/TCP/COM and mechanics
+    A->>A: if CPU parked/stopped, advance serial physical time without fake CPU T-states
+    A->>P: inject host input sampled at now; drain serial outputs/mechanics
     A->>E: render panels/tools, request next repaint
 ```
 
-Unlimited mode is constrained by a host-time deadline rather than a small fixed T-state chunk per repaint.
+The repaint loop is not the UART clock. In Authentic/2×/5×/10×, `run_cpu_frame` uses the installed cards' next observable physical event rather than the retired fixed 4 µs slice.
+
+A quiet serial channel publishes no scheduler deadline. If every installed UART is quiet, CPU execution retains the normal 4096-T-state Adaptive service slice and can stay in long Full windows. The card still retains its oscillator phase; `None` means only that no UART state can change before the normal CPU service boundary.
+
+An active card publishes its next **effective** event. For 88-SIO that is the relevant COM2502 UART clock boundary. For 88-2SIO the external MITS 16× baud-generator tap continues to free-run and retain phase, while the scheduler observes the next divided MC6850 `/1`, `/16` or `/64` boundary rather than every intermediate tap pulse.
+
+A guest `OUT` to installed serial hardware is a causal synchronization point. Adaptive execution stops before the output, the Cycle backend owns exact T-state progression across the barrier, pre-write serial physical time is settled, and the next scheduler query replans from the changed card state. A newly active UART therefore never receives time that elapsed before the guest actually wrote it.
+
+Unlimited has no meaningful CPU-T-state-to-wall-time ratio. It remains constrained by a host-time deadline for responsiveness while the UART receives elapsed physical time directly from the backend's `Instant` source. Handoffs between managed throttled timing and Unlimited establish one boundary so elapsed serial time is neither dropped nor counted twice.
+
+A card strapped/configured for 110 baud remains 110 baud in Authentic, 2×, 5×, 10× and Unlimited. Likewise, 9600 baud remains 9600 baud; increasing CPU execution speed only changes how much guest CPU work the host attempts during the same physical serial interval. Endpoint pacing is independent and must not silently restrap the card.
+
+See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) for the detailed clock-domain contract and benchmark evidence.
 
 ---
 
@@ -90,6 +112,8 @@ sequenceDiagram
 ```
 
 The implementation uses caching/delta observation, so not every conceptual arrow is necessarily an expensive host call on every phase. The physical dependency remains the same.
+
+A CPU T-state no longer advances the 88-SIO/88-2SIO baud generator. It may advance hardware explicitly defined in CPU/chassis virtual time, such as the current DCDD mechanics epoch. Serial oscillator progress arrives through the independent physical-time scheduler and is then resolved through the same S-100 fabric.
 
 ---
 
@@ -165,7 +189,7 @@ sequenceDiagram
     Note over Exact,Physical: next Partial edge continues the same physical machine
 ```
 
-No RAM or serial card is cloned at entry.
+No RAM or serial card is cloned at entry. An active independently clocked UART is not itself a reason to pin CPU execution in Partial. The scheduler caps CPU work only at card-owned observable serial deadlines, and guest serial IN/OUT remains an exact synchronization barrier. If a serial `OUT` would activate or reconfigure a UART, the managed causal barrier returns to exact Cycle progression before that card mutation and scheduling is replanned immediately afterward.
 
 ---
 
@@ -183,6 +207,8 @@ No RAM or serial card is cloned at entry.
 
 The decode index is equivalent to precompiling fixed jumper logic. It does not directly read/write the UART behind the card's back.
 
+A managed serial `OUT` additionally acts as a host scheduling barrier so the card mutation occurs at the correct point on the physical serial timeline. This changes host work granularity, not the guest-visible I/O transaction.
+
 ---
 
 ## 8. Serial byte from host to guest
@@ -193,19 +219,25 @@ Example: a character typed in the text terminal.
 sequenceDiagram
     participant UI as Text terminal UI/controller
     participant Router as SerialRouter
-    participant Endpoint as selected endpoint connection
+    participant Backend as Backend serial boundary
+    participant Clock as Physical serial clock
     participant Card as installed 88-SIO/88-2SIO
+    participant Bus as S-100
     participant CPU as guest 8080
 
-    UI->>Router: user byte available
-    Router->>Endpoint: route over explicit selected cable
-    Endpoint->>Card: connector-level receive input over emulated elapsed time
-    Card->>Card: UART receive timing/status evolves
-    Card-->>CPU: status/interrupt visible through S-100
+    Backend->>Clock: replay physical serial time up to current host boundary
+    UI->>Router: user byte sampled at now
+    Router->>Backend: route over explicit selected cable
+    Backend->>Card: connector-level receive input
+    Clock->>Card: later configured bit/frame timing, independent of CPU speed
+    Card->>Bus: status / PINT / VI / READY drive changes
+    Bus-->>CPU: resolved hardware state
     CPU->>Card: IN status/data when guest software polls/services it
 ```
 
-A host byte is not deposited instantly into accumulator A. It becomes input to serial hardware and guest software must interact with that hardware.
+A host byte is not deposited instantly into accumulator A. It becomes input to the installed serial hardware and guest software must interact with that hardware. The app first replays the physical interval that ended at the current host boundary and only then injects keyboard/tape input sampled during the current update. A newly arrived byte therefore cannot inherit UART time that elapsed before the byte existed.
+
+The same rule applies to ASR-33 keyboard input, Text Terminal input, TCP and COM endpoints. They do not receive separate UART timing implementations.
 
 ---
 
@@ -213,15 +245,17 @@ A host byte is not deposited instantly into accumulator A. It becomes input to s
 
 ```text
 8080 OUT / serial-card transmit register
-→ UART/card transmit timing
-→ emulated serial connector output
+→ installed UART shifts the configured serial frame in physical serial time
+→ completed byte reaches the emulated serial connector
 → explicit SerialRouter cable
 → ASR-33 peripheral/controller
-→ print/keyboard/paper mechanics state
+→ ASR-33 mechanical printer/distributor pacing
 → ASR-33 UI/audio presentation
 ```
 
-The ASR-33 visual/mechanical model is downstream of serial hardware; it is not part of the S-100 card.
+The ASR-33 visual/mechanical model is downstream of serial hardware; it is not part of the S-100 card. Its 10-cps mechanics may retain/pace completed output, but it does not complete COM2502/MC6850 transmission and it does not replace the selected card baud. At matching 110-baud settings the two physical stages pipeline rather than making CPU execution speed part of the line rate.
+
+ASR/terminal endpoint timing and card baud remain independently configurable. RusTair must not auto-synchronize them behind the user's back.
 
 ---
 
@@ -276,7 +310,7 @@ external/card HOLD request
 → CPU resumes at retained exact phase/state
 ```
 
-Even where no current DMA master is installed, the CPU/front-panel/bus behavior is tested as a physical contract.
+Even where no current DMA master is installed, the CPU/front-panel/bus behavior is tested as a physical contract. A parked CPU does not freeze the independent serial oscillator; the GUI/backend scheduler advances physical serial time for the elapsed wall interval without fabricating CPU T-states.
 
 ---
 
@@ -332,8 +366,8 @@ user selects convenience load
 
 ```text
 historical bootstrap runs on 8080
-→ paper-tape reader produces serial input over time
-→ installed serial card receives it
+→ paper-tape reader produces serial input over physical peripheral time
+→ installed serial card receives and shifts it at the configured baud
 → guest bootstrap polls/reads card
 → guest program writes bytes to RAM
 ```
@@ -374,6 +408,7 @@ Legacy fields are migration inputs only. They must not continue as a second live
 - Need exact CPU edge? Instrument/test `cpu8080_cycle`/Partial.
 - Need resolved bus? Inspect `S100BusSample`/backplane state.
 - Need card-local state? Use the card's controlled runtime handle/test helper.
+- Need serial timing? Inspect the card-owned deadline/phase plus `execution_frame`/`cycle_host` handoff; do not infer baud from CPU T-state rate.
 - Need guest instruction history? Use `trace8080`.
 - Need host serial data? Use endpoint/network/COM trace.
 - Need Full coverage? Use `adaptive_metrics`.
