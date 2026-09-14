@@ -11,6 +11,7 @@ This file contains **only unfinished work that is still relevant to the current 
 - `AltairChassis` owns physical chassis state but no processor implementation.
 - `S100HardwareConfig` slot inventory is the physical hardware configuration authority.
 - Adaptive **Full** and **Partial** are internal execution strategies over the same machine, never separate user-visible emulators.
+- Serial baud generators use an independent physical-time domain: host CPU speed must not scale baud, quiet UARTs must not fragment execution unnecessarily, and CPU/chassis-time devices such as DCDD remain on their separate virtual-time path.
 - Historical bugs/limitations remain reproducible; compatibility workarounds must be explicit and opt-in.
 - Do not run GitHub Actions without explicit user instruction.
 
@@ -81,7 +82,7 @@ Phase rules:
 
 - [ ] Each phase lands only when its focused PASS gate in the implementation contract is green; do not weaken an earlier gate to unlock a later phase.
 - [ ] One vs sixteen idle drives must not create O(drives × T-states) work; rotational/mechanical state should be epoch/deadline-derived where possible.
-- [ ] Authentic peripheral timing is guest virtual time. 1x/5x/10x/Unlimited changes host throughput only and must not change the historical FD-400 clock/timing model.
+- [ ] Authentic disk peripheral timing is guest CPU/chassis virtual time. 1x/5x/10x/Unlimited changes host throughput only and must not change the historical FD-400 timing model or reuse the independent serial physical-time scheduler.
 - [ ] Any new Rust source or integration-test file is added to `docs/SOURCE_REFERENCE.md` or `docs/TEST_REFERENCE.md` in the same phase.
 - [ ] Do not run GitHub Actions unless explicitly requested.
 
@@ -103,7 +104,9 @@ Phase rules:
 
 A cleanup/performance/fidelity phase is not complete until:
 
-1. `cargo test` passes locally.
-2. Relevant ignored classic diagnostic tests pass when production CPU/S-100 behavior changed.
-3. `cargo run --release` passes the manual UI smoke test for the affected workflows.
-4. No GitHub Actions were launched unless explicitly requested.
+1. `cargo fmt --check` passes locally.
+2. `cargo test --all-targets` passes locally (with warnings denied for the final contributor gate where applicable).
+3. Relevant ignored classic diagnostic/performance tests pass when the affected production behavior requires them.
+4. `cargo build --release` succeeds.
+5. `cargo run --release` passes the manual UI smoke test for affected interactive workflows when needed.
+6. No GitHub Actions were launched unless explicitly requested.
