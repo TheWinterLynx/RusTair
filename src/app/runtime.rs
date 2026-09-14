@@ -130,6 +130,9 @@ impl eframe::App for RusTairApp {
         if self.terminal_connection().is_connected() {
             self.process_terminal_serial(ctx);
         }
+        if self.adm3a_connection().is_connected() {
+            self.process_adm3a_serial(ctx);
+        }
         self.process_external_serial(ctx);
         self.process_external_com(ctx);
         self.service_disconnected_serial_ports();
