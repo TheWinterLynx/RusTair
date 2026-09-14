@@ -163,7 +163,7 @@ impl AltairChassis {
             return;
         }
         self.bus.cancel_cpu_diagnostic_meter();
-        self.bus.clear_transient_memory_guards();
+        self.bus.rearm_transient_memory_guards_after_reset();
         self.bus.panel.reset_address();
         self.bus.sync_cpu_inte(false);
         self.bus.set_hlda(false);
