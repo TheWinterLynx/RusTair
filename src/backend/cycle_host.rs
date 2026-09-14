@@ -605,42 +605,43 @@ impl MachineBackend for CycleHostBackend {
     }
     fn service_execution(&mut self, budget: u32) -> BackendResult<()> {
         self.service_serial_wall_clock();
-        let result = if !self.instruction_trace.enabled() && !self.debug_control.active() {
-            if self.serial_wall_clock_managed {
-                self.service_managed_execution(budget)
+        let result =
+            if !self.instruction_trace.enabled() && !self.debug_control.active() {
+                if self.serial_wall_clock_managed {
+                    self.service_managed_execution(budget)
+                } else {
+                    self.inner.service_execution(budget)
+                }
             } else {
-                self.inner.service_execution(budget)
-            }
-        } else {
-            // Debug/trace observation is already an exact Partial path. In
-            // managed mode cap it to one T-state so serial activation remains
-            // causally aligned without adding another barrier authority.
-            let observed_budget = if self.serial_wall_clock_managed {
-                budget.min(1)
-            } else {
-                budget
+                // Debug/trace observation is already an exact Partial path. In
+                // managed mode cap it to one T-state so serial activation remains
+                // causally aligned without adding another barrier authority.
+                let observed_budget = if self.serial_wall_clock_managed {
+                    budget.min(1)
+                } else {
+                    budget
+                };
+                let observing = self.observing_instruction_effects();
+                let pending = &mut self.pending_instruction_trace;
+                let trace = &mut self.instruction_trace;
+                let control = &mut self.debug_control;
+                self.inner
+                    .service_execution_with_observer(observed_budget, |inner, event| match event {
+                        CycleExecutionEvent::BeforeInstruction => {
+                            let r = inner.cpu().registers();
+                            if control.stop_before_with_sp(r.pc, r.sp).is_some() {
+                                return true;
+                            }
+                            if observing {
+                                Self::begin_pending_trace(inner, pending);
+                            }
+                            false
+                        }
+                        CycleExecutionEvent::InstructionComplete => {
+                            Self::finalize_pending_trace(inner, pending, trace, control)
+                        }
+                    })
             };
-            let observing = self.observing_instruction_effects();
-            let pending = &mut self.pending_instruction_trace;
-            let trace = &mut self.instruction_trace;
-            let control = &mut self.debug_control;
-            self.inner
-                .service_execution_with_observer(observed_budget, |inner, event| match event {
-                    CycleExecutionEvent::BeforeInstruction => {
-                        let r = inner.cpu().registers();
-                        if control.stop_before_with_sp(r.pc, r.sp).is_some() {
-                            return true;
-                        }
-                        if observing {
-                            Self::begin_pending_trace(inner, pending);
-                        }
-                        false
-                    }
-                    CycleExecutionEvent::InstructionComplete => {
-                        Self::finalize_pending_trace(inner, pending, trace, control)
-                    }
-                })
-        };
         self.service_serial_wall_clock();
         result
     }
