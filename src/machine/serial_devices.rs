@@ -100,10 +100,6 @@ impl IoTrace {
         self.ports.fill(IoPortActivity::default());
     }
 
-    fn set_output_state(&mut self, port: u8, value: u8) {
-        self.ports[port as usize].last_out = Some(value);
-    }
-
     fn snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
         self.events
             .iter()
@@ -158,6 +154,7 @@ fn configured_two_sio_ports(straps: TwoSioStraps) -> [TwoSioPort; 2] {
 pub(super) struct IoDevices {
     sio: SioPort,
     two_sio: [TwoSioPort; 2],
+    two_sio_control: [u8; 2],
     two_sio_straps: TwoSioStraps,
     two_sio_interrupt_wiring: TwoSioInterruptWiring,
     serial_board: SerialBoard,
@@ -171,6 +168,7 @@ impl Default for IoDevices {
         Self {
             sio: SioPort::default(),
             two_sio: configured_two_sio_ports(two_sio_straps),
+            two_sio_control: [0; 2],
             two_sio_straps,
             two_sio_interrupt_wiring: TwoSioInterruptWiring::default(),
             serial_board: SerialBoard::default(),
@@ -201,6 +199,7 @@ impl IoDevices {
         }
         self.two_sio_straps = straps;
         self.two_sio = configured_two_sio_ports(straps);
+        self.two_sio_control = [0; 2];
     }
 
     pub(super) fn two_sio_straps(&self) -> TwoSioStraps {
@@ -478,9 +477,15 @@ impl IoDevices {
                 }
             }
             SerialBoard::TwoSio88 => match self.two_sio_straps.address.offset(port) {
-                Some(0) => self.two_sio[0].write_control(value),
+                Some(0) => {
+                    self.two_sio_control[0] = value;
+                    self.two_sio[0].write_control(value);
+                }
                 Some(1) => self.two_sio[0].write_data(value),
-                Some(2) => self.two_sio[1].write_control(value),
+                Some(2) => {
+                    self.two_sio_control[1] = value;
+                    self.two_sio[1].write_control(value);
+                }
                 Some(3) => self.two_sio[1].write_data(value),
                 _ => {}
             },
@@ -618,16 +623,19 @@ impl IoDevices {
         self.two_sio[0].reset();
         self.two_sio[1].reset();
         self.sio_control = 0;
-        if self.serial_board == SerialBoard::TwoSio88 {
-            self.trace
-                .set_output_state(self.two_sio_straps.address.port0_status(), 0);
-            self.trace
-                .set_output_state(self.two_sio_straps.address.port1_status(), 0);
-        }
+        self.two_sio_control = [0; 2];
     }
 
     pub(super) fn trace_port_activity(&self, port: u8) -> (Option<u8>, Option<u8>, u64, u64) {
-        self.trace.port_activity(port)
+        let (last_in, mut last_out, in_count, out_count) = self.trace.port_activity(port);
+        if self.serial_board == SerialBoard::TwoSio88 {
+            match self.two_sio_straps.address.offset(port) {
+                Some(0) => last_out = Some(self.two_sio_control[0]),
+                Some(2) => last_out = Some(self.two_sio_control[1]),
+                _ => {}
+            }
+        }
+        (last_in, last_out, in_count, out_count)
     }
 
     pub(super) fn trace_snapshot(&self) -> Vec<(u64, u8, u8, u8, u32)> {
@@ -777,6 +785,11 @@ mod tests {
         let (_, last_out, _, out_count) = io.trace_port_activity(0x10);
         assert_eq!(last_out, Some(0x15));
         assert_eq!(out_count, 1);
+
+        io.clear_trace();
+        let (_, last_out, _, out_count) = io.trace_port_activity(0x10);
+        assert_eq!(last_out, Some(0x15));
+        assert_eq!(out_count, 0);
 
         io.clear_serial();
         let (_, last_out, _, _) = io.trace_port_activity(0x10);
