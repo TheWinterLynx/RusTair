@@ -29,6 +29,7 @@ enum ParserState {
 pub(super) struct Adm3aState {
     pub(super) window_open: bool,
     powered: bool,
+    auto_new_line: bool,
     cells: [[u8; ADM3A_COLS]; ADM3A_ROWS],
     cursor_col: usize,
     cursor_row: usize,
@@ -43,6 +44,7 @@ impl Default for Adm3aState {
         Self {
             window_open: false,
             powered: false,
+            auto_new_line: false,
             cells: [[b' '; ADM3A_COLS]; ADM3A_ROWS],
             cursor_col: 0,
             cursor_row: 0,
@@ -57,6 +59,14 @@ impl Default for Adm3aState {
 impl Adm3aState {
     pub(super) const fn powered(&self) -> bool {
         self.powered
+    }
+
+    pub(super) const fn auto_new_line(&self) -> bool {
+        self.auto_new_line
+    }
+
+    pub(super) fn set_auto_new_line(&mut self, enabled: bool) {
+        self.auto_new_line = enabled;
     }
 
     pub(super) fn set_powered(&mut self, powered: bool) {
@@ -113,9 +123,14 @@ impl Adm3aState {
         self.cells[self.cursor_row][self.cursor_col] = byte;
         if self.cursor_col + 1 < ADM3A_COLS {
             self.cursor_col += 1;
-        } else {
+        } else if self.auto_new_line {
             self.cursor_col = 0;
             self.line_down();
+        } else {
+            // With AUTO NL disabled, real ADM-3A overflow reloads column 79.
+            // Further printable characters overwrite the last cell until an
+            // explicit CR/LF (or cursor-control command) moves the cursor.
+            self.cursor_col = ADM3A_COLS - 1;
         }
     }
 
@@ -204,6 +219,7 @@ mod tests {
     fn power_starts_off_and_transition_resets_screen() {
         let mut terminal = Adm3aState::default();
         assert!(!terminal.powered());
+        assert!(!terminal.auto_new_line());
         terminal.receive_byte(b'X');
         terminal.set_powered(true);
         assert!(terminal.powered());
@@ -230,6 +246,30 @@ mod tests {
         assert_eq!(terminal.cursor(), (1, 1));
         terminal.receive_byte(b'E');
         assert_eq!(terminal.row(1)[1], b'E');
+    }
+
+    #[test]
+    fn auto_new_line_switch_controls_column_80_overflow() {
+        let mut terminal = Adm3aState::default();
+        for _ in 0..ADM3A_COLS {
+            terminal.receive_byte(b'X');
+        }
+        assert_eq!(terminal.cursor(), (ADM3A_COLS - 1, 0));
+        assert_eq!(terminal.row(0)[ADM3A_COLS - 1], b'X');
+
+        terminal.receive_byte(b'Y');
+        assert_eq!(terminal.cursor(), (ADM3A_COLS - 1, 0));
+        assert_eq!(terminal.row(0)[ADM3A_COLS - 1], b'Y');
+
+        terminal.receive_byte(b'\r');
+        terminal.receive_byte(b'\n');
+        assert_eq!(terminal.cursor(), (0, 1));
+
+        terminal.set_auto_new_line(true);
+        for _ in 0..ADM3A_COLS {
+            terminal.receive_byte(b'Z');
+        }
+        assert_eq!(terminal.cursor(), (0, 2));
     }
 
     #[test]
