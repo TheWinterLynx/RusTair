@@ -51,9 +51,7 @@ fn throttled_serial_deadline_t_states(
         .saturating_mul(u128::from(cpu_clock_hz))
         .saturating_mul(u128::from(multiplier));
     let denominator = u128::from(crate::machine::CLOCK_HZ).max(1);
-    ((numerator / denominator)
-        .max(1)
-        .min(u128::from(u32::MAX))) as u32
+    ((numerator / denominator).max(1).min(u128::from(u32::MAX))) as u32
 }
 
 #[inline]
@@ -317,10 +315,7 @@ mod tests {
                 EmulationSpeed::Authentic,
             );
             assert!(crossed > 0);
-            assert_eq!(
-                machine.serial_tx_complete(BackendSerialPort::Port0),
-                None
-            );
+            assert_eq!(machine.serial_tx_complete(BackendSerialPort::Port0), None);
         }
         assert!(
             machine.serial_clock_deadline_t_states().is_some(),
