@@ -65,6 +65,24 @@ fn physical_time_for_executed_t_states(
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
+/// Host-throughput frame helper retained for diagnostics/performance tests that
+/// intentionally exercise the old GUI slice contract without a throttled
+/// CPU-to-physical-time mapping. Production throttled execution must use
+/// `run_cpu_frame_timed` so serial time remains independent from CPU speed.
+pub(super) fn run_cpu_frame(
+    machine: &mut BackendHost,
+    budget: u32,
+    limit: Duration,
+) -> u64 {
+    run_cpu_frame_timed(
+        machine,
+        budget,
+        limit,
+        crate::machine::CLOCK_HZ,
+        EmulationSpeed::Unlimited,
+    )
+}
+
 /// Yield between exact engine budgets. In throttled modes this function also
 /// owns CPU/serial physical-time interleaving: CPU speed changes only how many
 /// guest T-states fit inside one 4 us physical slice, while the installed UART
@@ -73,7 +91,7 @@ fn physical_time_for_executed_t_states(
 ///
 /// Unlimited has no guest-CPU-to-wall-time ratio, so it retains the independent
 /// `Instant` serial source and large host-throughput slices.
-pub(super) fn run_cpu_frame(
+pub(super) fn run_cpu_frame_timed(
     machine: &mut BackendHost,
     budget: u32,
     limit: Duration,
@@ -188,7 +206,7 @@ mod tests {
         let mut sliced = machine();
         let mut uninterrupted = machine();
         let expected_first = throttled_serial_slice_t_states(TWO_MHZ, EmulationSpeed::Authentic);
-        let first = run_cpu_frame(
+        let first = run_cpu_frame_timed(
             &mut sliced,
             40_000,
             Duration::ZERO,
@@ -196,7 +214,7 @@ mod tests {
             EmulationSpeed::Authentic,
         );
         assert_eq!(first, u64::from(expected_first));
-        let rest = run_cpu_frame(
+        let rest = run_cpu_frame_timed(
             &mut sliced,
             40_000 - first as u32,
             Duration::from_secs(1),
@@ -241,8 +259,13 @@ mod tests {
             machine.debugger_output_port(0x01, b'A');
             machine.debugger_output_port(0x01, b'B');
 
-            let executed =
-                run_cpu_frame(&mut machine, budget, Duration::from_secs(1), TWO_MHZ, speed);
+            let executed = run_cpu_frame_timed(
+                &mut machine,
+                budget,
+                Duration::from_secs(1),
+                TWO_MHZ,
+                speed,
+            );
             assert_eq!(executed, u64::from(budget), "speed={speed:?}");
             assert_eq!(
                 machine.serial_tx_complete(BackendSerialPort::Port0),
@@ -324,7 +347,7 @@ mod tests {
         let mut machine = machine();
         machine.set_running(false);
         assert_eq!(
-            run_cpu_frame(
+            run_cpu_frame_timed(
                 &mut machine,
                 UNLIMITED_CHUNK_T_STATES,
                 CPU_FRAME_TIME,
