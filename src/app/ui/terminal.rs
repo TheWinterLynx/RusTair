@@ -10,61 +10,37 @@ const ADM3A_SHELL_TEXT_LEFT: f32 = 461.0 / ADM3A_SHELL_WIDTH;
 const ADM3A_SHELL_TEXT_TOP: f32 = 239.0 / ADM3A_SHELL_HEIGHT;
 const ADM3A_SHELL_TEXT_RIGHT: f32 = 997.0 / ADM3A_SHELL_WIDTH;
 const ADM3A_SHELL_TEXT_BOTTOM: f32 = 611.0 / ADM3A_SHELL_HEIGHT;
-const ADM3A_POPUP_ASPECT: f32 = 1.29;
-const ADM3A_POPUP_TEXT_LEFT: f32 = 0.076;
-const ADM3A_POPUP_TEXT_TOP: f32 = 0.148;
-const ADM3A_POPUP_TEXT_RIGHT: f32 = 0.945;
-const ADM3A_POPUP_TEXT_BOTTOM: f32 = 0.904;
-const ADM3A_CRT_BEZIER_STEPS: usize = 32;
-const ADM3A_CRT_BEZIERS: [[(f32, f32); 4]; 8] = [
-    [
-        (0.140, 0.065),
-        (0.340, 0.005),
-        (0.660, 0.005),
-        (0.860, 0.065),
-    ],
-    [
-        (0.860, 0.065),
-        (0.925, 0.075),
-        (0.965, 0.115),
-        (0.982, 0.205),
-    ],
-    [
-        (0.982, 0.205),
-        (0.995, 0.380),
-        (0.995, 0.620),
-        (0.982, 0.795),
-    ],
-    [
-        (0.982, 0.795),
-        (0.965, 0.885),
-        (0.925, 0.925),
-        (0.860, 0.940),
-    ],
-    [
-        (0.860, 0.940),
-        (0.660, 0.995),
-        (0.340, 0.995),
-        (0.140, 0.940),
-    ],
-    [
-        (0.140, 0.940),
-        (0.075, 0.925),
-        (0.035, 0.885),
-        (0.018, 0.795),
-    ],
-    [
-        (0.018, 0.795),
-        (0.005, 0.620),
-        (0.005, 0.380),
-        (0.018, 0.205),
-    ],
-    [
-        (0.018, 0.205),
-        (0.035, 0.115),
-        (0.075, 0.075),
-        (0.140, 0.065),
-    ],
+
+// Canonical active-CRT calibration measured from the photorealistic view that
+// is already aligned to the real ADM-3A photographs. The popup must not carry a
+// second independent approximation of the tube geometry or 80x24 raster.
+const ADM3A_POPUP_ASPECT: f32 = 757.0 / 605.0;
+const ADM3A_POPUP_TEXT_LEFT: f32 = 65.0 / 756.0;
+const ADM3A_POPUP_TEXT_TOP: f32 = 101.0 / 604.0;
+const ADM3A_POPUP_TEXT_RIGHT: f32 = 705.0 / 756.0;
+const ADM3A_POPUP_TEXT_BOTTOM: f32 = 533.0 / 604.0;
+const ADM3A_CRT_SMOOTHING_PASSES: usize = 4;
+const ADM3A_CRT_OUTLINE: [(f32, f32); 20] = [
+    (0.026, 0.083),
+    (0.003, 0.331),
+    (0.000, 0.583),
+    (0.020, 0.882),
+    (0.029, 0.922),
+    (0.046, 0.944),
+    (0.234, 0.985),
+    (0.507, 1.000),
+    (0.832, 0.974),
+    (0.935, 0.952),
+    (0.971, 0.922),
+    (0.992, 0.743),
+    (1.000, 0.495),
+    (0.991, 0.210),
+    (0.980, 0.103),
+    (0.964, 0.068),
+    (0.794, 0.023),
+    (0.493, 0.000),
+    (0.169, 0.030),
+    (0.054, 0.058),
 ];
 
 impl RusTairApp {
@@ -506,38 +482,56 @@ impl RusTairApp {
         egui::Rect::from_center_size(available.center(), size)
     }
 
-    fn adm3a_bezier_point(
-        rect: egui::Rect,
-        p0: (f32, f32),
-        p1: (f32, f32),
-        p2: (f32, f32),
-        p3: (f32, f32),
-        t: f32,
-    ) -> egui::Pos2 {
-        let one_minus_t = 1.0_f32 - t;
-        let b0 = one_minus_t * one_minus_t * one_minus_t;
-        let b1 = 3.0_f32 * one_minus_t * one_minus_t * t;
-        let b2 = 3.0_f32 * one_minus_t * t * t;
-        let b3 = t * t * t;
-        let u = b0 * p0.0 + b1 * p1.0 + b2 * p2.0 + b3 * p3.0;
-        let v = b0 * p0.1 + b1 * p1.1 + b2 * p2.1 + b3 * p3.1;
-        egui::Pos2::new(
-            rect.left() + rect.width() * u,
-            rect.top() + rect.height() * v,
-        )
-    }
-
     fn adm3a_crt_outline(rect: egui::Rect) -> Vec<egui::Pos2> {
-        let mut points = Vec::with_capacity(ADM3A_CRT_BEZIERS.len() * ADM3A_CRT_BEZIER_STEPS);
-        for segment in ADM3A_CRT_BEZIERS {
-            for step in 0..ADM3A_CRT_BEZIER_STEPS {
-                let t = step as f32 / ADM3A_CRT_BEZIER_STEPS as f32;
-                points.push(Self::adm3a_bezier_point(
-                    rect, segment[0], segment[1], segment[2], segment[3], t,
+        let mut points = ADM3A_CRT_OUTLINE
+            .iter()
+            .map(|(u, v)| egui::Pos2::new(*u, *v))
+            .collect::<Vec<_>>();
+
+        // Chaikin corner cutting turns the measured tube silhouette into a dense
+        // smooth convex outline without inventing another ellipse/superellipse.
+        // Renormalizing after smoothing preserves the exact measured aspect ratio.
+        for _ in 0..ADM3A_CRT_SMOOTHING_PASSES {
+            let mut smoothed = Vec::with_capacity(points.len() * 2);
+            for index in 0..points.len() {
+                let current = points[index];
+                let next = points[(index + 1) % points.len()];
+                smoothed.push(egui::Pos2::new(
+                    current.x * 0.75_f32 + next.x * 0.25_f32,
+                    current.y * 0.75_f32 + next.y * 0.25_f32,
+                ));
+                smoothed.push(egui::Pos2::new(
+                    current.x * 0.25_f32 + next.x * 0.75_f32,
+                    current.y * 0.25_f32 + next.y * 0.75_f32,
                 ));
             }
+            points = smoothed;
         }
+
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for point in &points {
+            min_x = min_x.min(point.x);
+            min_y = min_y.min(point.y);
+            max_x = max_x.max(point.x);
+            max_y = max_y.max(point.y);
+        }
+        let span_x = (max_x - min_x).max(f32::EPSILON);
+        let span_y = (max_y - min_y).max(f32::EPSILON);
+
         points
+            .into_iter()
+            .map(|point| {
+                let u = (point.x - min_x) / span_x;
+                let v = (point.y - min_y) / span_y;
+                egui::Pos2::new(
+                    rect.left() + rect.width() * u,
+                    rect.top() + rect.height() * v,
+                )
+            })
+            .collect()
     }
 
     fn adm3a_popup_text_rect(screen_rect: egui::Rect) -> egui::Rect {
