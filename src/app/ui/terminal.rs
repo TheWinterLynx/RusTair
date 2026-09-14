@@ -6,15 +6,26 @@ use crate::config::TerminalDuplex;
 
 const ADM3A_SHELL_WIDTH: f32 = 921.0;
 const ADM3A_SHELL_HEIGHT: f32 = 694.0;
-const ADM3A_SHELL_TEXT_LEFT: f32 = 300.0 / ADM3A_SHELL_WIDTH;
-const ADM3A_SHELL_TEXT_TOP: f32 = 128.0 / ADM3A_SHELL_HEIGHT;
-const ADM3A_SHELL_TEXT_RIGHT: f32 = 633.0 / ADM3A_SHELL_WIDTH;
-const ADM3A_SHELL_TEXT_BOTTOM: f32 = 376.0 / ADM3A_SHELL_HEIGHT;
-const ADM3A_POPUP_ASPECT: f32 = 809.0 / 646.0;
-const ADM3A_POPUP_TEXT_MARGIN_X: f32 = 0.110;
-const ADM3A_POPUP_TEXT_MARGIN_Y: f32 = 0.130;
-const ADM3A_CRT_OUTLINE_SEGMENTS: usize = 256;
-const ADM3A_CRT_SUPERELLIPSE_EXPONENT: f32 = 5.55;
+const ADM3A_SHELL_TEXT_LEFT: f32 = 284.0 / ADM3A_SHELL_WIDTH;
+const ADM3A_SHELL_TEXT_TOP: f32 = 122.0 / ADM3A_SHELL_HEIGHT;
+const ADM3A_SHELL_TEXT_RIGHT: f32 = 660.0 / ADM3A_SHELL_WIDTH;
+const ADM3A_SHELL_TEXT_BOTTOM: f32 = 391.0 / ADM3A_SHELL_HEIGHT;
+const ADM3A_POPUP_ASPECT: f32 = 1.29;
+const ADM3A_POPUP_TEXT_LEFT: f32 = 0.075;
+const ADM3A_POPUP_TEXT_TOP: f32 = 0.125;
+const ADM3A_POPUP_TEXT_RIGHT: f32 = 0.950;
+const ADM3A_POPUP_TEXT_BOTTOM: f32 = 0.907;
+const ADM3A_CRT_BEZIER_STEPS: usize = 32;
+const ADM3A_CRT_BEZIERS: [[(f32, f32); 4]; 8] = [
+    [(0.140, 0.065), (0.340, 0.005), (0.660, 0.005), (0.860, 0.065)],
+    [(0.860, 0.065), (0.925, 0.075), (0.965, 0.115), (0.982, 0.205)],
+    [(0.982, 0.205), (0.995, 0.380), (0.995, 0.620), (0.982, 0.795)],
+    [(0.982, 0.795), (0.965, 0.885), (0.925, 0.925), (0.860, 0.940)],
+    [(0.860, 0.940), (0.660, 0.995), (0.340, 0.995), (0.140, 0.940)],
+    [(0.140, 0.940), (0.075, 0.925), (0.035, 0.885), (0.018, 0.795)],
+    [(0.018, 0.795), (0.005, 0.620), (0.005, 0.380), (0.018, 0.205)],
+    [(0.018, 0.205), (0.035, 0.115), (0.075, 0.075), (0.140, 0.065)],
+];
 
 impl RusTairApp {
     fn draw_terminal_input(&mut self, ui: &mut egui::Ui) {
@@ -455,22 +466,51 @@ impl RusTairApp {
         egui::Rect::from_center_size(available.center(), size)
     }
 
-    fn adm3a_crt_outline(rect: egui::Rect) -> Vec<egui::Pos2> {
-        let center = rect.center();
-        let half_size = rect.size() * 0.5_f32;
-        let power = 2.0_f32 / ADM3A_CRT_SUPERELLIPSE_EXPONENT;
+    fn adm3a_bezier_point(
+        rect: egui::Rect,
+        p0: (f32, f32),
+        p1: (f32, f32),
+        p2: (f32, f32),
+        p3: (f32, f32),
+        t: f32,
+    ) -> egui::Pos2 {
+        let one_minus_t = 1.0_f32 - t;
+        let b0 = one_minus_t * one_minus_t * one_minus_t;
+        let b1 = 3.0_f32 * one_minus_t * one_minus_t * t;
+        let b2 = 3.0_f32 * one_minus_t * t * t;
+        let b3 = t * t * t;
+        let u = b0 * p0.0 + b1 * p1.0 + b2 * p2.0 + b3 * p3.0;
+        let v = b0 * p0.1 + b1 * p1.1 + b2 * p2.1 + b3 * p3.1;
+        egui::Pos2::new(
+            rect.left() + rect.width() * u,
+            rect.top() + rect.height() * v,
+        )
+    }
 
-        (0..ADM3A_CRT_OUTLINE_SEGMENTS)
-            .map(|index| {
-                let theta =
-                    std::f32::consts::TAU * index as f32 / ADM3A_CRT_OUTLINE_SEGMENTS as f32;
-                let cosine = theta.cos();
-                let sine = theta.sin();
-                let x = cosine.signum() * cosine.abs().powf(power);
-                let y = sine.signum() * sine.abs().powf(power);
-                egui::Pos2::new(center.x + x * half_size.x, center.y + y * half_size.y)
-            })
-            .collect()
+    fn adm3a_crt_outline(rect: egui::Rect) -> Vec<egui::Pos2> {
+        let mut points = Vec::with_capacity(ADM3A_CRT_BEZIERS.len() * ADM3A_CRT_BEZIER_STEPS);
+        for segment in ADM3A_CRT_BEZIERS {
+            for step in 0..ADM3A_CRT_BEZIER_STEPS {
+                let t = step as f32 / ADM3A_CRT_BEZIER_STEPS as f32;
+                points.push(Self::adm3a_bezier_point(
+                    rect, segment[0], segment[1], segment[2], segment[3], t,
+                ));
+            }
+        }
+        points
+    }
+
+    fn adm3a_popup_text_rect(screen_rect: egui::Rect) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::Pos2::new(
+                screen_rect.left() + screen_rect.width() * ADM3A_POPUP_TEXT_LEFT,
+                screen_rect.top() + screen_rect.height() * ADM3A_POPUP_TEXT_TOP,
+            ),
+            egui::Pos2::new(
+                screen_rect.left() + screen_rect.width() * ADM3A_POPUP_TEXT_RIGHT,
+                screen_rect.top() + screen_rect.height() * ADM3A_POPUP_TEXT_BOTTOM,
+            ),
+        )
     }
 
     fn draw_adm3a_contents(&self, painter: &egui::Painter, active_rect: egui::Rect) {
@@ -551,9 +591,10 @@ impl RusTairApp {
         ui.painter()
             .image(texture.id(), rect, full_uv, egui::Color32::WHITE);
 
-        // The black inner bevel in the photograph is not usable phosphor. Keep
-        // the photo untouched and map the 80x24 raster only onto the measured
-        // inner phosphor area so cell (0, 0) cannot land on the recessed bezel.
+        // The full-screen photographs of a real ADM-3A show that the 80x24
+        // raster occupies most of the phosphor, while leaving the recessed
+        // black inner bezel unused. These calibrated bounds reproduce that
+        // usable area without painting over the photographed glass.
         self.draw_adm3a_contents(ui.painter(), Self::adm3a_shell_text_rect(rect));
     }
 
@@ -587,11 +628,10 @@ impl RusTairApp {
                         fill,
                         stroke,
                     ));
-                    let text_rect = screen_rect.shrink2(egui::Vec2::new(
-                        screen_rect.width() * ADM3A_POPUP_TEXT_MARGIN_X,
-                        screen_rect.height() * ADM3A_POPUP_TEXT_MARGIN_Y,
-                    ));
-                    self.draw_adm3a_contents(ui.painter(), text_rect);
+                    self.draw_adm3a_contents(
+                        ui.painter(),
+                        Self::adm3a_popup_text_rect(screen_rect),
+                    );
                 });
                 if crt_ctx.input(|i| i.viewport().close_requested()) {
                     crt_ctx.data_mut(|data| {
