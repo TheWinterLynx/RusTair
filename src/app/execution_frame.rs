@@ -158,12 +158,14 @@ mod tests {
         machine.power(true);
         machine.set_running(false);
         machine.reset();
-        // Power-on registers are undefined. Initialize through guest code so
-        // equality below compares identical, physically constructed states.
+        // Power-on registers are undefined. Reinitialize every guest loop so
+        // equality below remains strict without inheriting random power-on state
+        // when different host slice boundaries choose different Full/Partial
+        // windows before the first comparison point.
         machine.load_bytes(
             0,
             &[
-                0x31, 0, 0x0f, 0x01, 0, 0, 0x11, 0, 0, 0x21, 0, 0xaf, 0, 0xc3, 13, 0,
+                0x31, 0, 0x0f, 0x01, 0, 0, 0x11, 0, 0, 0x21, 0, 0, 0xaf, 0xc3, 0, 0,
             ],
         );
         machine.set_running(true);
