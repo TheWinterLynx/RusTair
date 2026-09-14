@@ -73,7 +73,10 @@ fn run_deadline_interval(machine: &mut BackendHost, budget: u64, multiplier: u32
         let before_slice = executed;
         machine.run_cycles(slice);
         let total = machine.intel8080_state().total_t_states.unwrap() - before;
-        assert!(total > before_slice, "scheduler deadline made no CPU progress");
+        assert!(
+            total > before_slice,
+            "scheduler deadline made no CPU progress"
+        );
         machine.advance_serial_physical_time(physical_time_for_t_states(
             total - before_slice,
             multiplier,
