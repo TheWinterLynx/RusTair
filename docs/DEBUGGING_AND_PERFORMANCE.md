@@ -125,6 +125,8 @@ Typical categories:
 - asynchronous serial/interrupt event crossed by a Full window;
 - debugger observer not treated as a barrier.
 
+For serial divergence specifically, first distinguish the CPU timeline from the serial physical timeline. Check the installed card's current deadline/phase, whether the host crossed that deadline, whether a serial `OUT` was replanned at its causal boundary, and whether CPU/chassis T-states accidentally advanced UART state.
+
 Do not repair a Full divergence by changing the exact Partial result unless independent hardware evidence proves Partial wrong.
 
 ---
@@ -139,7 +141,7 @@ Do not repair a Full divergence by changing the exact Partial result unless inde
 - Full windows;
 - Partial entries;
 - Full→Partial and Partial→Full transitions;
-- fallback reasons such as chassis, serial, READY, HOLD, interrupt, budget tail, instruction boundary, stop/fault/reset, opcode barrier and unavailable Full window.
+- fallback reasons such as chassis, READY, HOLD, interrupt, budget tail, instruction boundary, stop/fault/reset, opcode barrier and unavailable Full window.
 
 Metrics are explicitly opt-in. This prevents production from paying per-T-state observer overhead when no measurement is active.
 
@@ -148,6 +150,8 @@ Use metrics to answer questions such as:
 - Is performance limited by Full coverage or by cost inside Full?
 - Which blocker fragments windows?
 - Did a change alter strategy behavior even though final diagnostics still pass?
+
+An independently clocked active UART is not itself a Full fallback cause. Serial synchronization is handled by host service boundaries and exact guest-I/O barriers.
 
 ---
 
@@ -224,6 +228,7 @@ Examples:
 - cached connector drive until its inputs change;
 - incremental backplane drive counts;
 - event/deadline advancement of quiet hardware;
+- card-owned next-event scheduling instead of fixed polling slices;
 - panel duty aggregation over mathematically equivalent intervals.
 
 Requires explicit invalidation/dependency reasoning.
@@ -246,6 +251,8 @@ Examples:
 - instruction-boundary READY/HOLD;
 - approximate panel from PC/registers;
 - instant serial byte queues;
+- scaling baud with CPU host speed;
+- crossing a newly active serial `OUT` and then retroactively applying pre-write elapsed time;
 - ignoring contention.
 
 Reject for the high-fidelity production path unless deliberately introduced as a separately named lower-fidelity mode with explicit scope.
@@ -268,13 +275,55 @@ Known intentional optimizations include:
 - multi-instruction Full windows;
 - conservative EI→LHLD special admission;
 - `#[inline(always)]` on hot Full machine-cycle projection;
-- host-deadline Unlimited GUI execution.
+- host-deadline Unlimited GUI execution;
+- event-driven serial physical-time scheduling: quiet UARTs expose no deadline, active UARTs expose their next effective card-owned boundary;
+- 88-2SIO scheduling at effective MC6850 `/1`, `/16`, `/64` boundaries while retaining the free-running external 16× tap phase;
+- exact serial-`OUT` causal replanning without moving the exact T-state loop into `CycleHostBackend`.
 
 Before redoing one of these, read its tests and historical performance documents. Several apparently "simpler" alternatives have already been shown slower or less exact.
 
 ---
 
-## 13. Performance benchmark workflow
+## 13. Serial scheduler benchmark evidence
+
+The maintained manual release benchmark is `tests/serial_scheduler_benchmark.rs`.
+
+Run idle installed-serial evidence with:
+
+```powershell
+cargo test --release --test serial_scheduler_benchmark measure_managed_serial_scheduler_cost -- --ignored --nocapture --test-threads=1
+```
+
+Run continuously active 110/9600-baud deadline evidence with:
+
+```powershell
+cargo test --release --test serial_scheduler_benchmark measure_active_serial_scheduler_cost -- --ignored --nocapture --test-threads=1
+```
+
+Locally validated results on 2026-09-14 for the historical 8800b starter, 16K static RAM and an installed idle 88-2SIO were approximately:
+
+| CPU mode | Event-driven idle throughput | Realtime headroom | Full |
+| --- | ---: | ---: | ---: |
+| Authentic | 254.89 MHz | 127.45x | 99.61% |
+| X2 | 252.20 MHz | 63.05x | 99.61% |
+| X5 | 259.64 MHz | 25.96x | 99.61% |
+| X10 | 259.05 MHz | 12.95x | 99.61% |
+
+A continuous 110-baud receive BREAK remained roughly 228-251 MHz with about 99.5-99.6% Full.
+
+For continuous 9600-baud receive BREAK, the first normal `/16` deadlines were 209/418/1045/2090 guest T-states in Authentic/X2/X5/X10, with 16.49x/16.01x/12.10x/9.21x realtime headroom respectively. Full coverage rose with CPU multiplier because the same physical event frequency spans more guest T-states: approximately 91.84%, 96.16%, 98.37% and 99.23%.
+
+These values are host/build-specific evidence, not permanent product guarantees. The important architectural result is that event frequency now follows real card state rather than a fixed 4 microsecond polling slice.
+
+The idle benchmark reports roughly 1.5x `deadline` versus `coarse` cost. `coarse` deliberately executes an entire one-second CPU budget in one host call, so this ratio primarily measures ordinary 4096-T-state service-boundary overhead. It must not be interpreted as "an idle UART costs 50%".
+
+The retired fixed-4-microsecond design is preserved only as historical evidence: it forced 0% Full in Authentic/X2 and could not sustain realtime in X2/X5/X10 in the investigation that motivated the event-driven redesign.
+
+See `SERIAL_CLOCK_DOMAINS.md` for the current timing contract.
+
+---
+
+## 14. Performance benchmark workflow
 
 For one proposed optimization:
 
@@ -291,7 +340,7 @@ A 1% fluctuation may be noise. Alternating A/B pairs are much more useful than c
 
 ---
 
-## 14. Canonical full-system reference checks
+## 15. Canonical full-system reference checks
 
 CPUTEST reference comparison:
 
@@ -313,7 +362,7 @@ The distinction between reference and actual T-state totals belongs to the diagn
 
 ---
 
-## 15. Logging/diagnostic discipline
+## 16. Logging/diagnostic discipline
 
 Avoid permanent `println!`/`eprintln!` in hot production paths.
 
@@ -329,28 +378,30 @@ A diagnostic should not materially change the timing behavior it claims to measu
 
 ---
 
-## 16. When a GUI bug looks like a CPU performance bug
+## 17. When a GUI bug looks like a CPU performance bug
 
 Host scheduling can cap visible throughput even when the emulator core is fast. Separate:
 
 - CPU/backend throughput;
 - GUI repaint cadence;
-- service slice size;
+- normal CPU service slice size;
+- card-owned external-event deadlines;
 - host deadline/yield behavior;
 - endpoint/peripheral servicing.
 
-Unlimited mode is designed to run multiple service slices within a host-time deadline rather than one fixed T-state chunk per repaint. When diagnosing GUI-only slowness, profile scheduling before changing CPU fidelity code.
+Unlimited mode is designed to run multiple service slices within a host-time deadline rather than one fixed T-state chunk per repaint. Throttled serial scheduling is separately event-driven. When diagnosing GUI-only slowness, profile scheduling before changing CPU fidelity code.
 
 ---
 
-## 17. Debugging checklist by symptom
+## 18. Debugging checklist by symptom
 
 | Symptom | First questions |
 | --- | --- |
 | Wrong register/flag | Semantic core and exact core agree? Which instruction? |
 | Correct result, wrong lamp | Is raw S-100/panel projection wrong or only LED presentation? |
 | Hangs on memory | READY/wait states? open bus? protection? overlap? |
-| Serial byte missing | Host endpoint, cable route, electrical interface, UART/card, or guest polling? |
+| Serial byte missing | Host endpoint, cable route, electrical interface, UART/card, deadline/physical-time progression, or guest polling? |
+| Serial baud changes with CPU speed | Physical serial-time source/deadline mapping is wrong; CPU/chassis T-states must not clock the UART. |
 | Interrupt not taken | INTE timing, card request/wiring, PINT/VI, acknowledge path? |
 | Full-only failure | Force Partial; inspect admission/boundary/cache/panel/INTE. |
 | Unlimited GUI slow | Host scheduling/repaint deadline, not necessarily CPU core. |
@@ -359,7 +410,7 @@ Unlimited mode is designed to run multiple service slices within a host-time dea
 
 ---
 
-## 18. What to attach to a performance/fidelity review
+## 19. What to attach to a performance/fidelity review
 
 A useful report contains:
 
@@ -375,5 +426,7 @@ A useful report contains:
 - fidelity tests run;
 - expected Amdahl ceiling;
 - recommendation KEEP/REJECT.
+
+For serial scheduling also record card baud/divider/activity, first deadline, realtime headroom and whether the comparator is a physical/event-driven path or an artificial coarse host baseline.
 
 This makes future developers able to reproduce the decision rather than inherit an unexplained magic optimization.
