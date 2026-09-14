@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
-use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_KEYBOARD_BAUD, ADM3A_ROWS};
+use crate::app::adm3a_state::{ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate};
 use crate::config::TerminalDuplex;
 
 const ADM3A_SHELL_WIDTH: f32 = 1448.0;
@@ -451,6 +451,22 @@ impl RusTairApp {
         }
     }
 
+    fn draw_adm3a_baud_selector(&mut self, ui: &mut egui::Ui) {
+        let current = self.adm3a.baud_rate();
+        let mut selected = current;
+        ui.label("BAUD:");
+        egui::ComboBox::from_id_salt("adm3a-baud-rate")
+            .selected_text(current.label())
+            .show_ui(ui, |ui| {
+                for baud_rate in Adm3aBaudRate::ALL {
+                    ui.selectable_value(&mut selected, baud_rate, baud_rate.label());
+                }
+            });
+        if selected != current {
+            self.adm3a.set_baud_rate(selected);
+        }
+    }
+
     fn adm3a_shell_text_uv() -> egui::Rect {
         egui::Rect::from_min_max(
             egui::Pos2::new(ADM3A_SHELL_TEXT_LEFT, ADM3A_SHELL_TEXT_TOP),
@@ -729,12 +745,14 @@ impl RusTairApp {
                                 ui.separator();
                                 self.draw_adm3a_connection_selector(ui);
                                 ui.separator();
+                                self.draw_adm3a_baud_selector(ui);
+                                ui.separator();
                                 ui.label("80 × 24");
                                 ui.separator();
                                 ui.monospace(format!(
                                     "KEY TX {} @ {} baud",
                                     self.adm3a.keyboard_pending_len(),
-                                    ADM3A_KEYBOARD_BAUD
+                                    self.adm3a.baud_rate().baud()
                                 ));
                                 ui.separator();
                                 if ui.button("Open active CRT…").clicked() {
