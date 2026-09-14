@@ -17,18 +17,19 @@ New contributors should start with the current developer set below before readin
 | 4 | [`GLOSSARY.md`](GLOSSARY.md) | Definitions of Rust/8080/S-100/RusTair terminology. |
 | 5 | [`EMULATION_ARCHITECTURE.md`](EMULATION_ARCHITECTURE.md) | Current runtime architecture, state ownership, Full/Partial and bus/card relationships. |
 | 6 | [`ARCHITECTURAL_INVARIANTS.md`](ARCHITECTURAL_INVARIANTS.md) | Non-negotiable rules and reviewer checklist for protecting the physical-machine model. |
-| 7 | [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) | Why the architecture deliberately uses S-100 cards, one CPU authority, Adaptive Full/Partial, physical RAM ownership and explicit host/device boundaries. |
-| 8 | [`RUNTIME_FLOWS.md`](RUNTIME_FLOWS.md) | End-to-end control/data flows: startup, CPU cycles, Full windows, memory, serial, interrupts, panel and loading. |
-| 9 | [`SUPPORT_AND_LIMITATIONS.md`](SUPPORT_AND_LIMITATIONS.md) | Current support scope, deliberate non-claims, known limitations and active structural debt. |
-| 10 | [`SUBSYSTEM_REVIEW_MAP.md`](SUBSYSTEM_REVIEW_MAP.md) | For each subsystem, exactly which source files, tests and documents to inspect before changing it. |
-| 11 | [`SOURCE_REFERENCE.md`](SOURCE_REFERENCE.md) | File-by-file mission and responsibilities for every Rust source file under `src/`. |
-| 12 | [`TEST_REFERENCE.md`](TEST_REFERENCE.md) | File-by-file mission of every Rust integration-test source under `tests/`. |
-| 13 | [`REPOSITORY_REFERENCE.md`](REPOSITORY_REFERENCE.md) | Root files, assets, tools, workflows, licenses and generated/local-only paths. |
-| 14 | [`BUILD_AND_TOOLCHAIN.md`](BUILD_AND_TOOLCHAIN.md) | Rust/Cargo build model, dependencies, profiles, assets and platform/tooling notes. |
-| 15 | [`CODING_CONVENTIONS.md`](CODING_CONVENTIONS.md) | Rust conventions, architectural rules, naming, error/assert policy, hot-path discipline and review checklist used specifically by RusTair. |
-| 16 | [`TESTING_GUIDE.md`](TESTING_GUIDE.md) | Test taxonomy, commands, fidelity oracles, classic diagnostics and performance validation. |
-| 17 | [`EXTENDING_RUSTAIR.md`](EXTENDING_RUSTAIR.md) | Recipes for adding CPU behavior, Full support, cards, endpoints, peripherals and tools safely. |
-| 18 | [`DEBUGGING_AND_PERFORMANCE.md`](DEBUGGING_AND_PERFORMANCE.md) | Debugger/tracing architecture, profiling, metrics and optimization discipline. |
+| 7 | [`SERIAL_CLOCK_DOMAINS.md`](SERIAL_CLOCK_DOMAINS.md) | Current independent serial physical-time domain, event-driven card deadlines, exact serial-OUT causality and performance evidence. |
+| 8 | [`DESIGN_RATIONALE.md`](DESIGN_RATIONALE.md) | Why the architecture deliberately uses S-100 cards, one CPU authority, Adaptive Full/Partial, physical RAM ownership and explicit host/device boundaries. |
+| 9 | [`RUNTIME_FLOWS.md`](RUNTIME_FLOWS.md) | End-to-end control/data flows: startup, CPU cycles, Full windows, memory, serial, interrupts, panel and loading. |
+| 10 | [`SUPPORT_AND_LIMITATIONS.md`](SUPPORT_AND_LIMITATIONS.md) | Current support scope, deliberate non-claims, known limitations and active structural debt. |
+| 11 | [`SUBSYSTEM_REVIEW_MAP.md`](SUBSYSTEM_REVIEW_MAP.md) | For each subsystem, exactly which source files, tests and documents to inspect before changing it. |
+| 12 | [`SOURCE_REFERENCE.md`](SOURCE_REFERENCE.md) | File-by-file mission and responsibilities for every Rust source file under `src/`. |
+| 13 | [`TEST_REFERENCE.md`](TEST_REFERENCE.md) | File-by-file mission of every Rust integration-test source under `tests/`. |
+| 14 | [`REPOSITORY_REFERENCE.md`](REPOSITORY_REFERENCE.md) | Root files, assets, tools, workflows, licenses and generated/local-only paths. |
+| 15 | [`BUILD_AND_TOOLCHAIN.md`](BUILD_AND_TOOLCHAIN.md) | Rust/Cargo build model, dependencies, profiles, assets and platform/tooling notes. |
+| 16 | [`CODING_CONVENTIONS.md`](CODING_CONVENTIONS.md) | Rust conventions, architectural rules, naming, error/assert policy, hot-path discipline and review checklist used specifically by RusTair. |
+| 17 | [`TESTING_GUIDE.md`](TESTING_GUIDE.md) | Test taxonomy, commands, fidelity oracles, classic diagnostics and performance validation. |
+| 18 | [`EXTENDING_RUSTAIR.md`](EXTENDING_RUSTAIR.md) | Recipes for adding CPU behavior, Full support, cards, endpoints, peripherals and tools safely. |
+| 19 | [`DEBUGGING_AND_PERFORMANCE.md`](DEBUGGING_AND_PERFORMANCE.md) | Debugger/tracing architecture, profiling, metrics and optimization discipline. |
 
 ## Suggested reading by task
 
@@ -36,6 +37,7 @@ New contributors should start with the current developer set below before readin
 | --- | --- |
 | Understand the project from zero | `DEVELOPER_GUIDE.md` → `GLOSSARY.md` |
 | Understand the runtime architecture | `EMULATION_ARCHITECTURE.md` → `ARCHITECTURAL_INVARIANTS.md` → `DESIGN_RATIONALE.md` → `RUNTIME_FLOWS.md` |
+| Understand serial baud/clock scheduling | `SERIAL_CLOCK_DOMAINS.md` → relevant 88-SIO/88-2SIO hardware record |
 | Understand why a seemingly simpler architecture was rejected | `DESIGN_RATIONALE.md` |
 | Know what is supported and what is not claimed | `SUPPORT_AND_LIMITATIONS.md` |
 | Change a specific subsystem | `SUBSYSTEM_REVIEW_MAP.md` → relevant source/tests/hardware record |
@@ -53,7 +55,8 @@ New contributors should start with the current developer set below before readin
 
 These pre-existing documents are also current and important:
 
-- [`STATE_SOURCES.md`](STATE_SOURCES.md) — authoritative versus derived runtime state.
+- [`STATE_SOURCES.md`](STATE_SOURCES.md) — authoritative versus derived runtime state and explicit time-domain ownership.
+- [`SERIAL_CLOCK_DOMAINS.md`](SERIAL_CLOCK_DOMAINS.md) — authoritative current serial clock/scheduler contract.
 - [`CPU_BOARD_ARCHITECTURE.md`](CPU_BOARD_ARCHITECTURE.md) — physical CPU-board model and future-board constraints.
 - [`../src/backend/README.md`](../src/backend/README.md) — backend ownership/execution contract.
 - [`HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md`](HARDWARE_FIDELITY_DOCUMENTATION_STANDARD.md) — standard for claiming/documenting hardware fidelity.
@@ -84,7 +87,7 @@ When architecture changes:
 
 - update the current developer documentation in the same branch;
 - do not rewrite historical validation results to make them look current;
-- add a historical banner when an old document could otherwise mislead a reader about current production;
+- add a historical banner or current-architecture addendum when an old document could otherwise mislead a reader about current production;
 - document state ownership and physical timing assumptions, not only function names;
 - document every new `src/**/*.rs` file in `SOURCE_REFERENCE.md`;
 - document every new `tests/**/*.rs` file in `TEST_REFERENCE.md`;
