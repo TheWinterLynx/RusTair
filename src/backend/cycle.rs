@@ -52,17 +52,17 @@ impl CycleAccurateMachineBackend {
         let before = self.cpu.total_t_states();
         let ready = self.machine.bus.cycle_front_panel_ready_input();
         let trace = self.tick_once(ready);
-        let elapsed = self.cpu.total_t_states().saturating_sub(before);
-        crate::adaptive_metrics::record_partial_span(
-            elapsed,
-            crate::adaptive_metrics::AdaptiveFallbackReason::OpcodeBarrier,
-        );
         if trace.fault.is_some() {
             return self.fail_if_cpu_fault("managed serial barrier");
         }
         if self.stop_wait_park_pending {
             self.park_physical_stop_at_first_tw();
         }
+        let elapsed = self.cpu.total_t_states().saturating_sub(before);
+        crate::adaptive_metrics::record_partial_span(
+            elapsed,
+            crate::adaptive_metrics::AdaptiveFallbackReason::OpcodeBarrier,
+        );
         self.fail_if_cpu_fault("managed serial barrier")
     }
 }
