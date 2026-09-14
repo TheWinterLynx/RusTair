@@ -347,7 +347,6 @@ fn full_ei_lhld_pair_is_safe(
     let guard_opcode = bus.peek_memory(address.wrapping_add(4)).unwrap_or(0xff);
     opcode_table[guard_opcode as usize]
 }
-
 /// Prepared guest-bus recorder for Cycle Full. Guest memory traffic reaches the
 /// same bus-owned S-100 decoder and RuntimeRamCard storage as Partial, while the
 /// expensive connector graph remains lazy until an actual synchronization
@@ -787,7 +786,7 @@ impl CycleAccurateMachineBackend {
             })
     }
 
-    pub(super) fn serial_output_instruction_pending(&self) -> bool {
+    pub(crate) fn serial_output_instruction_pending(&self) -> bool {
         if !self.at_instruction_boundary() {
             return false;
         }
@@ -800,7 +799,7 @@ impl CycleAccurateMachineBackend {
                 .is_some_and(|port| self.serial_output_port_is_installed(port))
     }
 
-    pub(super) fn execution_at_instruction_boundary(&self) -> bool {
+    pub(crate) fn execution_at_instruction_boundary(&self) -> bool {
         self.at_instruction_boundary()
     }
 
@@ -1159,7 +1158,7 @@ impl CycleAccurateMachineBackend {
         self.service_execution_compiled_with_serial_barrier(t_state_budget, false)
     }
 
-    pub(super) fn service_execution_until_serial_output(
+    pub(crate) fn service_execution_until_serial_output(
         &mut self,
         t_state_budget: u32,
     ) -> BackendResult<()> {
