@@ -50,13 +50,21 @@ fn function_body<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
 
 #[test]
 fn serial_and_dcdd_clock_domains_have_distinct_scheduler_owners() {
+    let serial_elapsed = function_body(
+        CYCLE_HOST_SOURCE,
+        "fn advance_serial_physical_elapsed",
+        "fn service_serial_wall_clock",
+    );
+    assert!(serial_elapsed.contains("advance_serial_hardware_time"));
+    assert!(!serial_elapsed.contains("advance_chassis_hardware_time"));
+
     let serial_service = function_body(
         CYCLE_HOST_SOURCE,
         "fn service_serial_wall_clock",
         "fn service_idle_chassis_clock",
     );
     assert!(serial_service.contains("Instant::now"));
-    assert!(serial_service.contains("advance_serial_hardware_time"));
+    assert!(serial_service.contains("advance_serial_physical_elapsed"));
     assert!(!serial_service.contains("advance_chassis_hardware_time"));
 
     let idle_chassis_service = function_body(
