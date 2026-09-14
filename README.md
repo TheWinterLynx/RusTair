@@ -33,6 +33,7 @@ Full and Partial are implementation strategies, not separate emulated machines o
 - Slot-native MITS RAM boards with per-card address/population/timing configuration.
 - MITS 88-SIO including revision, A/B/C electrical interface, baud/format and interrupt routing.
 - MITS 88-2SIO including address, baud/interface straps and interrupt wiring.
+- Independent serial physical-time scheduling: host CPU speed does not scale 88-SIO/88-2SIO baud; quiet UARTs do not fragment Adaptive execution, while active UARTs expose card-owned event deadlines.
 - Photographic Display/Control front panel with exact switch controls, LEDs, EXAMINE/DEPOSIT, RUN/STOP, RESET, PROTECT and related bus behavior.
 - ASR-33 teletype with keyboard, paper tape, reader/punch mechanics and audio.
 - Text terminal plus optional TCP and host COM endpoints.
@@ -56,6 +57,12 @@ Run the complete automated test suite with:
 cargo test
 ```
 
+Before merging production changes, verify formatting, all targets and the release build:
+
+```powershell
+cargo fmt --check; if ($LASTEXITCODE -eq 0) { cargo test --all-targets }; if ($LASTEXITCODE -eq 0) { cargo build --release }
+```
+
 The Windows release executable is written to `target/release/rustair.exe`.
 
 The ASR-33 artwork is larger than 2048 pixels on a side. Some graphics backends can trip a debug-only `egui` texture assertion, so `--release` is the supported normal desktop build.
@@ -64,7 +71,9 @@ The ASR-33 artwork is larger than 2048 pixels on a side. Some graphics backends 
 
 Physical hardware is configured under **Configuration → S-100 Chassis / Cards** while POWER is off. Chassis, slot occupancy, RAM card straps and serial-card straps are properties of that inventory.
 
-Host emulation speed is deliberately separate from the installed CPU board. The MITS 8080 board remains a 2 MHz historical device; 5×, 10× and Unlimited change only how quickly virtual machine time is advanced on the host.
+Host emulation speed is deliberately separate from the installed CPU board. The MITS 8080 board remains a 2 MHz historical device; 2×, 5×, 10× and Unlimited change only how quickly virtual CPU time is advanced on the host.
+
+Serial line timing is also independent from CPU host speed. A card configured for 110 baud remains 110 baud in Authentic, 2×, 5×, 10× and Unlimited; a 9600-baud channel remains 9600 baud. ASR-33, terminal, TCP and COM endpoint pacing/configuration does not silently restrap the installed card, so deliberate endpoint/card mismatches remain representable.
 
 ASR-33 and Text Terminal each have their own cable selector. BASIC auto-open is a UI preference only: it may reveal the console already connected to the relevant port, but it must never rewire the machine.
 
@@ -93,6 +102,7 @@ Key documents:
 - [`docs/GLOSSARY.md`](docs/GLOSSARY.md) — Rust, Intel 8080, S-100 and project terminology.
 - [`docs/EMULATION_ARCHITECTURE.md`](docs/EMULATION_ARCHITECTURE.md) — current runtime architecture and state ownership.
 - [`docs/ARCHITECTURAL_INVARIANTS.md`](docs/ARCHITECTURAL_INVARIANTS.md) — non-negotiable architecture/fidelity rules for contributors and reviewers.
+- [`docs/SERIAL_CLOCK_DOMAINS.md`](docs/SERIAL_CLOCK_DOMAINS.md) — current serial physical-time, card-deadline and CPU-speed-independence contract.
 - [`docs/RUNTIME_FLOWS.md`](docs/RUNTIME_FLOWS.md) — end-to-end execution, memory, serial, panel and configuration flows.
 - [`docs/SUPPORT_AND_LIMITATIONS.md`](docs/SUPPORT_AND_LIMITATIONS.md) — implemented scope, deliberate non-claims and known limitations.
 - [`docs/SUBSYSTEM_REVIEW_MAP.md`](docs/SUBSYSTEM_REVIEW_MAP.md) — source/tests/docs to inspect for each subsystem before making a change.
