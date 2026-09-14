@@ -94,6 +94,17 @@ impl Memory {
         self.fabric.serial_receive(port, byte)
     }
 
+    pub(super) fn serial_receive_with_errors(
+        &self,
+        port: usize,
+        byte: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) -> bool {
+        self.fabric
+            .serial_receive_with_errors(port, byte, framing_error, parity_error)
+    }
+
     pub(super) fn serial_rx_empty(&self, port: usize) -> bool {
         self.fabric.serial_rx_empty(port)
     }
