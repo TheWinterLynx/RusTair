@@ -558,12 +558,41 @@ impl RusTairApp {
             return;
         }
 
-        let cell_width = active_rect.width() / ADM3A_COLS as f32;
-        let cell_height = active_rect.height() / ADM3A_ROWS as f32;
-        let font_size = (cell_height * 0.66).min(cell_width * 1.45).max(4.0);
-        let font = egui::FontId::monospace(font_size);
+        // The temporary egui font path used to center each glyph on a fractional
+        // cell pitch. At normal window scales that walks the glyph origin through
+        // different sub-pixel phases and produces the periodic vertical bands
+        // visible in long runs of identical characters. Quantize the whole 80x24
+        // raster to physical device pixels so every column has the same phase.
+        let pixels_per_point = painter.ctx().pixels_per_point().max(1.0);
+        let cell_width_px =
+            (active_rect.width() * pixels_per_point / ADM3A_COLS as f32).floor().max(1.0);
+        let cell_height_px =
+            (active_rect.height() * pixels_per_point / ADM3A_ROWS as f32).floor().max(1.0);
+        let grid_width_px = cell_width_px * ADM3A_COLS as f32;
+        let grid_height_px = cell_height_px * ADM3A_ROWS as f32;
+        let grid_left_px =
+            (active_rect.center().x * pixels_per_point - grid_width_px * 0.5).round();
+        let grid_top_px =
+            (active_rect.center().y * pixels_per_point - grid_height_px * 0.5).round();
+        let grid_rect = egui::Rect::from_min_size(
+            egui::Pos2::new(
+                grid_left_px / pixels_per_point,
+                grid_top_px / pixels_per_point,
+            ),
+            egui::Vec2::new(
+                grid_width_px / pixels_per_point,
+                grid_height_px / pixels_per_point,
+            ),
+        );
+        let cell_width = cell_width_px / pixels_per_point;
+        let cell_height = cell_height_px / pixels_per_point;
+        let font_size_px = (cell_height_px * 0.66)
+            .min(cell_width_px * 1.45)
+            .floor()
+            .max(4.0);
+        let font = egui::FontId::monospace(font_size_px / pixels_per_point);
         let glyph_color = egui::Color32::from_rgb(191, 225, 196);
-        let clipped = painter.with_clip_rect(active_rect);
+        let clipped = painter.with_clip_rect(grid_rect);
 
         for row in 0..ADM3A_ROWS {
             for col in 0..ADM3A_COLS {
@@ -572,8 +601,8 @@ impl RusTairApp {
                     continue;
                 }
                 let pos = egui::Pos2::new(
-                    active_rect.left() + (col as f32 + 0.5) * cell_width,
-                    active_rect.top() + (row as f32 + 0.5) * cell_height,
+                    grid_rect.left() + (col as f32 + 0.5) * cell_width,
+                    grid_rect.top() + (row as f32 + 0.5) * cell_height,
                 );
                 clipped.text(
                     pos,
@@ -588,8 +617,8 @@ impl RusTairApp {
         let (cursor_col, cursor_row) = self.adm3a.cursor();
         let cursor_cell = egui::Rect::from_min_size(
             egui::Pos2::new(
-                active_rect.left() + cursor_col as f32 * cell_width,
-                active_rect.top() + cursor_row as f32 * cell_height,
+                grid_rect.left() + cursor_col as f32 * cell_width,
+                grid_rect.top() + cursor_row as f32 * cell_height,
             ),
             egui::Vec2::new(cell_width, cell_height),
         );
