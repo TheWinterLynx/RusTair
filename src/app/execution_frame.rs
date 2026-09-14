@@ -241,13 +241,8 @@ mod tests {
             machine.debugger_output_port(0x01, b'A');
             machine.debugger_output_port(0x01, b'B');
 
-            let executed = run_cpu_frame(
-                &mut machine,
-                budget,
-                Duration::from_secs(1),
-                TWO_MHZ,
-                speed,
-            );
+            let executed =
+                run_cpu_frame(&mut machine, budget, Duration::from_secs(1), TWO_MHZ, speed);
             assert_eq!(executed, u64::from(budget), "speed={speed:?}");
             assert_eq!(
                 machine.serial_tx_complete(BackendSerialPort::Port0),
