@@ -69,11 +69,7 @@ fn physical_time_for_executed_t_states(
 /// intentionally exercise the old GUI slice contract without a throttled
 /// CPU-to-physical-time mapping. Production throttled execution must use
 /// `run_cpu_frame_timed` so serial time remains independent from CPU speed.
-pub(super) fn run_cpu_frame(
-    machine: &mut BackendHost,
-    budget: u32,
-    limit: Duration,
-) -> u64 {
+pub(super) fn run_cpu_frame(machine: &mut BackendHost, budget: u32, limit: Duration) -> u64 {
     run_cpu_frame_timed(
         machine,
         budget,
@@ -167,7 +163,7 @@ mod tests {
         machine.load_bytes(
             0,
             &[
-                0x31, 0, 0x0f, 0x01, 0, 0, 0x11, 0, 0, 0x21, 0, 0, 0xaf, 0, 0xc3, 13, 0,
+                0x31, 0, 0x0f, 0x01, 0, 0, 0x11, 0, 0, 0x21, 0, 0xaf, 0, 0xc3, 13, 0,
             ],
         );
         machine.set_running(true);
@@ -259,13 +255,8 @@ mod tests {
             machine.debugger_output_port(0x01, b'A');
             machine.debugger_output_port(0x01, b'B');
 
-            let executed = run_cpu_frame_timed(
-                &mut machine,
-                budget,
-                Duration::from_secs(1),
-                TWO_MHZ,
-                speed,
-            );
+            let executed =
+                run_cpu_frame_timed(&mut machine, budget, Duration::from_secs(1), TWO_MHZ, speed);
             assert_eq!(executed, u64::from(budget), "speed={speed:?}");
             assert_eq!(
                 machine.serial_tx_complete(BackendSerialPort::Port0),
