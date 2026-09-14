@@ -460,6 +460,26 @@ impl SioPort {
         }
     }
 
+    /// Return the canonical chassis T-state count until the next COM2502 bit
+    /// boundary, derived directly from the UART's retained fractional phase.
+    /// The scheduler may stop there, but this UART remains the only owner of the
+    /// phase and of every RX/TX transition.
+    pub(in crate::machine) fn t_states_until_next_clock_boundary(
+        &self,
+        cpu_clock_hz: u32,
+    ) -> Option<u64> {
+        if cpu_clock_hz == 0 {
+            return None;
+        }
+        let baud = u64::from(self.config.baud.baud());
+        if baud == 0 {
+            return None;
+        }
+        let threshold = u64::from(cpu_clock_hz);
+        let remaining = threshold.saturating_sub(self.bit_phase_numerator);
+        Some((remaining.saturating_add(baud - 1) / baud).max(1))
+    }
+
     /// Advance the independent 88-SIO baud clock by elapsed chassis T-states.
     /// `baud` is the serial bit rate; the physical COM2502 receives a 16x clock,
     /// but its internal divider yields exactly one serial bit boundary per
@@ -631,6 +651,18 @@ mod tests {
             p.handshake_lines().tso_high,
             "completed TX frame returns TSO to idle MARK"
         );
+    }
+
+    #[test]
+    fn scheduler_deadline_comes_from_retained_com2502_phase() {
+        let mut c = config(SioRevision::Rev1);
+        c.baud = SioBaudRate::try_new(9_600).unwrap();
+        let mut p = SioPort::new(c);
+        assert_eq!(p.t_states_until_next_clock_boundary(TWO_MHZ), Some(209));
+        p.advance_t_states(208, TWO_MHZ);
+        assert_eq!(p.t_states_until_next_clock_boundary(TWO_MHZ), Some(1));
+        p.advance_t_states(1, TWO_MHZ);
+        assert_eq!(p.t_states_until_next_clock_boundary(TWO_MHZ), Some(208));
     }
 
     #[test]
