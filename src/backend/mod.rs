@@ -350,6 +350,12 @@ pub trait MachineBackend {
             engine: self.engine(),
         })
     }
+    fn serial_clock_deadline_t_states(&mut self) -> BackendResult<Option<u64>> {
+        Err(BackendError::Unsupported {
+            operation: "query serial physical clock deadline",
+            engine: self.engine(),
+        })
+    }
     fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) -> BackendResult<()>;
     fn serial_rx_empty(&mut self, port: BackendSerialPort) -> BackendResult<bool>;
     fn serial_rx_len(&mut self, port: BackendSerialPort) -> BackendResult<usize>;
@@ -834,6 +840,11 @@ impl BackendHost {
     }
     pub fn advance_serial_physical_time(&mut self, elapsed: Duration) {
         Self::call(self.backend.advance_serial_physical_time(elapsed));
+    }
+    /// Canonical 2 MHz physical-time quanta until the earliest installed serial
+    /// oscillator boundary. The value is derived from card-owned phase only.
+    pub fn serial_clock_deadline_t_states(&mut self) -> Option<u64> {
+        Self::call(self.backend.serial_clock_deadline_t_states())
     }
     pub fn serial_receive(&mut self, port: BackendSerialPort, byte: u8) {
         Self::call(self.backend.serial_receive(port, byte));
