@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use rustair::adaptive_metrics;
-use rustair::backend::BackendHost;
+use rustair::backend::{BackendHost, BackendSerialPort};
 use rustair::config::{RamInit, S100HardwareConfig};
 
 const TWO_MHZ: u32 = 2_000_000;
@@ -32,6 +32,18 @@ fn machine() -> BackendHost {
     machine.load_bytes(0, &[0x00, 0xc3, 0x00, 0x00]);
     machine.set_serial_clock_managed(true);
     machine.set_running(true);
+    machine
+}
+
+fn active_break_machine(port: BackendSerialPort) -> BackendHost {
+    let mut machine = machine();
+    let control_port = match port {
+        BackendSerialPort::Port0 => 0x10,
+        BackendSerialPort::Port1 => 0x12,
+    };
+    machine.debugger_output_port(control_port, 0x15);
+    assert!(machine.serial_set_receive_break(port, true));
+    assert!(machine.serial_clock_deadline_t_states().is_some());
     machine
 }
 
@@ -139,6 +151,45 @@ fn measure_coarse(multiplier: u32) -> Sample {
     }
 }
 
+fn measure_active_deadline(multiplier: u32, port: BackendSerialPort) -> Sample {
+    let mut machine = active_break_machine(port);
+    warm_up_deadline(&mut machine, multiplier);
+    let budget = budget_for(multiplier, PHYSICAL_MEASURE_TIME);
+
+    adaptive_metrics::begin_measurement();
+    let started = Instant::now();
+    run_deadline_interval(&mut machine, budget, multiplier);
+    let elapsed = started.elapsed();
+    let stats = adaptive_metrics::end_measurement();
+    assert_eq!(stats.total_t_states(), budget);
+
+    Sample {
+        elapsed,
+        full_percent: stats.full_percent(),
+        partial_percent: stats.partial_percent(),
+    }
+}
+
+fn measure_active_coarse(multiplier: u32, port: BackendSerialPort) -> Sample {
+    let mut machine = active_break_machine(port);
+    warm_up_coarse(&mut machine, multiplier);
+    let budget = budget_for(multiplier, PHYSICAL_MEASURE_TIME);
+
+    adaptive_metrics::begin_measurement();
+    let started = Instant::now();
+    machine.run_cycles(budget as u32);
+    machine.advance_serial_physical_time(PHYSICAL_MEASURE_TIME);
+    let elapsed = started.elapsed();
+    let stats = adaptive_metrics::end_measurement();
+    assert_eq!(stats.total_t_states(), budget);
+
+    Sample {
+        elapsed,
+        full_percent: stats.full_percent(),
+        partial_percent: stats.partial_percent(),
+    }
+}
+
 fn median(samples: &[Sample]) -> Sample {
     let mut ordered = samples.to_vec();
     ordered.sort_by_key(|sample| sample.elapsed);
@@ -209,5 +260,67 @@ fn measure_managed_serial_scheduler_cost() {
             deadline_min.as_secs_f64() * 1_000.0,
             deadline_max.as_secs_f64() * 1_000.0,
         );
+    }
+}
+
+#[test]
+#[ignore = "manual release benchmark for active card-driven serial deadlines"]
+fn measure_active_serial_scheduler_cost() {
+    println!();
+    println!("RusTair active physical serial deadline cost");
+    println!("Hardware: historical 8800b starter, 16K static RAM + 88-2SIO");
+    println!("Workload: NOP/JMP loop with a continuous RX BREAK on one MC6850 port");
+    println!("Each ACIA is configured for /16 before BREAK is asserted");
+    println!("Median of {ROUNDS} paired rounds after a 10 ms warm-up");
+
+    for (activity, port) in [
+        ("Port0 110 baud", BackendSerialPort::Port0),
+        ("Port1 9600 baud", BackendSerialPort::Port1),
+    ] {
+        println!();
+        println!("{activity} continuous RX BREAK");
+
+        for (label, multiplier) in MODES {
+            let budget = budget_for(multiplier, PHYSICAL_MEASURE_TIME);
+            let target_mhz = f64::from(TWO_MHZ) * f64::from(multiplier) / 1_000_000.0;
+            let initial_guest_slice = active_break_machine(port)
+                .serial_clock_deadline_t_states()
+                .map(|deadline| {
+                    guest_t_states_for_deadline(deadline, multiplier)
+                        .min(SERVICE_SLICE_T_STATES)
+                })
+                .unwrap_or(SERVICE_SLICE_T_STATES);
+            let mut deadline_samples = Vec::with_capacity(ROUNDS);
+            let mut coarse_samples = Vec::with_capacity(ROUNDS);
+
+            for round in 0..ROUNDS {
+                if round & 1 == 0 {
+                    coarse_samples.push(measure_active_coarse(multiplier, port));
+                    deadline_samples.push(measure_active_deadline(multiplier, port));
+                } else {
+                    deadline_samples.push(measure_active_deadline(multiplier, port));
+                    coarse_samples.push(measure_active_coarse(multiplier, port));
+                }
+            }
+
+            let deadline = median(&deadline_samples);
+            let coarse = median(&coarse_samples);
+            let deadline_mhz = budget as f64 / deadline.elapsed.as_secs_f64() / 1_000_000.0;
+            let coarse_mhz = budget as f64 / coarse.elapsed.as_secs_f64() / 1_000_000.0;
+            let headroom = PHYSICAL_MEASURE_TIME.as_secs_f64() / deadline.elapsed.as_secs_f64();
+            let slowdown = deadline.elapsed.as_secs_f64() / coarse.elapsed.as_secs_f64();
+            let overhead_percent = (slowdown - 1.0) * 100.0;
+            let (deadline_min, deadline_max) = elapsed_range(&deadline_samples);
+
+            println!(
+                "{label:>9} target={target_mhz:>5.1} MHz first={initial_guest_slice:>6}T | deadline {:>8.3} ms ({deadline_mhz:>8.2} MHz host, {headroom:>6.2}x realtime) | Full={:>6.2}% Partial={:>6.2}% | coarse {:>8.3} ms ({coarse_mhz:>8.2} MHz) | scheduler cost {slowdown:>6.2}x ({overhead_percent:>+8.1}%) | deadline range {:>8.3}-{:>8.3} ms",
+                deadline.elapsed.as_secs_f64() * 1_000.0,
+                deadline.full_percent,
+                deadline.partial_percent,
+                coarse.elapsed.as_secs_f64() * 1_000.0,
+                deadline_min.as_secs_f64() * 1_000.0,
+                deadline_max.as_secs_f64() * 1_000.0,
+            );
+        }
     }
 }
