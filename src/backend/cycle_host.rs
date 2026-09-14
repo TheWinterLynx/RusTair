@@ -717,6 +717,10 @@ impl MachineBackend for CycleHostBackend {
         self.advance_serial_physical_elapsed(elapsed);
         Ok(())
     }
+    fn serial_clock_deadline_t_states(&mut self) -> BackendResult<Option<u64>> {
+        self.service_serial_wall_clock();
+        Ok(self.inner.machine().bus.serial_clock_deadline_t_states())
+    }
     fn serial_receive(&mut self, p: BackendSerialPort, b: u8) -> BackendResult<()> {
         self.service_serial_wall_clock();
         self.inner.serial_receive(p, b)
