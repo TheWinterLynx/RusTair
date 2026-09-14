@@ -4,7 +4,7 @@
 //! latch. The FD-400/media layer only receives accepted physical-byte effects;
 //! it never decides guest I/O timing or exposes a sector API.
 
-use super::fd400::Fd400Time;
+use super::Fd400Time;
 
 const TRIM_ERASE_START_DELAY_US: u64 = 200;
 const FIRST_ENWD_FROM_SECTOR_START_US: u64 = 280;
