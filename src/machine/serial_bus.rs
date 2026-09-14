@@ -133,6 +133,13 @@ impl AltairBus {
         self.memory.advance_dcdd_time(t_states);
     }
 
+    /// Earliest installed serial-card clock boundary in canonical 2 MHz chassis
+    /// quanta. This is a read-only deadline derived from card-owned oscillator
+    /// phase; advancing that phase remains exclusively the card's responsibility.
+    pub(crate) fn serial_clock_deadline_t_states(&self) -> Option<u64> {
+        self.memory.serial_clock_deadline_t_states()
+    }
+
     /// Advance only the installed 88-SIO/88-2SIO oscillators by elapsed physical
     /// serial time, expressed in canonical 2 MHz chassis quanta. The UART/card
     /// remains the sole owner of bit/frame state; this scheduler never completes
