@@ -38,4 +38,31 @@ impl CycleAccurateMachineBackend {
         self.cpu_fault = None;
         Ok(())
     }
+
+    /// Cross exactly one electrical T-state while a managed serial OUT barrier
+    /// is in progress. Cycle owns the PHI1/PHI2 loop and all resulting S-100
+    /// effects; the host only chooses this exact primitive so it can settle the
+    /// independent physical serial clock after the activation edge.
+    pub(crate) fn service_managed_serial_barrier_t_state(&mut self) -> super::BackendResult<()> {
+        let lines = self.machine.bus.cpu_control_lines();
+        if !self.machine.powered || !self.machine.running() || lines.reset {
+            return self.fail_if_cpu_fault("managed serial barrier");
+        }
+
+        let before = self.cpu.total_t_states();
+        let ready = self.machine.bus.cycle_front_panel_ready_input();
+        let trace = self.tick_once(ready);
+        let elapsed = self.cpu.total_t_states().saturating_sub(before);
+        crate::adaptive_metrics::record_partial_span(
+            elapsed,
+            crate::adaptive_metrics::AdaptiveFallbackReason::OpcodeBarrier,
+        );
+        if trace.fault.is_some() {
+            return self.fail_if_cpu_fault("managed serial barrier");
+        }
+        if self.stop_wait_park_pending {
+            self.park_physical_stop_at_first_tw();
+        }
+        self.fail_if_cpu_fault("managed serial barrier")
+    }
 }
