@@ -85,6 +85,10 @@ impl RuntimeSerialCardHandle {
         self.state.borrow().serial_timing_is_quiet()
     }
 
+    pub(crate) fn t_states_until_next_clock_boundary(&self) -> Option<u64> {
+        self.state.borrow().t_states_until_next_clock_boundary()
+    }
+
     #[cfg(test)]
     pub(crate) const fn base(&self) -> u8 {
         self.base
@@ -405,5 +409,16 @@ mod tests {
         assert!(!device.external_drive_dirty());
         handle.advance_t_states(1);
         assert!(!device.external_drive_dirty());
+    }
+
+    #[test]
+    fn serial_handle_deadline_is_owned_by_the_same_card_state() {
+        let (_, handle) = RuntimeSerialCardHandle::new_two_sio(
+            TwoSioStraps::default(),
+            TwoSioInterruptWiring::default(),
+        );
+        assert_eq!(handle.t_states_until_next_clock_boundary(), Some(14));
+        handle.advance_t_states(13);
+        assert_eq!(handle.t_states_until_next_clock_boundary(), Some(1));
     }
 }
