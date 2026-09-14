@@ -65,12 +65,12 @@ Major categories include:
 - CPU-board/pin/front-panel timing;
 - READY/HOLD/interrupt/reset behavior;
 - 88-SIO/88-2SIO hardware/config/electrical interfaces;
-- serial endpoint and idle-clock integration;
+- serial endpoint, clock-domain and idle/active scheduler integration;
 - persistence/migration;
 - debugger/teacher/UI architecture;
 - authentic loader/paper-tape flows;
 - architecture authority guards;
-- ignored long performance/profiling workloads.
+- ignored long performance/profiling workloads, including serial scheduler evidence.
 
 Use [TEST_REFERENCE.md](TEST_REFERENCE.md) when you need to know **why a particular test file exists** and [TESTING_GUIDE.md](TESTING_GUIDE.md) for test strategy/commands.
 
@@ -93,6 +93,7 @@ Start from [`docs/README.md`](README.md). The core current set includes:
 - `EMULATION_ARCHITECTURE.md` — current machine/execution architecture;
 - `ARCHITECTURAL_INVARIANTS.md` — non-negotiable ownership/timing/fidelity rules;
 - `RUNTIME_FLOWS.md` — end-to-end runtime/control/data flows;
+- `SERIAL_CLOCK_DOMAINS.md` — current serial physical-time, card-owned deadline and guest-`OUT` causal-barrier contract;
 - `SUPPORT_AND_LIMITATIONS.md` — implemented scope, deliberate non-claims and known limitations;
 - `SUBSYSTEM_REVIEW_MAP.md` — subsystem → source/tests/docs review map;
 - `SOURCE_REFERENCE.md` — every Rust production/test-module source under `src/`;
@@ -113,7 +114,9 @@ These are living current documents. If production architecture changes, update t
 
 Many other documents record detailed research/validation for particular cards and signals. They are valuable because they preserve source evidence and regression intent.
 
-Some are explicitly marked **historical validation record**. Their old API/branch names are preserved intentionally; do not rewrite historical results to match current naming.
+Some are explicitly marked **historical validation record**. Their old API/branch names and measured behavior are preserved intentionally; do not rewrite historical results to match current naming. If a historical timing description could be mistaken for current production, add a dated current-architecture note/cross-link to the living contract instead.
+
+For serial timing, [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) is the current scheduling/clock-domain authority even when an older 88-SIO/88-2SIO fidelity record deliberately preserves the architecture tested at the time.
 
 ### Performance research
 
@@ -281,6 +284,6 @@ Use this sequence:
 4. `docs/EMULATION_ARCHITECTURE.md` + `ARCHITECTURAL_INVARIANTS.md` — how the machine is actually represented.
 5. `docs/SUBSYSTEM_REVIEW_MAP.md` — which files/tests/docs belong to your task.
 6. `docs/SOURCE_REFERENCE.md` / `TEST_REFERENCE.md` — detailed file ownership.
-7. component-specific fidelity documents — historical/hardware evidence for the exact thing you plan to change.
+7. component-specific current contracts such as `SERIAL_CLOCK_DOMAINS.md`, then hardware fidelity records for source evidence/history.
 
 If you still cannot answer **which object owns the real state you are about to modify**, do not start coding yet.
