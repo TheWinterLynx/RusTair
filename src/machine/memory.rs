@@ -42,6 +42,11 @@ pub(super) struct Memory {
     full_ram_timing_window: Option<RuntimeRamTimingWindow>,
     basic32_probe_guard: bool,
     basic32_probe_write: Option<u8>,
+    /// The one-shot FFFFh guard is consumed by each BASIC startup probe, but a
+    /// front-panel RESET restarts the same loaded image and therefore needs a new
+    /// one-shot probe. This latch remains set only while that BASIC image owns the
+    /// explicit compatibility workaround.
+    basic32_probe_rearm_on_reset: bool,
 }
 
 impl Default for Memory {
@@ -63,6 +68,7 @@ impl Default for Memory {
             full_ram_timing_window: None,
             basic32_probe_guard: false,
             basic32_probe_write: None,
+            basic32_probe_rearm_on_reset: false,
         }
     }
 }
@@ -460,15 +466,28 @@ impl Memory {
             return false;
         }
         self.basic32_probe_guard = true;
+        self.basic32_probe_rearm_on_reset = true;
         true
+    }
+
+    pub(super) fn rearm_transient_guards_after_reset(&mut self) {
+        self.basic32_probe_write = None;
+        self.basic32_probe_guard = self.basic32_probe_rearm_on_reset
+            && self.fabric.mapped_ram_card_count(u16::MAX) == 1
+            && self.fabric.installed_ram_bytes() == MAX_MEM_SIZE;
     }
 
     pub(super) fn clear_transient_guards(&mut self) {
         self.basic32_probe_guard = false;
         self.basic32_probe_write = None;
+        self.basic32_probe_rearm_on_reset = false;
     }
 
     pub(super) fn load(&mut self, address: u16, data: &[u8]) {
+        // A host-side image replacement ends any compatibility contract owned by
+        // the previously loaded guest. The BASIC loader arms its workaround only
+        // after loading the fresh image.
+        self.clear_transient_guards();
         let _ = self.fabric.load_bytes(address, data);
     }
     pub(super) fn peek(&self, address: u16) -> Option<u8> {
@@ -691,6 +710,10 @@ impl super::AltairBus {
         self.memory.cycle_read(address)
     }
 
+    pub(crate) fn rearm_transient_memory_guards_after_reset(&mut self) {
+        self.memory.rearm_transient_guards_after_reset();
+    }
+
     pub(crate) fn raw_s100_status_word(&self) -> u8 {
         let s = self.s100.signals();
         (u8::from(s.memr) << 7)
@@ -783,6 +806,35 @@ mod tests {
         assert_eq!(memory.preview_read(0xffff), 0xc8);
         assert_eq!(memory.read(0xffff), 0xc8);
         assert_eq!(memory.read(0xffff), 0x00);
+    }
+
+    #[test]
+    fn basic32_probe_guard_rearms_for_reset_while_workaround_is_latched() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K64, RamInit::Zeroed);
+        assert!(memory.arm_basic32_full_memory_probe_guard());
+
+        memory.write(u16::MAX, 0x37);
+        assert_eq!(memory.read(u16::MAX), 0xc8);
+        assert_eq!(memory.read(u16::MAX), 0x00);
+
+        memory.rearm_transient_guards_after_reset();
+        memory.write(u16::MAX, 0x5a);
+        assert_eq!(memory.peek(u16::MAX), Some(0x00));
+        assert_eq!(memory.read(u16::MAX), 0xa5);
+        assert_eq!(memory.read(u16::MAX), 0x00);
+    }
+
+    #[test]
+    fn programmatic_load_clears_basic32_reset_rearm_latch() {
+        let mut memory = Memory::default();
+        memory.configure(RamSize::K64, RamInit::Zeroed);
+        assert!(memory.arm_basic32_full_memory_probe_guard());
+        memory.load(0, &[0x76]);
+
+        memory.rearm_transient_guards_after_reset();
+        memory.write(u16::MAX, 0x5a);
+        assert_eq!(memory.read(u16::MAX), 0x5a);
     }
 
     #[test]
