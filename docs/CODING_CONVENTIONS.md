@@ -18,7 +18,9 @@ Good examples from the project vocabulary:
 - `read_wait_states`
 - `panel_activity`
 - `boundary_pins`
-- `serial_clocked`
+- `serial_physical_time`
+- `serial_clock_deadline`
+- `dcdd_chassis_time`
 
 Avoid generic names such as `state2`, `fast_data`, `temp_bus` unless the lifetime/meaning is genuinely local and obvious.
 
@@ -72,6 +74,21 @@ For the 8080:
 Do not "fix" a timing bug by adding arbitrary delay to semantic code, or fix an ALU bug by altering bus timing.
 
 When both layers change, keep the reason for each part clear in the diff/tests.
+
+### Timing domains must be explicit
+
+Do not use one generic elapsed-T-state counter for every peripheral merely because all durations can be converted to a common integer.
+
+Current examples deliberately use different domains:
+
+- CPU/chassis virtual time advances current DCDD/FD-400 mechanics;
+- serial physical time advances independently clocked 88-SIO/88-2SIO baud generators.
+
+A CPU T-state is therefore not automatically a serial clock tick. Likewise, settling serial physical time must not advance DCDD or fabricate CPU time.
+
+For independently clocked hardware, keep phase/state in the physical device and expose a next **effective** event deadline when the scheduler needs one. Avoid arbitrary fixed host polling slices. If guest I/O can activate timed hardware in the middle of a larger service interval, preserve causal ordering explicitly; the current serial path uses an exact `OUT` barrier for this purpose.
+
+See [SERIAL_CLOCK_DOMAINS.md](SERIAL_CLOCK_DOMAINS.md) before changing serial scheduling or clock ownership.
 
 ---
 
@@ -201,13 +218,15 @@ If a new integration test is created, document it in `docs/TEST_REFERENCE.md`.
 
 ## 13. Formatting and diff discipline
 
-Run:
+Before handing off or interpreting test failures, run the non-mutating formatting gate first:
 
 ```powershell
-cargo fmt
+cargo fmt --check
 ```
 
-but inspect the diff. Avoid formatting unrelated files as part of a fidelity change.
+If it reports a diff, apply the formatter (or the exact reported formatting change), then rerun `cargo fmt --check` before continuing with tests. Do not treat compiler/test output from an unformatted handoff as the final validation state.
+
+When intentionally formatting locally, `cargo fmt` is appropriate, but inspect the diff and avoid formatting unrelated files as part of a fidelity change.
 
 Before commit:
 
@@ -317,12 +336,13 @@ A reviewer should be able to answer:
 
 - What physical component owns the changed state?
 - Which real signal/event causes each transition?
-- Is timing expressed at the right T-state/edge?
+- Is timing expressed at the right T-state/edge **and in the correct time domain**?
 - Does any new shortcut bypass the S-100?
 - Does UI/debugger state remain derived?
 - What happens on open bus / overlap / High-Z?
 - What happens with READY/HOLD/interrupt/reset?
 - If Full is involved, what is the Partial oracle?
+- If independently clocked hardware is involved, who owns phase/deadline state and what prevents causal time from being applied before activation?
 - What test would fail if this invariant regressed?
 - Is performance work removing redundant host work or removing physical behavior?
 
