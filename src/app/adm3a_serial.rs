@@ -197,7 +197,8 @@ fn sample_async_frame(
         next_slot += 1;
         received_parity != parity_bit(decoded, receiver_format.data_bits, receiver_format.parity)
     };
-    let framing_error = !sample_line(next_slot);
+    let framing_error = (0..receiver_format.stop_bits)
+        .any(|stop_bit| !sample_line(next_slot + stop_bit));
 
     Some(SampledSerialFrame {
         byte: decoded,
