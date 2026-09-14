@@ -395,8 +395,7 @@ impl TwoSioPort {
             .saturating_sub(u128::from(self.tap_phase_numerator));
         let numerator_per_t_state = u128::from(numerator_per_t_state);
         Some(
-            ((required_numerator.saturating_add(numerator_per_t_state - 1)
-                / numerator_per_t_state)
+            ((required_numerator.saturating_add(numerator_per_t_state - 1) / numerator_per_t_state)
                 .max(1)
                 .min(u128::from(u64::MAX))) as u64,
         )
