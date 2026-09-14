@@ -422,7 +422,7 @@ mod tests {
             terminal
                 .row(ADM3A_ROWS - 1)
                 .iter()
-                .all(|byte| *byte == b' '))
+                .all(|byte| *byte == b' ')
         );
     }
 
