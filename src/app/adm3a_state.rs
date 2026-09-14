@@ -6,7 +6,6 @@ pub(super) const ADM3A_ROWS: usize = 24;
 
 const ASCII_MASK: u8 = 0x7f;
 const CURSOR_ADDRESS_BIAS: u8 = 0x20;
-const ADM3A_KEYBOARD_FRAME_BITS: f64 = 10.0;
 
 /// Physical communication-rate selector offered by the Lear Siegler ADM-3A.
 ///
@@ -77,15 +76,117 @@ impl Adm3aBaudRate {
     }
 }
 
+/// ADM-3A DATA 7/8 configuration switch (S3-3).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Adm3aDataBits {
+    Seven,
+    #[default]
+    Eight,
+}
+
+impl Adm3aDataBits {
+    pub(super) const ALL: [Self; 2] = [Self::Seven, Self::Eight];
+
+    pub(super) const fn bits(self) -> u8 {
+        match self {
+            Self::Seven => 7,
+            Self::Eight => 8,
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Seven => "7",
+            Self::Eight => "8",
+        }
+    }
+}
+
+/// ADM-3A PARITY/INH plus ODD/EVEN configuration switches (S3-2/S3-5).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Adm3aParity {
+    #[default]
+    None,
+    Even,
+    Odd,
+}
+
+impl Adm3aParity {
+    pub(super) const ALL: [Self; 3] = [Self::None, Self::Even, Self::Odd];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::None => "N",
+            Self::Even => "E",
+            Self::Odd => "O",
+        }
+    }
+}
+
+/// ADM-3A STOP 1/2 configuration switch (S3-4).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Adm3aStopBits {
+    #[default]
+    One,
+    Two,
+}
+
+impl Adm3aStopBits {
+    pub(super) const ALL: [Self; 2] = [Self::One, Self::Two];
+
+    pub(super) const fn bits(self) -> u8 {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::One => "1",
+            Self::Two => "2",
+        }
+    }
+}
+
+/// Wire framing selected by the ADM-3A switches. There was no single universal
+/// factory word format: ordering/customer setup selected these switches, so the
+/// emulator exposes them independently while retaining 8N1 as the prior RusTair
+/// compatibility default.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct Adm3aWordFormat {
+    pub(super) data_bits: Adm3aDataBits,
+    pub(super) parity: Adm3aParity,
+    pub(super) stop_bits: Adm3aStopBits,
+}
+
+impl Adm3aWordFormat {
+    pub(super) const fn frame_bits(self) -> u8 {
+        1 + self.data_bits.bits()
+            + match self.parity {
+                Adm3aParity::None => 0,
+                Adm3aParity::Even | Adm3aParity::Odd => 1,
+            }
+            + self.stop_bits.bits()
+    }
+
+    pub(super) fn label(self) -> String {
+        format!(
+            "{}{}{}",
+            self.data_bits.label(),
+            self.parity.label(),
+            self.stop_bits.label()
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ParserState {
     #[default]
     Normal,
     Escape,
     CursorRow,
-    CursorColumn {
-        row: usize,
-    },
+    CursorColumn { row: usize },
 }
 
 /// Headless Lear Siegler ADM-3A display and keyboard state.
@@ -99,6 +200,10 @@ pub(super) struct Adm3aState {
     powered: bool,
     auto_new_line: bool,
     baud_rate: Adm3aBaudRate,
+    word_format: Adm3aWordFormat,
+    /// S3-6 BIT 8 0/1. It applies only while 8-bit words are selected and fixes
+    /// the keyboard transmitter's eighth data bit independently from 7-bit ASCII.
+    bit8_one: bool,
     cells: [[u8; ADM3A_COLS]; ADM3A_ROWS],
     cursor_col: usize,
     cursor_row: usize,
@@ -115,6 +220,8 @@ impl Default for Adm3aState {
             powered: false,
             auto_new_line: false,
             baud_rate: Adm3aBaudRate::default(),
+            word_format: Adm3aWordFormat::default(),
+            bit8_one: false,
             cells: [[b' '; ADM3A_COLS]; ADM3A_ROWS],
             cursor_col: 0,
             cursor_row: 0,
@@ -157,7 +264,30 @@ impl Adm3aState {
         self.keyboard_next_at = None;
     }
 
+    pub(super) const fn word_format(&self) -> Adm3aWordFormat {
+        self.word_format
+    }
+
+    pub(super) fn set_word_format(&mut self, word_format: Adm3aWordFormat) {
+        if self.word_format == word_format {
+            return;
+        }
+        self.word_format = word_format;
+        // Word length/parity/stop changes alter the physical frame duration.
+        self.keyboard_next_at = None;
+    }
+
+    pub(super) const fn bit8_one(&self) -> bool {
+        self.bit8_one
+    }
+
+    pub(super) fn set_bit8_one(&mut self, bit8_one: bool) {
+        self.bit8_one = bit8_one;
+    }
+
     pub(super) fn receive_byte(&mut self, byte: u8) {
+        // ADM-3A display/control decoding is US-ASCII. The optional eighth data
+        // bit is a communications bit and never becomes an extra glyph address.
         let byte = byte & ASCII_MASK;
         match self.parser {
             ParserState::Normal => self.receive_normal(byte),
@@ -254,7 +384,13 @@ impl Adm3aState {
         if !self.powered {
             return false;
         }
-        self.keyboard_queue.push_back(byte & ASCII_MASK);
+        let ascii = byte & ASCII_MASK;
+        let byte = if self.word_format.data_bits == Adm3aDataBits::Eight && self.bit8_one {
+            ascii | 0x80
+        } else {
+            ascii
+        };
+        self.keyboard_queue.push_back(byte);
         self.keyboard_next_at.get_or_insert(now);
         true
     }
@@ -284,7 +420,9 @@ impl Adm3aState {
     }
 
     fn keyboard_char_time(&self) -> Duration {
-        Duration::from_secs_f64(ADM3A_KEYBOARD_FRAME_BITS / f64::from(self.baud_rate.baud()))
+        Duration::from_secs_f64(
+            f64::from(self.word_format.frame_bits()) / f64::from(self.baud_rate.baud()),
+        )
     }
 }
 
@@ -298,6 +436,7 @@ mod tests {
         assert!(!terminal.powered());
         assert!(!terminal.auto_new_line);
         assert_eq!(terminal.baud_rate(), Adm3aBaudRate::Baud9600);
+        assert_eq!(terminal.word_format(), Adm3aWordFormat::default());
         terminal.receive_byte(b'X');
         terminal.set_powered(true);
         assert!(terminal.powered());
@@ -445,13 +584,19 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_transmitter_uses_selected_baud_rate() {
+    fn keyboard_transmitter_uses_selected_baud_and_word_format() {
         let mut terminal = Adm3aState::default();
         let now = Instant::now();
         assert!(!terminal.queue_keyboard_byte(b'A', now));
 
         terminal.set_powered(true);
         terminal.set_baud_rate(Adm3aBaudRate::Baud110);
+        terminal.set_word_format(Adm3aWordFormat {
+            data_bits: Adm3aDataBits::Seven,
+            parity: Adm3aParity::Even,
+            stop_bits: Adm3aStopBits::Two,
+        });
+        assert_eq!(terminal.word_format().frame_bits(), 11);
         assert!(terminal.queue_keyboard_byte(b'A', now));
         assert!(terminal.queue_keyboard_byte(b'B', now));
         assert_eq!(terminal.keyboard_pending_len(), 2);
@@ -462,6 +607,25 @@ mod tests {
         assert_eq!(terminal.take_due_keyboard_byte(later), Some(b'B'));
         assert_eq!(terminal.keyboard_pending_len(), 0);
         assert_eq!(terminal.baud_rate().baud(), 110);
+        assert_eq!(terminal.keyboard_char_time(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn bit8_switch_only_changes_eight_bit_keyboard_words() {
+        let mut terminal = Adm3aState::default();
+        terminal.set_powered(true);
+        let now = Instant::now();
+
+        terminal.set_bit8_one(true);
+        assert!(terminal.queue_keyboard_byte(b'A', now));
+        assert_eq!(terminal.take_due_keyboard_byte(now), Some(0xc1));
+
+        terminal.set_word_format(Adm3aWordFormat {
+            data_bits: Adm3aDataBits::Seven,
+            ..Adm3aWordFormat::default()
+        });
+        assert!(terminal.queue_keyboard_byte(b'B', now));
+        assert_eq!(terminal.take_due_keyboard_byte(now), Some(b'B'));
     }
 
     #[test]
