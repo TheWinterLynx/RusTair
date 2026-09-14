@@ -51,6 +51,10 @@ pub(super) struct CycleHostBackend {
     /// it drains a throttled CPU clock debt; in that mode automatic `Instant`
     /// service is suppressed and the app supplies explicit elapsed durations.
     serial_wall_clock_managed: bool,
+    /// Managed execution stops before a guest OUT that targets installed serial
+    /// hardware, then crosses only that instruction one T-state per host service
+    /// so the app can settle physical serial time at the exact activation edge.
+    serial_output_instruction_in_progress: bool,
 }
 
 impl Default for CycleHostBackend {
@@ -67,6 +71,7 @@ impl Default for CycleHostBackend {
             serial_wall_clock_units: 0,
             serial_wall_clock_last: now,
             serial_wall_clock_managed: false,
+            serial_output_instruction_in_progress: false,
         }
     }
 }
@@ -201,6 +206,7 @@ impl CycleHostBackend {
         self.last_panel_commit_cpu_t_states = None;
         self.serial_wall_clock_units = 0;
         self.serial_wall_clock_last = Instant::now();
+        self.serial_output_instruction_in_progress = false;
     }
 
     /// Apply one elapsed physical-time interval to the installed serial-card
@@ -239,6 +245,39 @@ impl CycleHostBackend {
         self.serial_wall_clock_last = now;
         self.advance_serial_physical_elapsed(elapsed);
     }
+
+    /// Run a managed CPU slice without allowing a serial OUT to inherit physical
+    /// time from before its own bus cycle. Ordinary work stays on Adaptive Full;
+    /// only the one barrier instruction is replayed one exact T-state at a time.
+    fn service_managed_execution(&mut self, budget: u32) -> BackendResult<()> {
+        if budget == 0 {
+            return Ok(());
+        }
+
+        if self.serial_output_instruction_in_progress {
+            self.inner.service_execution(1)?;
+            if self.inner.execution_at_instruction_boundary() {
+                self.serial_output_instruction_in_progress = false;
+            }
+            return Ok(());
+        }
+
+        let before = self.inner.cpu().total_t_states();
+        self.inner.service_execution_until_serial_output(budget)?;
+        let executed = self.inner.cpu().total_t_states().saturating_sub(before);
+        if executed < u64::from(budget)
+            && self.inner.serial_output_instruction_pending()
+            && self.inner.machine().running()
+        {
+            self.serial_output_instruction_in_progress = true;
+            self.inner.service_execution(1)?;
+            if self.inner.execution_at_instruction_boundary() {
+                self.serial_output_instruction_in_progress = false;
+            }
+        }
+        Ok(())
+    }
+
     /// Keep CPU/chassis-time mechanics alive while the processor is parked. This
     /// path is intentionally DCDD-only now; serial cards have their own physical
     /// oscillator scheduler above and must never consume CPU-speed-scaled time.
@@ -567,14 +606,26 @@ impl MachineBackend for CycleHostBackend {
     fn service_execution(&mut self, budget: u32) -> BackendResult<()> {
         self.service_serial_wall_clock();
         let result = if !self.instruction_trace.enabled() && !self.debug_control.active() {
-            self.inner.service_execution(budget)
+            if self.serial_wall_clock_managed {
+                self.service_managed_execution(budget)
+            } else {
+                self.inner.service_execution(budget)
+            }
         } else {
+            // Debug/trace observation is already an exact Partial path. In
+            // managed mode cap it to one T-state so serial activation remains
+            // causally aligned without adding another barrier authority.
+            let observed_budget = if self.serial_wall_clock_managed {
+                budget.min(1)
+            } else {
+                budget
+            };
             let observing = self.observing_instruction_effects();
             let pending = &mut self.pending_instruction_trace;
             let trace = &mut self.instruction_trace;
             let control = &mut self.debug_control;
             self.inner
-                .service_execution_with_observer(budget, |inner, event| match event {
+                .service_execution_with_observer(observed_budget, |inner, event| match event {
                     CycleExecutionEvent::BeforeInstruction => {
                         let r = inner.cpu().registers();
                         if control.stop_before_with_sp(r.pc, r.sp).is_some() {
@@ -615,6 +666,7 @@ impl MachineBackend for CycleHostBackend {
         self.service_serial_wall_clock();
         self.reset_debugger_epoch();
         self.teaching_reset_seen = true;
+        self.serial_output_instruction_in_progress = false;
         self.inner.assert_reset()
     }
     fn release_reset(&mut self) -> BackendResult<()> {
@@ -689,6 +741,7 @@ impl MachineBackend for CycleHostBackend {
             return Ok(());
         }
         let now = Instant::now();
+        self.serial_output_instruction_in_progress = false;
         if managed {
             // The app establishes an explicit physical-time boundary when it
             // takes ownership. Do not replay automatic wall time here: the next
