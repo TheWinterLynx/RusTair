@@ -19,6 +19,7 @@ Current implemented areas include:
 - physical S-100 RAM card inventory with slot-native address/population/timing/protection behavior;
 - MITS 88-SIO serial hardware;
 - MITS 88-2SIO with MC6850-based ports;
+- independent serial physical-time scheduling whose baud is not scaled by host CPU execution speed;
 - front-panel Display/Control behavior including RUN/STOP, RESET, EXAMINE/DEPOSIT and protection-related behavior;
 - ASR-33 teletype/peripheral workflows;
 - text terminal endpoint;
@@ -46,6 +47,8 @@ It internally combines:
 Full coverage is intentionally incomplete. Falling back to Partial is correct and expected whenever the physical machine may observe behavior that Full does not represent exactly.
 
 Current Full support must not be interpreted as a promise that every 8080 instruction, interrupt state, READY condition or external event is accelerated.
+
+An independently clocked active UART is not itself a reason to force CPU execution into Partial. Serial physical time is settled at card-owned event boundaries, while guest serial I/O remains an exact synchronization barrier.
 
 The active roadmap explicitly calls for extending Full one instruction family at a time with exact differential/front-panel evidence.
 
@@ -92,7 +95,30 @@ This is deliberately **not** an analog DRAM-cell simulator. RusTair does not mod
 
 ---
 
-## 5. Serial configuration/persistence cleanup still in progress
+## 5. Serial timing scope
+
+The 88-SIO/88-2SIO baud generators are modeled as an independent **serial physical-time domain**. CPU host speed does not redefine card baud.
+
+Current guarantees include:
+
+- Authentic/2×/5×/10×/Unlimited do not multiply or divide selected serial baud;
+- quiet UARTs expose no scheduler deadline and therefore do not force tiny CPU service slices;
+- active UARTs expose their next effective card-owned event;
+- the 88-2SIO retains free-running external 16× tap phase while the scheduler observes effective MC6850 `/1`, `/16` or `/64` boundaries;
+- a guest serial `OUT` is causally aligned so a newly active/reconfigured UART cannot inherit pre-write elapsed time;
+- STOP/RESET/HOLD/HLDA/HALT can stop useful CPU progress while serial physical time continues without fabricated CPU T-states;
+- DCDD/FD-400 CPU/chassis virtual time remains separate from serial physical time;
+- Unlimited uses an automatic `Instant` source with an explicit managed/Unlimited handoff.
+
+Endpoint and card rates are also independent configuration domains. The application does not silently synchronize an ASR-33, Text Terminal, TCP or COM endpoint to the installed card by restrapping the hardware.
+
+A deliberate baud mismatch is therefore a valid configuration state. However, the current byte-oriented virtual endpoint path does **not** claim complete analog or independently clocked remote-bit sampling failure behavior for every mismatch. Automatic framing/parity corruption from arbitrary phase drift, electrical noise or marginal sampling remains outside the digital endpoint claim unless explicitly modeled.
+
+See [`SERIAL_CLOCK_DOMAINS.md`](SERIAL_CLOCK_DOMAINS.md) for the current architecture and performance evidence.
+
+---
+
+## 6. Serial configuration/persistence cleanup still in progress
 
 The architecture already requires one physical installed serial-card authority, but the active roadmap still calls out cleanup around older aggregate/singleton serial configuration and persistence.
 
@@ -108,7 +134,7 @@ These are architecture-cleanup constraints, not permission to introduce another 
 
 ---
 
-## 6. Interrupt-controller scope
+## 7. Interrupt-controller scope
 
 Serial cards can drive the configured S-100 interrupt lines, and Intel 8080 interrupt/INTE timing is modeled in the CPU path.
 
@@ -122,7 +148,7 @@ Until such a card exists in production:
 
 ---
 
-## 7. Chassis/card support is not universal S-100 support
+## 8. Chassis/card support is not universal S-100 support
 
 RusTair provides a generic S-100 electrical card/backplane contract, but only explicitly implemented card families are supported.
 
@@ -132,7 +158,7 @@ New boards should be added only when they can be represented as physical cards t
 
 ---
 
-## 8. Front-panel fidelity scope
+## 9. Front-panel fidelity scope
 
 RusTair distinguishes:
 
@@ -148,7 +174,7 @@ A visually pleasing LED effect must never overwrite raw bus truth.
 
 ---
 
-## 9. Debugger/history limitations
+## 10. Debugger/history limitations
 
 Debugger-derived tools intentionally use bounded observations.
 
@@ -164,7 +190,7 @@ The active roadmap mentions future nested/adjacent loop-inspector support, with 
 
 ---
 
-## 10. Host execution speed and throughput are not hardware-support claims
+## 11. Host execution speed and throughput are not hardware-support claims
 
 Measured equivalent MHz depends on:
 
@@ -174,15 +200,16 @@ Measured equivalent MHz depends on:
 - profiler instrumentation;
 - guest workload;
 - installed hardware/configuration;
-- Full/Partial admission pattern.
+- Full/Partial admission pattern;
+- active external-event frequency.
 
-Performance figures in historical documents are evidence from a particular test configuration, not a permanent product guarantee.
+Performance figures in historical/current benchmark documents are evidence from a particular test configuration, not a permanent product guarantee.
 
-Authentic/5×/10×/Unlimited speed modes affect host scheduling only. They do not change the hardware identity of the installed 2 MHz-class MITS CPU board.
+Authentic/2×/5×/10×/Unlimited speed modes affect host scheduling only. They do not change the hardware identity of the installed 2 MHz-class MITS CPU board or selected serial-card baud.
 
 ---
 
-## 11. GUI and platform limitations
+## 12. GUI and platform limitations
 
 The desktop UI is based on eframe/egui/WGPU and includes large photographic assets. Normal GUI use is documented against release builds.
 
@@ -197,7 +224,7 @@ None of these host facilities may become a source of guest CPU/card truth.
 
 ---
 
-## 12. Configuration changes require POWER OFF
+## 13. Configuration changes require POWER OFF
 
 Moving/installing/restrapping physical S-100 cards represents a physical hardware change. The configuration UI therefore treats those operations as POWER-OFF changes.
 
@@ -207,7 +234,7 @@ Runtime register state inside an already installed card is distinct from physica
 
 ---
 
-## 13. Quick Load is intentionally not historically authentic
+## 14. Quick Load is intentionally not historically authentic
 
 Quick/direct load is an explicit emulator convenience.
 
@@ -219,7 +246,7 @@ Do not describe Quick Load as hardware-authentic merely because it writes the sa
 
 ---
 
-## 14. Historical documentation can describe older architecture/performance states
+## 15. Historical documentation can describe older architecture/performance states
 
 The repository intentionally preserves hardware-fidelity investigations and performance experiments.
 
@@ -230,11 +257,11 @@ Some records describe:
 - an optimization that was later rejected;
 - measurements on an older commit/toolchain.
 
-Current contributor documents (`docs/README.md` reading path) take precedence for present-day architecture. Historical files remain evidence and should not be silently rewritten to appear current.
+Current contributor documents (`docs/README.md` reading path) take precedence for present-day architecture. Historical files remain evidence and should not be silently rewritten to appear current. When an old timing statement could be mistaken for current architecture, add a clearly labelled current-architecture addendum rather than rewriting the historical result.
 
 ---
 
-## 15. Current structural debt explicitly acknowledged by the project
+## 16. Current structural debt explicitly acknowledged by the project
 
 `STATE_SOURCES.md` and `TODO.md` currently acknowledge remaining structural cleanup, including:
 
@@ -247,7 +274,7 @@ A contributor should not "solve" this debt by introducing another compatibility 
 
 ---
 
-## 16. What is not automatically a bug
+## 17. What is not automatically a bug
 
 These behaviors can be intentional:
 
@@ -256,6 +283,8 @@ These behaviors can be intentional:
 - overlapping decoders create multiple responders/contention;
 - a configuration is rejected as electrically ambiguous;
 - an endpoint cannot connect because the selected interfaces are incompatible;
+- endpoint and card baud settings differ because they are independently configured;
+- an idle UART returns no scheduler deadline;
 - a debugger inference says incomplete/unknown;
 - a host benchmark is slower under symbols/profiling;
 - a historical software quirk requires an explicit compatibility option;
@@ -265,7 +294,7 @@ Before "fixing" such behavior, identify the hardware/documentation contract firs
 
 ---
 
-## 17. Where to confirm a support claim
+## 18. Where to confirm a support claim
 
 For any claim such as "RusTair correctly supports feature X", use this evidence order:
 
@@ -280,7 +309,7 @@ A README bullet alone is not enough evidence for a low-level hardware fidelity c
 
 ---
 
-## 18. Maintaining this document
+## 19. Maintaining this document
 
 Update this file when:
 
@@ -288,6 +317,7 @@ Update this file when:
 - a known non-PASS area is closed;
 - a compatibility/migration limitation is removed;
 - a new deliberate non-claim is introduced;
-- a platform limitation changes materially.
+- a platform limitation changes materially;
+- a timing domain or scheduling policy changes in a way that affects support claims.
 
 Do not use this file as a substitute for detailed card fidelity documentation. It should remain the high-level truth about **scope and caveats**.
