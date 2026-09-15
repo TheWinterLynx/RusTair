@@ -309,7 +309,11 @@ impl RusTairApp {
             return;
         }
 
+        let now = Instant::now();
         let mut bytes = Vec::new();
+        let mut repeat_key_change = None;
+        let mut repeat_target = None;
+        let mut repeat_target_released = false;
         ctx.input(|input| {
             for (event_index, event) in input.events.iter().enumerate() {
                 match event {
@@ -327,13 +331,21 @@ impl RusTairApp {
                         if host_autorepeat {
                             continue;
                         }
-                        bytes.extend(
-                            text.chars()
-                                .filter(|ch| ch.is_ascii())
-                                .map(|ch| ch as u8)
-                                .filter(|byte| (0x20..=0x7e).contains(byte)),
-                        );
+                        let printable = text
+                            .chars()
+                            .filter(|ch| ch.is_ascii())
+                            .map(|ch| ch as u8)
+                            .filter(|byte| (0x20..=0x7e).contains(byte))
+                            .collect::<Vec<_>>();
+                        repeat_target = printable.last().copied().or(repeat_target);
+                        bytes.extend(printable);
                     }
+                    egui::Event::Key {
+                        key: egui::Key::F12,
+                        pressed,
+                        repeat: false,
+                        ..
+                    } => repeat_key_change = Some(*pressed),
                     egui::Event::Key {
                         key: egui::Key::Enter,
                         pressed: true,
@@ -341,8 +353,10 @@ impl RusTairApp {
                         modifiers,
                         ..
                     } => {
+                        repeat_target = Some(b'\r');
                         if modifiers.shift {
                             bytes.push(b'\n');
+                            repeat_target = Some(b'\n');
                         } else {
                             bytes.push(b'\r');
                             if ADM3A_PC_ENTER_CRLF.load(Ordering::Relaxed) {
@@ -355,49 +369,73 @@ impl RusTairApp {
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x08),
+                    } => {
+                        bytes.push(0x08);
+                        repeat_target = Some(0x08);
+                    }
                     egui::Event::Key {
                         key: egui::Key::Delete,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x7f),
+                    } => {
+                        bytes.push(0x7f);
+                        repeat_target = Some(0x7f);
+                    }
                     egui::Event::Key {
                         key: egui::Key::Escape,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x1b),
+                    } => {
+                        bytes.push(0x1b);
+                        repeat_target = Some(0x1b);
+                    }
                     egui::Event::Key {
                         key: egui::Key::ArrowLeft,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x08),
+                    } => {
+                        bytes.push(0x08);
+                        repeat_target = Some(0x08);
+                    }
                     egui::Event::Key {
                         key: egui::Key::ArrowDown,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x0a),
+                    } => {
+                        bytes.push(0x0a);
+                        repeat_target = Some(0x0a);
+                    }
                     egui::Event::Key {
                         key: egui::Key::ArrowUp,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x0b),
+                    } => {
+                        bytes.push(0x0b);
+                        repeat_target = Some(0x0b);
+                    }
                     egui::Event::Key {
                         key: egui::Key::ArrowRight,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x0c),
+                    } => {
+                        bytes.push(0x0c);
+                        repeat_target = Some(0x0c);
+                    }
                     egui::Event::Key {
                         key: egui::Key::Home,
                         pressed: true,
                         repeat: false,
                         ..
-                    } => bytes.push(0x1e),
+                    } => {
+                        bytes.push(0x1e);
+                        repeat_target = Some(0x1e);
+                    }
                     egui::Event::Key {
                         key,
                         pressed: true,
@@ -407,12 +445,36 @@ impl RusTairApp {
                     } if modifiers.ctrl => {
                         if let Some(byte) = Self::adm3a_control_byte(*key) {
                             bytes.push(byte);
+                            repeat_target = Some(byte);
                         }
                     }
+                    egui::Event::Key {
+                        key: egui::Key::F12,
+                        ..
+                    } => {}
+                    egui::Event::Key { pressed: false, .. } => repeat_target_released = true,
                     _ => {}
                 }
             }
         });
+
+        if repeat_target_released {
+            self.adm3a.clear_repeat_target();
+        }
+        if let Some(target) = repeat_target {
+            self.adm3a.set_repeat_target(target, now);
+        }
+        if let Some(held) = repeat_key_change {
+            self.adm3a.set_repeat_key_held(held, now);
+        }
+        if let Some(repeated) = self.adm3a.take_due_repeat_byte(now) {
+            bytes.push(repeated);
+        }
+        if let Some(due) = self.adm3a.repeat_due_in(now) {
+            if !due.is_zero() {
+                ctx.request_repaint_after(due);
+            }
+        }
 
         let transmit = self.machine.powered() && self.adm3a_connection().is_connected();
         if !transmit {
@@ -425,7 +487,6 @@ impl RusTairApp {
             return;
         }
 
-        let now = Instant::now();
         let mut queued = 0usize;
         for byte in bytes {
             if self.adm3a.queue_keyboard_byte(byte, now) {
@@ -561,6 +622,37 @@ impl RusTairApp {
             self.adm3a.set_auto_new_line(auto_new_line);
         }
 
+        let mut space_advance = self.adm3a.space_advance();
+        let advance = ui.checkbox(&mut space_advance, "ADV");
+        if advance.changed() {
+            self.adm3a.set_space_advance(space_advance);
+        }
+        advance.on_hover_text(
+            "SPACE/ADV switch. In ADV, spaces after RETURN advance the cursor without erasing display memory until LINE FEED is executed.",
+        );
+
+        let mut clear_screen_control = self.adm3a.clear_screen_control();
+        let clear_screen = ui.checkbox(&mut clear_screen_control, "CLR SCRN");
+        if clear_screen.changed() {
+            self.adm3a.set_clear_screen_control(clear_screen_control);
+        }
+        clear_screen.on_hover_text(
+            "DISABLE/CLR SCRN switch. When disabled, a received CTRL-Z cannot clear the display; scrolling with LINE FEED still can.",
+        );
+
+        let current_60_hz = self.adm3a.line_frequency_60_hz();
+        let mut selected_60_hz = current_60_hz;
+        ui.label("LINE:");
+        egui::ComboBox::from_id_salt("adm3a-line-frequency")
+            .selected_text(if current_60_hz { "60 Hz" } else { "50 Hz" })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut selected_60_hz, true, "60 Hz");
+                ui.selectable_value(&mut selected_60_hz, false, "50 Hz");
+            });
+        if selected_60_hz != current_60_hz {
+            self.adm3a.set_line_frequency_60_hz(selected_60_hz);
+        }
+
         let mut enter_crlf = ADM3A_PC_ENTER_CRLF.load(Ordering::Relaxed);
         let enter_mapping = ui.checkbox(&mut enter_crlf, "PC ENTER = CR+LF");
         if enter_mapping.changed() {
@@ -569,6 +661,14 @@ impl RusTairApp {
         enter_mapping.on_hover_text(
             "Host keyboard convenience only. The real ADM-3A RETURN key sends CR. Enable this to make PC Enter send CR followed by the separate LINE FEED code. Shift+Enter always sends LF only.",
         );
+
+        ui.menu_button("Keyboard help", |ui| {
+            ui.label("PC Enter  → ADM-3A RETURN (CR)");
+            ui.label("Shift+Enter → LINE FEED (LF)");
+            ui.label("F12 + key → hold physical REPEAT with that key");
+            ui.label("Home → HOME; arrows → cursor control codes");
+            ui.small("REPEAT is 12.5 cps at 60 Hz or 10 cps at 50 Hz, and slows to the selected serial transmission rate when necessary.");
+        });
     }
 
     fn adm3a_shell_text_uv() -> egui::Rect {
