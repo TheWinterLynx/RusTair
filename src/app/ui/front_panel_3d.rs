@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use eframe::{
     egui,
@@ -26,6 +28,12 @@ const NO_LED_INDEX: u32 = u32::MAX;
 const NO_SWITCH_INDEX: u32 = u32::MAX;
 const LED_VISIBLE_THRESHOLD: f32 = 0.025;
 const LED_CORE_STEEPNESS: f32 = 7.0;
+const PICKABLE_SWITCH_COUNT: usize = 17;
+const SWITCH_PICK_RADIUS_MIN_M: f32 = 0.0040;
+const SWITCH_PICK_RADIUS_MAX_M: f32 = 0.0068;
+const SWITCH_PICK_RADIUS_SCALE: f32 = 1.45;
+const KILL_BITS_FIRST_SENSE_BIT: usize = 8;
+const KILL_BITS_MOMENTARY_PULSE: Duration = Duration::from_millis(90);
 
 const LED_IDS: [&str; LED_COUNT] = [
     "INTE", "PROT", "MEMR", "INP", "M1", "OUT", "HLTA", "STACK", "WO", "INT", "WAIT", "HLDA",
@@ -123,6 +131,15 @@ struct Panel3dSnapshot {
     switches: [f32; switch_runtime::SWITCH_COUNT],
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SwitchPickScene {
+    center: [f32; 3],
+    radius: f32,
+    switches: [switch_runtime::SwitchRuntime; switch_runtime::SWITCH_COUNT],
+}
+
+static SWITCH_PICK_SCENE: OnceLock<SwitchPickScene> = OnceLock::new();
+
 fn ui_state_id() -> egui::Id {
     egui::Id::new("rustair-altair-3d-front-panel-state")
 }
@@ -196,6 +213,151 @@ fn panel_snapshot(app: &mut RusTairApp) -> Panel3dSnapshot {
     Panel3dSnapshot { leds, switches }
 }
 
+fn publish_switch_pick_scene(
+    center: [f32; 3],
+    radius: f32,
+    switches: [switch_runtime::SwitchRuntime; switch_runtime::SWITCH_COUNT],
+) {
+    let _ = SWITCH_PICK_SCENE.set(SwitchPickScene {
+        center,
+        radius,
+        switches,
+    });
+}
+
+fn switch_pick_scene() -> Result<&'static SwitchPickScene, String> {
+    if let Some(scene) = SWITCH_PICK_SCENE.get() {
+        return Ok(scene);
+    }
+
+    let mesh = load_static_mesh()?;
+    let switches = switch_runtime::load_switch_runtime()?;
+    publish_switch_pick_scene(mesh.center, mesh.radius, switches);
+    SWITCH_PICK_SCENE
+        .get()
+        .ok_or_else(|| "Altair 3D switch picking scene failed to initialize".to_owned())
+}
+
+fn pointer_ray(
+    scene: &SwitchPickScene,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+    camera: CameraState,
+) -> Option<([f32; 3], [f32; 3])> {
+    if !rect.contains(pointer) || rect.width() <= f32::EPSILON || rect.height() <= f32::EPSILON {
+        return None;
+    }
+
+    let aspect = rect.width() / rect.height();
+    let x = ((pointer.x - rect.left()) / rect.width()) * 2.0 - 1.0;
+    let y = 1.0 - ((pointer.y - rect.top()) / rect.height()) * 2.0;
+    let tan_half_fov = (42.0_f32.to_radians() * 0.5).tan();
+    let (outward, right, up) = camera_basis(camera);
+    let forward = scale3(outward, -1.0);
+    let direction = normalize3(add3(
+        forward,
+        add3(
+            scale3(right, x * tan_half_fov * aspect),
+            scale3(up, y * tan_half_fov),
+        ),
+    ));
+    Some((
+        camera_eye(scene.center, scene.radius, camera),
+        direction,
+    ))
+}
+
+fn ray_sphere_distance(
+    origin: [f32; 3],
+    direction: [f32; 3],
+    center: [f32; 3],
+    radius: f32,
+) -> Option<f32> {
+    let offset = sub3(origin, center);
+    let along = dot3(offset, direction);
+    let discriminant = along * along - (dot3(offset, offset) - radius * radius);
+    if discriminant < 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let near = -along - root;
+    if near > 0.0 {
+        Some(near)
+    } else {
+        let far = -along + root;
+        (far > 0.0).then_some(far)
+    }
+}
+
+fn pick_switch(
+    scene: &SwitchPickScene,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+    camera: CameraState,
+) -> Option<usize> {
+    let (origin, direction) = pointer_ray(scene, rect, pointer, camera)?;
+    let mut nearest: Option<(usize, f32)> = None;
+    for (index, switch) in scene
+        .switches
+        .iter()
+        .take(PICKABLE_SWITCH_COUNT)
+        .enumerate()
+    {
+        // Front-panel controls are physically operated from the front. Do not
+        // let a ray from behind the chassis click through the cabinet.
+        if origin[2] <= switch.pivot[2] {
+            continue;
+        }
+        let radius = (switch.xy_radius * SWITCH_PICK_RADIUS_SCALE)
+            .clamp(SWITCH_PICK_RADIUS_MIN_M, SWITCH_PICK_RADIUS_MAX_M);
+        let Some(distance) = ray_sphere_distance(origin, direction, switch.pivot, radius) else {
+            continue;
+        };
+        if nearest.is_none_or(|(_, nearest_distance)| distance < nearest_distance) {
+            nearest = Some((index, distance));
+        }
+    }
+    nearest.map(|(index, _)| index)
+}
+
+fn activate_3d_switch(app: &mut RusTairApp, ctx: &egui::Context, index: usize) {
+    if index < 16 {
+        let bit = 15 - index;
+        let mask = 1u16 << bit;
+        let current = app.machine.switch_register();
+        let momentary = app.kill_bits_momentary_enabled(ctx) && bit >= KILL_BITS_FIRST_SENSE_BIT;
+        let next = if momentary {
+            current | mask
+        } else {
+            current ^ mask
+        };
+        app.machine.set_switch_register(next);
+        if momentary {
+            let due = Instant::now() + KILL_BITS_MOMENTARY_PULSE;
+            ctx.data_mut(|data| {
+                let deadlines = data.get_temp_mut_or(
+                    egui::Id::new("rustair-kill-bits-momentary-sense-deadlines"),
+                    [None::<Instant>; 16],
+                );
+                deadlines[bit] = Some(due);
+            });
+            ctx.request_repaint_after(KILL_BITS_MOMENTARY_PULSE);
+        }
+        app.audio.play_once("assets/click.mp3");
+        app.status = if momentary {
+            format!("3D A{bit:02} pulsed UP")
+        } else if next & mask != 0 {
+            format!("3D A{bit:02} switched UP / 1")
+        } else {
+            format!("3D A{bit:02} switched DOWN / 0")
+        };
+        ctx.request_repaint();
+    } else if index == 16 {
+        app.set_altair_power(!app.machine.powered());
+        ctx.request_repaint();
+    }
+}
+
 pub(super) fn open(ctx: &egui::Context) {
     let mut state = load_ui_state(ctx);
     state.open = true;
@@ -232,7 +394,7 @@ pub(super) fn show_viewport(app: &mut RusTairApp, parent_ctx: &egui::Context) {
             .with_resizable(true),
         |viewport_ctx, _class| {
             egui::CentralPanel::default().show(viewport_ctx, |ui| {
-                draw_viewport_contents(ui, &mut state, snapshot);
+                draw_viewport_contents(app, ui, &mut state, snapshot);
             });
             close_requested = viewport_ctx.input(|input| input.viewport().close_requested());
         },
@@ -245,12 +407,13 @@ pub(super) fn show_viewport(app: &mut RusTairApp, parent_ctx: &egui::Context) {
 }
 
 fn draw_viewport_contents(
+    app: &mut RusTairApp,
     ui: &mut egui::Ui,
     state: &mut Panel3dUiState,
     snapshot: Panel3dSnapshot,
 ) {
     ui.horizontal(|ui| {
-        ui.label("LMB orbit · RMB/MMB pan · wheel dolly");
+        ui.label("LMB click switch · LMB drag orbit · RMB/MMB pan · wheel dolly");
         ui.separator();
         ui.add(
             egui::Slider::new(&mut state.camera.zoom, 0.08..=6.0)
@@ -262,13 +425,13 @@ fn draw_viewport_contents(
         }
     });
     ui.small(
-        "Native inspection viewport · live LEDs plus A15-A0 and POWER lever positions share the classic panel hardware state; momentary controls are the next connection checkpoint.",
+        "Native inspection viewport · A15-A0 and POWER are live physical controls; all state remains owned by the same Altair backend as the classic 2D panel.",
     );
     ui.separator();
 
     let available = ui.available_size();
     let canvas_size = egui::vec2(available.x.max(320.0), available.y.max(240.0));
-    let (rect, response) = ui.allocate_exact_size(canvas_size, egui::Sense::drag());
+    let (rect, response) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
 
     if response.dragged_by(egui::PointerButton::Primary) {
         let delta = ui.input(|input| input.pointer.delta());
@@ -295,6 +458,29 @@ fn draw_viewport_contents(
         if scroll.abs() > f32::EPSILON {
             state.camera.zoom = (state.camera.zoom * (-scroll * 0.0025).exp()).clamp(0.08, 6.0);
             ui.ctx().request_repaint();
+        }
+        if let (Some(scene), Some(pointer)) = (
+            SWITCH_PICK_SCENE.get(),
+            ui.input(|input| input.pointer.hover_pos()),
+        ) {
+            if pick_switch(scene, rect, pointer, state.camera).is_some() {
+                ui.output_mut(|output| output.cursor_icon = egui::CursorIcon::PointingHand);
+            }
+        }
+    }
+
+    if response.clicked_by(egui::PointerButton::Primary) {
+        if let Some(pointer) = ui.input(|input| input.pointer.interact_pos()) {
+            match switch_pick_scene() {
+                Ok(scene) => {
+                    if let Some(index) = pick_switch(scene, rect, pointer, state.camera) {
+                        activate_3d_switch(app, ui.ctx(), index);
+                    }
+                }
+                Err(error) => {
+                    app.status = format!("3D switch picking unavailable: {error}");
+                }
+            }
         }
     }
 
@@ -426,6 +612,7 @@ impl LoadedRenderer {
     fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Result<Self, String> {
         let mesh = load_static_mesh()?;
         let switch_runtime = switch_runtime::load_switch_runtime()?;
+        publish_switch_pick_scene(mesh.center, mesh.radius, switch_runtime);
         let vertex_bytes = encode_vertices(&mesh.vertices);
         let index_bytes = encode_indices(&mesh.indices);
 
@@ -2128,6 +2315,40 @@ mod tests {
             assert!(dot3(direction, up).abs() < 1.0e-5);
             assert!(dot3(right, up).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn center_pointer_ray_tracks_camera_target() {
+        let switches = switch_runtime::load_switch_runtime().unwrap();
+        let scene = SwitchPickScene {
+            center: [0.1, -0.2, 0.3],
+            radius: 0.5,
+            switches,
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let camera = CameraState::default();
+        let (origin, direction) = pointer_ray(&scene, rect, rect.center(), camera).unwrap();
+        let target = add3(scene.center, scale3(camera.pan, scene.radius));
+        let expected = normalize3(sub3(target, origin));
+        assert!(dot3(direction, expected) > 0.99999);
+    }
+
+    #[test]
+    fn ray_sphere_picking_rejects_geometry_behind_camera() {
+        assert!(ray_sphere_distance(
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 0.0],
+            0.1
+        )
+        .is_some());
+        assert!(ray_sphere_distance(
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            0.1
+        )
+        .is_none());
     }
 
     #[test]
