@@ -132,6 +132,7 @@ impl RusTairApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         Tex::install_teletype_font(&cc.egui_ctx);
+        ui::install_front_panel_3d(cc);
         let now = Instant::now();
         let config = AppConfig::default();
         let cpu_board = config
