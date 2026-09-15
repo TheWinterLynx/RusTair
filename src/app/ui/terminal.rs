@@ -2,8 +2,7 @@ use std::time::Instant;
 
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
 use crate::app::adm3a_state::{
-    ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate, Adm3aDataBits, Adm3aDuplex, Adm3aParity,
-    Adm3aStopBits,
+    ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate, Adm3aDataBits, Adm3aDuplex, Adm3aParity, Adm3aStopBits,
 };
 use crate::config::TerminalDuplex;
 
