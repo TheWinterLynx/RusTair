@@ -4,31 +4,9 @@ pub(super) const SWITCH_COUNT: usize = 25;
 pub(super) const SWITCH_UNIFORM_BYTES: u64 = SWITCH_COUNT as u64 * 32;
 
 const SWITCH_IDS: [&str; SWITCH_COUNT] = [
-    "A15",
-    "A14",
-    "A13",
-    "A12",
-    "A11",
-    "A10",
-    "A09",
-    "A08",
-    "A07",
-    "A06",
-    "A05",
-    "A04",
-    "A03",
-    "A02",
-    "A01",
-    "A00",
-    "POWER",
-    "STOP_RUN",
-    "SINGLE_STEP",
-    "EXAMINE",
-    "DEPOSIT",
-    "RESET_CLR",
-    "PROTECT",
-    "AUX1",
-    "AUX2",
+    "A15", "A14", "A13", "A12", "A11", "A10", "A09", "A08", "A07", "A06", "A05", "A04", "A03",
+    "A02", "A01", "A00", "POWER", "STOP_RUN", "SINGLE_STEP", "EXAMINE", "DEPOSIT", "RESET_CLR",
+    "PROTECT", "AUX1", "AUX2",
 ];
 
 #[derive(Clone, Copy, Debug)]
@@ -269,9 +247,7 @@ pub(super) fn encode_switch_uniform(
 }
 
 #[cfg(test)]
-pub(super) fn rest_switch_states(
-    runtime: &[SwitchRuntime; SWITCH_COUNT],
-) -> [f32; SWITCH_COUNT] {
+pub(super) fn rest_switch_states(runtime: &[SwitchRuntime; SWITCH_COUNT]) -> [f32; SWITCH_COUNT] {
     std::array::from_fn(|index| runtime[index].rest)
 }
 
@@ -297,10 +273,7 @@ mod tests {
         for (index, switch) in runtime.iter().enumerate() {
             assert!(switch.xy_radius > 0.0015 && switch.xy_radius < 0.0100);
             assert!((length3(switch.axis) - 1.0).abs() < 1.0e-5);
-            assert!(
-                switch.pivot.iter().all(|value| value.is_finite()),
-                "{index}"
-            );
+            assert!(switch.pivot.iter().all(|value| value.is_finite()), "{index}");
         }
     }
 
