@@ -299,10 +299,7 @@ impl RusTairApp {
     }
 
     fn process_adm3a_host_keyboard(&mut self, ctx: &egui::Context) {
-        if !self.adm3a.powered()
-            || !self.machine.powered()
-            || !self.adm3a_connection().is_connected()
-        {
+        if !self.adm3a.powered() {
             return;
         }
 
@@ -400,6 +397,17 @@ impl RusTairApp {
                 }
             }
         });
+
+        let transmit = self.machine.powered() && self.adm3a_connection().is_connected();
+        if !transmit {
+            if self.adm3a.duplex() == Adm3aDuplex::Half && !bytes.is_empty() {
+                for byte in bytes {
+                    self.adm3a.receive_byte(byte);
+                }
+                ctx.request_repaint();
+            }
+            return;
+        }
 
         let now = Instant::now();
         let mut queued = 0usize;
