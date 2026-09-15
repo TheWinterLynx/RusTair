@@ -110,9 +110,12 @@ pub(in crate::app) fn open_front_panel_3d(ctx: &egui::Context) {
     front_panel_3d::open(ctx);
 }
 
+pub(in crate::app) fn show_front_panel_3d_viewport(app: &RusTairApp, ctx: &egui::Context) {
+    front_panel_3d::show_viewport(app, ctx);
+}
+
 pub(in crate::app) fn draw_main_menu(app: &mut RusTairApp, ctx: &egui::Context) {
     main_menu::draw_main_menu(app, ctx);
-    front_panel_3d::show_window(ctx);
 }
 
 pub(in crate::app) fn open_led_visual_controls(app: &mut RusTairApp) {
