@@ -2006,7 +2006,7 @@ impl<'a> JsonParser<'a> {
             return Ok(JsonValue::Array(values));
         }
         loop {
-            values.push(self.parse_value()?;
+            values.push(self.parse_value()?);
             self.skip_whitespace();
             if self.consume_if(b']') {
                 break;
