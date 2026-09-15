@@ -95,7 +95,22 @@ impl RuntimeSerialCardHandle {
     }
 
     pub(crate) fn receive(&self, port_index: usize, byte: u8) -> bool {
-        self.receive_with_errors(port_index, byte, false, false)
+        let mut state = self.state.borrow_mut();
+        let received = match (self.board, port_index) {
+            (_, 0) => {
+                state.serial_receive(byte);
+                true
+            }
+            (SerialBoard::TwoSio88, 1) => {
+                state.port1_receive(byte);
+                true
+            }
+            _ => false,
+        };
+        if received {
+            self.connector_dirty.set(true);
+        }
+        received
     }
 
     pub(crate) fn receive_with_errors(
