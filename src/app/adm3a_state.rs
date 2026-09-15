@@ -181,6 +181,27 @@ impl Adm3aWordFormat {
     }
 }
 
+/// S2-5 HDX/FDX switch. Full duplex keeps the historical RusTair default: keys
+/// are transmitted but appear on the screen only if the host echoes them. In
+/// half duplex the keyboard code is also routed into the terminal display path.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Adm3aDuplex {
+    Half,
+    #[default]
+    Full,
+}
+
+impl Adm3aDuplex {
+    pub(super) const ALL: [Self; 2] = [Self::Full, Self::Half];
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Full => "FDX",
+            Self::Half => "HDX",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 enum ParserState {
     #[default]
@@ -202,6 +223,7 @@ pub(super) struct Adm3aState {
     pub(super) window_open: bool,
     powered: bool,
     auto_new_line: bool,
+    duplex: Adm3aDuplex,
     baud_rate: Adm3aBaudRate,
     word_format: Adm3aWordFormat,
     /// S3-6 BIT 8 0/1. It applies only while 8-bit words are selected and fixes
@@ -222,6 +244,7 @@ impl Default for Adm3aState {
             window_open: false,
             powered: false,
             auto_new_line: false,
+            duplex: Adm3aDuplex::default(),
             baud_rate: Adm3aBaudRate::default(),
             word_format: Adm3aWordFormat::default(),
             bit8_one: false,
@@ -250,6 +273,22 @@ impl Adm3aState {
         self.bell_pending = false;
         self.keyboard_queue.clear();
         self.keyboard_next_at = None;
+    }
+
+    pub(super) const fn auto_new_line(&self) -> bool {
+        self.auto_new_line
+    }
+
+    pub(super) fn set_auto_new_line(&mut self, enabled: bool) {
+        self.auto_new_line = enabled;
+    }
+
+    pub(super) const fn duplex(&self) -> Adm3aDuplex {
+        self.duplex
+    }
+
+    pub(super) fn set_duplex(&mut self, duplex: Adm3aDuplex) {
+        self.duplex = duplex;
     }
 
     pub(super) const fn baud_rate(&self) -> Adm3aBaudRate {
@@ -395,6 +434,9 @@ impl Adm3aState {
             return false;
         }
         let ascii = byte & ASCII_MASK;
+        if self.duplex == Adm3aDuplex::Half {
+            self.receive_byte(ascii);
+        }
         let byte = if self.word_format.data_bits == Adm3aDataBits::Eight && self.bit8_one {
             ascii | 0x80
         } else {
@@ -444,7 +486,8 @@ mod tests {
     fn power_starts_off_and_transition_resets_screen() {
         let mut terminal = Adm3aState::default();
         assert!(!terminal.powered());
-        assert!(!terminal.auto_new_line);
+        assert!(!terminal.auto_new_line());
+        assert_eq!(terminal.duplex(), Adm3aDuplex::Full);
         assert_eq!(terminal.baud_rate(), Adm3aBaudRate::Baud9600);
         assert_eq!(terminal.word_format(), Adm3aWordFormat::default());
         terminal.receive_byte(b'X');
@@ -492,11 +535,30 @@ mod tests {
         terminal.receive_byte(b'\n');
         assert_eq!(terminal.cursor(), (0, 1));
 
-        terminal.auto_new_line = true;
+        terminal.set_auto_new_line(true);
         for _ in 0..ADM3A_COLS {
             terminal.receive_byte(b'Z');
         }
         assert_eq!(terminal.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn half_duplex_routes_keyboard_codes_to_the_local_display() {
+        let mut terminal = Adm3aState::default();
+        terminal.set_powered(true);
+        terminal.set_duplex(Adm3aDuplex::Half);
+        let now = Instant::now();
+
+        assert!(terminal.queue_keyboard_byte(b'A', now));
+        assert_eq!(terminal.row(0)[0], b'A');
+        assert_eq!(terminal.cursor(), (1, 0));
+        assert_eq!(terminal.keyboard_pending_len(), 1);
+
+        terminal.set_duplex(Adm3aDuplex::Full);
+        assert!(terminal.queue_keyboard_byte(b'B', now));
+        assert_eq!(terminal.row(0)[1], b' ');
+        assert_eq!(terminal.cursor(), (1, 0));
+        assert_eq!(terminal.keyboard_pending_len(), 2);
     }
 
     #[test]
