@@ -201,7 +201,7 @@ fn led_optical_intensity(electrical: f32, powered: bool, brightness: f32) -> f32
     (response * brightness).clamp(0.0, 1.0)
 }
 
-fn panel_snapshot(app: &RusTairApp) -> Panel3dSnapshot {
+fn panel_snapshot(app: &mut RusTairApp) -> Panel3dSnapshot {
     let panel = app.machine.front_panel_state();
     let lamps = panel.lamps;
     let (brightness, _) = super::persistence::led_visual_settings();
@@ -252,7 +252,7 @@ pub(super) fn install(cc: &eframe::CreationContext<'_>) {
         .insert(Altair3dRenderResources::new(render_state.target_format));
 }
 
-pub(super) fn show_viewport(app: &RusTairApp, parent_ctx: &egui::Context) {
+pub(super) fn show_viewport(app: &mut RusTairApp, parent_ctx: &egui::Context) {
     let mut state = load_ui_state(parent_ctx);
     if !state.open {
         return;
