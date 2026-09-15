@@ -6,6 +6,7 @@ pub(super) const ADM3A_ROWS: usize = 24;
 
 const ASCII_MASK: u8 = 0x7f;
 const CURSOR_ADDRESS_BIAS: u8 = 0x20;
+const COLUMN_72_WARNING_INDEX: usize = 71;
 
 /// Physical communication-rate selector offered by the Lear Siegler ADM-3A.
 ///
@@ -323,6 +324,10 @@ impl Adm3aState {
             b'\r' => self.cursor_col = 0,
             0x1a => self.clear_screen(),
             0x1b => self.parser = ParserState::Escape,
+            0x1e => {
+                self.cursor_col = 0;
+                self.cursor_row = 0;
+            }
             0x20..=0x7e => self.write_printable(byte),
             _ => {}
         }
@@ -332,6 +337,9 @@ impl Adm3aState {
         self.cells[self.cursor_row][self.cursor_col] = byte;
         if self.cursor_col + 1 < ADM3A_COLS {
             self.cursor_col += 1;
+            if self.cursor_col == COLUMN_72_WARNING_INDEX {
+                self.bell_pending = true;
+            }
         } else if self.auto_new_line {
             self.cursor_col = 0;
             self.line_down();
@@ -509,6 +517,17 @@ mod tests {
     }
 
     #[test]
+    fn rs_homes_cursor() {
+        let mut terminal = Adm3aState::default();
+        for byte in [0x1b, b'=', 0x20 + 7, 0x20 + 42] {
+            terminal.receive_byte(byte);
+        }
+        assert_eq!(terminal.cursor(), (42, 7));
+        terminal.receive_byte(0x1e);
+        assert_eq!(terminal.cursor(), (0, 0));
+    }
+
+    #[test]
     fn escape_equals_addresses_cursor_with_space_bias() {
         let mut terminal = Adm3aState::default();
         for byte in [0x1b, b'=', 0x20 + 7, 0x20 + 42] {
@@ -571,6 +590,17 @@ mod tests {
     fn bell_is_latched_until_consumed() {
         let mut terminal = Adm3aState::default();
         terminal.receive_byte(0x07);
+        assert!(terminal.take_bell());
+        assert!(!terminal.take_bell());
+    }
+
+    #[test]
+    fn column_72_warning_latches_the_same_beeper() {
+        let mut terminal = Adm3aState::default();
+        for _ in 0..COLUMN_72_WARNING_INDEX {
+            terminal.receive_byte(b'X');
+        }
+        assert_eq!(terminal.cursor(), (COLUMN_72_WARNING_INDEX, 0));
         assert!(terminal.take_bell());
         assert!(!terminal.take_bell());
     }
