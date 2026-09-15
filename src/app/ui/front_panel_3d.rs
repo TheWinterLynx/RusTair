@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 
 use eframe::{
+    egui,
     egui_wgpu::wgpu::util::DeviceExt as _,
     egui_wgpu::{self, wgpu},
 };
@@ -406,8 +407,8 @@ impl LoadedRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::LessEqual,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
