@@ -37,32 +37,46 @@ fn vs_main(input: VertexIn) -> VertexOut {
 }
 
 @fragment
-fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
-    let n = normalize(input.world_normal);
+fn fs_main(input: VertexOut, @builtin(front_facing) front_facing: bool) -> @location(0) vec4<f32> {
+    var n = normalize(input.world_normal);
+    if !front_facing {
+        n = -n;
+    }
+
     let key = max(dot(n, normalize(vec3<f32>(0.42, 0.68, 0.60))), 0.0);
     let fill = max(dot(n, normalize(vec3<f32>(-0.70, 0.28, 0.58))), 0.0);
     let back = max(dot(n, normalize(vec3<f32>(0.14, 0.46, -0.88))), 0.0);
     let hemisphere = 0.5 + 0.5 * n.y;
 
-    // Preserve the GLB baseColorFactor instead of applying an artistic gamma
-    // lift. This keeps the period blue, charcoal panel and grey/white plastics
-    // close to the neutral material-preview appearance of the same GLB in
-    // Blender while still giving enough shape to the enclosure and internals.
+    // Match the neutral Blender material-preview balance more closely. The GLB
+    // baseColorFactor is already in linear space; keep it intact and illuminate
+    // it rather than applying an artistic gamma lift or a hard clamp.
     let base = clamp(input.color.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
-    let light = 0.72 + 0.30 * hemisphere + 0.38 * key + 0.14 * fill + 0.08 * back;
-    var linear_rgb = base * light;
+    let diffuse_light = 1.10 + 0.42 * hemisphere + 0.52 * key + 0.20 * fill + 0.10 * back;
+
+    // Blender's neutral preview keeps even very dark painted surfaces readable
+    // because they reflect the studio environment. Approximate that environment
+    // with two broad neutral lobes so black paint, metal toggles and the blue
+    // enclosure retain shape without tinting their authored base colours.
+    let studio_a = pow(
+        max(dot(n, normalize(vec3<f32>(0.15, 0.30, 0.94))), 0.0),
+        6.0,
+    );
+    let studio_b = pow(
+        max(dot(n, normalize(vec3<f32>(-0.48, 0.22, 0.85))), 0.0),
+        4.0,
+    );
+    let studio_reflection = vec3<f32>(0.034) * studio_a + vec3<f32>(0.018) * studio_b;
+
+    var rgb = base * diffuse_light + studio_reflection;
 
     // Lamps remain emissive presentation driven by the same electrical duty
-    // snapshot as the classic 2D panel. Emission is added before the gentle
-    // highlight roll-off so fully lit LEDs glow without clipping the lens to a
-    // flat primary colour.
+    // snapshot as the classic 2D panel. They are not point lights and feed no
+    // state back into the emulated machine.
     if input.led_index < 36u {
         let intensity = led_state.values[input.led_index].x;
-        linear_rgb += vec3<f32>(2.8, 0.045, 0.018) * intensity;
+        rgb += vec3<f32>(2.4, 0.040, 0.015) * intensity;
     }
 
-    // Soft highlight compression only; unlike the previous hard min(..., 1.0)
-    // this keeps the lower logo strip and pale internal parts from blowing out.
-    let rgb = linear_rgb / (vec3<f32>(1.0) + 0.35 * linear_rgb);
     return vec4<f32>(rgb, input.color.a);
 }
