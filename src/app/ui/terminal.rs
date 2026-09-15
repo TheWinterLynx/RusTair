@@ -716,10 +716,7 @@ impl RusTairApp {
         );
 
         if self.adm3a.cursor_control() {
-            let block = cursor_cell.shrink2(egui::Vec2::new(
-                cell_width * 0.08,
-                cell_height * 0.06,
-            ));
+            let block = cursor_cell.shrink2(egui::Vec2::new(cell_width * 0.08, cell_height * 0.06));
             clipped.rect_filled(block, egui::CornerRadius::same(1), cursor_color);
             let byte = self.adm3a.row(cursor_row)[cursor_col];
             if byte != b' ' {
