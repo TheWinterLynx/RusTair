@@ -384,7 +384,9 @@ impl RusTairApp {
                 input.pointer.interact_pos(),
             )
         });
-        if sense_switch_activates_on_press(primary_pressed, pointer_pos, hit) {
+        if response.is_pointer_button_down_on()
+            && sense_switch_activates_on_press(primary_pressed, pointer_pos, hit)
+        {
             let current = self.machine.switch_register();
             let (next, momentary) =
                 sense_switch_press_value(current, bit, self.kill_bits_momentary_enabled(ui.ctx()));
@@ -468,7 +470,11 @@ impl RusTairApp {
                 let mut just_latched = false;
                 let mut released_latch = false;
 
-                if primary_pressed && pointer_inside && state.press_started.is_none() {
+                if primary_pressed
+                    && response.is_pointer_button_down_on()
+                    && pointer_inside
+                    && state.press_started.is_none()
+                {
                     let already_latched = state.latched.is_some();
                     state.press_started = Some(now);
                     state.press_direction = Some(pointer_position);
