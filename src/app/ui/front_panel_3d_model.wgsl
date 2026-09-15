@@ -18,6 +18,7 @@ struct VertexIn {
     @location(2) color: vec4<f32>,
     @location(3) led_index: u32,
     @location(4) metallic_roughness: vec2<f32>,
+    @location(5) switch_index: u32,
 };
 struct VertexOut {
     @builtin(position) clip_position: vec4<f32>,
@@ -40,24 +41,13 @@ fn rotate_axis(value: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
 fn vs_main(input: VertexIn) -> VertexOut {
     var position = input.position;
     var normal = input.normal;
-
-    // The runtime GLB is authored with every lever already in its bindings.json
-    // rest state. Identify only the protruding lever mesh around each authored
-    // pivot, then apply the delta from rest. Nuts, bushings and switch bodies sit
-    // behind this depth threshold and therefore remain fixed. This keeps the
-    // complete Altair in one draw call while allowing all 25 levers to animate.
-    for (var switch_index = 0u; switch_index < 25u; switch_index += 1u) {
-        let switch = switch_state.values[switch_index];
+    if input.switch_index < 25u {
+        let switch = switch_state.values[input.switch_index];
         let pivot = switch.pivot_angle.xyz;
-        let delta_xy = position.xy - pivot.xy;
-        let radius = switch.axis_radius.w;
-        if dot(delta_xy, delta_xy) <= radius * radius && position.z > pivot.z - 0.0009 {
-            let axis = normalize(switch.axis_radius.xyz);
-            let angle = switch.pivot_angle.w;
-            position = pivot + rotate_axis(position - pivot, axis, angle);
-            normal = normalize(rotate_axis(normal, axis, angle));
-            break;
-        }
+        let axis = normalize(switch.axis_radius.xyz);
+        let angle = switch.pivot_angle.w;
+        position = pivot + rotate_axis(position - pivot, axis, angle);
+        normal = normalize(rotate_axis(normal, axis, angle));
     }
 
     var out: VertexOut;
