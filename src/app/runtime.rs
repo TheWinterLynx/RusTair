@@ -303,6 +303,7 @@ impl eframe::App for RusTairApp {
 
         let switches_before_helper_viewports = self.machine.switch_register();
 
+        super::ui::show_front_panel_3d_viewport(self, ctx);
         self.show_tty_viewport(ctx);
         self.show_terminal_viewport(ctx);
         self.show_external_serial_viewport(ctx);
