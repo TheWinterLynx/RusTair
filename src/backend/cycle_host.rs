@@ -779,6 +779,22 @@ impl MachineBackend for CycleHostBackend {
         self.service_serial_wall_clock();
         self.inner.serial_receive(p, b)
     }
+    fn serial_receive_with_errors(
+        &mut self,
+        p: BackendSerialPort,
+        b: u8,
+        framing_error: bool,
+        parity_error: bool,
+    ) -> BackendResult<()> {
+        self.service_serial_wall_clock();
+        self.inner.machine_mut().bus.serial_receive_with_errors(
+            p.index(),
+            b,
+            framing_error,
+            parity_error,
+        );
+        Ok(())
+    }
     fn serial_rx_empty(&mut self, p: BackendSerialPort) -> BackendResult<bool> {
         self.service_serial_wall_clock();
         self.inner.serial_rx_empty(p)
