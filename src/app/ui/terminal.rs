@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
 use crate::app::adm3a_state::{
-    ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate, Adm3aDataBits, Adm3aParity, Adm3aStopBits,
+    ADM3A_COLS, ADM3A_ROWS, Adm3aBaudRate, Adm3aDataBits, Adm3aDuplex, Adm3aParity,
+    Adm3aStopBits,
 };
 use crate::config::TerminalDuplex;
 
@@ -512,6 +513,27 @@ impl RusTairApp {
         }
     }
 
+    fn draw_adm3a_operating_switches(&mut self, ui: &mut egui::Ui) {
+        let current_duplex = self.adm3a.duplex();
+        let mut duplex = current_duplex;
+        ui.label("DUPLEX:");
+        egui::ComboBox::from_id_salt("adm3a-duplex")
+            .selected_text(current_duplex.label())
+            .show_ui(ui, |ui| {
+                for mode in Adm3aDuplex::ALL {
+                    ui.selectable_value(&mut duplex, mode, mode.label());
+                }
+            });
+        if duplex != current_duplex {
+            self.adm3a.set_duplex(duplex);
+        }
+
+        let mut auto_new_line = self.adm3a.auto_new_line();
+        if ui.checkbox(&mut auto_new_line, "AUTO NL").changed() {
+            self.adm3a.set_auto_new_line(auto_new_line);
+        }
+    }
+
     fn adm3a_shell_text_uv() -> egui::Rect {
         egui::Rect::from_min_max(
             egui::Pos2::new(ADM3A_SHELL_TEXT_LEFT, ADM3A_SHELL_TEXT_TOP),
@@ -793,6 +815,8 @@ impl RusTairApp {
                                 self.draw_adm3a_baud_selector(ui);
                                 ui.separator();
                                 self.draw_adm3a_word_format_selector(ui);
+                                ui.separator();
+                                self.draw_adm3a_operating_switches(ui);
                                 ui.separator();
                                 ui.label("80 × 24");
                                 ui.separator();
