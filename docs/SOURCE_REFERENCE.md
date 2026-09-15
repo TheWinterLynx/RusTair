@@ -181,7 +181,7 @@ Read `src/backend/README.md` before editing this directory; it is the current ow
 | `src/config/sio_electrical.rs` | Shared serial physical-interface configuration. |
 | `src/config/two_sio.rs` | 88-2SIO address/baud-tap/interface/interrupt straps. Card configuration remains independent of endpoint pacing. |
 | `src/config/external_serial.rs` | Host TCP serial endpoint settings. |
-| `src/config/external_com.rs` | Host COM endpoint lifecycle/config/servicing. |
+| `src/config/external_com.rs` | Host COM endpoint settings. |
 | `src/config/terminal.rs` | Text-terminal host configuration/pacing settings. |
 
 ---
@@ -258,3 +258,9 @@ A change in these normally needs focused fidelity tests, not only manual UI vali
 ## 12. Intentionally derived state
 
 Decoder/explanation/debug analysis, trace/history, memory activity, most UI viewers, Bus Teacher presentation and Adaptive metrics are derived observations. They may be stale or bounded by design and must never feed back as hardware authority.
+
+---
+
+## 13. Integration-test reference
+
+Integration tests under `tests/` are catalogued separately in [`TEST_REFERENCE.md`](TEST_REFERENCE.md). Important groups cover Adaptive authority, classic diagnostics, exact timing, front panel, S-100 topology/electrical behavior, 88-SIO/88-2SIO hardware, serial clock-domain independence, debugger architecture, authentic loading and manual performance evidence.
