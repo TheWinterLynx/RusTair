@@ -12,6 +12,8 @@ struct SwitchState { values: array<SwitchTransform, 25>, };
 @group(0) @binding(1) var<uniform> led_state: LedState;
 @group(0) @binding(2) var<uniform> switch_state: SwitchState;
 
+const SWITCH_SEAT_DEPTH_M: f32 = 0.0032;
+
 struct VertexIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
@@ -46,7 +48,8 @@ fn vs_main(input: VertexIn) -> VertexOut {
         let pivot = lever_state.pivot_angle.xyz;
         let axis = normalize(lever_state.axis_radius.xyz);
         let angle = lever_state.pivot_angle.w;
-        position = pivot + rotate_axis(position - pivot, axis, angle);
+        let seat_offset = vec3<f32>(0.0, 0.0, -SWITCH_SEAT_DEPTH_M);
+        position = pivot + rotate_axis(position - pivot, axis, angle) + seat_offset;
         normal = normalize(rotate_axis(normal, axis, angle));
     }
 
