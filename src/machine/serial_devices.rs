@@ -508,11 +508,15 @@ impl IoDevices {
         parity_error: bool,
     ) {
         match self.serial_board {
-            SerialBoard::Sio88 => self
-                .sio
-                .queue_received_character_with_errors(byte, framing_error, parity_error),
-            SerialBoard::TwoSio88 => self.two_sio[0]
-                .queue_received_character_with_errors(byte, framing_error, parity_error),
+            SerialBoard::Sio88 => {
+                self.sio
+                    .queue_received_character_with_errors(byte, framing_error, parity_error)
+            }
+            SerialBoard::TwoSio88 => self.two_sio[0].queue_received_character_with_errors(
+                byte,
+                framing_error,
+                parity_error,
+            ),
         }
         self.trace
             .record(IO_TRACE_RX_ENQUEUE, self.data_port_for_index(0), byte);
@@ -587,11 +591,7 @@ impl IoDevices {
         if self.serial_board != SerialBoard::TwoSio88 {
             return;
         }
-        self.two_sio[1].queue_received_character_with_errors(
-            byte,
-            framing_error,
-            parity_error,
-        );
+        self.two_sio[1].queue_received_character_with_errors(byte, framing_error, parity_error);
         self.trace
             .record(IO_TRACE_RX_ENQUEUE, self.data_port_for_index(1), byte);
     }
