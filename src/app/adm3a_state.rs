@@ -232,6 +232,13 @@ pub(super) struct Adm3aState {
     space_advance: bool,
     /// S4-3 DISABLE/CLR SCRN. When false, received CTRL-Z cannot clear display RAM.
     clear_screen_control: bool,
+    /// S4-4 DISABLE/KB LOCK. When enabled, remote SO/SI may unlock/lock the keyboard.
+    keyboard_lock_control: bool,
+    /// Runtime keyboard inhibit latch controlled only by remote SO/SI.
+    keyboard_locked: bool,
+    /// S4-5 UC DISP/U/L DISP. When false, the 64-character generator folds the
+    /// lower graphics half onto the corresponding upper-case glyph addresses.
+    upper_lower_display: bool,
     /// S4-2 50/60 Hz. Besides CRT timing, the original keyboard repeat divider
     /// derives its 12.5 cps (60 Hz) or 10 cps (50 Hz) cadence from this setting.
     line_frequency_60_hz: bool,
@@ -264,6 +271,9 @@ impl Default for Adm3aState {
             cursor_control: false,
             space_advance: false,
             clear_screen_control: true,
+            keyboard_lock_control: false,
+            keyboard_locked: false,
+            upper_lower_display: true,
             line_frequency_60_hz: true,
             nondestructive_space_after_return: false,
             baud_rate: Adm3aBaudRate::default(),
@@ -297,6 +307,7 @@ impl Adm3aState {
         self.bell_pending = false;
         self.keyboard_queue.clear();
         self.keyboard_next_at = None;
+        self.keyboard_locked = false;
         self.repeat_key_held = false;
         self.repeat_target = None;
         self.repeat_next_at = None;
@@ -350,6 +361,29 @@ impl Adm3aState {
 
     pub(super) fn set_clear_screen_control(&mut self, enabled: bool) {
         self.clear_screen_control = enabled;
+    }
+
+    pub(super) const fn keyboard_lock_control(&self) -> bool {
+        self.keyboard_lock_control
+    }
+
+    pub(super) fn set_keyboard_lock_control(&mut self, enabled: bool) {
+        self.keyboard_lock_control = enabled;
+        if !enabled {
+            self.keyboard_locked = false;
+        }
+    }
+
+    pub(super) const fn keyboard_locked(&self) -> bool {
+        self.keyboard_locked
+    }
+
+    pub(super) const fn upper_lower_display(&self) -> bool {
+        self.upper_lower_display
+    }
+
+    pub(super) fn set_upper_lower_display(&mut self, enabled: bool) {
+        self.upper_lower_display = enabled;
     }
 
     pub(super) const fn line_frequency_60_hz(&self) -> bool {
@@ -406,11 +440,19 @@ impl Adm3aState {
     }
 
     pub(super) fn receive_byte(&mut self, byte: u8) {
+        self.receive_byte_with_source(byte, true);
+    }
+
+    pub(super) fn receive_keyboard_echo_byte(&mut self, byte: u8) {
+        self.receive_byte_with_source(byte, false);
+    }
+
+    fn receive_byte_with_source(&mut self, byte: u8, remote_keyboard_control: bool) {
         // ADM-3A display/control decoding is US-ASCII. The optional eighth data
         // bit is a communications bit and never becomes an extra glyph address.
         let byte = byte & ASCII_MASK;
         match self.parser {
-            ParserState::Normal => self.receive_normal(byte),
+            ParserState::Normal => self.receive_normal(byte, remote_keyboard_control),
             ParserState::Escape => {
                 self.parser = if byte == b'=' {
                     ParserState::CursorRow
@@ -431,7 +473,7 @@ impl Adm3aState {
         }
     }
 
-    fn receive_normal(&mut self, byte: u8) {
+    fn receive_normal(&mut self, byte: u8, remote_keyboard_control: bool) {
         match byte {
             0x07 => self.bell_pending = true,
             0x08 => self.cursor_col = self.cursor_col.saturating_sub(1),
@@ -446,6 +488,17 @@ impl Adm3aState {
             b'\r' => {
                 self.cursor_col = 0;
                 self.nondestructive_space_after_return = self.space_advance;
+            }
+            0x0e if remote_keyboard_control && self.keyboard_lock_control => {
+                self.keyboard_locked = false;
+            }
+            0x0f if remote_keyboard_control && self.keyboard_lock_control => {
+                self.keyboard_locked = true;
+                self.keyboard_queue.clear();
+                self.keyboard_next_at = None;
+                self.repeat_key_held = false;
+                self.repeat_target = None;
+                self.repeat_next_at = None;
             }
             0x1a if self.clear_screen_control => self.clear_screen(),
             0x1b if self.cursor_control => self.parser = ParserState::Escape,
@@ -518,6 +571,15 @@ impl Adm3aState {
         &self.cells[row]
     }
 
+    pub(super) fn display_byte(&self, row: usize, col: usize) -> u8 {
+        let byte = self.cells[row][col];
+        if !self.upper_lower_display && (0x60..=0x7e).contains(&byte) {
+            byte & 0x5f
+        } else {
+            byte
+        }
+    }
+
     pub(super) const fn cursor(&self) -> (usize, usize) {
         (self.cursor_col, self.cursor_row)
     }
@@ -565,12 +627,12 @@ impl Adm3aState {
     }
 
     pub(super) fn queue_keyboard_byte(&mut self, byte: u8, now: Instant) -> bool {
-        if !self.powered {
+        if !self.powered || self.keyboard_locked {
             return false;
         }
         let ascii = byte & ASCII_MASK;
         if self.duplex == Adm3aDuplex::Half {
-            self.receive_byte(ascii);
+            self.receive_keyboard_echo_byte(ascii);
         }
         let byte = if self.word_format.data_bits == Adm3aDataBits::Eight && self.bit8_one {
             ascii | 0x80
@@ -640,6 +702,9 @@ mod tests {
         assert!(!terminal.cursor_control());
         assert!(!terminal.space_advance());
         assert!(terminal.clear_screen_control());
+        assert!(!terminal.keyboard_lock_control());
+        assert!(!terminal.keyboard_locked());
+        assert!(terminal.upper_lower_display());
         assert!(terminal.line_frequency_60_hz());
         assert_eq!(terminal.baud_rate(), Adm3aBaudRate::Baud9600);
         assert_eq!(terminal.word_format(), Adm3aWordFormat::default());
@@ -655,6 +720,7 @@ mod tests {
         assert_eq!(terminal.row(ADM3A_ROWS - 1)[0], b' ');
         assert_eq!(terminal.cursor(), (0, ADM3A_ROWS - 1));
         assert_eq!(terminal.keyboard_pending_len(), 0);
+        assert!(!terminal.keyboard_locked());
     }
 
     #[test]
@@ -749,6 +815,53 @@ mod tests {
         terminal.receive_byte(0x1a);
         assert_eq!(terminal.row(0)[0], b' ');
         assert_eq!(terminal.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn remote_keyboard_lock_respects_switch_and_ignores_hdx_echo() {
+        let mut terminal = Adm3aState::default();
+        terminal.set_powered(true);
+        terminal.set_duplex(Adm3aDuplex::Half);
+        terminal.set_keyboard_lock_control(true);
+        let now = Instant::now();
+
+        assert!(terminal.queue_keyboard_byte(0x0f, now));
+        assert!(!terminal.keyboard_locked());
+        assert_eq!(terminal.take_due_keyboard_byte(now), Some(0x0f));
+
+        terminal.receive_byte(0x0f);
+        assert!(terminal.keyboard_locked());
+        assert!(!terminal.queue_keyboard_byte(b'A', now));
+        assert_eq!(terminal.keyboard_pending_len(), 0);
+
+        terminal.receive_byte(0x0e);
+        assert!(!terminal.keyboard_locked());
+        assert!(terminal.queue_keyboard_byte(b'A', now));
+
+        terminal.receive_byte(0x0f);
+        assert!(terminal.keyboard_locked());
+        terminal.set_keyboard_lock_control(false);
+        assert!(!terminal.keyboard_locked());
+        terminal.receive_byte(0x0f);
+        assert!(!terminal.keyboard_locked());
+    }
+
+    #[test]
+    fn upper_case_display_folds_lower_graphics_without_changing_ram() {
+        let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
+        terminal.set_upper_lower_display(false);
+        terminal.receive_byte(b'a');
+        terminal.receive_byte(b'~');
+
+        assert_eq!(terminal.row(0)[0], b'a');
+        assert_eq!(terminal.row(0)[1], b'~');
+        assert_eq!(terminal.display_byte(0, 0), b'A');
+        assert_eq!(terminal.display_byte(0, 1), b'^');
+
+        terminal.set_upper_lower_display(true);
+        assert_eq!(terminal.display_byte(0, 0), b'a');
+        assert_eq!(terminal.display_byte(0, 1), b'~');
     }
 
     #[test]
