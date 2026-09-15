@@ -399,6 +399,7 @@ pub(super) fn show_viewport(app: &mut RusTairApp, parent_ctx: &egui::Context) {
     );
 
     if close_requested {
+        switch_runtime::release_all_controls(app, parent_ctx);
         state.open = false;
     }
     store_ui_state(parent_ctx, state);
@@ -423,15 +424,17 @@ fn draw_viewport_contents(
         }
     });
     ui.small(
-        "Native inspection viewport · A15-A0 and POWER are live physical controls; all state remains owned by the same Altair backend as the classic 2D panel.",
+        "Native inspection viewport · all 25 physical levers are live; AUX1/AUX2 remain unassigned. Hardware authority is shared with the classic 2D panel.",
     );
     ui.separator();
 
     let available = ui.available_size();
     let canvas_size = egui::vec2(available.x.max(320.0), available.y.max(240.0));
     let (rect, response) = ui.allocate_exact_size(canvas_size, egui::Sense::click_and_drag());
+    let suppress_primary_orbit =
+        switch_runtime::handle_control_input(app, ui, rect, &response, state.camera);
 
-    if response.dragged_by(egui::PointerButton::Primary) {
+    if response.dragged_by(egui::PointerButton::Primary) && !suppress_primary_orbit {
         let delta = ui.input(|input| input.pointer.delta());
         state.camera.yaw = wrap_angle(state.camera.yaw - delta.x * 0.008);
         state.camera.pitch = wrap_angle(state.camera.pitch + delta.y * 0.008);
