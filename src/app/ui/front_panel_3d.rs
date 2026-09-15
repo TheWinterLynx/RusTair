@@ -23,10 +23,9 @@ const LED_VISIBLE_THRESHOLD: f32 = 0.025;
 const LED_CORE_STEEPNESS: f32 = 7.0;
 
 const LED_IDS: [&str; LED_COUNT] = [
-    "INTE", "PROT", "MEMR", "INP", "M1", "OUT", "HLTA", "STACK", "WO", "INT", "WAIT",
-    "HLDA", "A15", "A14", "A13", "A12", "A11", "A10", "A09", "A08", "A07", "A06",
-    "A05", "A04", "A03", "A02", "A01", "A00", "D7", "D6", "D5", "D4", "D3", "D2",
-    "D1", "D0",
+    "INTE", "PROT", "MEMR", "INP", "M1", "OUT", "HLTA", "STACK", "WO", "INT", "WAIT", "HLDA",
+    "A15", "A14", "A13", "A12", "A11", "A10", "A09", "A08", "A07", "A06", "A05", "A04", "A03",
+    "A02", "A01", "A00", "D7", "D6", "D5", "D4", "D3", "D2", "D1", "D0",
 ];
 
 const MODEL_SHADER: &str = r#"
@@ -331,8 +330,7 @@ fn draw_viewport_contents(
     if response.hovered() {
         let scroll = ui.input(|input| input.smooth_scroll_delta.y);
         if scroll.abs() > f32::EPSILON {
-            state.camera.zoom =
-                (state.camera.zoom * (-scroll * 0.0025).exp()).clamp(0.08, 6.0);
+            state.camera.zoom = (state.camera.zoom * (-scroll * 0.0025).exp()).clamp(0.08, 6.0);
             ui.ctx().request_repaint();
         }
     }
@@ -982,14 +980,7 @@ fn append_node(
 
     if let Some(children) = node.get("children") {
         for child in json_array(children)? {
-            append_node(
-                root,
-                bin,
-                json_usize(child)?,
-                world,
-                led_materials,
-                builder,
-            )?;
+            append_node(root, bin, json_usize(child)?, world, led_materials, builder)?;
         }
     }
     Ok(())
