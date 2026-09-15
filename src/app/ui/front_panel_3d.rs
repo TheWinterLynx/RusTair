@@ -48,9 +48,12 @@ fn vs_main(input: VertexIn) -> VertexOut {
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(input.world_normal);
     let key = max(dot(n, normalize(vec3<f32>(0.38, 0.72, 0.58))), 0.0);
-    let fill = max(dot(n, normalize(vec3<f32>(-0.65, 0.28, 0.42))), 0.0);
-    let light = 0.34 + 0.60 * key + 0.16 * fill;
-    return vec4<f32>(input.color.rgb * light, input.color.a);
+    let fill = max(dot(n, normalize(vec3<f32>(-0.72, 0.22, 0.48))), 0.0);
+    let back = max(dot(n, normalize(vec3<f32>(0.18, -0.32, -0.93))), 0.0);
+    let sky = 0.5 + 0.5 * n.y;
+    let light = 0.68 + 0.50 * key + 0.28 * fill + 0.24 * back + 0.08 * sky;
+    let rgb = min(input.color.rgb * light, vec3<f32>(1.0));
+    return vec4<f32>(rgb, input.color.a);
 }
 "#;
 
@@ -96,6 +99,7 @@ struct CameraState {
     yaw: f32,
     pitch: f32,
     zoom: f32,
+    pan: [f32; 3],
 }
 
 impl Default for CameraState {
@@ -104,6 +108,7 @@ impl Default for CameraState {
             yaw: 0.0,
             pitch: 0.10,
             zoom: 1.0,
+            pan: [0.0; 3],
         }
     }
 }
@@ -172,11 +177,11 @@ pub(super) fn show_window(ctx: &egui::Context) {
         .resizable(true)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Drag to orbit");
+                ui.label("LMB orbit · RMB/MMB pan · wheel dolly");
                 ui.separator();
                 ui.add(
-                    egui::Slider::new(&mut state.camera.zoom, 0.55..=2.2)
-                        .text("Zoom")
+                    egui::Slider::new(&mut state.camera.zoom, 0.08..=6.0)
+                        .text("Distance")
                         .step_by(0.01),
                 );
                 if ui.button("Reset camera").clicked() {
@@ -184,7 +189,7 @@ pub(super) fn show_window(ctx: &egui::Context) {
                 }
             });
             ui.small(
-                "Checkpoint 1: embedded GLB geometry and base materials only. \
+                "Free inspection camera and bright neutral presentation lighting. \
                  Hardware LEDs and switches still remain authoritative in the existing 2D panel.",
             );
             ui.separator();
@@ -195,13 +200,38 @@ pub(super) fn show_window(ctx: &egui::Context) {
 
             if response.dragged_by(egui::PointerButton::Primary) {
                 let delta = ui.input(|input| input.pointer.delta());
-                state.camera.yaw -= delta.x * 0.008;
-                state.camera.pitch = (state.camera.pitch + delta.y * 0.008).clamp(-1.20, 1.20);
+                state.camera.yaw = wrap_angle(state.camera.yaw - delta.x * 0.008);
+                state.camera.pitch = wrap_angle(state.camera.pitch + delta.y * 0.008);
                 ui.ctx().request_repaint();
             }
 
+            if response.dragged_by(egui::PointerButton::Secondary)
+                || response.dragged_by(egui::PointerButton::Middle)
+            {
+                let delta = ui.input(|input| input.pointer.delta());
+                let (_, right, up) = camera_basis(state.camera);
+                let scale = 0.003 * state.camera.zoom;
+                state.camera.pan = add3(
+                    state.camera.pan,
+                    add3(
+                        scale3(right, -delta.x * scale),
+                        scale3(up, delta.y * scale),
+                    ),
+                );
+                ui.ctx().request_repaint();
+            }
+
+            if response.hovered() {
+                let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+                if scroll.abs() > f32::EPSILON {
+                    state.camera.zoom = (state.camera.zoom * (-scroll * 0.0025).exp())
+                        .clamp(0.08, 6.0);
+                    ui.ctx().request_repaint();
+                }
+            }
+
             ui.painter()
-                .rect_filled(rect, 0.0, egui::Color32::from_rgb(17, 19, 22));
+                .rect_filled(rect, 0.0, egui::Color32::from_rgb(23, 25, 29));
 
             ui.painter().add(egui_wgpu::Callback::new_paint_callback(
                 rect,
@@ -546,9 +576,9 @@ impl LoadedRenderer {
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.035,
-                    g: 0.040,
-                    b: 0.047,
+                    r: 0.060,
+                    g: 0.065,
+                    b: 0.075,
                     a: 1.0,
                 }),
                 store: wgpu::StoreOp::Store,
@@ -1250,23 +1280,33 @@ impl Mat4 {
 fn camera_matrix(center: [f32; 3], radius: f32, aspect: f32, camera: CameraState) -> Mat4 {
     let fov_y = 42.0_f32.to_radians();
     let distance = (radius / (fov_y * 0.5).sin()) * camera.zoom;
-    let cos_pitch = camera.pitch.cos();
-    let direction = [
-        camera.yaw.sin() * cos_pitch,
-        camera.pitch.sin(),
-        camera.yaw.cos() * cos_pitch,
-    ];
-    let eye = [
-        center[0] + direction[0] * distance,
-        center[1] + direction[1] * distance,
-        center[2] + direction[2] * distance,
-    ];
+    let target = add3(center, scale3(camera.pan, radius));
+    let (direction, _, up) = camera_basis(camera);
+    let eye = add3(target, scale3(direction, distance));
 
-    let view = look_at_rh(eye, center, [0.0, 1.0, 0.0]);
-    let near = (distance - radius * 1.5).max(0.01);
-    let far = distance + radius * 2.5;
+    let view = look_at_rh(eye, target, up);
+    let near = (radius * 0.002).max(0.0001);
+    let far = distance + radius * (8.0 + length3(camera.pan));
     let projection = perspective_rh_zo(fov_y, aspect.max(0.05), near, far);
     projection.mul(view)
+}
+
+fn camera_basis(camera: CameraState) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    let (sin_yaw, cos_yaw) = camera.yaw.sin_cos();
+    let (sin_pitch, cos_pitch) = camera.pitch.sin_cos();
+    let direction = normalize3([
+        sin_yaw * cos_pitch,
+        sin_pitch,
+        cos_yaw * cos_pitch,
+    ]);
+    let right = normalize3([cos_yaw, 0.0, -sin_yaw]);
+    let up = normalize3(cross3(direction, right));
+    (direction, right, up)
+}
+
+fn wrap_angle(value: f32) -> f32 {
+    (value + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+        - std::f32::consts::PI
 }
 
 fn look_at_rh(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> Mat4 {
@@ -1296,8 +1336,16 @@ fn perspective_rh_zo(fov_y: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
     ])
 }
 
+fn add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
 fn sub3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn scale3(value: [f32; 3], scale: f32) -> [f32; 3] {
+    [value[0] * scale, value[1] * scale, value[2] * scale]
 }
 
 fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -1625,14 +1673,10 @@ mod tests {
         let glb = embedded_assets::get(GLB_PATH).unwrap();
         let (root, bin) = parse_glb(glb).expect("embedded Altair GLB must parse");
         assert!(bin.len() > 1_000_000);
-        assert_eq!(
-            json_array(root.require("nodes").unwrap()).unwrap().len(),
-            620
-        );
-        assert_eq!(
-            json_array(root.require("meshes").unwrap()).unwrap().len(),
-            584
-        );
+        let nodes = json_array(root.require("nodes").unwrap()).unwrap();
+        let meshes = json_array(root.require("meshes").unwrap()).unwrap();
+        assert!(nodes.len() >= 620, "Altair GLB unexpectedly lost scene nodes");
+        assert!(meshes.len() >= 584, "Altair GLB unexpectedly lost meshes");
     }
 
     #[test]
@@ -1642,6 +1686,29 @@ mod tests {
         assert!(mesh.indices.len() > 1_000_000);
         assert_eq!(mesh.indices.len() % 3, 0);
         assert!(mesh.radius > 0.2 && mesh.radius < 1.0);
+    }
+
+    #[test]
+    fn free_camera_basis_remains_valid_through_poles() {
+        for pitch in [
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+            std::f32::consts::PI,
+            -std::f32::consts::FRAC_PI_2,
+        ] {
+            let camera = CameraState {
+                pitch,
+                yaw: 0.73,
+                ..CameraState::default()
+            };
+            let (direction, right, up) = camera_basis(camera);
+            assert!((length3(direction) - 1.0).abs() < 1.0e-5);
+            assert!((length3(right) - 1.0).abs() < 1.0e-5);
+            assert!((length3(up) - 1.0).abs() < 1.0e-5);
+            assert!(dot3(direction, right).abs() < 1.0e-5);
+            assert!(dot3(direction, up).abs() < 1.0e-5);
+            assert!(dot3(right, up).abs() < 1.0e-5);
+        }
     }
 
     #[test]
