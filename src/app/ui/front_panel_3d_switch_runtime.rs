@@ -268,6 +268,7 @@ pub(super) fn encode_switch_uniform(
     bytes
 }
 
+#[cfg(test)]
 pub(super) fn rest_switch_states(
     runtime: &[SwitchRuntime; SWITCH_COUNT],
 ) -> [f32; SWITCH_COUNT] {
