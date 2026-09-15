@@ -42,12 +42,9 @@ impl AltairBus {
         framing_error: bool,
         parity_error: bool,
     ) {
-        let _ = self.memory.serial_receive_with_errors(
-            port_index,
-            byte,
-            framing_error,
-            parity_error,
-        );
+        let _ =
+            self.memory
+                .serial_receive_with_errors(port_index, byte, framing_error, parity_error);
         self.settle_host_serial_change();
     }
 
