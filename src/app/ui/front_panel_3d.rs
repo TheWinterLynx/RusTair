@@ -350,7 +350,8 @@ fn activate_3d_switch(app: &mut RusTairApp, ctx: &egui::Context, index: usize) {
         };
         ctx.request_repaint();
     } else if index == 16 {
-        app.set_altair_power(!app.machine.powered());
+        let powered = app.machine.powered();
+        app.set_altair_power(!powered);
         ctx.request_repaint();
     }
 }
@@ -2005,7 +2006,7 @@ impl<'a> JsonParser<'a> {
             return Ok(JsonValue::Array(values));
         }
         loop {
-            values.push(self.parse_value()?);
+            values.push(self.parse_value()?;
             self.skip_whitespace();
             if self.consume_if(b']') {
                 break;
