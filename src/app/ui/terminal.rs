@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use super::super::{RusTairApp, SerialBoard, SerialConnection, SerialDevice, TerminalSpeed, egui};
@@ -12,6 +13,11 @@ const ADM3A_SHELL_TEXT_LEFT: f32 = 461.0 / ADM3A_SHELL_WIDTH;
 const ADM3A_SHELL_TEXT_TOP: f32 = 239.0 / ADM3A_SHELL_HEIGHT;
 const ADM3A_SHELL_TEXT_RIGHT: f32 = 997.0 / ADM3A_SHELL_WIDTH;
 const ADM3A_SHELL_TEXT_BOTTOM: f32 = 611.0 / ADM3A_SHELL_HEIGHT;
+
+// Host-keyboard convenience only. The physical ADM-3A RETURN key always
+// generates CR; this opt-in mapping lets a PC Enter key additionally generate
+// the terminal's separate LINE FEED key without changing guest-visible hardware.
+static ADM3A_PC_ENTER_CRLF: AtomicBool = AtomicBool::new(false);
 
 // Canonical active-CRT calibration measured from the photorealistic view that
 // is already aligned to the real ADM-3A photographs. The popup must not carry a
@@ -332,8 +338,18 @@ impl RusTairApp {
                         key: egui::Key::Enter,
                         pressed: true,
                         repeat: false,
+                        modifiers,
                         ..
-                    } => bytes.push(b'\r'),
+                    } => {
+                        if modifiers.shift {
+                            bytes.push(b'\n');
+                        } else {
+                            bytes.push(b'\r');
+                            if ADM3A_PC_ENTER_CRLF.load(Ordering::Relaxed) {
+                                bytes.push(b'\n');
+                            }
+                        }
+                    }
                     egui::Event::Key {
                         key: egui::Key::Backspace,
                         pressed: true,
@@ -544,6 +560,15 @@ impl RusTairApp {
         if ui.checkbox(&mut auto_new_line, "AUTO NL").changed() {
             self.adm3a.set_auto_new_line(auto_new_line);
         }
+
+        let mut enter_crlf = ADM3A_PC_ENTER_CRLF.load(Ordering::Relaxed);
+        let enter_mapping = ui.checkbox(&mut enter_crlf, "PC ENTER = CR+LF");
+        if enter_mapping.changed() {
+            ADM3A_PC_ENTER_CRLF.store(enter_crlf, Ordering::Relaxed);
+        }
+        enter_mapping.on_hover_text(
+            "Host keyboard convenience only. The real ADM-3A RETURN key sends CR. Enable this to make PC Enter send CR followed by the separate LINE FEED code. Shift+Enter always sends LF only.",
+        );
     }
 
     fn adm3a_shell_text_uv() -> egui::Rect {
