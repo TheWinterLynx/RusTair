@@ -152,6 +152,11 @@ fn draw_view_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::Ui) 
             app.open_standalone_front_panel_operator(ctx);
             ui.close();
         }
+        if ui.button("Interactive 3D Front Panel").clicked() {
+            super::open_front_panel_3d(ctx);
+            app.status = "Interactive 3D Front Panel opened — Classic 2D remains active and unchanged".into();
+            ui.close();
+        }
         ui.separator();
         if ui.button("LED Appearance…").clicked() {
             super::open_led_visual_controls(app);
