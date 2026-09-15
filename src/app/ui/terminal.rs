@@ -535,6 +535,11 @@ impl RusTairApp {
             self.adm3a.set_duplex(duplex);
         }
 
+        let mut cursor_control = self.adm3a.cursor_control();
+        if ui.checkbox(&mut cursor_control, "CUR CTL").changed() {
+            self.adm3a.set_cursor_control(cursor_control);
+        }
+
         let mut auto_new_line = self.adm3a.auto_new_line();
         if ui.checkbox(&mut auto_new_line, "AUTO NL").changed() {
             self.adm3a.set_auto_new_line(auto_new_line);
@@ -678,6 +683,7 @@ impl RusTairApp {
             .max(4.0);
         let font = egui::FontId::monospace(font_size_px / pixels_per_point);
         let glyph_color = egui::Color32::from_rgb(191, 225, 196);
+        let cursor_color = egui::Color32::from_rgb(205, 238, 210);
         let clipped = painter.with_clip_rect(grid_rect);
 
         for row in 0..ADM3A_ROWS {
@@ -708,21 +714,35 @@ impl RusTairApp {
             ),
             egui::Vec2::new(cell_width, cell_height),
         );
-        let cursor = egui::Rect::from_min_max(
-            egui::Pos2::new(
-                cursor_cell.left() + cell_width * 0.12,
-                cursor_cell.bottom() - cell_height * 0.18,
-            ),
-            egui::Pos2::new(
-                cursor_cell.right() - cell_width * 0.12,
-                cursor_cell.bottom() - cell_height * 0.08,
-            ),
-        );
-        clipped.rect_filled(
-            cursor,
-            egui::CornerRadius::same(1),
-            egui::Color32::from_rgb(205, 238, 210),
-        );
+
+        if self.adm3a.cursor_control() {
+            let block = cursor_cell.shrink2(egui::Vec2::new(
+                cell_width * 0.08,
+                cell_height * 0.06,
+            ));
+            clipped.rect_filled(block, egui::CornerRadius::same(1), cursor_color);
+            let byte = self.adm3a.row(cursor_row)[cursor_col];
+            if byte != b' ' {
+                clipped.text(
+                    cursor_cell.center(),
+                    egui::Align2::CENTER_CENTER,
+                    char::from(byte),
+                    font,
+                    egui::Color32::from_rgb(8, 20, 11),
+                );
+            }
+        } else {
+            let inset = cell_width * 0.12;
+            let thickness = (1.0_f32 / pixels_per_point).max(cell_height * 0.035);
+            for offset in [cell_height * 0.18, cell_height * 0.08] {
+                let bottom = cursor_cell.bottom() - offset;
+                let underline = egui::Rect::from_min_max(
+                    egui::Pos2::new(cursor_cell.left() + inset, bottom - thickness),
+                    egui::Pos2::new(cursor_cell.right() - inset, bottom),
+                );
+                clipped.rect_filled(underline, egui::CornerRadius::same(1), cursor_color);
+            }
+        }
     }
 
     fn draw_adm3a_shell(&self, ui: &mut egui::Ui) {
