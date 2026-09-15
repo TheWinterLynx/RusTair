@@ -154,7 +154,9 @@ fn draw_view_menu(app: &mut RusTairApp, ctx: &egui::Context, ui: &mut egui::Ui) 
         }
         if ui.button("Interactive 3D Front Panel").clicked() {
             super::open_front_panel_3d(ctx);
-            app.status = "Interactive 3D Front Panel opened — Classic 2D remains active and unchanged".into();
+            app.status =
+                "Interactive 3D Front Panel opened — Classic 2D remains active and unchanged"
+                    .into();
             ui.close();
         }
         ui.separator();
