@@ -937,7 +937,10 @@ mod tests {
 
         terminal.set_line_frequency_60_hz(true);
         terminal.set_baud_rate(Adm3aBaudRate::Baud110);
-        assert_eq!(terminal.keyboard_repeat_time(), terminal.keyboard_char_time());
+        assert_eq!(
+            terminal.keyboard_repeat_time(),
+            terminal.keyboard_char_time()
+        );
         assert!(terminal.keyboard_repeat_time() > Duration::from_millis(80));
     }
 
