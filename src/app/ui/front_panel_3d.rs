@@ -7,32 +7,55 @@ use eframe::{
     egui_wgpu::{self, wgpu},
 };
 
+use super::super::RusTairApp;
 use crate::embedded_assets;
 
 const GLB_PATH: &str = "assets/panels/altair-3d/runtime/Altair8800_1975.glb";
+const BINDINGS_PATH: &str = "assets/panels/altair-3d/runtime/bindings.json";
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
-const VERTEX_STRIDE: wgpu::BufferAddress = 40;
+const VERTEX_STRIDE: wgpu::BufferAddress = 44;
 const CAMERA_UNIFORM_BYTES: u64 = 64;
+const LED_COUNT: usize = 36;
+const LED_UNIFORM_BYTES: u64 = LED_COUNT as u64 * 16;
+const NO_LED_INDEX: u32 = u32::MAX;
+const LED_VISIBLE_THRESHOLD: f32 = 0.025;
+const LED_CORE_STEEPNESS: f32 = 7.0;
+
+const LED_IDS: [&str; LED_COUNT] = [
+    "INTE", "PROT", "MEMR", "INP", "M1", "OUT", "HLTA", "STACK", "WO", "INT", "WAIT",
+    "HLDA", "A15", "A14", "A13", "A12", "A11", "A10", "A09", "A08", "A07", "A06",
+    "A05", "A04", "A03", "A02", "A01", "A00", "D7", "D6", "D5", "D4", "D3", "D2",
+    "D1", "D0",
+];
 
 const MODEL_SHADER: &str = r#"
 struct Camera {
     view_proj: mat4x4<f32>,
 };
 
+struct LedState {
+    values: array<vec4<f32>, 36>,
+};
+
 @group(0) @binding(0)
 var<uniform> camera: Camera;
+
+@group(0) @binding(1)
+var<uniform> led_state: LedState;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) led_index: u32,
 };
 
 struct VertexOut {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world_normal: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) led_index: u32,
 };
 
 @vertex
@@ -41,6 +64,7 @@ fn vs_main(input: VertexIn) -> VertexOut {
     out.clip_position = camera.view_proj * vec4<f32>(input.position, 1.0);
     out.world_normal = input.normal;
     out.color = input.color;
+    out.led_index = input.led_index;
     return out;
 }
 
@@ -51,8 +75,24 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let fill = max(dot(n, normalize(vec3<f32>(-0.72, 0.22, 0.48))), 0.0);
     let back = max(dot(n, normalize(vec3<f32>(0.18, -0.32, -0.93))), 0.0);
     let sky = 0.5 + 0.5 * n.y;
-    let light = 0.68 + 0.50 * key + 0.28 * fill + 0.24 * back + 0.08 * sky;
-    let rgb = min(input.color.rgb * light, vec3<f32>(1.0));
+
+    // The GLB deliberately carries very dark period-correct paint values. A
+    // pure multiplicative Lambert term made those values collapse to almost
+    // black in the emulator. Lift the viewing exposure while retaining a dark
+    // charcoal front panel and the blue enclosure separation.
+    let base = pow(max(input.color.rgb, vec3<f32>(0.018)), vec3<f32>(0.72));
+    let light = 1.08 + 0.68 * key + 0.38 * fill + 0.32 * back + 0.12 * sky;
+    var rgb = min(base * light + vec3<f32>(0.028), vec3<f32>(1.0));
+
+    // Lamps are emissive presentation driven from the exact same electrical
+    // duty snapshot as the classic 2D panel. They are not point lights and do
+    // not feed any state back into the emulated machine.
+    if input.led_index < 36u {
+        let intensity = led_state.values[input.led_index].x;
+        let emission = vec3<f32>(1.0, 0.035, 0.012) * (2.6 * intensity);
+        rgb = min(rgb + emission, vec3<f32>(1.0));
+    }
+
     return vec4<f32>(rgb, input.color.a);
 }
 "#;
@@ -128,6 +168,11 @@ impl Default for Panel3dUiState {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Panel3dSnapshot {
+    leds: [f32; LED_COUNT],
+}
+
 fn ui_state_id() -> egui::Id {
     egui::Id::new("rustair-altair-3d-front-panel-state")
 }
@@ -141,6 +186,52 @@ fn load_ui_state(ctx: &egui::Context) -> Panel3dUiState {
 
 fn store_ui_state(ctx: &egui::Context, state: Panel3dUiState) {
     ctx.data_mut(|data| data.insert_temp(ui_state_id(), state));
+}
+
+fn led_optical_intensity(electrical: f32, powered: bool, brightness: f32) -> f32 {
+    if !powered {
+        return 0.0;
+    }
+    let electrical = electrical.clamp(0.0, 1.0);
+    if electrical < LED_VISIBLE_THRESHOLD {
+        return 0.0;
+    }
+    let x = ((electrical - LED_VISIBLE_THRESHOLD) / (1.0 - LED_VISIBLE_THRESHOLD)).clamp(0.0, 1.0);
+    let normalization = 1.0 - (-LED_CORE_STEEPNESS).exp();
+    let response = (1.0 - (-LED_CORE_STEEPNESS * x).exp()) / normalization;
+    (response * brightness).clamp(0.0, 1.0)
+}
+
+fn panel_snapshot(app: &RusTairApp) -> Panel3dSnapshot {
+    let panel = app.machine.front_panel_state();
+    let lamps = panel.lamps;
+    let (brightness, _) = super::persistence::led_visual_settings();
+    let mut leds = [0.0; LED_COUNT];
+    let mut set_led = |index: usize, electrical: f32| {
+        leds[index] = led_optical_intensity(electrical, panel.powered, brightness);
+    };
+
+    set_led(0, lamps.inte);
+    set_led(1, lamps.prot);
+    set_led(2, lamps.memr);
+    set_led(3, lamps.inp);
+    set_led(4, lamps.m1);
+    set_led(5, lamps.out);
+    set_led(6, lamps.hlta);
+    set_led(7, lamps.stack);
+    set_led(8, lamps.wo);
+    set_led(9, lamps.int_ack);
+    set_led(10, lamps.wait);
+    set_led(11, lamps.hlda);
+
+    for binding_bit in 0..16 {
+        set_led(12 + binding_bit, lamps.address[15 - binding_bit]);
+    }
+    for binding_bit in 0..8 {
+        set_led(28 + binding_bit, lamps.data[7 - binding_bit]);
+    }
+
+    Panel3dSnapshot { leds }
 }
 
 pub(super) fn open(ctx: &egui::Context) {
@@ -162,90 +253,107 @@ pub(super) fn install(cc: &eframe::CreationContext<'_>) {
         .insert(Altair3dRenderResources::new(render_state.target_format));
 }
 
-pub(super) fn show_window(ctx: &egui::Context) {
-    let mut state = load_ui_state(ctx);
+pub(super) fn show_viewport(app: &RusTairApp, parent_ctx: &egui::Context) {
+    let mut state = load_ui_state(parent_ctx);
     if !state.open {
         return;
     }
 
-    let mut open = state.open;
-    egui::Window::new("Interactive 3D Front Panel")
-        .id(egui::Id::new("rustair-altair-3d-front-panel-window"))
-        .open(&mut open)
-        .default_size([1100.0, 690.0])
-        .min_size([640.0, 400.0])
-        .resizable(true)
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("LMB orbit · RMB/MMB pan · wheel dolly");
-                ui.separator();
-                ui.add(
-                    egui::Slider::new(&mut state.camera.zoom, 0.08..=6.0)
-                        .text("Distance")
-                        .step_by(0.01),
-                );
-                if ui.button("Reset camera").clicked() {
-                    state.camera = CameraState::default();
-                }
+    let snapshot = panel_snapshot(app);
+    let mut close_requested = false;
+    parent_ctx.show_viewport_immediate(
+        egui::ViewportId::from_hash_of("rustair-altair-3d-front-panel"),
+        egui::ViewportBuilder::default()
+            .with_title("RusTair — Interactive 3D Altair 8800")
+            .with_inner_size([1180.0, 760.0])
+            .with_min_inner_size([720.0, 480.0])
+            .with_resizable(true),
+        |viewport_ctx, _class| {
+            egui::CentralPanel::default().show(viewport_ctx, |ui| {
+                draw_viewport_contents(ui, &mut state, snapshot);
             });
-            ui.small(
-                "Free inspection camera and bright neutral presentation lighting. \
-                 Hardware LEDs and switches still remain authoritative in the existing 2D panel.",
-            );
-            ui.separator();
+            close_requested = viewport_ctx.input(|input| input.viewport().close_requested());
+        },
+    );
 
-            let available = ui.available_size();
-            let canvas_size = egui::vec2(available.x.max(320.0), available.y.max(240.0));
-            let (rect, response) = ui.allocate_exact_size(canvas_size, egui::Sense::drag());
+    if close_requested {
+        state.open = false;
+    }
+    store_ui_state(parent_ctx, state);
+}
 
-            if response.dragged_by(egui::PointerButton::Primary) {
-                let delta = ui.input(|input| input.pointer.delta());
-                state.camera.yaw = wrap_angle(state.camera.yaw - delta.x * 0.008);
-                state.camera.pitch = wrap_angle(state.camera.pitch + delta.y * 0.008);
-                ui.ctx().request_repaint();
-            }
+fn draw_viewport_contents(
+    ui: &mut egui::Ui,
+    state: &mut Panel3dUiState,
+    snapshot: Panel3dSnapshot,
+) {
+    ui.horizontal(|ui| {
+        ui.label("LMB orbit · RMB/MMB pan · wheel dolly");
+        ui.separator();
+        ui.add(
+            egui::Slider::new(&mut state.camera.zoom, 0.08..=6.0)
+                .text("Distance")
+                .step_by(0.01),
+        );
+        if ui.button("Reset camera").clicked() {
+            state.camera = CameraState::default();
+        }
+    });
+    ui.small(
+        "Native inspection viewport · live front-panel LEDs share the classic panel hardware duty snapshot; switches are the next connection checkpoint.",
+    );
+    ui.separator();
 
-            if response.dragged_by(egui::PointerButton::Secondary)
-                || response.dragged_by(egui::PointerButton::Middle)
-            {
-                let delta = ui.input(|input| input.pointer.delta());
-                let (_, right, up) = camera_basis(state.camera);
-                let scale = 0.003 * state.camera.zoom;
-                state.camera.pan = add3(
-                    state.camera.pan,
-                    add3(scale3(right, -delta.x * scale), scale3(up, delta.y * scale)),
-                );
-                ui.ctx().request_repaint();
-            }
+    let available = ui.available_size();
+    let canvas_size = egui::vec2(available.x.max(320.0), available.y.max(240.0));
+    let (rect, response) = ui.allocate_exact_size(canvas_size, egui::Sense::drag());
 
-            if response.hovered() {
-                let scroll = ui.input(|input| input.smooth_scroll_delta.y);
-                if scroll.abs() > f32::EPSILON {
-                    state.camera.zoom =
-                        (state.camera.zoom * (-scroll * 0.0025).exp()).clamp(0.08, 6.0);
-                    ui.ctx().request_repaint();
-                }
-            }
+    if response.dragged_by(egui::PointerButton::Primary) {
+        let delta = ui.input(|input| input.pointer.delta());
+        state.camera.yaw = wrap_angle(state.camera.yaw - delta.x * 0.008);
+        state.camera.pitch = wrap_angle(state.camera.pitch + delta.y * 0.008);
+        ui.ctx().request_repaint();
+    }
 
-            ui.painter()
-                .rect_filled(rect, 0.0, egui::Color32::from_rgb(23, 25, 29));
+    if response.dragged_by(egui::PointerButton::Secondary)
+        || response.dragged_by(egui::PointerButton::Middle)
+    {
+        let delta = ui.input(|input| input.pointer.delta());
+        let (_, right, up) = camera_basis(state.camera);
+        let scale = 0.003 * state.camera.zoom;
+        state.camera.pan = add3(
+            state.camera.pan,
+            add3(scale3(right, -delta.x * scale), scale3(up, delta.y * scale)),
+        );
+        ui.ctx().request_repaint();
+    }
 
-            ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-                rect,
-                Altair3dCallback {
-                    camera: state.camera,
-                    size_points: [rect.width(), rect.height()],
-                },
-            ));
-        });
+    if response.hovered() {
+        let scroll = ui.input(|input| input.smooth_scroll_delta.y);
+        if scroll.abs() > f32::EPSILON {
+            state.camera.zoom =
+                (state.camera.zoom * (-scroll * 0.0025).exp()).clamp(0.08, 6.0);
+            ui.ctx().request_repaint();
+        }
+    }
 
-    state.open = open;
-    store_ui_state(ctx, state);
+    ui.painter()
+        .rect_filled(rect, 0.0, egui::Color32::from_rgb(36, 39, 45));
+
+    ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        Altair3dCallback {
+            camera: state.camera,
+            leds: snapshot.leds,
+            size_points: [rect.width(), rect.height()],
+        },
+    ));
 }
 
 #[derive(Clone, Copy)]
 struct Altair3dCallback {
     camera: CameraState,
+    leds: [f32; LED_COUNT],
     size_points: [f32; 2],
 }
 
@@ -269,7 +377,14 @@ impl egui_wgpu::CallbackTrait for Altair3dCallback {
             .round()
             .max(1.0) as u32;
 
-        resources.prepare(device, queue, encoder, [width, height], self.camera);
+        resources.prepare(
+            device,
+            queue,
+            encoder,
+            [width, height],
+            self.camera,
+            self.leds,
+        );
         Vec::new()
     }
 
@@ -306,13 +421,14 @@ impl Altair3dRenderResources {
         encoder: &mut wgpu::CommandEncoder,
         size: [u32; 2],
         camera: CameraState,
+        leds: [f32; LED_COUNT],
     ) {
         if self.loaded.is_none() {
             self.loaded = Some(LoadedRenderer::new(device, self.target_format));
         }
 
         if let Some(Ok(renderer)) = self.loaded.as_mut() {
-            renderer.prepare(device, queue, encoder, size, camera);
+            renderer.prepare(device, queue, encoder, size, camera, leds);
         }
     }
 
@@ -327,7 +443,8 @@ struct LoadedRenderer {
     model_pipeline: wgpu::RenderPipeline,
     present_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    led_buffer: wgpu::Buffer,
+    model_bind_group: wgpu::BindGroup,
     present_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     vertex_buffer: wgpu::Buffer,
@@ -355,19 +472,31 @@ impl LoadedRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let camera_bind_group_layout =
+        let model_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Altair 8800 3D camera layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: NonZeroU64::new(CAMERA_UNIFORM_BYTES),
+                label: Some("Altair 8800 3D model state layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(CAMERA_UNIFORM_BYTES),
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(LED_UNIFORM_BYTES),
+                        },
+                        count: None,
+                    },
+                ],
             });
 
         let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -376,13 +505,25 @@ impl LoadedRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Altair 8800 3D camera bind group"),
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+        let led_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Altair 8800 3D LED buffer"),
+            size: LED_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let model_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Altair 8800 3D model state bind group"),
+            layout: &model_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: led_buffer.as_entire_binding(),
+                },
+            ],
         });
 
         let model_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -392,11 +533,11 @@ impl LoadedRenderer {
         let model_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Altair 8800 3D model pipeline layout"),
-                bind_group_layouts: &[&camera_bind_group_layout],
+                bind_group_layouts: &[&model_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
-        const ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+        const ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x3,
                 offset: 0,
@@ -411,6 +552,11 @@ impl LoadedRenderer {
                 format: wgpu::VertexFormat::Float32x4,
                 offset: 24,
                 shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 40,
+                shader_location: 3,
             },
         ];
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -526,7 +672,8 @@ impl LoadedRenderer {
             model_pipeline,
             present_pipeline,
             camera_buffer,
-            camera_bind_group,
+            led_buffer,
+            model_bind_group,
             present_bind_group_layout,
             sampler,
             vertex_buffer,
@@ -546,6 +693,7 @@ impl LoadedRenderer {
         encoder: &mut wgpu::CommandEncoder,
         size: [u32; 2],
         camera: CameraState,
+        leds: [f32; LED_COUNT],
     ) {
         let resize = self
             .target
@@ -563,6 +711,7 @@ impl LoadedRenderer {
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         let view_proj = camera_matrix(self.center, self.radius, aspect, camera);
         queue.write_buffer(&self.camera_buffer, 0, &encode_mat4_uniform(view_proj));
+        queue.write_buffer(&self.led_buffer, 0, &encode_led_uniform(leds));
 
         let Some(target) = self.target.as_ref() else {
             return;
@@ -573,9 +722,9 @@ impl LoadedRenderer {
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.060,
-                    g: 0.065,
-                    b: 0.075,
+                    r: 0.105,
+                    g: 0.115,
+                    b: 0.135,
                     a: 1.0,
                 }),
                 store: wgpu::StoreOp::Store,
@@ -598,7 +747,7 @@ impl LoadedRenderer {
             occlusion_query_set: None,
         });
         render_pass.set_pipeline(&self.model_pipeline);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(0, &self.model_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..self.index_count, 0, 0..1);
@@ -688,6 +837,7 @@ struct Vertex {
     position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 4],
+    led_index: u32,
 }
 
 struct StaticMesh {
@@ -697,10 +847,43 @@ struct StaticMesh {
     radius: f32,
 }
 
+fn load_led_material_bindings() -> Result<HashMap<String, u32>, String> {
+    let bytes = embedded_assets::get(BINDINGS_PATH)
+        .ok_or_else(|| format!("missing embedded runtime asset: {BINDINGS_PATH}"))?;
+    let mut parser = JsonParser::new(bytes);
+    let root = parser.parse()?;
+    let leds = json_array(root.require("leds")?)?;
+    if leds.len() != LED_COUNT {
+        return Err(format!(
+            "Altair 3D bindings define {} LEDs; expected {LED_COUNT}",
+            leds.len()
+        ));
+    }
+
+    let mut materials = HashMap::with_capacity(LED_COUNT);
+    for (index, led) in leds.iter().enumerate() {
+        let id = json_string(led.require("id")?)?;
+        if id != LED_IDS[index] {
+            return Err(format!(
+                "Altair 3D LED binding {index} is {id:?}; expected {:?}",
+                LED_IDS[index]
+            ));
+        }
+        let material = json_string(led.require("material")?)?.to_owned();
+        if materials.insert(material.clone(), index as u32).is_some() {
+            return Err(format!(
+                "Altair 3D LED material {material:?} is bound more than once"
+            ));
+        }
+    }
+    Ok(materials)
+}
+
 fn load_static_mesh() -> Result<StaticMesh, String> {
     let glb = embedded_assets::get(GLB_PATH)
         .ok_or_else(|| format!("missing embedded runtime asset: {GLB_PATH}"))?;
     let (root, bin) = parse_glb(glb)?;
+    let led_materials = load_led_material_bindings()?;
 
     let scene_index = root.get("scene").map(json_usize).transpose()?.unwrap_or(0);
     let scenes = json_array(root.require("scenes")?)?;
@@ -716,6 +899,7 @@ fn load_static_mesh() -> Result<StaticMesh, String> {
             bin,
             json_usize(node)?,
             Mat4::identity(),
+            &led_materials,
             &mut builder,
         )?;
     }
@@ -776,6 +960,7 @@ fn append_node(
     bin: &[u8],
     node_index: usize,
     parent_transform: Mat4,
+    led_materials: &HashMap<String, u32>,
     builder: &mut MeshBuilder,
 ) -> Result<(), String> {
     let nodes = json_array(root.require("nodes")?)?;
@@ -785,12 +970,26 @@ fn append_node(
     let world = parent_transform.mul(node_transform(node)?);
 
     if let Some(mesh_value) = node.get("mesh") {
-        append_mesh(root, bin, json_usize(mesh_value)?, world, builder)?;
+        append_mesh(
+            root,
+            bin,
+            json_usize(mesh_value)?,
+            world,
+            led_materials,
+            builder,
+        )?;
     }
 
     if let Some(children) = node.get("children") {
         for child in json_array(children)? {
-            append_node(root, bin, json_usize(child)?, world, builder)?;
+            append_node(
+                root,
+                bin,
+                json_usize(child)?,
+                world,
+                led_materials,
+                builder,
+            )?;
         }
     }
     Ok(())
@@ -801,6 +1000,7 @@ fn append_mesh(
     bin: &[u8],
     mesh_index: usize,
     transform: Mat4,
+    led_materials: &HashMap<String, u32>,
     builder: &mut MeshBuilder,
 ) -> Result<(), String> {
     let meshes = json_array(root.require("meshes")?)?;
@@ -834,13 +1034,17 @@ fn append_mesh(
             ));
         }
 
-        let color = primitive
-            .get("material")
-            .map(json_usize)
-            .transpose()?
+        let material_index = primitive.get("material").map(json_usize).transpose()?;
+        let color = material_index
             .map(|material| material_base_color(root, material))
             .transpose()?
             .unwrap_or([1.0; 4]);
+        let led_index = material_index
+            .map(|material| material_name(root, material))
+            .transpose()?
+            .flatten()
+            .and_then(|name| led_materials.get(name).copied())
+            .unwrap_or(NO_LED_INDEX);
 
         let base = u32::try_from(builder.vertices.len())
             .map_err(|_| "Altair 3D vertex count exceeds u32".to_owned())?;
@@ -852,6 +1056,7 @@ fn append_mesh(
                 position: world_position,
                 normal: world_normal,
                 color,
+                led_index,
             });
         }
 
@@ -867,11 +1072,22 @@ fn append_mesh(
     Ok(())
 }
 
-fn material_base_color(root: &JsonValue, material_index: usize) -> Result<[f32; 4], String> {
+fn material(root: &JsonValue, material_index: usize) -> Result<&JsonValue, String> {
     let materials = json_array(root.require("materials")?)?;
-    let material = materials
+    materials
         .get(material_index)
-        .ok_or_else(|| format!("glTF material index {material_index} is out of range"))?;
+        .ok_or_else(|| format!("glTF material index {material_index} is out of range"))
+}
+
+fn material_name(root: &JsonValue, material_index: usize) -> Result<Option<&str>, String> {
+    material(root, material_index)?
+        .get("name")
+        .map(json_string)
+        .transpose()
+}
+
+fn material_base_color(root: &JsonValue, material_index: usize) -> Result<[f32; 4], String> {
+    let material = material(root, material_index)?;
     let Some(pbr) = material.get("pbrMetallicRoughness") else {
         return Ok([1.0; 4]);
     };
@@ -1164,6 +1380,7 @@ fn encode_vertices(vertices: &[Vertex]) -> Vec<u8> {
         {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        bytes.extend_from_slice(&vertex.led_index.to_le_bytes());
     }
     bytes
 }
@@ -1185,6 +1402,15 @@ fn encode_mat4_uniform(matrix: Mat4) -> [u8; CAMERA_UNIFORM_BYTES as usize] {
             bytes[cursor..cursor + 4].copy_from_slice(&value);
             cursor += 4;
         }
+    }
+    bytes
+}
+
+fn encode_led_uniform(leds: [f32; LED_COUNT]) -> Vec<u8> {
+    let mut bytes = vec![0u8; LED_UNIFORM_BYTES as usize];
+    for (index, intensity) in leds.into_iter().enumerate() {
+        let offset = index * 16;
+        bytes[offset..offset + 4].copy_from_slice(&intensity.to_le_bytes());
     }
     bytes
 }
@@ -1675,12 +1901,31 @@ mod tests {
     }
 
     #[test]
+    fn embedded_altair_bindings_define_expected_led_order() {
+        let materials = load_led_material_bindings().expect("embedded LED bindings must parse");
+        assert_eq!(materials.len(), LED_COUNT);
+    }
+
+    #[test]
     fn embedded_altair_glb_builds_expected_triangle_scene() {
         let mesh = load_static_mesh().expect("embedded Altair GLB must build a static scene");
         assert!(mesh.vertices.len() > 600_000);
         assert!(mesh.indices.len() > 1_000_000);
         assert_eq!(mesh.indices.len() % 3, 0);
         assert!(mesh.radius > 0.2 && mesh.radius < 1.0);
+
+        let mut seen = [false; LED_COUNT];
+        for vertex in &mesh.vertices {
+            if let Ok(index) = usize::try_from(vertex.led_index) {
+                if index < LED_COUNT {
+                    seen[index] = true;
+                }
+            }
+        }
+        assert!(
+            seen.into_iter().all(|present| present),
+            "every bindings.json LED material must exist in the runtime GLB"
+        );
     }
 
     #[test]
