@@ -42,10 +42,10 @@ fn vs_main(input: VertexIn) -> VertexOut {
     var position = input.position;
     var normal = input.normal;
     if input.switch_index < 25u {
-        let switch = switch_state.values[input.switch_index];
-        let pivot = switch.pivot_angle.xyz;
-        let axis = normalize(switch.axis_radius.xyz);
-        let angle = switch.pivot_angle.w;
+        let lever_state = switch_state.values[input.switch_index];
+        let pivot = lever_state.pivot_angle.xyz;
+        let axis = normalize(lever_state.axis_radius.xyz);
+        let angle = lever_state.pivot_angle.w;
         position = pivot + rotate_axis(position - pivot, axis, angle);
         normal = normalize(rotate_axis(normal, axis, angle));
     }
