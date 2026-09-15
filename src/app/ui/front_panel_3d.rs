@@ -127,7 +127,10 @@ fn ui_state_id() -> egui::Id {
 }
 
 fn load_ui_state(ctx: &egui::Context) -> Panel3dUiState {
-    ctx.data(|data| data.get_temp::<Panel3dUiState>(ui_state_id()).unwrap_or_default())
+    ctx.data(|data| {
+        data.get_temp::<Panel3dUiState>(ui_state_id())
+            .unwrap_or_default()
+    })
 }
 
 fn store_ui_state(ctx: &egui::Context, state: Panel3dUiState) {
@@ -192,8 +195,7 @@ pub(super) fn show_window(ctx: &egui::Context) {
             if response.dragged_by(egui::PointerButton::Primary) {
                 let delta = ui.input(|input| input.pointer.delta());
                 state.camera.yaw -= delta.x * 0.008;
-                state.camera.pitch =
-                    (state.camera.pitch + delta.y * 0.008).clamp(-1.20, 1.20);
+                state.camera.pitch = (state.camera.pitch + delta.y * 0.008).clamp(-1.20, 1.20);
                 ui.ctx().request_repaint();
             }
 
@@ -672,11 +674,7 @@ fn load_static_mesh() -> Result<StaticMesh, String> {
         .ok_or_else(|| format!("missing embedded runtime asset: {GLB_PATH}"))?;
     let (root, bin) = parse_glb(glb)?;
 
-    let scene_index = root
-        .get("scene")
-        .map(json_usize)
-        .transpose()?
-        .unwrap_or(0);
+    let scene_index = root.get("scene").map(json_usize).transpose()?.unwrap_or(0);
     let scenes = json_array(root.require("scenes")?)?;
     let scene = scenes
         .get(scene_index)
@@ -1001,9 +999,7 @@ fn read_vec3_f32_accessor(
 ) -> Result<Vec<[f32; 3]>, String> {
     let info = accessor_info(root, bin.len(), accessor_index)?;
     if info.component_type != 5126 || info.value_type != "VEC3" {
-        return Err(format!(
-            "glTF accessor {accessor_index} is not FLOAT VEC3"
-        ));
+        return Err(format!("glTF accessor {accessor_index} is not FLOAT VEC3"));
     }
 
     let mut values = Vec::with_capacity(info.count);
@@ -1025,7 +1021,9 @@ fn read_indices_accessor(
 ) -> Result<Vec<u32>, String> {
     let info = accessor_info(root, bin.len(), accessor_index)?;
     if info.value_type != "SCALAR" {
-        return Err(format!("glTF index accessor {accessor_index} is not SCALAR"));
+        return Err(format!(
+            "glTF index accessor {accessor_index} is not SCALAR"
+        ));
     }
 
     let mut values = Vec::with_capacity(info.count);
@@ -1034,14 +1032,11 @@ fn read_indices_accessor(
         let value = match info.component_type {
             5121 => *bin
                 .get(offset)
-                .ok_or_else(|| "glTF u8 index is truncated".to_owned())?
-                as u32,
+                .ok_or_else(|| "glTF u8 index is truncated".to_owned())? as u32,
             5123 => u32::from(read_u16_le(bin, offset)?),
             5125 => read_u32_le(bin, offset)?,
             component => {
-                return Err(format!(
-                    "unsupported glTF index component type {component}"
-                ));
+                return Err(format!("unsupported glTF index component type {component}"));
             }
         };
         values.push(value);
@@ -1123,9 +1118,7 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, String> {
     let slice = bytes
         .get(offset..offset + 4)
         .ok_or_else(|| "binary u32 is truncated".to_owned())?;
-    Ok(u32::from_le_bytes([
-        slice[0], slice[1], slice[2], slice[3],
-    ]))
+    Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 fn read_f32_le(bytes: &[u8], offset: usize) -> Result<f32, String> {
@@ -1210,24 +1203,9 @@ impl Mat4 {
         let wy = w * y;
         let wz = w * z;
         Self([
-            [
-                1.0 - 2.0 * (yy + zz),
-                2.0 * (xy - wz),
-                2.0 * (xz + wy),
-                0.0,
-            ],
-            [
-                2.0 * (xy + wz),
-                1.0 - 2.0 * (xx + zz),
-                2.0 * (yz - wx),
-                0.0,
-            ],
-            [
-                2.0 * (xz - wy),
-                2.0 * (yz + wx),
-                1.0 - 2.0 * (xx + yy),
-                0.0,
-            ],
+            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy), 0.0],
+            [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx), 0.0],
+            [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy), 0.0],
             [0.0, 0.0, 0.0, 1.0],
         ])
     }
@@ -1236,9 +1214,7 @@ impl Mat4 {
         let mut out = [[0.0f32; 4]; 4];
         for (row, out_row) in out.iter_mut().enumerate() {
             for (column, cell) in out_row.iter_mut().enumerate() {
-                *cell = (0..4)
-                    .map(|k| self.0[row][k] * rhs.0[k][column])
-                    .sum();
+                *cell = (0..4).map(|k| self.0[row][k] * rhs.0[k][column]).sum();
             }
         }
         Self(out)
@@ -1263,25 +1239,14 @@ impl Mat4 {
 
     fn transform_vector(self, vector: [f32; 3]) -> [f32; 3] {
         [
-            self.0[0][0] * vector[0]
-                + self.0[0][1] * vector[1]
-                + self.0[0][2] * vector[2],
-            self.0[1][0] * vector[0]
-                + self.0[1][1] * vector[1]
-                + self.0[1][2] * vector[2],
-            self.0[2][0] * vector[0]
-                + self.0[2][1] * vector[1]
-                + self.0[2][2] * vector[2],
+            self.0[0][0] * vector[0] + self.0[0][1] * vector[1] + self.0[0][2] * vector[2],
+            self.0[1][0] * vector[0] + self.0[1][1] * vector[1] + self.0[1][2] * vector[2],
+            self.0[2][0] * vector[0] + self.0[2][1] * vector[1] + self.0[2][2] * vector[2],
         ]
     }
 }
 
-fn camera_matrix(
-    center: [f32; 3],
-    radius: f32,
-    aspect: f32,
-    camera: CameraState,
-) -> Mat4 {
+fn camera_matrix(center: [f32; 3], radius: f32, aspect: f32, camera: CameraState) -> Mat4 {
     let fov_y = 42.0_f32.to_radians();
     let distance = (radius / (fov_y * 0.5).sin()) * camera.zoom;
     let cos_pitch = camera.pitch.cos();
@@ -1315,12 +1280,7 @@ fn look_at_rh(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> Mat4 {
             corrected_up[2],
             -dot3(corrected_up, eye),
         ],
-        [
-            -forward[0],
-            -forward[1],
-            -forward[2],
-            dot3(forward, eye),
-        ],
+        [-forward[0], -forward[1], -forward[2], dot3(forward, eye)],
         [0.0, 0.0, 0.0, 1.0],
     ])
 }
@@ -1664,8 +1624,14 @@ mod tests {
         let glb = embedded_assets::get(GLB_PATH).unwrap();
         let (root, bin) = parse_glb(glb).expect("embedded Altair GLB must parse");
         assert!(bin.len() > 1_000_000);
-        assert_eq!(json_array(root.require("nodes").unwrap()).unwrap().len(), 620);
-        assert_eq!(json_array(root.require("meshes").unwrap()).unwrap().len(), 584);
+        assert_eq!(
+            json_array(root.require("nodes").unwrap()).unwrap().len(),
+            620
+        );
+        assert_eq!(
+            json_array(root.require("meshes").unwrap()).unwrap().len(),
+            584
+        );
     }
 
     #[test]
@@ -1681,7 +1647,10 @@ mod tests {
     fn json_parser_handles_unicode_and_numbers() {
         let mut parser = JsonParser::new(br#"{"name":"Altair \u2605","v":[-1,2.5e1,true,null]}"#);
         let value = parser.parse().unwrap();
-        assert_eq!(json_string(value.require("name").unwrap()).unwrap(), "Altair ★");
+        assert_eq!(
+            json_string(value.require("name").unwrap()).unwrap(),
+            "Altair ★"
+        );
         let values = json_array(value.require("v").unwrap()).unwrap();
         assert_eq!(json_f32(&values[0]).unwrap(), -1.0);
         assert_eq!(json_f32(&values[1]).unwrap(), 25.0);
