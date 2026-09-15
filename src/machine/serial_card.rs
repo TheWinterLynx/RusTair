@@ -120,6 +120,10 @@ impl RuntimeSerialCardHandle {
         framing_error: bool,
         parity_error: bool,
     ) -> bool {
+        if !framing_error && !parity_error {
+            return self.receive(port_index, byte);
+        }
+
         let mut state = self.state.borrow_mut();
         let received = match (self.board, port_index) {
             (_, 0) => {
