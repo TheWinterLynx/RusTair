@@ -1,5 +1,12 @@
-use rustair::backend::{BackendHost, BusMachineCycle, BusTState, EmulationEngine};
-use rustair::config::{RamInit, S100HardwareConfig, S100InstalledCardConfig};
+use std::time::Duration;
+
+use rustair::backend::{
+    BackendHost, BackendSerialPort, BusMachineCycle, BusTState, EmulationEngine,
+};
+use rustair::config::{
+    RamInit, S100HardwareConfig, S100InstalledCardConfig, TwoSioBaudTap, TwoSioInterruptWiring,
+    TwoSioStraps,
+};
 use rustair::s100_chassis::S100ChassisConfig;
 use rustair::s100_memory::{S100RamBoardModel, S100RamCardConfig};
 
@@ -57,6 +64,34 @@ fn dcdd_hardware() -> S100HardwareConfig {
     hardware.validate().unwrap()
 }
 
+fn two_sio_hardware() -> S100HardwareConfig {
+    let mut hardware = S100HardwareConfig::empty(S100ChassisConfig::altair_8800b(6)).unwrap();
+    hardware
+        .set_slot(1, Some(S100InstalledCardConfig::Mits8080Cpu))
+        .unwrap();
+    hardware
+        .set_slot(
+            2,
+            Some(S100InstalledCardConfig::Ram(
+                S100RamCardConfig::fully_populated(S100RamBoardModel::Mits4KStatic88_4Mcs, 0x0000),
+            )),
+        )
+        .unwrap();
+    hardware
+        .set_slot(
+            3,
+            Some(S100InstalledCardConfig::Mits88TwoSio {
+                straps: TwoSioStraps {
+                    port0_baud: TwoSioBaudTap::Baud9600,
+                    ..TwoSioStraps::default()
+                },
+                interrupt_wiring: TwoSioInterruptWiring::default(),
+            }),
+        )
+        .unwrap();
+    hardware.validate().unwrap()
+}
+
 #[test]
 fn fast_and_cycle_mount_the_same_slot_native_memory_topology() {
     let hardware = topology_with_gap_and_overlap();
@@ -94,6 +129,27 @@ fn fast_and_cycle_mount_the_same_slot_native_memory_topology() {
         assert_eq!(unique.drivers[0].slot, 4, "{engine:?}");
         assert_eq!(host.peek_memory(0x4000), Some(0), "{engine:?}");
     }
+}
+
+#[test]
+fn sampled_rx_faults_cross_backend_and_appear_only_after_timed_acia_frame() {
+    let mut host = BackendHost::default();
+    let hardware = two_sio_hardware();
+    let straps = hardware.active_two_sio_straps().unwrap();
+    host.configure_s100_hardware(hardware, RamInit::Zeroed);
+    host.power(true);
+    host.set_serial_clock_managed(true);
+
+    // /16, 8O1. The external endpoint supplies a frame already sampled as both
+    // framing- and parity-faulted; the MC6850 must keep those faults latent until
+    // its real receiver shift register reaches the frame boundary.
+    host.debugger_output_port(straps.address.port0_status(), 0x1d);
+    host.serial_receive_with_errors(BackendSerialPort::Port0, b'P', true, true);
+    assert_eq!(host.peek_io_port(straps.address.port0_status()) & 0x51, 0);
+
+    host.advance_serial_physical_time(Duration::from_millis(2));
+    assert_eq!(host.peek_io_port(straps.address.port0_status()) & 0x51, 0x51);
+    assert_eq!(host.peek_io_port(straps.address.port0_data()), b'P');
 }
 
 #[test]
