@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) const SWITCH_COUNT: usize = 25;
 pub(super) const SWITCH_UNIFORM_BYTES: u64 = SWITCH_COUNT as u64 * 32;
+const POWER_SWITCH_INDEX: usize = 16;
 
 const SWITCH_IDS: [&str; SWITCH_COUNT] = [
     "A15",
@@ -229,6 +230,17 @@ fn lever_xy_radius(
     Ok(radius_sq.sqrt() + 0.00035)
 }
 
+fn authored_switch_state(index: usize, live_state: f32) -> f32 {
+    // The live snapshot uses +1 for an active/true boolean. Address switches
+    // naturally share that polarity (+1 = physical UP = 1). POWER is the one
+    // inverse control in the manifest: +1 is UP/OFF and -1 is DOWN/ON.
+    if index == POWER_SWITCH_INDEX {
+        -live_state
+    } else {
+        live_state
+    }
+}
+
 pub(super) fn encode_switch_uniform(
     runtime: &[SwitchRuntime; SWITCH_COUNT],
     states: [f32; SWITCH_COUNT],
@@ -236,7 +248,8 @@ pub(super) fn encode_switch_uniform(
     let mut bytes = vec![0u8; SWITCH_UNIFORM_BYTES as usize];
     for (index, switch) in runtime.iter().enumerate() {
         let offset = index * 32;
-        let angle = (states[index] - switch.rest) * switch.radians_per_state;
+        let authored_state = authored_switch_state(index, states[index]);
+        let angle = (authored_state - switch.rest) * switch.radians_per_state;
         for (slot, value) in [switch.pivot[0], switch.pivot[1], switch.pivot[2], angle]
             .into_iter()
             .enumerate()
@@ -262,7 +275,13 @@ pub(super) fn encode_switch_uniform(
 
 #[cfg(test)]
 pub(super) fn rest_switch_states(runtime: &[SwitchRuntime; SWITCH_COUNT]) -> [f32; SWITCH_COUNT] {
-    std::array::from_fn(|index| runtime[index].rest)
+    std::array::from_fn(|index| {
+        if index == POWER_SWITCH_INDEX {
+            -runtime[index].rest
+        } else {
+            runtime[index].rest
+        }
+    })
 }
 
 #[cfg(test)]
@@ -307,5 +326,26 @@ mod tests {
         let bytes = encode_switch_uniform(&runtime, moved);
         let expected = 2.0 * runtime[0].radians_per_state;
         assert!((read_f32_le(&bytes, 12).unwrap() - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn power_live_true_maps_to_physical_down_on() {
+        let runtime = load_switch_runtime().unwrap();
+        assert_eq!(runtime[POWER_SWITCH_INDEX].rest, 1.0);
+
+        let mut states = rest_switch_states(&runtime);
+        assert_eq!(states[POWER_SWITCH_INDEX], -1.0);
+        let off = encode_switch_uniform(&runtime, states);
+        assert_eq!(
+            read_f32_le(&off, POWER_SWITCH_INDEX * 32 + 12).unwrap(),
+            0.0
+        );
+
+        states[POWER_SWITCH_INDEX] = 1.0;
+        let on = encode_switch_uniform(&runtime, states);
+        let expected = -2.0 * runtime[POWER_SWITCH_INDEX].radians_per_state;
+        assert!(
+            (read_f32_le(&on, POWER_SWITCH_INDEX * 32 + 12).unwrap() - expected).abs() < 1.0e-6
+        );
     }
 }
