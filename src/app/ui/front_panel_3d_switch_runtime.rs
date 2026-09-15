@@ -100,6 +100,15 @@ fn load_switch_bindings() -> Result<Vec<SwitchBinding>, String> {
     Ok(bindings)
 }
 
+pub(super) fn load_switch_lever_indices() -> Result<HashMap<String, u32>, String> {
+    let bindings = load_switch_bindings()?;
+    Ok(bindings
+        .into_iter()
+        .enumerate()
+        .map(|(index, binding)| (binding.lever, index as u32))
+        .collect())
+}
+
 pub(super) fn load_switch_runtime() -> Result<[SwitchRuntime; SWITCH_COUNT], String> {
     let bindings = load_switch_bindings()?;
     let lever_indices: HashMap<&str, usize> = bindings
