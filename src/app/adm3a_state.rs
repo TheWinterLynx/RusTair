@@ -6,7 +6,6 @@ pub(super) const ADM3A_ROWS: usize = 24;
 
 const ASCII_MASK: u8 = 0x7f;
 const CURSOR_ADDRESS_BIAS: u8 = 0x20;
-const COLUMN_72_WARNING_INDEX: usize = 71;
 
 /// Physical communication-rate selector offered by the Lear Siegler ADM-3A.
 ///
@@ -224,6 +223,9 @@ pub(super) struct Adm3aState {
     powered: bool,
     auto_new_line: bool,
     duplex: Adm3aDuplex,
+    /// S5-7 CUR CTL/OFF. Factory OFF is the rolling bottom-line mode; CUR CTL
+    /// enables the moveable block cursor and absolute ESC '=' positioning.
+    cursor_control: bool,
     baud_rate: Adm3aBaudRate,
     word_format: Adm3aWordFormat,
     /// S3-6 BIT 8 0/1. It applies only while 8-bit words are selected and fixes
@@ -245,12 +247,13 @@ impl Default for Adm3aState {
             powered: false,
             auto_new_line: false,
             duplex: Adm3aDuplex::default(),
+            cursor_control: false,
             baud_rate: Adm3aBaudRate::default(),
             word_format: Adm3aWordFormat::default(),
             bit8_one: false,
             cells: [[b' '; ADM3A_COLS]; ADM3A_ROWS],
             cursor_col: 0,
-            cursor_row: 0,
+            cursor_row: ADM3A_ROWS - 1,
             parser: ParserState::Normal,
             bell_pending: false,
             keyboard_queue: VecDeque::new(),
@@ -289,6 +292,21 @@ impl Adm3aState {
 
     pub(super) fn set_duplex(&mut self, duplex: Adm3aDuplex) {
         self.duplex = duplex;
+    }
+
+    pub(super) const fn cursor_control(&self) -> bool {
+        self.cursor_control
+    }
+
+    pub(super) fn set_cursor_control(&mut self, enabled: bool) {
+        if self.cursor_control == enabled {
+            return;
+        }
+        self.cursor_control = enabled;
+        self.parser = ParserState::Normal;
+        if !enabled {
+            self.cursor_row = ADM3A_ROWS - 1;
+        }
     }
 
     pub(super) const fn baud_rate(&self) -> Adm3aBaudRate {
@@ -358,27 +376,26 @@ impl Adm3aState {
             0x07 => self.bell_pending = true,
             0x08 => self.cursor_col = self.cursor_col.saturating_sub(1),
             0x0a => self.line_down(),
-            0x0b => self.cursor_row = self.cursor_row.saturating_sub(1),
+            0x0b if self.cursor_control => {
+                self.cursor_row = self.cursor_row.saturating_sub(1);
+            }
             0x0c => self.cursor_col = (self.cursor_col + 1).min(ADM3A_COLS - 1),
             b'\r' => self.cursor_col = 0,
             0x1a => self.clear_screen(),
-            0x1b => self.parser = ParserState::Escape,
-            0x1e => {
-                self.cursor_col = 0;
-                self.cursor_row = 0;
-            }
+            0x1b if self.cursor_control => self.parser = ParserState::Escape,
+            0x1e => self.home_cursor(),
             0x20..=0x7e => self.write_printable(byte),
             _ => {}
         }
     }
 
     fn write_printable(&mut self, byte: u8) {
+        if !self.cursor_control {
+            self.cursor_row = ADM3A_ROWS - 1;
+        }
         self.cells[self.cursor_row][self.cursor_col] = byte;
         if self.cursor_col + 1 < ADM3A_COLS {
             self.cursor_col += 1;
-            if self.cursor_col == COLUMN_72_WARNING_INDEX {
-                self.bell_pending = true;
-            }
         } else if self.auto_new_line {
             self.cursor_col = 0;
             self.line_down();
@@ -391,7 +408,9 @@ impl Adm3aState {
     }
 
     fn line_down(&mut self) {
-        if self.cursor_row + 1 < ADM3A_ROWS {
+        if !self.cursor_control {
+            self.scroll_up();
+        } else if self.cursor_row + 1 < ADM3A_ROWS {
             self.cursor_row += 1;
         } else {
             self.scroll_up();
@@ -406,14 +425,22 @@ impl Adm3aState {
         self.cursor_row = ADM3A_ROWS - 1;
     }
 
+    fn home_cursor(&mut self) {
+        self.cursor_col = 0;
+        self.cursor_row = if self.cursor_control {
+            0
+        } else {
+            ADM3A_ROWS - 1
+        };
+    }
+
     fn decode_cursor_coordinate(byte: u8, limit: usize) -> usize {
         usize::from(byte.saturating_sub(CURSOR_ADDRESS_BIAS)).min(limit - 1)
     }
 
     pub(super) fn clear_screen(&mut self) {
         self.cells = [[b' '; ADM3A_COLS]; ADM3A_ROWS];
-        self.cursor_col = 0;
-        self.cursor_row = 0;
+        self.home_cursor();
         self.parser = ParserState::Normal;
     }
 
@@ -482,30 +509,38 @@ impl Adm3aState {
 mod tests {
     use super::*;
 
+    fn enable_cursor_control(terminal: &mut Adm3aState) {
+        terminal.set_cursor_control(true);
+        terminal.clear_screen();
+    }
+
     #[test]
     fn power_starts_off_and_transition_resets_screen() {
         let mut terminal = Adm3aState::default();
         assert!(!terminal.powered());
         assert!(!terminal.auto_new_line());
         assert_eq!(terminal.duplex(), Adm3aDuplex::Full);
+        assert!(!terminal.cursor_control());
         assert_eq!(terminal.baud_rate(), Adm3aBaudRate::Baud9600);
         assert_eq!(terminal.word_format(), Adm3aWordFormat::default());
         terminal.receive_byte(b'X');
         terminal.set_powered(true);
         assert!(terminal.powered());
-        assert_eq!(terminal.row(0)[0], b' ');
-        assert_eq!(terminal.cursor(), (0, 0));
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[0], b' ');
+        assert_eq!(terminal.cursor(), (0, ADM3A_ROWS - 1));
         terminal.receive_byte(b'Y');
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[0], b'Y');
         terminal.set_powered(false);
         assert!(!terminal.powered());
-        assert_eq!(terminal.row(0)[0], b' ');
-        assert_eq!(terminal.cursor(), (0, 0));
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[0], b' ');
+        assert_eq!(terminal.cursor(), (0, ADM3A_ROWS - 1));
         assert_eq!(terminal.keyboard_pending_len(), 0);
     }
 
     #[test]
-    fn printable_input_and_cr_lf_are_independent() {
+    fn printable_input_and_cr_lf_are_independent_in_cursor_control_mode() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         for byte in b"ABC\rD" {
             terminal.receive_byte(*byte);
         }
@@ -519,8 +554,25 @@ mod tests {
     }
 
     #[test]
+    fn factory_off_mode_keeps_data_entry_on_bottom_line() {
+        let mut terminal = Adm3aState::default();
+        assert_eq!(terminal.cursor(), (0, ADM3A_ROWS - 1));
+
+        terminal.receive_byte(b'A');
+        assert_eq!(terminal.cursor(), (1, ADM3A_ROWS - 1));
+        terminal.receive_byte(b'\n');
+        assert_eq!(terminal.cursor(), (1, ADM3A_ROWS - 1));
+        assert_eq!(terminal.row(ADM3A_ROWS - 2)[0], b'A');
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[0], b' ');
+
+        terminal.receive_byte(b'B');
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[1], b'B');
+    }
+
+    #[test]
     fn auto_new_line_switch_controls_column_80_overflow() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         for _ in 0..ADM3A_COLS {
             terminal.receive_byte(b'X');
         }
@@ -550,20 +602,21 @@ mod tests {
         let now = Instant::now();
 
         assert!(terminal.queue_keyboard_byte(b'A', now));
-        assert_eq!(terminal.row(0)[0], b'A');
-        assert_eq!(terminal.cursor(), (1, 0));
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[0], b'A');
+        assert_eq!(terminal.cursor(), (1, ADM3A_ROWS - 1));
         assert_eq!(terminal.keyboard_pending_len(), 1);
 
         terminal.set_duplex(Adm3aDuplex::Full);
         assert!(terminal.queue_keyboard_byte(b'B', now));
-        assert_eq!(terminal.row(0)[1], b' ');
-        assert_eq!(terminal.cursor(), (1, 0));
+        assert_eq!(terminal.row(ADM3A_ROWS - 1)[1], b' ');
+        assert_eq!(terminal.cursor(), (1, ADM3A_ROWS - 1));
         assert_eq!(terminal.keyboard_pending_len(), 2);
     }
 
     #[test]
-    fn four_direction_cursor_controls_stop_at_screen_edges() {
+    fn four_direction_cursor_controls_stop_at_screen_edges_when_enabled() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         terminal.receive_byte(0x08);
         terminal.receive_byte(0x0b);
         assert_eq!(terminal.cursor(), (0, 0));
@@ -579,8 +632,12 @@ mod tests {
     }
 
     #[test]
-    fn rs_homes_cursor() {
+    fn rs_home_uses_selected_cursor_mode() {
         let mut terminal = Adm3aState::default();
+        terminal.receive_byte(0x1e);
+        assert_eq!(terminal.cursor(), (0, ADM3A_ROWS - 1));
+
+        enable_cursor_control(&mut terminal);
         for byte in [0x1b, b'=', 0x20 + 7, 0x20 + 42] {
             terminal.receive_byte(byte);
         }
@@ -590,8 +647,9 @@ mod tests {
     }
 
     #[test]
-    fn escape_equals_addresses_cursor_with_space_bias() {
+    fn escape_equals_addresses_cursor_with_space_bias_in_cursor_control_mode() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         for byte in [0x1b, b'=', 0x20 + 7, 0x20 + 42] {
             terminal.receive_byte(byte);
         }
@@ -603,6 +661,7 @@ mod tests {
     #[test]
     fn cursor_addressing_clamps_out_of_range_coordinates() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         for byte in [0x1b, b'=', 0x7f, 0x7f] {
             terminal.receive_byte(byte);
         }
@@ -610,24 +669,30 @@ mod tests {
     }
 
     #[test]
-    fn sub_clears_screen_and_homes_cursor() {
+    fn sub_clears_screen_and_homes_cursor_for_selected_mode() {
         let mut terminal = Adm3aState::default();
         for byte in b"HELLO" {
             terminal.receive_byte(*byte);
         }
         terminal.receive_byte(0x1a);
-        assert_eq!(terminal.cursor(), (0, 0));
+        assert_eq!(terminal.cursor(), (0, ADM3A_ROWS - 1));
         assert!(
             terminal
                 .cells
                 .iter()
                 .all(|row| row.iter().all(|byte| *byte == b' '))
         );
+
+        enable_cursor_control(&mut terminal);
+        terminal.receive_byte(b'X');
+        terminal.receive_byte(0x1a);
+        assert_eq!(terminal.cursor(), (0, 0));
     }
 
     #[test]
     fn bottom_line_feed_scrolls_without_changing_column() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         for row in 0..ADM3A_ROWS {
             for byte in [0x1b, b'=', 0x20 + row as u8, 0x20] {
                 terminal.receive_byte(byte);
@@ -657,19 +722,20 @@ mod tests {
     }
 
     #[test]
-    fn column_72_warning_latches_the_same_beeper() {
+    fn column_72_does_not_generate_a_terminal_bell() {
         let mut terminal = Adm3aState::default();
-        for _ in 0..COLUMN_72_WARNING_INDEX {
+        enable_cursor_control(&mut terminal);
+        for _ in 0..72 {
             terminal.receive_byte(b'X');
         }
-        assert_eq!(terminal.cursor(), (COLUMN_72_WARNING_INDEX, 0));
-        assert!(terminal.take_bell());
+        assert_eq!(terminal.cursor(), (72, 0));
         assert!(!terminal.take_bell());
     }
 
     #[test]
     fn unknown_escape_recovers_to_normal_input() {
         let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
         terminal.receive_byte(0x1b);
         terminal.receive_byte(b'X');
         terminal.receive_byte(b'A');
