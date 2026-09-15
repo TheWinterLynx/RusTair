@@ -88,7 +88,11 @@ mod tests {
     fn embedded_altair_3d_runtime_assets_have_expected_container_markers() {
         let glb = get("assets/panels/altair-3d/runtime/Altair8800_1975.glb").unwrap();
         assert!(glb.len() >= 12, "GLB header is truncated");
-        assert_eq!(&glb[0..4], b"glTF", "Altair runtime model must be a binary glTF container");
+        assert_eq!(
+            &glb[0..4],
+            b"glTF",
+            "Altair runtime model must be a binary glTF container"
+        );
 
         let bindings = get("assets/panels/altair-3d/runtime/bindings.json").unwrap();
         let bindings = std::str::from_utf8(bindings).expect("Altair bindings must be UTF-8 JSON");
