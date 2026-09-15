@@ -20,6 +20,13 @@ pub(crate) fn get(path: &str) -> Option<&'static [u8]> {
             include_bytes!("../assets/panels/white-pivot/switch_down.png")
         }
 
+        "assets/panels/altair-3d/runtime/Altair8800_1975.glb" => {
+            include_bytes!("../assets/panels/altair-3d/runtime/Altair8800_1975.glb")
+        }
+        "assets/panels/altair-3d/runtime/bindings.json" => {
+            include_bytes!("../assets/panels/altair-3d/runtime/bindings.json")
+        }
+
         "assets/asr33_body_clean.png" => include_bytes!("../assets/asr33_body_clean.png"),
         "assets/asr33_key_up.png" => include_bytes!("../assets/asr33_key_up.png"),
         "assets/asr33_key_mid.png" => include_bytes!("../assets/asr33_key_mid.png"),
@@ -54,6 +61,8 @@ mod tests {
             "assets/panels/white-pivot/switch_up.png",
             "assets/panels/white-pivot/switch_center.png",
             "assets/panels/white-pivot/switch_down.png",
+            "assets/panels/altair-3d/runtime/Altair8800_1975.glb",
+            "assets/panels/altair-3d/runtime/bindings.json",
             "assets/asr33_body_clean.png",
             "assets/asr33_key_up.png",
             "assets/asr33_key_mid.png",
@@ -73,5 +82,19 @@ mod tests {
         ] {
             assert!(get(path).is_some(), "missing embedded asset: {path}");
         }
+    }
+
+    #[test]
+    fn embedded_altair_3d_runtime_assets_have_expected_container_markers() {
+        let glb = get("assets/panels/altair-3d/runtime/Altair8800_1975.glb").unwrap();
+        assert!(glb.len() >= 12, "GLB header is truncated");
+        assert_eq!(&glb[0..4], b"glTF", "Altair runtime model must be a binary glTF container");
+
+        let bindings = get("assets/panels/altair-3d/runtime/bindings.json").unwrap();
+        let bindings = std::str::from_utf8(bindings).expect("Altair bindings must be UTF-8 JSON");
+        assert!(
+            bindings.contains("\"schema\": \"altair8800.frontpanel.v1\""),
+            "Altair bindings schema changed unexpectedly"
+        );
     }
 }
