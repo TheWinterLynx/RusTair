@@ -266,13 +266,14 @@ impl RusTairApp {
                         card_format,
                         card_rate,
                     )
+                    && let Some(port) = Self::backend_serial_port(connection)
                 {
-                    // The public cable endpoint is still byte-oriented, so the
-                    // sampled data byte enters the real timed UART receive path.
-                    // Propagating sampled FE/PE into the card status bits is the
-                    // next lower-boundary step; data corruption itself is already
-                    // determined here from the physical clocks and framing.
-                    self.serial_receive_at(connection, sampled.byte);
+                    self.machine.serial_receive_with_errors(
+                        port,
+                        sampled.byte,
+                        sampled.framing_error,
+                        sampled.parity_error,
+                    );
                 }
                 if self.adm3a.keyboard_pending_len() != 0 {
                     ctx.request_repaint_after(self.adm3a.keyboard_due_in(now));
