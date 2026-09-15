@@ -124,6 +124,7 @@ fn gpu_color_and_material_render() {
         wgpu::TextureFormat::Rgba8UnormSrgb,
     ] {
         let mut renderer = LoadedRenderer::new(&device, format).unwrap();
+        let switch_states = switch_runtime::rest_switch_states(&renderer.switch_runtime);
         let mut encoder = device.create_command_encoder(&Default::default());
         renderer.prepare(
             &device,
@@ -135,6 +136,7 @@ fn gpu_color_and_material_render() {
                 ..CameraState::default()
             },
             [0.0; LED_COUNT],
+            switch_states,
         );
         queue.submit([encoder.finish()]);
         let frame = read_present(&renderer, &device, &queue, format, size);
