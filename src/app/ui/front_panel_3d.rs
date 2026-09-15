@@ -261,10 +261,7 @@ fn pointer_ray(
             scale3(up, y * tan_half_fov),
         ),
     ));
-    Some((
-        camera_eye(scene.center, scene.radius, camera),
-        direction,
-    ))
+    Some((camera_eye(scene.center, scene.radius, camera), direction))
 }
 
 fn ray_sphere_distance(
@@ -2335,20 +2332,12 @@ mod tests {
 
     #[test]
     fn ray_sphere_picking_rejects_geometry_behind_camera() {
-        assert!(ray_sphere_distance(
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, -1.0],
-            [0.0, 0.0, 0.0],
-            0.1
-        )
-        .is_some());
-        assert!(ray_sphere_distance(
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0],
-            0.1
-        )
-        .is_none());
+        assert!(
+            ray_sphere_distance([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [0.0, 0.0, 0.0], 0.1).is_some()
+        );
+        assert!(
+            ray_sphere_distance([0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0], 0.1).is_none()
+        );
     }
 
     #[test]
