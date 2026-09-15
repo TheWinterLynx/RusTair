@@ -3,8 +3,14 @@ struct Camera {
     eye: vec4<f32>,
 };
 struct LedState { values: array<vec4<f32>, 36>, };
+struct SwitchTransform {
+    pivot_angle: vec4<f32>,
+    axis_radius: vec4<f32>,
+};
+struct SwitchState { values: array<SwitchTransform, 25>, };
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> led_state: LedState;
+@group(0) @binding(2) var<uniform> switch_state: SwitchState;
 
 struct VertexIn {
     @location(0) position: vec3<f32>,
@@ -21,12 +27,43 @@ struct VertexOut {
     @location(3) world_position: vec3<f32>,
     @location(4) metallic_roughness: vec2<f32>,
 };
+
+fn rotate_axis(value: vec3<f32>, axis: vec3<f32>, angle: f32) -> vec3<f32> {
+    let sine = sin(angle);
+    let cosine = cos(angle);
+    return value * cosine
+        + cross(axis, value) * sine
+        + axis * dot(axis, value) * (1.0 - cosine);
+}
+
 @vertex
 fn vs_main(input: VertexIn) -> VertexOut {
+    var position = input.position;
+    var normal = input.normal;
+
+    // The runtime GLB is authored with every lever already in its bindings.json
+    // rest state. Identify only the protruding lever mesh around each authored
+    // pivot, then apply the delta from rest. Nuts, bushings and switch bodies sit
+    // behind this depth threshold and therefore remain fixed. This keeps the
+    // complete Altair in one draw call while allowing all 25 levers to animate.
+    for (var switch_index = 0u; switch_index < 25u; switch_index += 1u) {
+        let switch = switch_state.values[switch_index];
+        let pivot = switch.pivot_angle.xyz;
+        let delta_xy = position.xy - pivot.xy;
+        let radius = switch.axis_radius.w;
+        if dot(delta_xy, delta_xy) <= radius * radius && position.z > pivot.z - 0.0009 {
+            let axis = normalize(switch.axis_radius.xyz);
+            let angle = switch.pivot_angle.w;
+            position = pivot + rotate_axis(position - pivot, axis, angle);
+            normal = normalize(rotate_axis(normal, axis, angle));
+            break;
+        }
+    }
+
     var out: VertexOut;
-    out.clip_position = camera.view_proj * vec4<f32>(input.position, 1.0);
-    out.world_normal = input.normal;
-    out.world_position = input.position;
+    out.clip_position = camera.view_proj * vec4<f32>(position, 1.0);
+    out.world_normal = normal;
+    out.world_position = position;
     out.color = input.color;
     out.led_index = input.led_index;
     out.metallic_roughness = input.metallic_roughness;
