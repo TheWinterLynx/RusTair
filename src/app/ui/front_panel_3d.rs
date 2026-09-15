@@ -213,10 +213,7 @@ pub(super) fn show_window(ctx: &egui::Context) {
                 let scale = 0.003 * state.camera.zoom;
                 state.camera.pan = add3(
                     state.camera.pan,
-                    add3(
-                        scale3(right, -delta.x * scale),
-                        scale3(up, delta.y * scale),
-                    ),
+                    add3(scale3(right, -delta.x * scale), scale3(up, delta.y * scale)),
                 );
                 ui.ctx().request_repaint();
             }
@@ -224,8 +221,8 @@ pub(super) fn show_window(ctx: &egui::Context) {
             if response.hovered() {
                 let scroll = ui.input(|input| input.smooth_scroll_delta.y);
                 if scroll.abs() > f32::EPSILON {
-                    state.camera.zoom = (state.camera.zoom * (-scroll * 0.0025).exp())
-                        .clamp(0.08, 6.0);
+                    state.camera.zoom =
+                        (state.camera.zoom * (-scroll * 0.0025).exp()).clamp(0.08, 6.0);
                     ui.ctx().request_repaint();
                 }
             }
@@ -1294,19 +1291,14 @@ fn camera_matrix(center: [f32; 3], radius: f32, aspect: f32, camera: CameraState
 fn camera_basis(camera: CameraState) -> ([f32; 3], [f32; 3], [f32; 3]) {
     let (sin_yaw, cos_yaw) = camera.yaw.sin_cos();
     let (sin_pitch, cos_pitch) = camera.pitch.sin_cos();
-    let direction = normalize3([
-        sin_yaw * cos_pitch,
-        sin_pitch,
-        cos_yaw * cos_pitch,
-    ]);
+    let direction = normalize3([sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch]);
     let right = normalize3([cos_yaw, 0.0, -sin_yaw]);
     let up = normalize3(cross3(direction, right));
     (direction, right, up)
 }
 
 fn wrap_angle(value: f32) -> f32 {
-    (value + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-        - std::f32::consts::PI
+    (value + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 fn look_at_rh(eye: [f32; 3], center: [f32; 3], up: [f32; 3]) -> Mat4 {
@@ -1675,7 +1667,10 @@ mod tests {
         assert!(bin.len() > 1_000_000);
         let nodes = json_array(root.require("nodes").unwrap()).unwrap();
         let meshes = json_array(root.require("meshes").unwrap()).unwrap();
-        assert!(nodes.len() >= 620, "Altair GLB unexpectedly lost scene nodes");
+        assert!(
+            nodes.len() >= 620,
+            "Altair GLB unexpectedly lost scene nodes"
+        );
         assert!(meshes.len() >= 584, "Altair GLB unexpectedly lost meshes");
     }
 
