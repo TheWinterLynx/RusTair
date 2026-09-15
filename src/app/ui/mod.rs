@@ -8,6 +8,7 @@ mod cpu_pin_diagram;
 mod debugger_controls;
 mod execution_position;
 mod front_panel;
+mod front_panel_3d;
 mod front_panel_assets;
 mod front_panel_operator;
 mod front_panel_switches;
@@ -101,8 +102,17 @@ pub(in crate::app) fn persist_configuration_if_changed(app: &mut RusTairApp) {
     app.persist_configuration_if_changed();
 }
 
+pub(in crate::app) fn install_front_panel_3d(cc: &eframe::CreationContext<'_>) {
+    front_panel_3d::install(cc);
+}
+
+pub(in crate::app) fn open_front_panel_3d(ctx: &egui::Context) {
+    front_panel_3d::open(ctx);
+}
+
 pub(in crate::app) fn draw_main_menu(app: &mut RusTairApp, ctx: &egui::Context) {
     main_menu::draw_main_menu(app, ctx);
+    front_panel_3d::show_window(ctx);
 }
 
 pub(in crate::app) fn open_led_visual_controls(app: &mut RusTairApp) {
