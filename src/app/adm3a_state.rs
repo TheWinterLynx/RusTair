@@ -6,6 +6,8 @@ pub(super) const ADM3A_ROWS: usize = 24;
 
 const ASCII_MASK: u8 = 0x7f;
 const CURSOR_ADDRESS_BIAS: u8 = 0x20;
+const REPEAT_60_HZ_PERIOD: Duration = Duration::from_millis(80);
+const REPEAT_50_HZ_PERIOD: Duration = Duration::from_millis(100);
 
 /// Physical communication-rate selector offered by the Lear Siegler ADM-3A.
 ///
@@ -207,9 +209,7 @@ enum ParserState {
     Normal,
     Escape,
     CursorRow,
-    CursorColumn {
-        row: usize,
-    },
+    CursorColumn { row: usize },
 }
 
 /// Headless Lear Siegler ADM-3A display and keyboard state.
@@ -226,6 +226,15 @@ pub(super) struct Adm3aState {
     /// S5-7 CUR CTL/OFF. Factory OFF is the rolling bottom-line mode; CUR CTL
     /// enables the moveable block cursor and absolute ESC '=' positioning.
     cursor_control: bool,
+    /// S4-6 SPACE/ADV. ADV makes SP non-destructive after CR until the next LF.
+    space_advance: bool,
+    /// S4-3 DISABLE/CLR SCRN. When false, received CTRL-Z cannot clear display RAM.
+    clear_screen_control: bool,
+    /// S4-2 50/60 Hz. Besides CRT timing, the original keyboard repeat divider
+    /// derives its 12.5 cps (60 Hz) or 10 cps (50 Hz) cadence from this setting.
+    line_frequency_60_hz: bool,
+    /// Runtime latch for the ADV exception between RETURN and subsequent LF.
+    nondestructive_space_after_return: bool,
     baud_rate: Adm3aBaudRate,
     word_format: Adm3aWordFormat,
     /// S3-6 BIT 8 0/1. It applies only while 8-bit words are selected and fixes
@@ -238,6 +247,9 @@ pub(super) struct Adm3aState {
     bell_pending: bool,
     keyboard_queue: VecDeque<u8>,
     keyboard_next_at: Option<Instant>,
+    repeat_key_held: bool,
+    repeat_target: Option<u8>,
+    repeat_next_at: Option<Instant>,
 }
 
 impl Default for Adm3aState {
@@ -248,6 +260,10 @@ impl Default for Adm3aState {
             auto_new_line: false,
             duplex: Adm3aDuplex::default(),
             cursor_control: false,
+            space_advance: false,
+            clear_screen_control: true,
+            line_frequency_60_hz: true,
+            nondestructive_space_after_return: false,
             baud_rate: Adm3aBaudRate::default(),
             word_format: Adm3aWordFormat::default(),
             bit8_one: false,
@@ -258,6 +274,9 @@ impl Default for Adm3aState {
             bell_pending: false,
             keyboard_queue: VecDeque::new(),
             keyboard_next_at: None,
+            repeat_key_held: false,
+            repeat_target: None,
+            repeat_next_at: None,
         }
     }
 }
@@ -276,6 +295,9 @@ impl Adm3aState {
         self.bell_pending = false;
         self.keyboard_queue.clear();
         self.keyboard_next_at = None;
+        self.repeat_key_held = false;
+        self.repeat_target = None;
+        self.repeat_next_at = None;
     }
 
     pub(super) const fn auto_new_line(&self) -> bool {
@@ -309,6 +331,36 @@ impl Adm3aState {
         }
     }
 
+    pub(super) const fn space_advance(&self) -> bool {
+        self.space_advance
+    }
+
+    pub(super) fn set_space_advance(&mut self, enabled: bool) {
+        self.space_advance = enabled;
+        if !enabled {
+            self.nondestructive_space_after_return = false;
+        }
+    }
+
+    pub(super) const fn clear_screen_control(&self) -> bool {
+        self.clear_screen_control
+    }
+
+    pub(super) fn set_clear_screen_control(&mut self, enabled: bool) {
+        self.clear_screen_control = enabled;
+    }
+
+    pub(super) const fn line_frequency_60_hz(&self) -> bool {
+        self.line_frequency_60_hz
+    }
+
+    pub(super) fn set_line_frequency_60_hz(&mut self, enabled: bool) {
+        self.line_frequency_60_hz = enabled;
+        if self.repeat_key_held && self.repeat_target.is_some() {
+            self.repeat_next_at = Some(Instant::now() + self.keyboard_repeat_time());
+        }
+    }
+
     pub(super) const fn baud_rate(&self) -> Adm3aBaudRate {
         self.baud_rate
     }
@@ -322,6 +374,9 @@ impl Adm3aState {
         // Keep already typed keys, but restart the pacing epoch at the next
         // presentation instead of carrying timing from the old oscillator rate.
         self.keyboard_next_at = None;
+        if self.repeat_key_held && self.repeat_target.is_some() {
+            self.repeat_next_at = Some(Instant::now() + self.keyboard_repeat_time());
+        }
     }
 
     pub(super) const fn word_format(&self) -> Adm3aWordFormat {
@@ -335,6 +390,9 @@ impl Adm3aState {
         self.word_format = word_format;
         // Word length/parity/stop changes alter the physical frame duration.
         self.keyboard_next_at = None;
+        if self.repeat_key_held && self.repeat_target.is_some() {
+            self.repeat_next_at = Some(Instant::now() + self.keyboard_repeat_time());
+        }
     }
 
     pub(super) const fn bit8_one(&self) -> bool {
@@ -375,13 +433,19 @@ impl Adm3aState {
         match byte {
             0x07 => self.bell_pending = true,
             0x08 => self.cursor_col = self.cursor_col.saturating_sub(1),
-            0x0a => self.line_down(),
+            0x0a => {
+                self.nondestructive_space_after_return = false;
+                self.line_down();
+            }
             0x0b if self.cursor_control => {
                 self.cursor_row = self.cursor_row.saturating_sub(1);
             }
             0x0c => self.cursor_col = (self.cursor_col + 1).min(ADM3A_COLS - 1),
-            b'\r' => self.cursor_col = 0,
-            0x1a => self.clear_screen(),
+            b'\r' => {
+                self.cursor_col = 0;
+                self.nondestructive_space_after_return = self.space_advance;
+            }
+            0x1a if self.clear_screen_control => self.clear_screen(),
             0x1b if self.cursor_control => self.parser = ParserState::Escape,
             0x1e => self.home_cursor(),
             0x20..=0x7e => self.write_printable(byte),
@@ -393,11 +457,14 @@ impl Adm3aState {
         if !self.cursor_control {
             self.cursor_row = ADM3A_ROWS - 1;
         }
-        self.cells[self.cursor_row][self.cursor_col] = byte;
+        if byte != b' ' || !self.nondestructive_space_after_return {
+            self.cells[self.cursor_row][self.cursor_col] = byte;
+        }
         if self.cursor_col + 1 < ADM3A_COLS {
             self.cursor_col += 1;
         } else if self.auto_new_line {
             self.cursor_col = 0;
+            self.nondestructive_space_after_return = false;
             self.line_down();
         } else {
             // With AUTO NL disabled, real ADM-3A overflow reloads column 79.
@@ -442,6 +509,7 @@ impl Adm3aState {
         self.cells = [[b' '; ADM3A_COLS]; ADM3A_ROWS];
         self.home_cursor();
         self.parser = ParserState::Normal;
+        self.nondestructive_space_after_return = false;
     }
 
     pub(super) fn row(&self, row: usize) -> &[u8; ADM3A_COLS] {
@@ -454,6 +522,44 @@ impl Adm3aState {
 
     pub(super) fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell_pending)
+    }
+
+    pub(super) fn set_repeat_key_held(&mut self, held: bool, now: Instant) {
+        if self.repeat_key_held == held {
+            return;
+        }
+        self.repeat_key_held = held;
+        self.repeat_next_at = if held && self.repeat_target.is_some() {
+            Some(now + self.keyboard_repeat_time())
+        } else {
+            None
+        };
+    }
+
+    pub(super) fn set_repeat_target(&mut self, byte: u8, now: Instant) {
+        self.repeat_target = Some(byte & ASCII_MASK);
+        if self.repeat_key_held {
+            self.repeat_next_at = Some(now + self.keyboard_repeat_time());
+        }
+    }
+
+    pub(super) fn clear_repeat_target(&mut self) {
+        self.repeat_target = None;
+        self.repeat_next_at = None;
+    }
+
+    pub(super) fn repeat_due_in(&self, now: Instant) -> Option<Duration> {
+        self.repeat_next_at
+            .map(|due| due.saturating_duration_since(now))
+    }
+
+    pub(super) fn take_due_repeat_byte(&mut self, now: Instant) -> Option<u8> {
+        if !self.repeat_key_held || !self.repeat_due_in(now)?.is_zero() {
+            return None;
+        }
+        let byte = self.repeat_target?;
+        self.repeat_next_at = Some(now + self.keyboard_repeat_time());
+        Some(byte)
     }
 
     pub(super) fn queue_keyboard_byte(&mut self, byte: u8, now: Instant) -> bool {
@@ -503,6 +609,15 @@ impl Adm3aState {
             f64::from(self.word_format.frame_bits()) / f64::from(self.baud_rate.baud()),
         )
     }
+
+    fn keyboard_repeat_time(&self) -> Duration {
+        let oscillator_period = if self.line_frequency_60_hz {
+            REPEAT_60_HZ_PERIOD
+        } else {
+            REPEAT_50_HZ_PERIOD
+        };
+        oscillator_period.max(self.keyboard_char_time())
+    }
 }
 
 #[cfg(test)]
@@ -521,6 +636,9 @@ mod tests {
         assert!(!terminal.auto_new_line());
         assert_eq!(terminal.duplex(), Adm3aDuplex::Full);
         assert!(!terminal.cursor_control());
+        assert!(!terminal.space_advance());
+        assert!(terminal.clear_screen_control());
+        assert!(terminal.line_frequency_60_hz());
         assert_eq!(terminal.baud_rate(), Adm3aBaudRate::Baud9600);
         assert_eq!(terminal.word_format(), Adm3aWordFormat::default());
         terminal.receive_byte(b'X');
@@ -592,6 +710,43 @@ mod tests {
             terminal.receive_byte(b'Z');
         }
         assert_eq!(terminal.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn advance_mode_preserves_spaces_after_return_until_line_feed() {
+        let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
+        terminal.set_space_advance(true);
+        for byte in b"ABCDE" {
+            terminal.receive_byte(*byte);
+        }
+
+        terminal.receive_byte(b'\r');
+        terminal.receive_byte(b' ');
+        terminal.receive_byte(b' ');
+        assert_eq!(&terminal.row(0)[..5], b"ABCDE");
+        assert_eq!(terminal.cursor(), (2, 0));
+
+        terminal.receive_byte(b'\n');
+        terminal.receive_byte(b'X');
+        terminal.receive_byte(0x08);
+        terminal.receive_byte(b' ');
+        assert_eq!(terminal.row(1)[2], b' ');
+    }
+
+    #[test]
+    fn disable_clear_screen_blocks_remote_ctrl_z() {
+        let mut terminal = Adm3aState::default();
+        enable_cursor_control(&mut terminal);
+        terminal.receive_byte(b'X');
+        terminal.set_clear_screen_control(false);
+        terminal.receive_byte(0x1a);
+        assert_eq!(terminal.row(0)[0], b'X');
+
+        terminal.set_clear_screen_control(true);
+        terminal.receive_byte(0x1a);
+        assert_eq!(terminal.row(0)[0], b' ');
+        assert_eq!(terminal.cursor(), (0, 0));
     }
 
     #[test]
@@ -768,6 +923,36 @@ mod tests {
         assert_eq!(terminal.keyboard_pending_len(), 0);
         assert_eq!(terminal.baud_rate().baud(), 110);
         assert_eq!(terminal.keyboard_char_time(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn repeat_cadence_tracks_line_frequency_and_slow_serial_rate() {
+        let mut terminal = Adm3aState::default();
+        assert_eq!(terminal.keyboard_repeat_time(), Duration::from_millis(80));
+
+        terminal.set_line_frequency_60_hz(false);
+        assert_eq!(terminal.keyboard_repeat_time(), Duration::from_millis(100));
+
+        terminal.set_line_frequency_60_hz(true);
+        terminal.set_baud_rate(Adm3aBaudRate::Baud110);
+        assert_eq!(terminal.keyboard_repeat_time(), terminal.keyboard_char_time());
+        assert!(terminal.keyboard_repeat_time() > Duration::from_millis(80));
+    }
+
+    #[test]
+    fn repeat_key_replays_target_only_on_hardware_cadence() {
+        let mut terminal = Adm3aState::default();
+        let now = Instant::now();
+        terminal.set_repeat_target(b'R', now);
+        terminal.set_repeat_key_held(true, now);
+        assert_eq!(terminal.take_due_repeat_byte(now), None);
+
+        let due = now + terminal.keyboard_repeat_time();
+        assert_eq!(terminal.take_due_repeat_byte(due), Some(b'R'));
+        assert_eq!(terminal.take_due_repeat_byte(due), None);
+
+        terminal.clear_repeat_target();
+        assert_eq!(terminal.repeat_due_in(due), None);
     }
 
     #[test]
