@@ -110,7 +110,7 @@ pub(in crate::app) fn open_front_panel_3d(ctx: &egui::Context) {
     front_panel_3d::open(ctx);
 }
 
-pub(in crate::app) fn show_front_panel_3d_viewport(app: &RusTairApp, ctx: &egui::Context) {
+pub(in crate::app) fn show_front_panel_3d_viewport(app: &mut RusTairApp, ctx: &egui::Context) {
     front_panel_3d::show_viewport(app, ctx);
 }
 
