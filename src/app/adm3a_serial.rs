@@ -294,7 +294,10 @@ impl RusTairApp {
             else {
                 continue;
             };
-            if powered && !sampled.framing_error && !sampled.parity_error {
+            if powered {
+                // ADM-3A maintenance manual section 6.6.1: framing, parity and
+                // overrun error outputs are ignored. A malformed frame may alter
+                // the sampled character, but those flags never veto DATA RDY.
                 self.adm3a.receive_byte(sampled.byte);
                 changed = true;
             }
