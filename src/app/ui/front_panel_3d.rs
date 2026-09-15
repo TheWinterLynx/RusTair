@@ -470,9 +470,7 @@ impl LoadedRenderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: NonZeroU64::new(
-                                switch_runtime::SWITCH_UNIFORM_BYTES,
-                            ),
+                            min_binding_size: NonZeroU64::new(switch_runtime::SWITCH_UNIFORM_BYTES),
                         },
                         count: None,
                     },
