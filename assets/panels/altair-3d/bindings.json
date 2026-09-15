@@ -1,0 +1,1520 @@
+{
+  "schema": "altair8800.frontpanel.v1",
+  "reference": "Early MITS Altair 8800 #220081K, 1975",
+  "accuracy": "Reference-grounded reconstruction; not certified museum-grade metrology",
+  "units": "metres",
+  "cabinet_nominal_mm": [
+    431.8,
+    457.2,
+    177.8
+  ],
+  "blender_axes": {
+    "up": "+Z",
+    "front": "-Y",
+    "right": "+X"
+  },
+  "gltf_axes": {
+    "up": "+Y",
+    "front": "+Z",
+    "right": "+X"
+  },
+  "switches": [
+    {
+      "id": "A15",
+      "node": "SW_A15",
+      "lever": "SW_A15_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -110.3488888888889,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A14",
+      "node": "SW_A14",
+      "lever": "SW_A14_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -87.73079365079366,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A13",
+      "node": "SW_A13",
+      "lever": "SW_A13_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -72.65206349206349,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A12",
+      "node": "SW_A12",
+      "lever": "SW_A12_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -57.23063492063493,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A11",
+      "node": "SW_A11",
+      "lever": "SW_A11_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -34.61253968253968,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A10",
+      "node": "SW_A10",
+      "lever": "SW_A10_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -19.876507936507938,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A09",
+      "node": "SW_A09",
+      "lever": "SW_A09_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -4.455079365079365,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A08",
+      "node": "SW_A08",
+      "lever": "SW_A08_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        18.163015873015873,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A07",
+      "node": "SW_A07",
+      "lever": "SW_A07_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        33.24174603174603,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A06",
+      "node": "SW_A06",
+      "lever": "SW_A06_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        48.32047619047619,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A05",
+      "node": "SW_A05",
+      "lever": "SW_A05_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        70.93857142857144,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A04",
+      "node": "SW_A04",
+      "lever": "SW_A04_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        86.36000000000001,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A03",
+      "node": "SW_A03",
+      "lever": "SW_A03_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        101.43873015873017,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A02",
+      "node": "SW_A02",
+      "lever": "SW_A02_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        124.39952380952381,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A01",
+      "node": "SW_A01",
+      "lever": "SW_A01_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        139.47825396825397,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "A00",
+      "node": "SW_A00",
+      "lever": "SW_A00_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": -1,
+      "momentary": false,
+      "up": "1",
+      "down": "0",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        154.55698412698413,
+        0,
+        82.40346153846154
+      ]
+    },
+    {
+      "id": "POWER",
+      "node": "SW_POWER",
+      "lever": "SW_POWER_LEVER",
+      "states": [
+        -1,
+        1
+      ],
+      "rest": 1,
+      "momentary": false,
+      "up": "OFF",
+      "down": "ON",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -185.3998412698413,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "STOP_RUN",
+      "node": "SW_STOP_RUN",
+      "lever": "SW_STOP_RUN_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "STOP",
+      "down": "RUN",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -111.37698412698414,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "SINGLE_STEP",
+      "node": "SW_SINGLE_STEP",
+      "lever": "SW_SINGLE_STEP_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "SINGLE STEP",
+      "down": "UNASSIGNED",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -80.87682539682541,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "EXAMINE",
+      "node": "SW_EXAMINE",
+      "lever": "SW_EXAMINE_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "EXAMINE",
+      "down": "EXAMINE NEXT",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -50.37666666666667,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "DEPOSIT",
+      "node": "SW_DEPOSIT",
+      "lever": "SW_DEPOSIT_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "DEPOSIT",
+      "down": "DEPOSIT NEXT",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        -19.876507936507938,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "RESET_CLR",
+      "node": "SW_RESET_CLR",
+      "lever": "SW_RESET_CLR_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "RESET",
+      "down": "CLR",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        10.280952380952382,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "PROTECT",
+      "node": "SW_PROTECT",
+      "lever": "SW_PROTECT_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "PROTECT",
+      "down": "UNPROTECT",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        40.438412698412705,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "AUX1",
+      "node": "SW_AUX1",
+      "lever": "SW_AUX1_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "AUX",
+      "down": "UNASSIGNED",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        71.28126984126985,
+        0,
+        52.314230769230775
+      ]
+    },
+    {
+      "id": "AUX2",
+      "node": "SW_AUX2",
+      "lever": "SW_AUX2_LEVER",
+      "states": [
+        -1,
+        0,
+        1
+      ],
+      "rest": 0,
+      "momentary": true,
+      "up": "AUX",
+      "down": "UNASSIGNED",
+      "axis": [
+        1,
+        0,
+        0
+      ],
+      "radians_per_state": -0.3490658503988659,
+      "property": "switch_state",
+      "pivot_local_blender_m": [
+        0,
+        -0.0032,
+        0
+      ],
+      "pivot_local_gltf_m": [
+        0,
+        0,
+        0.0032
+      ],
+      "position_mm": [
+        102.12412698412699,
+        0,
+        52.314230769230775
+      ]
+    }
+  ],
+  "leds": [
+    {
+      "id": "INTE",
+      "node": "LED_INTE",
+      "material": "MAT_LED_INTE",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -155.24238095238096,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "PROT",
+      "node": "LED_PROT",
+      "material": "MAT_LED_PROT",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -140.16365079365082,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "MEMR",
+      "node": "LED_MEMR",
+      "material": "MAT_LED_MEMR",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -125.08492063492065,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "INP",
+      "node": "LED_INP",
+      "material": "MAT_LED_INP",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -110.00619047619048,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "M1",
+      "node": "LED_M1",
+      "material": "MAT_LED_M1",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -94.92746031746033,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "OUT",
+      "node": "LED_OUT",
+      "material": "MAT_LED_OUT",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -79.50603174603175,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "HLTA",
+      "node": "LED_HLTA",
+      "material": "MAT_LED_HLTA",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -64.77000000000001,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "STACK",
+      "node": "LED_STACK",
+      "material": "MAT_LED_STACK",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -49.69126984126984,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "WO",
+      "node": "LED_WO",
+      "material": "MAT_LED_WO",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -34.61253968253968,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "INT",
+      "node": "LED_INT",
+      "material": "MAT_LED_INT",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -19.533809523809524,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "WAIT",
+      "node": "LED_WAIT",
+      "material": "MAT_LED_WAIT",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -156.2704761904762,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "HLDA",
+      "node": "LED_HLDA",
+      "material": "MAT_LED_HLDA",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -140.84904761904764,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A15",
+      "node": "LED_A15",
+      "material": "MAT_LED_A15",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -110.3488888888889,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A14",
+      "node": "LED_A14",
+      "material": "MAT_LED_A14",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -87.73079365079366,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A13",
+      "node": "LED_A13",
+      "material": "MAT_LED_A13",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -72.65206349206349,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A12",
+      "node": "LED_A12",
+      "material": "MAT_LED_A12",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -57.23063492063493,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A11",
+      "node": "LED_A11",
+      "material": "MAT_LED_A11",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -34.61253968253968,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A10",
+      "node": "LED_A10",
+      "material": "MAT_LED_A10",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -19.876507936507938,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A09",
+      "node": "LED_A09",
+      "material": "MAT_LED_A09",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        -4.455079365079365,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A08",
+      "node": "LED_A08",
+      "material": "MAT_LED_A08",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        18.163015873015873,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A07",
+      "node": "LED_A07",
+      "material": "MAT_LED_A07",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        33.24174603174603,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A06",
+      "node": "LED_A06",
+      "material": "MAT_LED_A06",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        48.32047619047619,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A05",
+      "node": "LED_A05",
+      "material": "MAT_LED_A05",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        70.93857142857144,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A04",
+      "node": "LED_A04",
+      "material": "MAT_LED_A04",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        86.36000000000001,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A03",
+      "node": "LED_A03",
+      "material": "MAT_LED_A03",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        101.43873015873017,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A02",
+      "node": "LED_A02",
+      "material": "MAT_LED_A02",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        124.39952380952381,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A01",
+      "node": "LED_A01",
+      "material": "MAT_LED_A01",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        139.47825396825397,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "A00",
+      "node": "LED_A00",
+      "material": "MAT_LED_A00",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        154.55698412698413,
+        0,
+        113.17653846153847
+      ]
+    },
+    {
+      "id": "D7",
+      "node": "LED_D7",
+      "material": "MAT_LED_D7",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        33.24174603174603,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D6",
+      "node": "LED_D6",
+      "material": "MAT_LED_D6",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        48.32047619047619,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D5",
+      "node": "LED_D5",
+      "material": "MAT_LED_D5",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        70.93857142857144,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D4",
+      "node": "LED_D4",
+      "material": "MAT_LED_D4",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        86.36000000000001,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D3",
+      "node": "LED_D3",
+      "material": "MAT_LED_D3",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        101.43873015873017,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D2",
+      "node": "LED_D2",
+      "material": "MAT_LED_D2",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        124.39952380952381,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D1",
+      "node": "LED_D1",
+      "material": "MAT_LED_D1",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        139.47825396825397,
+        0,
+        142.92384615384617
+      ]
+    },
+    {
+      "id": "D0",
+      "node": "LED_D0",
+      "material": "MAT_LED_D0",
+      "property": "led_state",
+      "on_emissive": [
+        1,
+        0.008,
+        0.002
+      ],
+      "on_strength": 4,
+      "position_mm": [
+        154.55698412698413,
+        0,
+        142.92384615384617
+      ]
+    }
+  ]
+}
