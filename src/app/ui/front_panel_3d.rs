@@ -10,16 +10,20 @@ use eframe::{
 use super::super::RusTairApp;
 use crate::embedded_assets;
 
+#[path = "front_panel_3d_switch_runtime.rs"]
+mod switch_runtime;
+
 const GLB_PATH: &str = "assets/panels/altair-3d/runtime/Altair8800_1975.glb";
 const BINDINGS_PATH: &str = "assets/panels/altair-3d/runtime/bindings.json";
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
-const VERTEX_STRIDE: wgpu::BufferAddress = 52;
+const VERTEX_STRIDE: wgpu::BufferAddress = 56;
 const MODEL_SAMPLE_COUNT: u32 = 4;
 const CAMERA_UNIFORM_BYTES: u64 = 80;
 const LED_COUNT: usize = 36;
 const LED_UNIFORM_BYTES: u64 = LED_COUNT as u64 * 16;
 const NO_LED_INDEX: u32 = u32::MAX;
+const NO_SWITCH_INDEX: u32 = u32::MAX;
 const LED_VISIBLE_THRESHOLD: f32 = 0.025;
 const LED_CORE_STEEPNESS: f32 = 7.0;
 
@@ -116,6 +120,7 @@ impl Default for Panel3dUiState {
 #[derive(Clone, Copy, Debug)]
 struct Panel3dSnapshot {
     leds: [f32; LED_COUNT],
+    switches: [f32; switch_runtime::SWITCH_COUNT],
 }
 
 fn ui_state_id() -> egui::Id {
@@ -176,7 +181,19 @@ fn panel_snapshot(app: &mut RusTairApp) -> Panel3dSnapshot {
         set_led(28 + binding_bit, lamps.data[7 - binding_bit]);
     }
 
-    Panel3dSnapshot { leds }
+    let switch_register = app.machine.switch_register();
+    let mut switches = [0.0; switch_runtime::SWITCH_COUNT];
+    for binding_index in 0..16 {
+        let bit = 15 - binding_index;
+        switches[binding_index] = if switch_register & (1u16 << bit) != 0 {
+            1.0
+        } else {
+            -1.0
+        };
+    }
+    switches[16] = if panel.powered { 1.0 } else { -1.0 };
+
+    Panel3dSnapshot { leds, switches }
 }
 
 pub(super) fn open(ctx: &egui::Context) {
@@ -245,7 +262,7 @@ fn draw_viewport_contents(
         }
     });
     ui.small(
-        "Native inspection viewport · live front-panel LEDs share the classic panel hardware duty snapshot; switches are the next connection checkpoint.",
+        "Native inspection viewport · live LEDs plus A15-A0 and POWER lever positions share the classic panel hardware state; momentary controls are the next connection checkpoint.",
     );
     ui.separator();
 
@@ -289,6 +306,7 @@ fn draw_viewport_contents(
         Altair3dCallback {
             camera: state.camera,
             leds: snapshot.leds,
+            switches: snapshot.switches,
             size_points: [rect.width(), rect.height()],
         },
     ));
@@ -298,6 +316,7 @@ fn draw_viewport_contents(
 struct Altair3dCallback {
     camera: CameraState,
     leds: [f32; LED_COUNT],
+    switches: [f32; switch_runtime::SWITCH_COUNT],
     size_points: [f32; 2],
 }
 
@@ -328,6 +347,7 @@ impl egui_wgpu::CallbackTrait for Altair3dCallback {
             [width, height],
             self.camera,
             self.leds,
+            self.switches,
         );
         Vec::new()
     }
@@ -366,13 +386,14 @@ impl Altair3dRenderResources {
         size: [u32; 2],
         camera: CameraState,
         leds: [f32; LED_COUNT],
+        switches: [f32; switch_runtime::SWITCH_COUNT],
     ) {
         if self.loaded.is_none() {
             self.loaded = Some(LoadedRenderer::new(device, self.target_format));
         }
 
         if let Some(Ok(renderer)) = self.loaded.as_mut() {
-            renderer.prepare(device, queue, encoder, size, camera, leds);
+            renderer.prepare(device, queue, encoder, size, camera, leds, switches);
         }
     }
 
@@ -388,6 +409,7 @@ struct LoadedRenderer {
     present_pipeline: wgpu::RenderPipeline,
     camera_buffer: wgpu::Buffer,
     led_buffer: wgpu::Buffer,
+    switch_buffer: wgpu::Buffer,
     model_bind_group: wgpu::BindGroup,
     present_bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -396,12 +418,14 @@ struct LoadedRenderer {
     index_count: u32,
     center: [f32; 3],
     radius: f32,
+    switch_runtime: [switch_runtime::SwitchRuntime; switch_runtime::SWITCH_COUNT],
     target: Option<OffscreenTarget>,
 }
 
 impl LoadedRenderer {
     fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Result<Self, String> {
         let mesh = load_static_mesh()?;
+        let switch_runtime = switch_runtime::load_switch_runtime()?;
         let vertex_bytes = encode_vertices(&mesh.vertices);
         let index_bytes = encode_indices(&mesh.indices);
 
@@ -440,6 +464,18 @@ impl LoadedRenderer {
                         },
                         count: None,
                     },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: NonZeroU64::new(
+                                switch_runtime::SWITCH_UNIFORM_BYTES,
+                            ),
+                        },
+                        count: None,
+                    },
                 ],
             });
 
@@ -455,6 +491,12 @@ impl LoadedRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let switch_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Altair 8800 3D switch transform buffer"),
+            size: switch_runtime::SWITCH_UNIFORM_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let model_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Altair 8800 3D model state bind group"),
             layout: &model_bind_group_layout,
@@ -466,6 +508,10 @@ impl LoadedRenderer {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: led_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: switch_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -481,7 +527,7 @@ impl LoadedRenderer {
                 push_constant_ranges: &[],
             });
 
-        const ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
+        const ATTRIBUTES: [wgpu::VertexAttribute; 6] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x3,
                 offset: 0,
@@ -506,6 +552,11 @@ impl LoadedRenderer {
                 format: wgpu::VertexFormat::Float32x2,
                 offset: 44,
                 shader_location: 4,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 52,
+                shader_location: 5,
             },
         ];
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -625,6 +676,7 @@ impl LoadedRenderer {
             present_pipeline,
             camera_buffer,
             led_buffer,
+            switch_buffer,
             model_bind_group,
             present_bind_group_layout,
             sampler,
@@ -634,6 +686,7 @@ impl LoadedRenderer {
                 .map_err(|_| "Altair 3D index count exceeds u32".to_owned())?,
             center: mesh.center,
             radius: mesh.radius,
+            switch_runtime,
             target: None,
         })
     }
@@ -646,6 +699,7 @@ impl LoadedRenderer {
         size: [u32; 2],
         camera: CameraState,
         leds: [f32; LED_COUNT],
+        switches: [f32; switch_runtime::SWITCH_COUNT],
     ) {
         let resize = self
             .target
@@ -668,6 +722,11 @@ impl LoadedRenderer {
             &encode_camera_uniform(view_proj, camera_eye(self.center, self.radius, camera)),
         );
         queue.write_buffer(&self.led_buffer, 0, &encode_led_uniform(leds));
+        queue.write_buffer(
+            &self.switch_buffer,
+            0,
+            &switch_runtime::encode_switch_uniform(&self.switch_runtime, switches),
+        );
 
         let Some(target) = self.target.as_ref() else {
             return;
@@ -809,6 +868,7 @@ struct Vertex {
     color: [f32; 4],
     led_index: u32,
     metallic_roughness: [f32; 2],
+    switch_index: u32,
 }
 
 struct StaticMesh {
@@ -855,6 +915,7 @@ fn load_static_mesh() -> Result<StaticMesh, String> {
         .ok_or_else(|| format!("missing embedded runtime asset: {GLB_PATH}"))?;
     let (root, bin) = parse_glb(glb)?;
     let led_materials = load_led_material_bindings()?;
+    let switch_levers = switch_runtime::load_switch_lever_indices()?;
 
     let scene_index = root.get("scene").map(json_usize).transpose()?.unwrap_or(0);
     let scenes = json_array(root.require("scenes")?)?;
@@ -871,6 +932,8 @@ fn load_static_mesh() -> Result<StaticMesh, String> {
             json_usize(node)?,
             Mat4::identity(),
             &led_materials,
+            &switch_levers,
+            NO_SWITCH_INDEX,
             &mut builder,
         )?;
     }
@@ -932,6 +995,8 @@ fn append_node(
     node_index: usize,
     parent_transform: Mat4,
     led_materials: &HashMap<String, u32>,
+    switch_levers: &HashMap<String, u32>,
+    inherited_switch_index: u32,
     builder: &mut MeshBuilder,
 ) -> Result<(), String> {
     let nodes = json_array(root.require("nodes")?)?;
@@ -939,6 +1004,12 @@ fn append_node(
         .get(node_index)
         .ok_or_else(|| format!("glTF node index {node_index} is out of range"))?;
     let world = parent_transform.mul(node_transform(node)?);
+    let switch_index = node
+        .get("name")
+        .map(json_string)
+        .transpose()?
+        .and_then(|name| switch_levers.get(name).copied())
+        .unwrap_or(inherited_switch_index);
 
     if let Some(mesh_value) = node.get("mesh") {
         append_mesh(
@@ -947,13 +1018,23 @@ fn append_node(
             json_usize(mesh_value)?,
             world,
             led_materials,
+            switch_index,
             builder,
         )?;
     }
 
     if let Some(children) = node.get("children") {
         for child in json_array(children)? {
-            append_node(root, bin, json_usize(child)?, world, led_materials, builder)?;
+            append_node(
+                root,
+                bin,
+                json_usize(child)?,
+                world,
+                led_materials,
+                switch_levers,
+                switch_index,
+                builder,
+            )?;
         }
     }
     Ok(())
@@ -965,6 +1046,7 @@ fn append_mesh(
     mesh_index: usize,
     transform: Mat4,
     led_materials: &HashMap<String, u32>,
+    switch_index: u32,
     builder: &mut MeshBuilder,
 ) -> Result<(), String> {
     let meshes = json_array(root.require("meshes")?)?;
@@ -1026,6 +1108,7 @@ fn append_mesh(
                 color,
                 led_index,
                 metallic_roughness,
+                switch_index,
             });
         }
 
@@ -1381,6 +1464,7 @@ fn encode_vertices(vertices: &[Vertex]) -> Vec<u8> {
         for value in vertex.metallic_roughness {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+        bytes.extend_from_slice(&vertex.switch_index.to_le_bytes());
     }
     bytes
 }
@@ -1491,6 +1575,14 @@ impl Mat4 {
                 + self.0[2][1] * point[1]
                 + self.0[2][2] * point[2]
                 + self.0[2][3],
+        ]
+    }
+
+    fn transform_vector(self, vector: [f32; 3]) -> [f32; 3] {
+        [
+            self.0[0][0] * vector[0] + self.0[0][1] * vector[1] + self.0[0][2] * vector[2],
+            self.0[1][0] * vector[0] + self.0[1][1] * vector[1] + self.0[1][2] * vector[2],
+            self.0[2][0] * vector[0] + self.0[2][1] * vector[1] + self.0[2][2] * vector[2],
         ]
     }
 
@@ -1939,16 +2031,26 @@ mod tests {
         assert!(mesh.radius > 0.2 && mesh.radius < 1.0);
 
         let mut seen = [false; LED_COUNT];
+        let mut switch_vertices = [0usize; switch_runtime::SWITCH_COUNT];
         for vertex in &mesh.vertices {
             if let Ok(index) = usize::try_from(vertex.led_index) {
                 if index < LED_COUNT {
                     seen[index] = true;
                 }
             }
+            if let Ok(index) = usize::try_from(vertex.switch_index) {
+                if index < switch_runtime::SWITCH_COUNT {
+                    switch_vertices[index] += 1;
+                }
+            }
         }
         assert!(
             seen.into_iter().all(|present| present),
             "every bindings.json LED material must exist in the runtime GLB"
+        );
+        assert!(
+            switch_vertices.into_iter().all(|count| count > 0),
+            "every bindings.json switch lever must own tagged runtime vertices"
         );
     }
 
@@ -1984,12 +2086,14 @@ mod tests {
             color: [0.2, 0.3, 0.4, 1.0],
             led_index: 17,
             metallic_roughness: [0.92, 0.24],
+            switch_index: 9,
         };
         let bytes = encode_vertices(&[v]);
         assert_eq!(bytes.len(), VERTEX_STRIDE as usize);
         assert_eq!(read_u32_le(&bytes, 40).unwrap(), 17);
         assert_eq!(read_f32_le(&bytes, 44).unwrap(), 0.92);
         assert_eq!(read_f32_le(&bytes, 48).unwrap(), 0.24);
+        assert_eq!(read_u32_le(&bytes, 52).unwrap(), 9);
         let camera = encode_camera_uniform(Mat4::identity(), [2.0, 3.0, 4.0]);
         assert_eq!(camera.len(), 80);
         assert_eq!(read_f32_le(&camera, 64).unwrap(), 2.0);
