@@ -64,6 +64,7 @@ The app owns host/UI workflow state. It must never become a second CPU, RAM, UAR
 | `src/app/ui/assets.rs` | egui textures/fonts/visual assets. Presentation only. |
 | `src/app/ui/front_panel.rs` | Main photographic Altair panel renderer; consumes backend/machine truth. |
 | `src/app/ui/front_panel_3d.rs` | Embedded-GLB WGPU Altair renderer and camera/presentation state. Presentation only: it must consume the same machine/front-panel truth as the 2D renderer and never own emulated hardware state. |
+| `src/app/ui/front_panel_3d_gpu_tests.rs` | Opt-in headless GPU render/readback regressions for material pipelines, MSAA and sRGB versus UNORM presentation. See `docs/ALTAIR_3D_RENDERING.md`. |
 | `src/app/ui/front_panel_assets.rs` | Front-panel visual asset/layout helpers. |
 | `src/app/ui/front_panel_switches.rs` | Switch geometry/input/rendering helpers. |
 | `src/app/ui/front_panel_operator.rs` | Operator-oriented panel/control window using backend controls. |

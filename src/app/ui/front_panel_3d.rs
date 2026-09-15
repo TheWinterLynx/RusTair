@@ -14,8 +14,9 @@ const GLB_PATH: &str = "assets/panels/altair-3d/runtime/Altair8800_1975.glb";
 const BINDINGS_PATH: &str = "assets/panels/altair-3d/runtime/bindings.json";
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
-const VERTEX_STRIDE: wgpu::BufferAddress = 44;
-const CAMERA_UNIFORM_BYTES: u64 = 64;
+const VERTEX_STRIDE: wgpu::BufferAddress = 52;
+const MODEL_SAMPLE_COUNT: u32 = 4;
+const CAMERA_UNIFORM_BYTES: u64 = 80;
 const LED_COUNT: usize = 36;
 const LED_UNIFORM_BYTES: u64 = LED_COUNT as u64 * 16;
 const NO_LED_INDEX: u32 = u32::MAX;
@@ -31,6 +32,7 @@ const LED_IDS: [&str; LED_COUNT] = [
 const MODEL_SHADER: &str = include_str!("front_panel_3d_model.wgsl");
 
 const PRESENT_SHADER: &str = r#"
+const TARGET_IS_SRGB: bool = false;
 @group(0) @binding(0)
 var source_tex: texture_2d<f32>;
 
@@ -63,7 +65,17 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> QuadOut {
 
 @fragment
 fn fs_main(input: QuadOut) -> @location(0) vec4<f32> {
-    return textureSample(source_tex, source_sampler, input.uv);
+    let color = textureSample(source_tex, source_sampler, input.uv);
+    // Sampling an sRGB texture returns LINEAR light. egui normally renders to
+    // an UNORM (gamma-space) surface, which does not encode it on write.
+    // An sRGB surface does encode on write; never apply the transfer twice.
+    if TARGET_IS_SRGB {
+        return color;
+    }
+    let encoded = select(12.92 * color.rgb,
+        1.055 * pow(max(color.rgb, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055,
+        color.rgb > vec3<f32>(0.0031308));
+    return vec4<f32>(encoded, color.a);
 }
 "#;
 
@@ -410,7 +422,7 @@ impl LoadedRenderer {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
+                        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -469,7 +481,7 @@ impl LoadedRenderer {
                 push_constant_ranges: &[],
             });
 
-        const ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+        const ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
             wgpu::VertexAttribute {
                 format: wgpu::VertexFormat::Float32x3,
                 offset: 0,
@@ -489,6 +501,11 @@ impl LoadedRenderer {
                 format: wgpu::VertexFormat::Uint32,
                 offset: 40,
                 shader_location: 3,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x2,
+                offset: 44,
+                shader_location: 4,
             },
         ];
         let vertex_layout = wgpu::VertexBufferLayout {
@@ -517,7 +534,10 @@ impl LoadedRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: MODEL_SAMPLE_COUNT,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &model_shader,
                 entry_point: Some("fs_main"),
@@ -562,7 +582,7 @@ impl LoadedRenderer {
             });
         let present_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Altair 8800 3D present shader"),
-            source: wgpu::ShaderSource::Wgsl(PRESENT_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(present_shader_source(target_format).into()),
         });
         let present_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Altair 8800 3D present pipeline"),
@@ -642,7 +662,11 @@ impl LoadedRenderer {
 
         let aspect = size[0] as f32 / size[1].max(1) as f32;
         let view_proj = camera_matrix(self.center, self.radius, aspect, camera);
-        queue.write_buffer(&self.camera_buffer, 0, &encode_mat4_uniform(view_proj));
+        queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            &encode_camera_uniform(view_proj, camera_eye(self.center, self.radius, camera)),
+        );
         queue.write_buffer(&self.led_buffer, 0, &encode_led_uniform(leds));
 
         let Some(target) = self.target.as_ref() else {
@@ -650,13 +674,13 @@ impl LoadedRenderer {
         };
 
         let color_attachment = Some(wgpu::RenderPassColorAttachment {
-            view: &target.color_view,
-            resolve_target: None,
+            view: &target.msaa_view,
+            resolve_target: Some(&target.color_view),
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.247,
-                    g: 0.247,
-                    b: 0.247,
+                    r: 0.05,
+                    g: 0.05,
+                    b: 0.05,
                     a: 1.0,
                 }),
                 store: wgpu::StoreOp::Store,
@@ -699,6 +723,8 @@ struct OffscreenTarget {
     size: [u32; 2],
     _color: wgpu::Texture,
     _depth: wgpu::Texture,
+    _msaa: wgpu::Texture,
+    msaa_view: wgpu::TextureView,
     color_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     present_bind_group: wgpu::BindGroup,
@@ -726,11 +752,21 @@ impl OffscreenTarget {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        let msaa = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Altair 8800 3D multisample color"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: MODEL_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: OFFSCREEN_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Altair 8800 3D offscreen depth"),
             size: extent,
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: MODEL_SAMPLE_COUNT,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -757,6 +793,8 @@ impl OffscreenTarget {
             size,
             _color: color,
             _depth: depth,
+            msaa_view: msaa.create_view(&wgpu::TextureViewDescriptor::default()),
+            _msaa: msaa,
             color_view,
             depth_view,
             present_bind_group,
@@ -770,6 +808,7 @@ struct Vertex {
     normal: [f32; 3],
     color: [f32; 4],
     led_index: u32,
+    metallic_roughness: [f32; 2],
 }
 
 struct StaticMesh {
@@ -964,6 +1003,10 @@ fn append_mesh(
             .map(|material| material_base_color(root, material))
             .transpose()?
             .unwrap_or([1.0; 4]);
+        let metallic_roughness = material_index
+            .map(|index| material_metallic_roughness(root, index))
+            .transpose()?
+            .unwrap_or([1.0, 1.0]);
         let led_index = material_index
             .map(|material| material_name(root, material))
             .transpose()?
@@ -975,13 +1018,14 @@ fn append_mesh(
             .map_err(|_| "Altair 3D vertex count exceeds u32".to_owned())?;
         for (position, normal) in positions.into_iter().zip(normals) {
             let world_position = transform.transform_point(position);
-            let world_normal = normalize3(transform.transform_vector(normal));
+            let world_normal = transform.transform_normal(normal);
             builder.include_point(world_position);
             builder.vertices.push(Vertex {
                 position: world_position,
                 normal: world_normal,
                 color,
                 led_index,
+                metallic_roughness,
             });
         }
 
@@ -1029,6 +1073,34 @@ fn material_base_color(root: &JsonValue, material_index: usize) -> Result<[f32; 
         json_f32(&values[2])?,
         json_f32(&values[3])?,
     ])
+}
+
+fn material_metallic_roughness(root: &JsonValue, index: usize) -> Result<[f32; 2], String> {
+    let mat = material(root, index)?;
+    let Some(pbr) = mat.get("pbrMetallicRoughness") else {
+        return Ok([1.0, 1.0]);
+    };
+    Ok([
+        pbr.get("metallicFactor")
+            .map(json_f32)
+            .transpose()?
+            .unwrap_or(1.0),
+        pbr.get("roughnessFactor")
+            .map(json_f32)
+            .transpose()?
+            .unwrap_or(1.0),
+    ])
+}
+
+fn present_shader_source(target_format: wgpu::TextureFormat) -> String {
+    PRESENT_SHADER.replace(
+        "const TARGET_IS_SRGB: bool = false;",
+        if target_format.is_srgb() {
+            "const TARGET_IS_SRGB: bool = true;"
+        } else {
+            "const TARGET_IS_SRGB: bool = false;"
+        },
+    )
 }
 
 fn node_transform(node: &JsonValue) -> Result<Mat4, String> {
@@ -1306,6 +1378,9 @@ fn encode_vertices(vertices: &[Vertex]) -> Vec<u8> {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
         bytes.extend_from_slice(&vertex.led_index.to_le_bytes());
+        for value in vertex.metallic_roughness {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
     }
     bytes
 }
@@ -1318,7 +1393,7 @@ fn encode_indices(indices: &[u32]) -> Vec<u8> {
     bytes
 }
 
-fn encode_mat4_uniform(matrix: Mat4) -> [u8; CAMERA_UNIFORM_BYTES as usize] {
+fn encode_camera_uniform(matrix: Mat4, eye: [f32; 3]) -> [u8; CAMERA_UNIFORM_BYTES as usize] {
     let mut bytes = [0u8; CAMERA_UNIFORM_BYTES as usize];
     let mut cursor = 0usize;
     for column in 0..4 {
@@ -1327,6 +1402,9 @@ fn encode_mat4_uniform(matrix: Mat4) -> [u8; CAMERA_UNIFORM_BYTES as usize] {
             bytes[cursor..cursor + 4].copy_from_slice(&value);
             cursor += 4;
         }
+    }
+    for (i, value) in eye.into_iter().enumerate() {
+        bytes[64 + i * 4..68 + i * 4].copy_from_slice(&value.to_le_bytes());
     }
     bytes
 }
@@ -1416,24 +1494,45 @@ impl Mat4 {
         ]
     }
 
-    fn transform_vector(self, vector: [f32; 3]) -> [f32; 3] {
-        [
-            self.0[0][0] * vector[0] + self.0[0][1] * vector[1] + self.0[0][2] * vector[2],
-            self.0[1][0] * vector[0] + self.0[1][1] * vector[1] + self.0[1][2] * vector[2],
-            self.0[2][0] * vector[0] + self.0[2][1] * vector[1] + self.0[2][2] * vector[2],
-        ]
+    fn transform_normal(self, normal: [f32; 3]) -> [f32; 3] {
+        // Inverse transpose of the world linear transform, including scale.
+        let a = [self.0[0][0], self.0[1][0], self.0[2][0]];
+        let b = [self.0[0][1], self.0[1][1], self.0[2][1]];
+        let c = [self.0[0][2], self.0[1][2], self.0[2][2]];
+        let cofactor = add3(
+            add3(
+                scale3(cross3(b, c), normal[0]),
+                scale3(cross3(c, a), normal[1]),
+            ),
+            scale3(cross3(a, b), normal[2]),
+        );
+        let determinant = dot3(a, cross3(b, c));
+        normalize3(scale3(cofactor, if determinant < 0.0 { -1.0 } else { 1.0 }))
     }
+}
+
+fn camera_eye(center: [f32; 3], radius: f32, camera: CameraState) -> [f32; 3] {
+    let distance = (radius / (42.0_f32.to_radians() * 0.5).sin()) * camera.zoom;
+    add3(
+        add3(center, scale3(camera.pan, radius)),
+        scale3(camera_basis(camera).0, distance),
+    )
 }
 
 fn camera_matrix(center: [f32; 3], radius: f32, aspect: f32, camera: CameraState) -> Mat4 {
     let fov_y = 42.0_f32.to_radians();
     let distance = (radius / (fov_y * 0.5).sin()) * camera.zoom;
     let target = add3(center, scale3(camera.pan, radius));
-    let (direction, _, up) = camera_basis(camera);
-    let eye = add3(target, scale3(direction, distance));
+    let (_, _, up) = camera_basis(camera);
+    let eye = camera_eye(center, radius, camera);
 
     let view = look_at_rh(eye, target, up);
-    let near = (radius * 0.002).max(0.0001);
+    // Put the near plane before the model bounding sphere, including when
+    // panning. A fixed sub-millimetre plane wasted depth precision needed
+    // to separate the thin printed graphics from the dress panel.
+    let near = ((length3(sub3(eye, center)) - radius) * 0.5)
+        .max(radius * 0.002)
+        .max(0.0001);
     let far = distance + radius * (8.0 + length3(camera.pan));
     let projection = perspective_rh_zo(fov_y, aspect.max(0.05), near, far);
     projection.mul(view)
@@ -1854,6 +1953,59 @@ mod tests {
     }
 
     #[test]
+    fn imported_materials_keep_metal_and_roughness() {
+        let (root, _) = parse_glb(embedded_assets::get(GLB_PATH).unwrap()).unwrap();
+        let mats = json_array(root.require("materials").unwrap()).unwrap();
+        for (name, expected) in [
+            ("Hardware_Nickel", [0.92, 0.24]),
+            ("Panel_Charcoal_Provisional", [0.12, 0.48]),
+            ("Paint_Blue_Provisional", [0.18, 0.4]),
+        ] {
+            let index = mats
+                .iter()
+                .position(|m| m.get("name").and_then(|n| json_string(n).ok()) == Some(name))
+                .unwrap();
+            let actual = material_metallic_roughness(&root, index).unwrap();
+            for i in 0..2 {
+                assert!((actual[i] - expected[i]).abs() < 1e-5);
+            }
+        }
+        let mut parser = JsonParser::new(br#"{"materials":[{}, {"pbrMetallicRoughness":{}}]}"#);
+        let root = parser.parse().unwrap();
+        assert_eq!(material_metallic_roughness(&root, 0).unwrap(), [1.0, 1.0]);
+        assert_eq!(material_metallic_roughness(&root, 1).unwrap(), [1.0, 1.0]);
+    }
+
+    #[test]
+    fn vertex_and_camera_bytes_match_gpu_layout() {
+        let v = Vertex {
+            position: [1.0, 2.0, 3.0],
+            normal: [0.0, 1.0, 0.0],
+            color: [0.2, 0.3, 0.4, 1.0],
+            led_index: 17,
+            metallic_roughness: [0.92, 0.24],
+        };
+        let bytes = encode_vertices(&[v]);
+        assert_eq!(bytes.len(), VERTEX_STRIDE as usize);
+        assert_eq!(read_u32_le(&bytes, 40).unwrap(), 17);
+        assert_eq!(read_f32_le(&bytes, 44).unwrap(), 0.92);
+        assert_eq!(read_f32_le(&bytes, 48).unwrap(), 0.24);
+        let camera = encode_camera_uniform(Mat4::identity(), [2.0, 3.0, 4.0]);
+        assert_eq!(camera.len(), 80);
+        assert_eq!(read_f32_le(&camera, 64).unwrap(), 2.0);
+        assert_eq!(read_f32_le(&camera, 72).unwrap(), 4.0);
+    }
+
+    #[test]
+    fn normal_transform_remains_perpendicular_under_nonuniform_scale() {
+        let transform = Mat4::scale([2.0, 1.0, 0.5]);
+        let n = transform.transform_normal(normalize3([1.0, 1.0, 0.0]));
+        assert!(dot3(n, [2.0, -1.0, 0.0]).abs() < 1e-6);
+        let mirrored = Mat4::scale([-2.0, 1.0, 0.5]).transform_normal([1.0, 0.0, 0.0]);
+        assert_eq!(mirrored, [-1.0, 0.0, 0.0]);
+    }
+
+    #[test]
     fn free_camera_basis_remains_valid_through_poles() {
         for pitch in [
             0.0,
@@ -1889,3 +2041,7 @@ mod tests {
         assert_eq!(json_f32(&values[1]).unwrap(), 25.0);
     }
 }
+
+#[cfg(test)]
+#[path = "front_panel_3d_gpu_tests.rs"]
+mod gpu_tests;
