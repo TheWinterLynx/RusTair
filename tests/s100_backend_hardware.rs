@@ -148,7 +148,10 @@ fn sampled_rx_faults_cross_backend_and_appear_only_after_timed_acia_frame() {
     assert_eq!(host.peek_io_port(straps.address.port0_status()) & 0x51, 0);
 
     host.advance_serial_physical_time(Duration::from_millis(2));
-    assert_eq!(host.peek_io_port(straps.address.port0_status()) & 0x51, 0x51);
+    assert_eq!(
+        host.peek_io_port(straps.address.port0_status()) & 0x51,
+        0x51
+    );
     assert_eq!(host.peek_io_port(straps.address.port0_data()), b'P');
 }
 
