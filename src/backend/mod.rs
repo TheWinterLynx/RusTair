@@ -871,10 +871,12 @@ impl BackendHost {
         framing_error: bool,
         parity_error: bool,
     ) {
-        Self::call(
-            self.backend
-                .serial_receive_with_errors(port, byte, framing_error, parity_error),
-        );
+        Self::call(self.backend.serial_receive_with_errors(
+            port,
+            byte,
+            framing_error,
+            parity_error,
+        ));
     }
     pub fn serial_rx_empty(&mut self, port: BackendSerialPort) -> bool {
         Self::call(self.backend.serial_rx_empty(port))
