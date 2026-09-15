@@ -44,6 +44,7 @@ pub(super) struct SwitchRuntime {
 struct SwitchBinding {
     lever: String,
     axis: [f32; 3],
+    pivot_local: [f32; 3],
     rest: f32,
     radians_per_state: f32,
 }
@@ -74,12 +75,23 @@ fn load_switch_bindings() -> Result<Vec<SwitchBinding>, String> {
         if axis_values.len() != 3 {
             return Err(format!("Altair 3D switch {id} axis is not a vec3"));
         }
+        let pivot_values = json_array(switch.require("pivot_local_gltf_m")?)?;
+        if pivot_values.len() != 3 {
+            return Err(format!(
+                "Altair 3D switch {id} pivot_local_gltf_m is not a vec3"
+            ));
+        }
         bindings.push(SwitchBinding {
             lever: json_string(switch.require("lever")?)?.to_owned(),
             axis: [
                 json_f32(&axis_values[0])?,
                 json_f32(&axis_values[1])?,
                 json_f32(&axis_values[2])?,
+            ],
+            pivot_local: [
+                json_f32(&pivot_values[0])?,
+                json_f32(&pivot_values[1])?,
+                json_f32(&pivot_values[2])?,
             ],
             rest: json_f32(switch.require("rest")?)?,
             radians_per_state: json_f32(switch.require("radians_per_state")?)?,
@@ -157,7 +169,7 @@ fn collect_switch_runtime(
                 return Err(format!("Altair runtime GLB repeats bound lever {name:?}"));
             }
             let binding = &bindings[switch_index];
-            let pivot = world.transform_point([0.0, 0.0, 0.0]);
+            let pivot = world.transform_point(binding.pivot_local);
             let axis = normalize3(world.transform_vector(binding.axis));
             let xy_radius = lever_xy_radius(root, bin, node, world, pivot)?;
             runtime[switch_index] = Some(SwitchRuntime {
@@ -266,6 +278,7 @@ mod tests {
         assert_eq!(bindings[16].lever, "SW_POWER_LEVER");
         assert_eq!(bindings[17].lever, "SW_STOP_RUN_LEVER");
         assert_eq!(bindings[24].lever, "SW_AUX2_LEVER");
+        assert_eq!(bindings[0].pivot_local, [0.0, 0.0, 0.0032]);
     }
 
     #[test]
@@ -274,7 +287,10 @@ mod tests {
         for (index, switch) in runtime.iter().enumerate() {
             assert!(switch.xy_radius > 0.0015 && switch.xy_radius < 0.0100);
             assert!((length3(switch.axis) - 1.0).abs() < 1.0e-5);
-            assert!(switch.pivot.iter().all(|value| value.is_finite()), "{index}");
+            assert!(
+                switch.pivot.iter().all(|value| value.is_finite()),
+                "{index}"
+            );
         }
     }
 
