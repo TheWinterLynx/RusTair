@@ -1,8 +1,10 @@
+use std::sync::Mutex;
+
 use super::*;
 
 pub(super) const SWITCH_COUNT: usize = 25;
 pub(super) const SWITCH_UNIFORM_BYTES: u64 = SWITCH_COUNT as u64 * 32;
-pub(super) const MOMENTARY_FIRST_INDEX: usize = 17;
+const MOMENTARY_FIRST_INDEX: usize = 17;
 const MOMENTARY_SWITCH_COUNT: usize = SWITCH_COUNT - MOMENTARY_FIRST_INDEX;
 const POWER_SWITCH_INDEX: usize = 16;
 const MOMENTARY_LATCH_HOLD: Duration = Duration::from_secs(3);
@@ -89,7 +91,7 @@ struct MomentaryControlState {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct ControlState {
+struct ControlState {
     switches: [MomentaryControlState; MOMENTARY_SWITCH_COUNT],
     active_index: Option<usize>,
 }
@@ -110,6 +112,18 @@ struct ControlTransition {
     released: Option<bool>,
     just_latched: bool,
     released_latch: bool,
+}
+
+static CONTROL_STATE: OnceLock<Mutex<ControlState>> = OnceLock::new();
+
+fn control_state() -> &'static Mutex<ControlState> {
+    CONTROL_STATE.get_or_init(|| Mutex::new(ControlState::default()))
+}
+
+fn lock_control_state() -> std::sync::MutexGuard<'static, ControlState> {
+    control_state()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn load_switch_bindings() -> Result<Vec<SwitchBinding>, String> {
@@ -306,8 +320,10 @@ fn authored_switch_state(index: usize, live_state: f32) -> f32 {
 
 pub(super) fn encode_switch_uniform(
     runtime: &[SwitchRuntime; SWITCH_COUNT],
-    states: [f32; SWITCH_COUNT],
+    mut states: [f32; SWITCH_COUNT],
 ) -> Vec<u8> {
+    write_control_states(&lock_control_state(), &mut states);
+
     let mut bytes = vec![0u8; SWITCH_UNIFORM_BYTES as usize];
     for (index, switch) in runtime.iter().enumerate() {
         let offset = index * 32;
@@ -423,15 +439,36 @@ fn visual_direction(state: &MomentaryControlState) -> Option<ControlDirection> {
     }
 }
 
-pub(super) fn write_control_states(
-    state: &ControlState,
-    states: &mut [f32; SWITCH_COUNT],
-) {
+fn write_control_states(state: &ControlState, states: &mut [f32; SWITCH_COUNT]) {
     for (local_index, control) in state.switches.iter().enumerate() {
         states[MOMENTARY_FIRST_INDEX + local_index] = visual_direction(control)
             .map(ControlDirection::state_value)
             .unwrap_or(0.0);
     }
+}
+
+fn pick_momentary_switch(
+    scene: &SwitchPickScene,
+    rect: egui::Rect,
+    pointer: egui::Pos2,
+    camera: CameraState,
+) -> Option<usize> {
+    let (origin, direction) = pointer_ray(scene, rect, pointer, camera)?;
+    let mut nearest: Option<(usize, f32)> = None;
+    for (index, switch) in scene.switches.iter().enumerate().skip(MOMENTARY_FIRST_INDEX) {
+        if origin[2] <= switch.pivot[2] {
+            continue;
+        }
+        let radius = (switch.xy_radius * SWITCH_PICK_RADIUS_SCALE)
+            .clamp(SWITCH_PICK_RADIUS_MIN_M, SWITCH_PICK_RADIUS_MAX_M);
+        let Some(distance) = ray_sphere_distance(origin, direction, switch.pivot, radius) else {
+            continue;
+        };
+        if nearest.is_none_or(|(_, nearest_distance)| distance < nearest_distance) {
+            nearest = Some((index, distance));
+        }
+    }
+    nearest.map(|(index, _)| index)
 }
 
 fn picked_direction(
@@ -460,30 +497,39 @@ pub(super) fn handle_control_input(
     rect: egui::Rect,
     response: &egui::Response,
     camera: CameraState,
-    state: &mut ControlState,
 ) -> bool {
     let now = Instant::now();
-    let (primary_down, primary_pressed, primary_released, pointer_pos) = ui.input(|input| {
-        (
-            input.pointer.primary_down(),
-            input.pointer.primary_pressed(),
-            input.pointer.primary_released(),
-            input.pointer.interact_pos(),
-        )
-    });
+    let (primary_down, primary_pressed, primary_released, pointer_pos, hover_pos) =
+        ui.input(|input| {
+            (
+                input.pointer.primary_down(),
+                input.pointer.primary_pressed(),
+                input.pointer.primary_released(),
+                input.pointer.interact_pos(),
+                input.pointer.hover_pos(),
+            )
+        });
+
+    if response.hovered() {
+        if let (Some(pointer), Ok(scene)) = (hover_pos, switch_pick_scene()) {
+            if pick_momentary_switch(scene, rect, pointer, camera).is_some() {
+                ui.output_mut(|output| output.cursor_icon = egui::CursorIcon::PointingHand);
+            }
+        }
+    }
+
+    let mut state = lock_control_state();
     let mut suppress_primary_orbit = state.active_index.is_some();
 
     if primary_pressed && response.is_pointer_button_down_on() && state.active_index.is_none() {
         if let (Some(pointer), Ok(scene)) = (pointer_pos, switch_pick_scene()) {
-            if let Some(index) = pick_switch(scene, rect, pointer, camera) {
-                if index >= MOMENTARY_FIRST_INDEX {
-                    if let Some(direction) = picked_direction(scene, rect, pointer, camera, index) {
-                        let local_index = index - MOMENTARY_FIRST_INDEX;
-                        let transition = begin_press(&mut state.switches[local_index], direction, now);
-                        state.active_index = Some(index);
-                        suppress_primary_orbit = true;
-                        apply_transition(app, ui.ctx(), index, transition);
-                    }
+            if let Some(index) = pick_momentary_switch(scene, rect, pointer, camera) {
+                if let Some(direction) = picked_direction(scene, rect, pointer, camera, index) {
+                    let local_index = index - MOMENTARY_FIRST_INDEX;
+                    let transition = begin_press(&mut state.switches[local_index], direction, now);
+                    state.active_index = Some(index);
+                    suppress_primary_orbit = true;
+                    apply_transition(app, ui.ctx(), index, transition);
                 }
             }
         }
@@ -609,11 +655,8 @@ fn apply_released(app: &mut RusTairApp, ctx: &egui::Context, index: usize, down:
     }
 }
 
-pub(super) fn release_all_controls(
-    app: &mut RusTairApp,
-    ctx: &egui::Context,
-    state: &mut ControlState,
-) {
+pub(super) fn release_all_controls(app: &mut RusTairApp, ctx: &egui::Context) {
+    let mut state = lock_control_state();
     for (local_index, control) in state.switches.iter_mut().enumerate() {
         let index = MOMENTARY_FIRST_INDEX + local_index;
         if let Some(direction) = control.latched.or(control.press_direction) {
@@ -633,6 +676,11 @@ pub(super) fn rest_switch_states(runtime: &[SwitchRuntime; SWITCH_COUNT]) -> [f3
             runtime[index].rest
         }
     })
+}
+
+#[cfg(test)]
+fn reset_control_state_for_test() {
+    *lock_control_state() = ControlState::default();
 }
 
 #[cfg(test)]
@@ -665,6 +713,7 @@ mod tests {
 
     #[test]
     fn switch_uniform_rotates_from_authored_rest_not_from_zero() {
+        reset_control_state_for_test();
         let runtime = load_switch_runtime().unwrap();
         let rest = rest_switch_states(&runtime);
         let bytes = encode_switch_uniform(&runtime, rest);
@@ -681,6 +730,7 @@ mod tests {
 
     #[test]
     fn power_live_true_maps_to_physical_down_on() {
+        reset_control_state_for_test();
         let runtime = load_switch_runtime().unwrap();
         assert_eq!(runtime[POWER_SWITCH_INDEX].rest, 1.0);
 
