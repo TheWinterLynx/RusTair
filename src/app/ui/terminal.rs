@@ -156,7 +156,7 @@ impl RusTairApp {
                 }
             });
         if board.is_none() {
-            ui.small("Install an 88-SIO or 88-2SIO in Configuration → S-100 Chassis / Cards to attach a cable.");
+            ui.small("Install an 88-SIO or 88-2SIO in Configuration -> S-100 Chassis / Cards to attach a cable.");
         }
 
         if selected != current {
@@ -207,7 +207,7 @@ impl RusTairApp {
                     if ui.button("Clear").clicked() {
                         self.terminal.clear_output();
                     }
-                    if ui.button("Send text/BASIC file…").clicked() {
+                    if ui.button("Send text/BASIC file...").clicked() {
                         self.load_terminal_text_file();
                     }
                     ui.separator();
@@ -498,13 +498,29 @@ impl RusTairApp {
         }
     }
 
+    fn adm3a_combo_width(max_chars: usize) -> f32 {
+        24.0_f32 + max_chars as f32 * 7.0_f32
+    }
+
     fn draw_adm3a_connection_selector(&mut self, ui: &mut egui::Ui) {
         let hardware = self.config.machine.s100_hardware;
         let current = self.adm3a_connection();
         let mut selected = current;
+        let connection_max_chars = [SerialConnection::Port0, SerialConnection::Port1]
+            .into_iter()
+            .filter(|connection| {
+                Self::serial_connection_supported(hardware, SerialDevice::Adm3a, *connection)
+            })
+            .map(|connection| {
+                Self::serial_connection_label(hardware, connection)
+                    .chars()
+                    .count()
+            })
+            .fold("Disconnected".len(), usize::max);
 
         ui.label("RS-232 cable:");
         egui::ComboBox::from_id_salt("adm3a-serial-connection")
+            .width(Self::adm3a_combo_width(connection_max_chars))
             .selected_text(Self::serial_connection_label(hardware, current))
             .show_ui(ui, |ui| {
                 ui.selectable_value(
@@ -541,8 +557,14 @@ impl RusTairApp {
     fn draw_adm3a_baud_selector(&mut self, ui: &mut egui::Ui) {
         let current = self.adm3a.baud_rate();
         let mut selected = current;
+        let baud_max_chars = Adm3aBaudRate::ALL
+            .into_iter()
+            .map(|baud_rate| baud_rate.label().len())
+            .max()
+            .unwrap_or(1);
         ui.label("BAUD:");
         egui::ComboBox::from_id_salt("adm3a-baud-rate")
+            .width(Self::adm3a_combo_width(baud_max_chars))
             .selected_text(current.label())
             .show_ui(ui, |ui| {
                 for baud_rate in Adm3aBaudRate::ALL {
@@ -557,9 +579,25 @@ impl RusTairApp {
     fn draw_adm3a_word_format_selector(&mut self, ui: &mut egui::Ui) {
         let current = self.adm3a.word_format();
         let mut selected = current;
+        let data_max_chars = Adm3aDataBits::ALL
+            .into_iter()
+            .map(|value| value.label().len())
+            .max()
+            .unwrap_or(1);
+        let parity_max_chars = Adm3aParity::ALL
+            .into_iter()
+            .map(|value| value.label().len())
+            .max()
+            .unwrap_or(1);
+        let stop_max_chars = Adm3aStopBits::ALL
+            .into_iter()
+            .map(|value| value.label().len())
+            .max()
+            .unwrap_or(1);
 
         ui.label("DATA:");
         egui::ComboBox::from_id_salt("adm3a-data-bits")
+            .width(Self::adm3a_combo_width(data_max_chars))
             .selected_text(current.data_bits.label())
             .show_ui(ui, |ui| {
                 for data_bits in Adm3aDataBits::ALL {
@@ -569,6 +607,7 @@ impl RusTairApp {
 
         ui.label("PARITY:");
         egui::ComboBox::from_id_salt("adm3a-parity")
+            .width(Self::adm3a_combo_width(parity_max_chars))
             .selected_text(current.parity.label())
             .show_ui(ui, |ui| {
                 for parity in Adm3aParity::ALL {
@@ -578,6 +617,7 @@ impl RusTairApp {
 
         ui.label("STOP:");
         egui::ComboBox::from_id_salt("adm3a-stop-bits")
+            .width(Self::adm3a_combo_width(stop_max_chars))
             .selected_text(current.stop_bits.label())
             .show_ui(ui, |ui| {
                 for stop_bits in Adm3aStopBits::ALL {
@@ -600,8 +640,14 @@ impl RusTairApp {
     fn draw_adm3a_operating_switches(&mut self, ui: &mut egui::Ui) {
         let current_duplex = self.adm3a.duplex();
         let mut duplex = current_duplex;
+        let duplex_max_chars = Adm3aDuplex::ALL
+            .into_iter()
+            .map(|mode| mode.label().len())
+            .max()
+            .unwrap_or(1);
         ui.label("DUPLEX:");
         egui::ComboBox::from_id_salt("adm3a-duplex")
+            .width(Self::adm3a_combo_width(duplex_max_chars))
             .selected_text(current_duplex.label())
             .show_ui(ui, |ui| {
                 for mode in Adm3aDuplex::ALL {
@@ -644,6 +690,7 @@ impl RusTairApp {
         let mut selected_60_hz = current_60_hz;
         ui.label("LINE:");
         egui::ComboBox::from_id_salt("adm3a-line-frequency")
+            .width(Self::adm3a_combo_width("60 Hz".len()))
             .selected_text(if current_60_hz { "60 Hz" } else { "50 Hz" })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut selected_60_hz, true, "60 Hz");
@@ -663,10 +710,10 @@ impl RusTairApp {
         );
 
         ui.menu_button("Keyboard help", |ui| {
-            ui.label("PC Enter  → ADM-3A RETURN (CR)");
-            ui.label("Shift+Enter → LINE FEED (LF)");
-            ui.label("F12 + key → hold physical REPEAT with that key");
-            ui.label("Home → HOME; arrows → cursor control codes");
+            ui.label("PC Enter -> ADM-3A RETURN (CR)");
+            ui.label("Shift+Enter -> LINE FEED (LF)");
+            ui.label("F12 + key -> hold physical REPEAT with that key");
+            ui.label("Home -> HOME; arrows -> cursor control codes");
             ui.small("REPEAT is 12.5 cps at 60 Hz or 10 cps at 50 Hz, and slows to the selected serial transmission rate when necessary.");
         });
     }
@@ -967,7 +1014,7 @@ impl RusTairApp {
                                 ui.separator();
                                 self.draw_adm3a_operating_switches(ui);
                                 ui.separator();
-                                ui.label("80 × 24");
+                                ui.label("80 x 24");
                                 ui.separator();
                                 ui.monospace(format!(
                                     "KEY TX {} @ {} {}",
@@ -976,7 +1023,7 @@ impl RusTairApp {
                                     self.adm3a.word_format().label()
                                 ));
                                 ui.separator();
-                                if ui.button("Open active CRT…").clicked() {
+                                if ui.button("Open active CRT...").clicked() {
                                     Self::open_adm3a_crt_viewport(adm3a_ctx);
                                 }
                             });
