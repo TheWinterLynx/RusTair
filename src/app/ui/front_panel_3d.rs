@@ -28,73 +28,7 @@ const LED_IDS: [&str; LED_COUNT] = [
     "A02", "A01", "A00", "D7", "D6", "D5", "D4", "D3", "D2", "D1", "D0",
 ];
 
-const MODEL_SHADER: &str = r#"
-struct Camera {
-    view_proj: mat4x4<f32>,
-};
-
-struct LedState {
-    values: array<vec4<f32>, 36>,
-};
-
-@group(0) @binding(0)
-var<uniform> camera: Camera;
-
-@group(0) @binding(1)
-var<uniform> led_state: LedState;
-
-struct VertexIn {
-    @location(0) position: vec3<f32>,
-    @location(1) normal: vec3<f32>,
-    @location(2) color: vec4<f32>,
-    @location(3) led_index: u32,
-};
-
-struct VertexOut {
-    @builtin(position) clip_position: vec4<f32>,
-    @location(0) world_normal: vec3<f32>,
-    @location(1) color: vec4<f32>,
-    @location(2) @interpolate(flat) led_index: u32,
-};
-
-@vertex
-fn vs_main(input: VertexIn) -> VertexOut {
-    var out: VertexOut;
-    out.clip_position = camera.view_proj * vec4<f32>(input.position, 1.0);
-    out.world_normal = input.normal;
-    out.color = input.color;
-    out.led_index = input.led_index;
-    return out;
-}
-
-@fragment
-fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
-    let n = normalize(input.world_normal);
-    let key = max(dot(n, normalize(vec3<f32>(0.38, 0.72, 0.58))), 0.0);
-    let fill = max(dot(n, normalize(vec3<f32>(-0.72, 0.22, 0.48))), 0.0);
-    let back = max(dot(n, normalize(vec3<f32>(0.18, -0.32, -0.93))), 0.0);
-    let sky = 0.5 + 0.5 * n.y;
-
-    // The GLB deliberately carries very dark period-correct paint values. A
-    // pure multiplicative Lambert term made those values collapse to almost
-    // black in the emulator. Lift the viewing exposure while retaining a dark
-    // charcoal front panel and the blue enclosure separation.
-    let base = pow(max(input.color.rgb, vec3<f32>(0.018)), vec3<f32>(0.72));
-    let light = 1.08 + 0.68 * key + 0.38 * fill + 0.32 * back + 0.12 * sky;
-    var rgb = min(base * light + vec3<f32>(0.028), vec3<f32>(1.0));
-
-    // Lamps are emissive presentation driven from the exact same electrical
-    // duty snapshot as the classic 2D panel. They are not point lights and do
-    // not feed any state back into the emulated machine.
-    if input.led_index < 36u {
-        let intensity = led_state.values[input.led_index].x;
-        let emission = vec3<f32>(1.0, 0.035, 0.012) * (2.6 * intensity);
-        rgb = min(rgb + emission, vec3<f32>(1.0));
-    }
-
-    return vec4<f32>(rgb, input.color.a);
-}
-"#;
+const MODEL_SHADER: &str = include_str!("front_panel_3d_model.wgsl");
 
 const PRESENT_SHADER: &str = r#"
 @group(0) @binding(0)
@@ -336,7 +270,7 @@ fn draw_viewport_contents(
     }
 
     ui.painter()
-        .rect_filled(rect, 0.0, egui::Color32::from_rgb(36, 39, 45));
+        .rect_filled(rect, 0.0, egui::Color32::from_rgb(63, 63, 63));
 
     ui.painter().add(egui_wgpu::Callback::new_paint_callback(
         rect,
@@ -720,9 +654,9 @@ impl LoadedRenderer {
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.105,
-                    g: 0.115,
-                    b: 0.135,
+                    r: 0.247,
+                    g: 0.247,
+                    b: 0.247,
                     a: 1.0,
                 }),
                 store: wgpu::StoreOp::Store,
